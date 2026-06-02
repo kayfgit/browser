@@ -75,7 +75,11 @@ WebView2 process set; quitting (or even a crash) returns to baseline — no orph
   scroll the page; `n`/`p` switch tabs; `1`–`9` jump to a tab; `<`/`>` reorder the
   current tab; `x` close tab; `H`/`L` history. A native tab bar shows all open tabs.
 - **Command** — `:open <url>`, `:close`, `:tabnext`/`:tabprev`, `:reload`, `:quit`,
-  and `:nojs` (toggle JavaScript-off for new tabs) / `:nojs <url>` (open one JS-disabled).
+  `:nojs` (toggle JS-off for new tabs) / `:nojs <url>`, `:f` (toggle fullscreen),
+  `:resize` and `:move` (window-control modes — then `hjkl`, `Esc` to finish).
+- **Resize / Move** — entered by `:resize` / `:move`; `hjkl` size or reposition the
+  window, `Esc` exits. The window is **borderless** (no OS title bar) — all window
+  control is command-driven.
 - **Passthrough** — `Ctrl+V` (or `i`) sends *all* keys to the page, for terminals (ttyd)
   and web apps. Leave with **Shift+Esc** — bare `Esc` passes through to the page, so vim
   etc. work. Shift+Esc is caught by an injected JS→IPC hook even while the page is focused.

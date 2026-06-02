@@ -22,7 +22,7 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::keyboard::{Key, KeyCode, ModifiersState};
 use tao::window::{Window, WindowBuilder};
 use wry::dpi::{PhysicalPosition, PhysicalSize};
-use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder};
+use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewBuilderExtWindows};
 
 mod draw;
 use draw::Painter;
@@ -63,6 +63,10 @@ enum ModeKind {
     /// All keys go to the page (qutebrowser passthrough). Enter: Ctrl+V or `i`.
     /// Leave: Shift+Esc (handled by the injected script while the page is focused).
     Passthrough,
+    /// hjkl resize the window; Esc exits. Entered with `:resize`.
+    Resize,
+    /// hjkl move the window across the desktop; Esc exits. Entered with `:move`.
+    Move,
 }
 
 struct Tab {
@@ -96,6 +100,7 @@ fn main() -> Result<()> {
 
     let window = WindowBuilder::new()
         .with_title("browser")
+        .with_decorations(false) // no OS title bar; window control is command-driven
         .with_inner_size(tao::dpi::LogicalSize::new(1100.0, 740.0))
         .build(&event_loop)
         .context("creating window")?;
@@ -244,6 +249,8 @@ impl App {
     fn handle_key(&mut self, key: &KeyEvent) {
         match self.mode {
             ModeKind::Command => self.key_command(key),
+            ModeKind::Resize => self.key_resize(key),
+            ModeKind::Move => self.key_move(key),
             ModeKind::Passthrough => {
                 // The page usually has OS focus, so the injected Shift+Esc hook is
                 // what leaves passthrough. This only fires if the page isn't focused.
@@ -346,6 +353,61 @@ impl App {
         self.window.request_redraw();
     }
 
+    // --- window control (resize / move / fullscreen) --------------------------
+
+    fn key_resize(&mut self, key: &KeyEvent) {
+        const STEP: i32 = 40;
+        match &key.logical_key {
+            Key::Escape | Key::Enter => self.mode = ModeKind::Normal,
+            Key::Character(s) => match *s {
+                "h" => self.resize_window(-STEP, 0),
+                "l" => self.resize_window(STEP, 0),
+                "j" => self.resize_window(0, STEP),
+                "k" => self.resize_window(0, -STEP),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    fn key_move(&mut self, key: &KeyEvent) {
+        const STEP: i32 = 40;
+        match &key.logical_key {
+            Key::Escape | Key::Enter => self.mode = ModeKind::Normal,
+            Key::Character(s) => match *s {
+                "h" => self.move_window(-STEP, 0),
+                "l" => self.move_window(STEP, 0),
+                "j" => self.move_window(0, STEP),
+                "k" => self.move_window(0, -STEP),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    fn resize_window(&self, dw: i32, dh: i32) {
+        let s = self.window.inner_size();
+        let w = (s.width as i32 + dw).max(240) as u32;
+        let h = (s.height as i32 + dh).max(160) as u32;
+        self.window.set_inner_size(tao::dpi::PhysicalSize::new(w, h));
+    }
+
+    fn move_window(&self, dx: i32, dy: i32) {
+        if let Ok(p) = self.window.outer_position() {
+            self.window
+                .set_outer_position(tao::dpi::PhysicalPosition::new(p.x + dx, p.y + dy));
+        }
+    }
+
+    fn toggle_fullscreen(&self) {
+        use tao::window::Fullscreen;
+        if self.window.fullscreen().is_some() {
+            self.window.set_fullscreen(None);
+        } else {
+            self.window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+        }
+    }
+
     // --- commands -------------------------------------------------------------
 
     fn run_command(&mut self, line: &str) {
@@ -376,6 +438,15 @@ impl App {
             "prev" | "tabprev" | "tp" => self.switch_tab(-1),
             "back" => self.history(false),
             "forward" => self.history(true),
+            "f" | "fullscreen" => self.toggle_fullscreen(),
+            "resize" => {
+                self.mode = ModeKind::Resize;
+                self.status.clear();
+            }
+            "move" => {
+                self.mode = ModeKind::Move;
+                self.status.clear();
+            }
             "" => {}
             other => self.status = format!("unknown command: {other}"),
         }
@@ -407,6 +478,10 @@ impl App {
             .with_url(url)
             .with_bounds(self.content_rect())
             .with_focused(false)
+            // Disable Chromium's built-in accelerators (Shift+Esc task manager,
+            // Ctrl+F/P, F12, …) so our own keybindings own the keyboard. Standard
+            // editing keys (Ctrl+C/V/X) are unaffected.
+            .with_browser_accelerator_keys(false)
             .with_initialization_script(ESC_SCRIPT)
             .with_ipc_handler(move |req| {
                 if req.body().as_str() == "leave-passthrough" {
@@ -580,6 +655,14 @@ impl App {
     fn bar_segments(&self) -> Vec<(String, draw::Rgb)> {
         match self.mode {
             ModeKind::Command => vec![(format!(":{}", self.command), draw::BAR_FG)],
+            ModeKind::Resize => vec![
+                ("[RESIZE]".into(), draw::ACCENT),
+                ("  hjkl resize window · Esc done".into(), draw::DIM),
+            ],
+            ModeKind::Move => vec![
+                ("[MOVE]".into(), draw::ACCENT),
+                ("  hjkl move window · Esc done".into(), draw::DIM),
+            ],
             ModeKind::Passthrough => {
                 let url = self.active_url().unwrap_or("").to_string();
                 vec![
@@ -664,6 +747,9 @@ fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize) {
         ("< / >", "move the current tab left / right"),
         ("x", "close the current tab (frees its memory)"),
         ("H / L", "history back / forward"),
+        (":f", "toggle fullscreen"),
+        (":resize", "resize mode — then hjkl to size, Esc to finish"),
+        (":move", "move mode — then hjkl to reposition, Esc to finish"),
         (":q", "quit"),
     ] {
         p.text(buf, w, h, x, y, keys, draw::FG);
