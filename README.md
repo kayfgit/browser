@@ -72,7 +72,8 @@ WebView2 process set; quitting (or even a crash) returns to baseline — no orph
 
 **Modes (qutebrowser-style):**
 - **Normal** — shell has focus; `:`/`o` open the command bar; `j`/`k`/`Space`/`d`/`u`
-  scroll the page; `n`/`p` switch tabs; `x` close tab; `H`/`L` history.
+  scroll the page; `n`/`p` switch tabs; `1`–`9` jump to a tab; `<`/`>` reorder the
+  current tab; `x` close tab; `H`/`L` history. A native tab bar shows all open tabs.
 - **Command** — `:open <url>`, `:close`, `:tabnext`/`:tabprev`, `:reload`, `:quit`,
   and `:nojs` (toggle JavaScript-off for new tabs) / `:nojs <url>` (open one JS-disabled).
 - **Passthrough** — `Ctrl+V` (or `i`) sends *all* keys to the page, for terminals (ttyd)

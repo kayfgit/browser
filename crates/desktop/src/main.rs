@@ -29,6 +29,8 @@ use draw::Painter;
 
 /// Height of the bottom command/status bar, in physical pixels.
 const BAR_H: u32 = 28;
+/// Height of the top tab bar (only shown when at least one tab is open).
+const TAB_BAR_H: u32 = 24;
 
 /// Injected into every page: report Shift+Escape back to the shell so we can
 /// leave passthrough mode even while the page holds keyboard focus. Bare Escape
@@ -200,12 +202,22 @@ impl App {
         (s.width.max(1), s.height.max(1))
     }
 
-    /// Bounds for a content webview: full width, full height minus the bar.
+    /// Tab-bar height: present only while at least one tab is open.
+    fn tab_bar_h(&self) -> u32 {
+        if self.tabs.is_empty() {
+            0
+        } else {
+            TAB_BAR_H
+        }
+    }
+
+    /// Bounds for a content webview: full width, between the tab bar and command bar.
     fn content_rect(&self) -> Rect {
         let (w, h) = self.inner();
+        let top = self.tab_bar_h();
         Rect {
-            position: PhysicalPosition::new(0, 0).into(),
-            size: PhysicalSize::new(w, h.saturating_sub(BAR_H)).into(),
+            position: PhysicalPosition::new(0_i32, top as i32).into(),
+            size: PhysicalSize::new(w, h.saturating_sub(top + BAR_H)).into(),
         }
     }
 
@@ -273,6 +285,14 @@ impl App {
                 "L" => self.history(true),
                 "n" => self.switch_tab(1),
                 "p" => self.switch_tab(-1),
+                "<" => self.move_tab(-1),
+                ">" => self.move_tab(1),
+                d if d.len() == 1 && d.as_bytes()[0].is_ascii_digit() => {
+                    let n = (d.as_bytes()[0] - b'0') as usize;
+                    if n >= 1 {
+                        self.jump_to(n - 1);
+                    }
+                }
                 _ => {}
             },
             Key::Space => self.scroll(page * 9 / 10),
@@ -433,6 +453,29 @@ impl App {
         let next = (cur + delta).rem_euclid(n) as usize;
         self.active = Some(next);
         self.refresh_visibility();
+        self.window.set_focus();
+    }
+
+    /// Jump directly to a zero-based tab index (bound to keys 1..9).
+    fn jump_to(&mut self, index: usize) {
+        if index < self.tabs.len() {
+            self.active = Some(index);
+            self.refresh_visibility();
+            self.window.set_focus();
+        }
+    }
+
+    /// Move the active tab one position left (-1) or right (+1).
+    fn move_tab(&mut self, delta: i32) {
+        let Some(i) = self.active else { return };
+        let j = i as i32 + delta;
+        if j < 0 || j as usize >= self.tabs.len() {
+            return;
+        }
+        let j = j as usize;
+        self.tabs.swap(i, j);
+        self.active = Some(j);
+        self.refresh_visibility();
     }
 
     fn refresh_visibility(&mut self) {
@@ -473,6 +516,7 @@ impl App {
         let (w, h) = self.inner();
         // Gather all dynamic text up front, while we can still borrow &self.
         let segments = self.bar_segments();
+        let tab_labels = self.tab_labels();
         let welcome = self.active.is_none();
 
         self.surface
@@ -501,18 +545,35 @@ impl App {
             draw_welcome(p, &mut buf, wz, hz);
             buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
         } else {
-            // A webview covers the content area; only present the bar strip so we
-            // never paint over the live page.
-            let damage = softbuffer::Rect {
+            // A webview covers the middle; redraw only the top tab bar and the
+            // bottom command bar so we never paint over the live page.
+            draw::fill_band(&mut buf, wz, hz, 0, TAB_BAR_H as usize, draw::BAR_BG);
+            draw_tab_bar(p, &mut buf, wz, &tab_labels);
+            let top = softbuffer::Rect {
+                x: 0,
+                y: 0,
+                width: NonZeroU32::new(w).unwrap(),
+                height: NonZeroU32::new(TAB_BAR_H).unwrap(),
+            };
+            let bottom = softbuffer::Rect {
                 x: 0,
                 y: bar_top as u32,
                 width: NonZeroU32::new(w).unwrap(),
                 height: NonZeroU32::new(BAR_H).unwrap(),
             };
-            buf.present_with_damage(&[damage])
+            buf.present_with_damage(&[top, bottom])
                 .map_err(|e| anyhow::anyhow!("present: {e}"))?;
         }
         Ok(())
+    }
+
+    /// (label, is_active) for each open tab, in order.
+    fn tab_labels(&self) -> Vec<(String, bool)> {
+        self.tabs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (short_label(&t.url), Some(i) == self.active))
+            .collect()
     }
 
     /// Build the bar as a sequence of (text, color) segments drawn left to right.
@@ -549,6 +610,41 @@ impl App {
     }
 }
 
+/// A short tab label: the host without scheme/`www.`, truncated.
+fn short_label(url: &str) -> String {
+    let s = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let host = s.split('/').next().unwrap_or(s);
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    let mut label = host.to_string();
+    if label.chars().count() > 22 {
+        label = label.chars().take(21).collect::<String>();
+        label.push('…');
+    }
+    label
+}
+
+/// Draw the top tab bar: `[1:host]` for the active tab, ` 2:host ` for others.
+fn draw_tab_bar(p: &Painter, buf: &mut [u32], w: usize, labels: &[(String, bool)]) {
+    let h = TAB_BAR_H as usize;
+    let baseline = h * 2 / 3;
+    let mut x = 8;
+    for (i, (label, active)) in labels.iter().enumerate() {
+        let (text, color) = if *active {
+            (format!("[{}:{}]", i + 1, label), draw::ACCENT)
+        } else {
+            (format!(" {}:{} ", i + 1, label), draw::DIM)
+        };
+        x = p.text(buf, w, h, x, baseline, &text, color) + 6;
+        if x > w.saturating_sub(40) {
+            p.text(buf, w, h, x, baseline, "…", draw::DIM);
+            break;
+        }
+    }
+}
+
 fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize) {
     let lh = p.line_height();
     let mut y = lh * 2;
@@ -564,6 +660,8 @@ fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize) {
         (":nojs            ", "toggle JavaScript off for new tabs"),
         (":nojs <url>", "open a page with JavaScript disabled"),
         ("n / p", "next / previous tab"),
+        ("1 .. 9", "jump straight to tab N"),
+        ("< / >", "move the current tab left / right"),
         ("x", "close the current tab (frees its memory)"),
         ("H / L", "history back / forward"),
         (":q", "quit"),
