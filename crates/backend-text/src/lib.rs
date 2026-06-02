@@ -85,6 +85,47 @@ pub fn extract(url: &str, html: &str) -> Result<Document> {
     Ok(doc)
 }
 
+/// Extracted article ready to render as a web page: the final URL (after
+/// redirects, for resolving relative links), the title, and cleaned article HTML.
+pub struct Readable {
+    pub url: String,
+    pub title: String,
+    pub html: String,
+}
+
+/// Run readability and return the cleaned article HTML (not our Document model).
+/// Used by the GUI read mode, which renders the HTML in a JS-disabled webview.
+pub fn extract_article(url: &str, html: &str) -> Result<(String, String)> {
+    let mut readability = Readability::new(html, Some(url), Some(ReadabilityConfig::default()))
+        .map_err(|e| anyhow!("readability init failed: {e}"))?;
+    let article = readability
+        .parse()
+        .map_err(|e| anyhow!("readability parse failed: {e}"))?;
+    let title = if article.title.is_empty() {
+        url.to_string()
+    } else {
+        article.title.to_string()
+    };
+    Ok((title, article.content.to_string()))
+}
+
+/// Blocking fetch + readability extraction, for callers without an async runtime
+/// (e.g. the GUI shell). Spins up a short-lived current-thread runtime.
+pub fn fetch_readable_blocking(target: &str) -> Result<Readable> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building runtime")?;
+    rt.block_on(async move {
+        let url = intent::normalize_url(target)
+            .ok_or_else(|| anyhow!("not a valid URL: {target}"))?;
+        let backend = TextBackend::new()?;
+        let (final_url, html) = backend.get_html(&url).await?;
+        let (title, article_html) = extract_article(&final_url, &html)?;
+        Ok(Readable { url: final_url, title, html: article_html })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -79,9 +79,16 @@ WebView2 process set; quitting (or even a crash) returns to baseline — no orph
   shell keeps the keyboard — so it works on CSP-strict sites (needs JS, so not on `:nojs` tabs).
   A hint on a text field / search box focuses it and drops into Insert so you can type
   (Esc or click-away to leave).
-- **Command** — `:open <url>`, `:close`, `:tabnext`/`:tabprev`, `:reload`, `:quit`,
-  `:nojs` (toggle JS-off for new tabs) / `:nojs <url>`, `:f` (toggle fullscreen),
-  `:resize` and `:move` (window-control modes — then `hjkl`, `Esc` to finish).
+- **Command** — `:open <url>`, `:read <url>` (reader mode), `:close`, `:tabnext`/`:tabprev`,
+  `:reload`, `:quit`, `:nojs` (toggle JS-off for new tabs) / `:nojs <url>`, `:f` (toggle
+  fullscreen), `:resize` and `:move` (window-control modes — then `hjkl`, `Esc` to finish).
+- **Read mode** — `:read <url>` extracts the article with the `dom_smoothie` readability
+  pipeline and renders just that (clean dark stylesheet, `<base>` for relative links) in a
+  WebView2 tab. Leanness comes from the **stripped article DOM** (no ads/trackers/page scripts —
+  readability removes them), not from disabling the engine: JS stays on so scrolling, hint mode,
+  and focus handling work normally. Works on docs/wikis/news where a from-scratch engine
+  struggles. Read tabs are tinted **green** in the tab bar and show `[read]` in the status line.
+  (Servo remains a possible future drop-in behind the same `:read` command once it matures.)
 - **Resize / Move** — entered by `:resize` / `:move`; `hjkl` size or reposition the
   window, `Esc` exits. The window is **borderless** (no OS title bar) — all window
   control is command-driven.

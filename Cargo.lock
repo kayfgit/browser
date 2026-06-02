@@ -269,6 +269,7 @@ name = "browser-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "browser-backend-text",
  "browser-core",
  "fontdue",
  "softbuffer",

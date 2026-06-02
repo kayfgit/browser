@@ -72,6 +72,9 @@ const BRIDGE_JS: &str = r#"
       if (!a || !editable(a)) post('insert-blur');
     }, 0);
   }, true);
+  // Tell the shell once the page is up so it can reclaim keyboard focus — works
+  // for both URL and with_html content, independent of native load events.
+  window.addEventListener('load', function () { post('page-ready'); });
 })();
 "#;
 
@@ -174,6 +177,10 @@ enum UserEvent {
     ExitHint,
     /// A hint selected an editable element: focus it and enter passthrough.
     HintEdit,
+    /// A `:read` extraction finished: open a reader tab with this article HTML.
+    ReadReady { url: String, title: String, html: String },
+    /// A `:read` extraction failed.
+    ReadFailed(String),
     Quit,
 }
 
@@ -196,11 +203,19 @@ enum ModeKind {
     Hint,
 }
 
+/// Where a content webview gets its page from.
+enum Source {
+    Url(String),
+    Html(String),
+}
+
 struct Tab {
     webview: WebView,
     url: String,
     /// Whether this tab was opened with JavaScript disabled (hint mode needs JS).
     nojs: bool,
+    /// Whether this is a readability "read mode" tab.
+    read: bool,
 }
 
 struct App {
@@ -347,6 +362,13 @@ fn main() -> Result<()> {
                         "window.__hintTarget&&(window.__hintTarget.focus(),window.__hintTarget=null)",
                     );
                 }
+                app.window.request_redraw();
+            }
+            Event::UserEvent(UserEvent::ReadReady { url, title, html }) => {
+                app.open_read_tab(&url, &title, &html);
+            }
+            Event::UserEvent(UserEvent::ReadFailed(e)) => {
+                app.status = format!("read failed: {e}");
                 app.window.request_redraw();
             }
             Event::UserEvent(UserEvent::Quit) => {
@@ -670,6 +692,13 @@ impl App {
         };
         match verb {
             "open" | "o" | "tabopen" | "t" => self.open_tab(rest, self.nojs),
+            "read" => {
+                if rest.is_empty() {
+                    self.status = "usage: :read <url>".into();
+                } else {
+                    self.start_read(rest);
+                }
+            }
             "nojs" => {
                 if rest.is_empty() {
                     self.nojs = !self.nojs;
@@ -709,9 +738,9 @@ impl App {
             self.status = format!("invalid url: {target}");
             return;
         };
-        match self.build_webview(&url, disable_js) {
+        match self.build_content_webview(Source::Url(url.clone()), disable_js) {
             Ok(webview) => {
-                self.tabs.push(Tab { webview, url: url.clone(), nojs: disable_js });
+                self.tabs.push(Tab { webview, url: url.clone(), nojs: disable_js, read: false });
                 self.active = Some(self.tabs.len() - 1);
                 self.refresh_visibility();
                 // Keep the keyboard on the shell; the page-load handler re-asserts
@@ -723,11 +752,17 @@ impl App {
         }
     }
 
-    fn build_webview(&self, url: &str, disable_js: bool) -> Result<WebView> {
+    /// Build a child webview from either a URL or an inline HTML document, with
+    /// the full shell bridge (keybindings, focus reclaim, hint mode).
+    fn build_content_webview(&self, source: Source, disable_js: bool) -> Result<WebView> {
         let ipc_proxy = self.proxy.clone();
         let load_proxy = self.proxy.clone();
-        let mut builder = WebViewBuilder::new()
-            .with_url(url)
+        let mut builder = WebViewBuilder::new();
+        builder = match source {
+            Source::Url(u) => builder.with_url(u),
+            Source::Html(h) => builder.with_html(h),
+        };
+        builder = builder
             .with_bounds(self.content_rect())
             .with_focused(false)
             // Disable Chromium's built-in accelerators (Shift+Esc task manager,
@@ -742,6 +777,9 @@ impl App {
                 "to-passthrough" => {
                     let _ = ipc_proxy.send_event(UserEvent::InsertToPassthrough);
                 }
+                "page-ready" => {
+                    let _ = ipc_proxy.send_event(UserEvent::FocusShell);
+                }
                 "hint-exit" => {
                     let _ = ipc_proxy.send_event(UserEvent::ExitHint);
                 }
@@ -750,8 +788,7 @@ impl App {
                 }
                 _ => {}
             })
-            // WebView2 tends to grab focus when navigation completes; reclaim it
-            // for the shell so the keyboard UI keeps working in Normal mode.
+            // Backup focus reclaim for non-JS tabs (page-ready covers JS tabs).
             .with_on_page_load_handler(move |event, _url| {
                 if matches!(event, PageLoadEvent::Finished) {
                     let _ = load_proxy.send_event(UserEvent::FocusShell);
@@ -763,6 +800,40 @@ impl App {
         builder
             .build_as_child(&*self.window)
             .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    /// Kick off a background readability extraction; the result arrives as a
+    /// ReadReady/ReadFailed user event so the UI stays responsive.
+    fn start_read(&mut self, target: &str) {
+        self.status = format!("reading {target} …");
+        let proxy = self.proxy.clone();
+        let target = target.to_string();
+        std::thread::spawn(move || {
+            let event = match browser_backend_text::fetch_readable_blocking(&target) {
+                Ok(r) => UserEvent::ReadReady { url: r.url, title: r.title, html: r.html },
+                Err(e) => UserEvent::ReadFailed(format!("{e:#}")),
+            };
+            let _ = proxy.send_event(event);
+        });
+        self.window.request_redraw();
+    }
+
+    /// Open a reader tab from already-extracted article HTML.
+    fn open_read_tab(&mut self, url: &str, title: &str, article_html: &str) {
+        let doc = read_document(url, title, article_html);
+        // JS stays enabled: the article has no page scripts (readability stripped
+        // them), but our bridge/scroll/hint need JS. Leanness comes from the
+        // stripped DOM, not from disabling the engine.
+        match self.build_content_webview(Source::Html(doc), false) {
+            Ok(webview) => {
+                self.tabs.push(Tab { webview, url: url.to_string(), nojs: false, read: true });
+                self.active = Some(self.tabs.len() - 1);
+                self.refresh_visibility();
+                self.window.set_focus();
+                self.status.clear();
+            }
+            Err(e) => self.status = format!("read failed: {e:#}"),
+        }
     }
 
     fn close_active(&mut self) {
@@ -904,13 +975,18 @@ impl App {
         Ok(())
     }
 
-    /// (label, is_active) for each open tab, in order.
-    fn tab_labels(&self) -> Vec<(String, bool)> {
+    /// (label, is_active, is_read) for each open tab, in order.
+    fn tab_labels(&self) -> Vec<(String, bool, bool)> {
         self.tabs
             .iter()
             .enumerate()
-            .map(|(i, t)| (short_label(&t.url), Some(i) == self.active))
+            .map(|(i, t)| (short_label(&t.url), Some(i) == self.active, t.read))
             .collect()
+    }
+
+    /// Whether the active tab is a read-mode tab.
+    fn active_is_read(&self) -> bool {
+        self.active.and_then(|i| self.tabs.get(i)).map(|t| t.read).unwrap_or(false)
     }
 
     /// Build the bar as a sequence of (text, color) segments drawn left to right.
@@ -956,6 +1032,9 @@ impl App {
                     None => ":open <url>  (or press o)".to_string(),
                 };
                 let mut segs = vec![("[N]".into(), draw::ACCENT), (label, draw::BAR_FG)];
+                if self.active_is_read() {
+                    segs.push(("   [read]".into(), draw::READ));
+                }
                 if self.nojs {
                     segs.push(("   [no-js]".into(), draw::ACCENT));
                 }
@@ -966,6 +1045,30 @@ impl App {
             }
         }
     }
+}
+
+/// A clean dark reading stylesheet for read mode.
+const READ_CSS: &str = "html{background:#1e1e1e;color:#d0d0d0}body{margin:0}\
+main{max-width:760px;margin:48px auto;padding:0 22px;\
+font:17px/1.65 -apple-system,Segoe UI,Roboto,sans-serif}\
+h1,h2,h3,h4{line-height:1.25;color:#fff}h1{font-size:1.9em}\
+a{color:#6cb6ff}img,video{max-width:100%;height:auto}\
+pre,code{font-family:Consolas,monospace;font-size:.92em}\
+pre{background:#2a2a2a;padding:12px;overflow:auto;border-radius:6px}\
+code{background:#2a2a2a;padding:1px 4px;border-radius:3px}\
+pre code{background:none;padding:0}\
+blockquote{border-left:3px solid #444;margin:0 0 1em;padding-left:16px;color:#a8a8a8}\
+hr{border:none;border-top:1px solid #333}";
+
+/// Wrap extracted article HTML in a full document with a `<base>` (so relative
+/// links/images resolve against the source) and the reading stylesheet.
+fn read_document(url: &str, title: &str, article_html: &str) -> String {
+    format!(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <base href=\"{url}\"><title>{title}</title><style>{READ_CSS}</style></head>\
+         <body><main>{article_html}</main></body></html>"
+    )
 }
 
 /// A short tab label: the host without scheme/`www.`, truncated.
@@ -985,15 +1088,23 @@ fn short_label(url: &str) -> String {
 }
 
 /// Draw the top tab bar: `[1:host]` for the active tab, ` 2:host ` for others.
-fn draw_tab_bar(p: &Painter, buf: &mut [u32], w: usize, labels: &[(String, bool)]) {
+/// Read-mode tabs are tinted green.
+fn draw_tab_bar(p: &Painter, buf: &mut [u32], w: usize, labels: &[(String, bool, bool)]) {
     let h = TAB_BAR_H as usize;
     let baseline = h * 2 / 3;
     let mut x = 8;
-    for (i, (label, active)) in labels.iter().enumerate() {
-        let (text, color) = if *active {
-            (format!("[{}:{}]", i + 1, label), draw::ACCENT)
+    for (i, (label, active, read)) in labels.iter().enumerate() {
+        let color = if *read {
+            draw::READ
+        } else if *active {
+            draw::ACCENT
         } else {
-            (format!(" {}:{} ", i + 1, label), draw::DIM)
+            draw::DIM
+        };
+        let text = if *active {
+            format!("[{}:{}]", i + 1, label)
+        } else {
+            format!(" {}:{} ", i + 1, label)
         };
         x = p.text(buf, w, h, x, baseline, &text, color) + 6;
         if x > w.saturating_sub(40) {
@@ -1012,6 +1123,7 @@ fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize) {
     y += lh * 2;
     for (keys, desc) in [
         (":open <url>   or   o <url>", "open a page (boots the engine on demand)"),
+        (":read <url>", "reader mode: extract the article, no JS/ads (green tab)"),
         ("j / k / Space / d / u", "scroll the page"),
         ("f", "hint mode: label every link, type the label to follow it"),
         ("i", "insert mode: type in a field (Esc leaves, click-away leaves)"),

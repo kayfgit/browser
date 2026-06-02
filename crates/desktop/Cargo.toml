@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 browser-core.workspace = true
+browser-backend-text.workspace = true
 anyhow.workspace = true
 tao.workspace = true
 wry.workspace = true
