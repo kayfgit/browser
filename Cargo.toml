@@ -6,6 +6,7 @@ members = [
     "crates/backend-text",
     "crates/backend-search",
     "crates/cli",
+    "crates/desktop",
 ]
 
 [workspace.package]
@@ -35,6 +36,12 @@ dom_smoothie = "0.17"
 scraper = "0.27"
 ego-tree = "0.11"
 directories = "6"
+
+# desktop GUI shell
+tao = "0.35"
+wry = "0.55"
+softbuffer = "0.4"
+fontdue = "0.9"
 
 [profile.release]
 opt-level = 3

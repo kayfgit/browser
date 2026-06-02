@@ -55,6 +55,31 @@ Copy [`config/config.toml`](config/config.toml) to your platform config dir
 mode, per-host routing rules (exact host or `*.wildcard`), the search provider,
 and key bindings. A missing config falls back to sane defaults.
 
+## Desktop shell (`browser-desktop`)
+
+A separate, keyboard-driven GUI frontend that boots a **WebView2 (Chromium)** engine
+*only when you open a page*. The window chrome (welcome screen + command bar) is drawn
+natively with a pixel buffer, so an **idle shell holds no engine (~30 MB)**; opening a
+tab spawns the engine on demand and closing it frees the renderer.
+
+```sh
+cargo run -p browser-desktop                 # welcome window, no engine
+cargo run -p browser-desktop youtube.com     # open a page on startup
+```
+
+Verified on Windows 11: idle ≈ 30 MB with zero WebView2 processes; one tab adds the
+WebView2 process set; quitting (or even a crash) returns to baseline — no orphans.
+
+**Modes (qutebrowser-style):**
+- **Normal** — shell has focus; `:`/`o` open the command bar; `j`/`k`/`Space`/`d`/`u`
+  scroll the page; `i` interact; `n`/`p` switch tabs; `x` close tab; `H`/`L` history.
+- **Command** — type `:open <url>`, `:close`, `:tabnext`/`:tabprev`, `:reload`, `:quit`.
+- **Insert** — `i` hands keyboard focus to the page (e.g. to click YouTube); `Esc`
+  returns to Normal (works even while the page has focus, via an injected JS→IPC hook).
+
+Roadmap: per-mode engine config (JS off / image-block for a lean read mode), a native
+YouTube mode (thumbnails via Piped/Invidious + `mpv`), and Servo for the read tier.
+
 ## Architecture
 
 ```
@@ -62,7 +87,8 @@ core            config, intent routing, the Document model, the Backend trait
 backend-text    reqwest + dom_smoothie (readability) + DOM→Document walker
 backend-search  reqwest + DDG-lite / SearXNG → Document
 tui             ratatui app: command bar, viewport, history, find-in-page
-cli             the `browser` binary
+cli             the `browser` (terminal) binary
+desktop         tao + wry (WebView2) + softbuffer/fontdue native chrome; `browser-desktop`
 ```
 
 Every backend produces a `Document`; the TUI only knows how to render a

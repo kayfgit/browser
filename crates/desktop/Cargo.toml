@@ -1,0 +1,18 @@
+[package]
+name = "browser-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "browser-desktop"
+path = "src/main.rs"
+
+[dependencies]
+browser-core.workspace = true
+anyhow.workspace = true
+tao.workspace = true
+wry.workspace = true
+softbuffer.workspace = true
+fontdue.workspace = true
