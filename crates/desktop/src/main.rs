@@ -14,6 +14,7 @@
 #![windows_subsystem = "windows"]
 
 use std::num::NonZeroU32;
+use std::process::Command;
 use std::rc::Rc;
 
 use anyhow::{Context as _, Result};
@@ -181,6 +182,8 @@ enum UserEvent {
     ReadReady { url: String, title: String, html: String },
     /// A `:read` extraction failed.
     ReadFailed(String),
+    /// A `:te` command finished: combined output and exit code.
+    TermDone { cmd: String, output: String, code: Option<i32> },
     Quit,
 }
 
@@ -370,6 +373,9 @@ fn main() -> Result<()> {
             Event::UserEvent(UserEvent::ReadFailed(e)) => {
                 app.status = format!("read failed: {e}");
                 app.window.request_redraw();
+            }
+            Event::UserEvent(UserEvent::TermDone { cmd, output, code }) => {
+                app.show_term_result(&cmd, &output, code);
             }
             Event::UserEvent(UserEvent::Quit) => {
                 app.teardown();
@@ -699,6 +705,13 @@ impl App {
                     self.start_read(rest);
                 }
             }
+            "te" | "term" => {
+                if rest.is_empty() {
+                    self.status = "usage: :te <command>".into();
+                } else {
+                    self.run_term(rest);
+                }
+            }
             "nojs" => {
                 if rest.is_empty() {
                     self.nojs = !self.nojs;
@@ -815,6 +828,32 @@ impl App {
             };
             let _ = proxy.send_event(event);
         });
+        self.window.request_redraw();
+    }
+
+    /// Run a local shell command in the background. Result arrives as TermDone.
+    /// Strictly shell-initiated — never reachable from page content.
+    fn run_term(&mut self, cmd: &str) {
+        self.status = format!("$ {cmd}");
+        let proxy = self.proxy.clone();
+        let cmd = cmd.to_string();
+        std::thread::spawn(move || {
+            let (output, code) = exec_command(&cmd);
+            let _ = proxy.send_event(UserEvent::TermDone { cmd, output, code });
+        });
+        self.window.request_redraw();
+    }
+
+    /// Present a finished command vim-style: the result replaces the command-bar
+    /// text (collapsed to one line).
+    fn show_term_result(&mut self, _cmd: &str, output: &str, code: Option<i32>) {
+        let trimmed = output.trim();
+        self.status = if trimmed.is_empty() {
+            let codestr = code.map(|c| c.to_string()).unwrap_or_else(|| "?".into());
+            format!("(exit {codestr})")
+        } else {
+            trimmed.replace(['\r', '\n'], " ")
+        };
         self.window.request_redraw();
     }
 
@@ -1047,6 +1086,44 @@ impl App {
     }
 }
 
+/// Cap captured command output so a runaway command can't balloon memory.
+const TERM_OUTPUT_CAP: usize = 200_000;
+
+/// Run `cmd` through the platform shell, returning combined stdout+stderr and the
+/// exit code. Blocking — call from a background thread.
+fn exec_command(cmd: &str) -> (String, Option<i32>) {
+    #[cfg(windows)]
+    let mut command = {
+        let mut c = Command::new("cmd");
+        c.args(["/C", cmd]);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut c = Command::new("sh");
+        c.args(["-c", cmd]);
+        c
+    };
+    match command.output() {
+        Ok(out) => {
+            let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+            let err = String::from_utf8_lossy(&out.stderr);
+            if !err.trim().is_empty() {
+                if !s.is_empty() && !s.ends_with('\n') {
+                    s.push('\n');
+                }
+                s.push_str(&err);
+            }
+            if s.len() > TERM_OUTPUT_CAP {
+                s.truncate(TERM_OUTPUT_CAP);
+                s.push_str("\n… (output truncated)");
+            }
+            (s, out.status.code())
+        }
+        Err(e) => (format!("failed to run command: {e}"), None),
+    }
+}
+
 /// A clean dark reading stylesheet for read mode.
 const READ_CSS: &str = "html{background:#1e1e1e;color:#d0d0d0}body{margin:0}\
 main{max-width:760px;margin:48px auto;padding:0 22px;\
@@ -1124,6 +1201,7 @@ fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize) {
     for (keys, desc) in [
         (":open <url>   or   o <url>", "open a page (boots the engine on demand)"),
         (":read <url>", "reader mode: extract the article, no JS/ads (green tab)"),
+        (":te <command>", "run a local command; result shows in the command bar"),
         ("j / k / Space / d / u", "scroll the page"),
         ("f", "hint mode: label every link, type the label to follow it"),
         ("i", "insert mode: type in a field (Esc leaves, click-away leaves)"),

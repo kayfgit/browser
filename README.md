@@ -79,9 +79,13 @@ WebView2 process set; quitting (or even a crash) returns to baseline — no orph
   shell keeps the keyboard — so it works on CSP-strict sites (needs JS, so not on `:nojs` tabs).
   A hint on a text field / search box focuses it and drops into Insert so you can type
   (Esc or click-away to leave).
-- **Command** — `:open <url>`, `:read <url>` (reader mode), `:close`, `:tabnext`/`:tabprev`,
-  `:reload`, `:quit`, `:nojs` (toggle JS-off for new tabs) / `:nojs <url>`, `:f` (toggle
-  fullscreen), `:resize` and `:move` (window-control modes — then `hjkl`, `Esc` to finish).
+- **Command** — `:open <url>`, `:read <url>` (reader mode), `:te <command>` (run a local
+  command), `:close`, `:tabnext`/`:tabprev`, `:reload`, `:quit`, `:nojs` (toggle JS-off for new
+  tabs) / `:nojs <url>`, `:f` (toggle fullscreen), `:resize` and `:move` (window-control modes —
+  then `hjkl`, `Esc` to finish).
+- **`:te` (built-in command runner)** — runs a local shell command on a background thread.
+  Single-line output shows in the command bar (e.g. `:te echo hi`); multi-line output opens a
+  scrollable output tab. **Strictly shell-initiated** — never reachable from page content.
 - **Read mode** — `:read <url>` extracts the article with the `dom_smoothie` readability
   pipeline and renders just that (clean dark stylesheet, `<base>` for relative links) in a
   WebView2 tab. Leanness comes from the **stripped article DOM** (no ads/trackers/page scripts —
