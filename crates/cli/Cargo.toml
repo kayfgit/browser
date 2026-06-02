@@ -1,0 +1,16 @@
+[package]
+name = "browser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "browser"
+path = "src/main.rs"
+
+[dependencies]
+browser-core.workspace = true
+browser-tui.workspace = true
+anyhow.workspace = true
+tokio.workspace = true

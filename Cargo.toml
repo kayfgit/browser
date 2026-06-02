@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/tui",
+    "crates/backend-text",
+    "crates/backend-search",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["kayf"]
+
+[workspace.dependencies]
+# internal crates
+browser-core = { path = "crates/core" }
+browser-tui = { path = "crates/tui" }
+browser-backend-text = { path = "crates/backend-text" }
+browser-backend-search = { path = "crates/backend-search" }
+
+# shared third-party
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+reqwest = { version = "0.13", features = ["gzip", "brotli"] }
+url = "2"
+ratatui = "0.30"
+crossterm = "0.29"
+dom_smoothie = "0.17"
+scraper = "0.27"
+ego-tree = "0.11"
+directories = "6"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

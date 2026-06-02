@@ -1,0 +1,16 @@
+[package]
+name = "browser-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+browser-core.workspace = true
+browser-backend-text.workspace = true
+browser-backend-search.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+url.workspace = true

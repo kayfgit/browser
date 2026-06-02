@@ -1,0 +1,36 @@
+# Sample browser config. Copy to your platform config dir to activate:
+#   Windows: %APPDATA%\browser\config.toml
+# Anything omitted falls back to the built-in defaults.
+
+# Mode used for a bare target when no [modes] rule matches.
+# One of: text | search | video | full
+default_mode = "text"
+
+# Per-host routing. Keys are an exact host or a leading wildcard (*.example.com).
+[modes]
+"youtube.com"     = "video"   # roadmap (yt-dlp + mpv)
+"www.youtube.com" = "video"
+"docs.rs"         = "text"
+"*.wikipedia.org" = "text"
+"github.com"      = "full"    # roadmap (WebView2)
+
+[search]
+# provider = "ddg"  -> DuckDuckGo lite (no setup needed; default)
+# provider = "searxng" + base_url = "https://your-instance/search"
+provider = "ddg"
+base_url = "https://lite.duckduckgo.com/lite/"
+limit = 15
+
+# Single-key bindings for the viewport (command-bar verbs live in :commands).
+[keys]
+command        = ":"
+follow         = "f"
+reload         = "r"
+back           = "H"
+forward        = "L"
+quit           = "q"
+search_in_page = "/"
+down           = "j"
+up             = "k"
+top            = "g"
+bottom         = "G"

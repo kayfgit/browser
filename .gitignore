@@ -1,0 +1,28 @@
+# Rust build output
+/target/
+**/*.rs.bk
+
+# We DO commit Cargo.lock: this workspace produces a binary, and a locked
+# dependency set keeps builds reproducible. (Only libraries omit it.)
+
+# Backtraces / debugging
+*.pdb
+
+# Local config overrides (sample lives at config/config.toml)
+/config/local.toml
+
+# Editor / IDE
+/.vscode/
+/.idea/
+*.swp
+*.swo
+*~
+
+# OS cruft
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Environment / secrets
+.env
+.env.*
