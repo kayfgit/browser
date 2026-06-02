@@ -32,27 +32,148 @@ const BAR_H: u32 = 28;
 /// Height of the top tab bar (only shown when at least one tab is open).
 const TAB_BAR_H: u32 = 24;
 
-/// Injected into every page: report Shift+Escape back to the shell so we can
-/// leave passthrough mode even while the page holds keyboard focus. Bare Escape
-/// is deliberately NOT intercepted, so terminal apps (vim in ttyd, etc.) keep it.
-const ESC_SCRIPT: &str = r#"
+/// Injected into every page. Reads a synchronous `window.__mode` flag (kept in
+/// sync by the shell) and, per mode, intercepts exactly the keys the shell owns.
+/// In `insert` it takes Escape (leave) and Ctrl+V (to passthrough) and lets the
+/// rest type; in `passthrough` it takes only Shift+Escape and lets every other key
+/// reach the page. In insert it also reports when focus leaves the editable element,
+/// so the shell can drop back to normal when you click away.
+const BRIDGE_JS: &str = r#"
 (function () {
+  if (window.__shellBridge) return;
+  window.__shellBridge = true;
+  if (typeof window.__mode === 'undefined') window.__mode = 'normal';
+  function post(m) { if (window.ipc) window.ipc.postMessage(m); }
+  function editable(el) {
+    if (!el) return false;
+    var tag = el.tagName;
+    if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    if (tag === 'INPUT') {
+      var t = (el.getAttribute('type') || 'text').toLowerCase();
+      return ['button','submit','reset','checkbox','radio','file','image','range','color','hidden']
+        .indexOf(t) === -1;
+    }
+    return !!el.isContentEditable;
+  }
+  window.__shellEditable = editable;
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && e.shiftKey) {
-      e.preventDefault();
-      window.ipc.postMessage('leave-passthrough');
+    var m = window.__mode;
+    if (m === 'insert') {
+      if (e.key === 'Escape' && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); post('insert-escape'); }
+      else if (e.ctrlKey && (e.key === 'v' || e.key === 'V')) { e.preventDefault(); e.stopPropagation(); post('to-passthrough'); }
+    } else if (m === 'passthrough') {
+      if (e.key === 'Escape' && e.shiftKey) { e.preventDefault(); e.stopPropagation(); post('leave-passthrough'); }
     }
   }, true);
+  document.addEventListener('focusout', function () {
+    if (window.__mode !== 'insert') return;
+    setTimeout(function () {
+      var a = document.activeElement;
+      if (!a || !editable(a)) post('insert-blur');
+    }, 0);
+  }, true);
+})();
+"#;
+
+/// Injected on demand to drive hint mode. Defines `window.__hintShow/Input/Clear`.
+/// The shell collects the typed label and calls `__hintInput`; the page filters
+/// badges and, on an exact match, clicks the target and reports back via IPC.
+const HINT_JS: &str = r#"
+(function () {
+  if (window.__hintClear) window.__hintClear();
+  var chars = "asdfghjkl";
+  var sel = "a[href], button, input:not([type=hidden]):not([disabled]), textarea, " +
+            "select, [onclick], [role='button'], [role='link'], [tabindex]:not([tabindex='-1'])";
+  var els = Array.prototype.slice.call(document.querySelectorAll(sel)).filter(function (el) {
+    var r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;
+    if (r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) return false;
+    var st = getComputedStyle(el);
+    return st.visibility !== 'hidden' && st.display !== 'none';
+  });
+  function gen(n) {
+    if (n === 0) return [];
+    var width = 1, cap = chars.length;
+    while (cap < n) { width++; cap *= chars.length; }
+    var out = [];
+    for (var i = 0; i < n; i++) {
+      var s = '', x = i;
+      for (var w = 0; w < width; w++) { s = chars[x % chars.length] + s; x = Math.floor(x / chars.length); }
+      out.push(s);
+    }
+    return out;
+  }
+  var labels = gen(els.length);
+  var box = document.createElement('div');
+  box.id = '__hint_box';
+  var map = {};
+  for (var i = 0; i < els.length; i++) {
+    var r = els[i].getBoundingClientRect();
+    var b = document.createElement('span');
+    b.textContent = labels[i];
+    b.style.cssText = 'position:fixed;left:' + Math.max(0, r.left) + 'px;top:' + Math.max(0, r.top) +
+      'px;z-index:2147483647;background:#ffd400;color:#000;font:bold 11px monospace;padding:0 3px;' +
+      'border:1px solid #000;border-radius:3px;line-height:14px;pointer-events:none;';
+    box.appendChild(b);
+    map[labels[i]] = { el: els[i], badge: b };
+  }
+  document.documentElement.appendChild(box);
+  window.__hintMap = map;
+  window.__hintClear = function () {
+    var x = document.getElementById('__hint_box');
+    if (x) x.remove();
+    window.__hintMap = null;
+  };
+  function editable(el) {
+    if (!el) return false;
+    var tag = el.tagName;
+    if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+    if (tag === 'INPUT') {
+      var t = (el.getAttribute('type') || 'text').toLowerCase();
+      return ['button','submit','reset','checkbox','radio','file','image','range','color','hidden']
+        .indexOf(t) === -1;
+    }
+    return !!el.isContentEditable;
+  }
+  window.__hintInput = function (s) {
+    var m = window.__hintMap; if (!m) return;
+    s = (s || '').toLowerCase();
+    var exact = null;
+    for (var k in m) {
+      if (k.indexOf(s) === 0) { m[k].badge.style.display = ''; if (k === s) exact = m[k]; }
+      else { m[k].badge.style.display = 'none'; }
+    }
+    if (exact) {
+      var el = exact.el;
+      var edit = editable(el);
+      window.__hintClear();
+      if (edit) {
+        // Defer focusing until the shell has handed the webview OS focus, so the
+        // field (not the document body) ends up focused; then enter passthrough.
+        window.__hintTarget = el;
+        if (window.ipc) window.ipc.postMessage('hint-edit');
+      } else {
+        try { el.focus(); el.click(); } catch (e) {}
+        if (window.ipc) window.ipc.postMessage('hint-exit');
+      }
+    }
+  };
 })();
 "#;
 
 /// Events posted from webview IPC back into the event loop.
 enum UserEvent {
-    /// Leave passthrough: move focus from the page back to the shell.
-    ReturnFocus,
+    /// Leave insert/passthrough: move focus from the page back to the shell.
+    ExitToNormal,
+    /// Promote insert → passthrough (Ctrl+V while typing); the page keeps focus.
+    InsertToPassthrough,
     /// Reclaim keyboard focus for the shell (e.g. after a page finishes loading
-    /// and WebView2 has grabbed focus), unless we are intentionally in passthrough.
+    /// and WebView2 has grabbed focus), unless the page should keep focus.
     FocusShell,
+    /// A hint was activated (or the page asked to end hint mode).
+    ExitHint,
+    /// A hint selected an editable element: focus it and enter passthrough.
+    HintEdit,
     Quit,
 }
 
@@ -60,18 +181,26 @@ enum UserEvent {
 enum ModeKind {
     Normal,
     Command,
-    /// All keys go to the page (qutebrowser passthrough). Enter: Ctrl+V or `i`.
-    /// Leave: Shift+Esc (handled by the injected script while the page is focused).
+    /// Temporary typing in a field. The page types, but the shell still owns
+    /// Escape (leave) and Ctrl+V (→ passthrough); auto-exits when focus leaves the
+    /// field. Enter: `i` or a hint on an editable element.
+    Insert,
+    /// Every keystroke goes to the page, no exceptions; persists across clicks and
+    /// navigation. Enter: Ctrl+V. Leave: Shift+Esc only.
     Passthrough,
     /// hjkl resize the window; Esc exits. Entered with `:resize`.
     Resize,
     /// hjkl move the window across the desktop; Esc exits. Entered with `:move`.
     Move,
+    /// Link hints are shown; typed characters select one. Entered with `f`.
+    Hint,
 }
 
 struct Tab {
     webview: WebView,
     url: String,
+    /// Whether this tab was opened with JavaScript disabled (hint mode needs JS).
+    nojs: bool,
 }
 
 struct App {
@@ -84,6 +213,8 @@ struct App {
 
     mode: ModeKind,
     command: String,
+    /// Accumulated label characters while in Hint mode.
+    hint_input: String,
     status: String,
     tabs: Vec<Tab>,
     active: Option<usize>,
@@ -121,6 +252,7 @@ fn main() -> Result<()> {
         proxy,
         mode: ModeKind::Normal,
         command: String::new(),
+        hint_input: String::new(),
         status: String::new(),
         tabs: Vec::new(),
         active: None,
@@ -176,13 +308,46 @@ fn main() -> Result<()> {
                 }
                 _ => {}
             },
-            Event::UserEvent(UserEvent::ReturnFocus) => app.return_focus(),
-            Event::UserEvent(UserEvent::FocusShell) => {
-                // The page just loaded and may have stolen focus; take it back
-                // unless the user deliberately switched to passthrough.
-                if app.mode != ModeKind::Passthrough {
-                    app.window.set_focus();
+            Event::UserEvent(UserEvent::ExitToNormal) => app.exit_to_normal(),
+            Event::UserEvent(UserEvent::InsertToPassthrough) => {
+                app.mode = ModeKind::Passthrough;
+                app.set_page_mode("passthrough");
+                app.window.request_redraw();
+            }
+            Event::UserEvent(UserEvent::FocusShell) => match app.mode {
+                // Passthrough persists across navigation: re-assert it on the new
+                // page and keep the page focused.
+                ModeKind::Passthrough => {
+                    app.set_page_mode("passthrough");
+                    if let Some(wv) = app.active_webview() {
+                        let _ = wv.focus();
+                    }
                 }
+                // Insert is temporary; a navigation ends the editing context.
+                ModeKind::Insert => {
+                    app.mode = ModeKind::Normal;
+                    app.window.set_focus();
+                    app.window.request_redraw();
+                }
+                _ => app.window.set_focus(),
+            },
+            Event::UserEvent(UserEvent::ExitHint) => {
+                app.hint_input.clear();
+                app.mode = ModeKind::Normal;
+                app.window.set_focus();
+                app.window.request_redraw();
+            }
+            Event::UserEvent(UserEvent::HintEdit) => {
+                // The hint selected a text field: enter insert (temporary typing),
+                // then focus the field itself within the page.
+                app.hint_input.clear();
+                app.enter_insert();
+                if let Some(wv) = app.active_webview() {
+                    let _ = wv.evaluate_script(
+                        "window.__hintTarget&&(window.__hintTarget.focus(),window.__hintTarget=null)",
+                    );
+                }
+                app.window.request_redraw();
             }
             Event::UserEvent(UserEvent::Quit) => {
                 app.teardown();
@@ -251,11 +416,20 @@ impl App {
             ModeKind::Command => self.key_command(key),
             ModeKind::Resize => self.key_resize(key),
             ModeKind::Move => self.key_move(key),
+            ModeKind::Hint => self.key_hint(key),
+            // In Insert/Passthrough the page normally has OS focus and the injected
+            // bridge handles the shell keys; these arms are fallbacks for when the
+            // shell still holds focus (e.g. right after entering the mode).
+            ModeKind::Insert => {
+                if matches!(key.logical_key, Key::Escape) && !self.modifiers.shift_key() {
+                    self.exit_to_normal();
+                } else if self.modifiers.control_key() && key.physical_key == KeyCode::KeyV {
+                    self.enter_passthrough();
+                }
+            }
             ModeKind::Passthrough => {
-                // The page usually has OS focus, so the injected Shift+Esc hook is
-                // what leaves passthrough. This only fires if the page isn't focused.
                 if matches!(key.logical_key, Key::Escape) && self.modifiers.shift_key() {
-                    self.return_focus();
+                    self.exit_to_normal();
                 }
             }
             ModeKind::Normal => self.key_normal(key),
@@ -281,7 +455,8 @@ impl App {
                 "k" => self.scroll(-80),
                 "d" => self.scroll(page / 2),
                 "u" => self.scroll(-page / 2),
-                "i" => self.enter_passthrough(),
+                "i" => self.enter_insert(),
+                "f" => self.enter_hint(),
                 "x" => self.close_active(),
                 "r" => {
                     if let Some(wv) = self.active_webview() {
@@ -335,21 +510,98 @@ impl App {
         self.status.clear();
     }
 
-    fn enter_passthrough(&mut self) {
+    fn enter_insert(&mut self) {
+        if self.active_webview().is_none() {
+            self.status = "no page — open one first".into();
+            return;
+        }
+        self.mode = ModeKind::Insert;
+        self.set_page_mode("insert");
         if let Some(wv) = self.active_webview() {
             let _ = wv.focus();
-            self.mode = ModeKind::Passthrough;
-        } else {
-            self.status = "no page — open one first".into();
         }
     }
 
-    fn return_focus(&mut self) {
+    fn enter_passthrough(&mut self) {
+        if self.active_webview().is_none() {
+            self.status = "no page — open one first".into();
+            return;
+        }
+        self.mode = ModeKind::Passthrough;
+        self.set_page_mode("passthrough");
+        if let Some(wv) = self.active_webview() {
+            let _ = wv.focus();
+        }
+    }
+
+    /// Push the current mode name into the page so the injected bridge knows which
+    /// keys to intercept. Called whenever the mode changes.
+    fn set_page_mode(&self, mode: &str) {
+        if let Some(wv) = self.active_webview() {
+            let _ = wv.evaluate_script(&format!("window.__mode={mode:?}"));
+        }
+    }
+
+    fn exit_to_normal(&mut self) {
+        self.set_page_mode("normal");
         if let Some(wv) = self.active_webview() {
             let _ = wv.focus_parent();
         }
         self.mode = ModeKind::Normal;
         self.window.set_focus();
+        self.window.request_redraw();
+    }
+
+    // --- hint mode ------------------------------------------------------------
+
+    fn enter_hint(&mut self) {
+        let Some(idx) = self.active else {
+            self.status = "no page — open one first".into();
+            return;
+        };
+        if self.tabs[idx].nojs {
+            self.status = "hint mode needs JavaScript (this tab is no-js)".into();
+            return;
+        }
+        self.hint_input.clear();
+        self.mode = ModeKind::Hint;
+        let _ = self.tabs[idx].webview.evaluate_script(HINT_JS);
+    }
+
+    fn key_hint(&mut self, key: &KeyEvent) {
+        match &key.logical_key {
+            Key::Escape => self.exit_hint(),
+            Key::Backspace => {
+                self.hint_input.pop();
+                self.hint_send();
+            }
+            Key::Character(s) => {
+                let c = *s;
+                if !c.is_empty() && c.chars().all(|ch| ch.is_ascii_alphabetic()) {
+                    self.hint_input.push_str(&c.to_lowercase());
+                    self.hint_send();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Forward the current label string to the page to filter/activate hints.
+    fn hint_send(&self) {
+        if let Some(wv) = self.active_webview() {
+            let _ = wv.evaluate_script(&format!(
+                "window.__hintInput&&window.__hintInput({:?})",
+                self.hint_input
+            ));
+        }
+    }
+
+    fn exit_hint(&mut self) {
+        if let Some(wv) = self.active_webview() {
+            let _ = wv.evaluate_script("window.__hintClear&&window.__hintClear()");
+        }
+        self.hint_input.clear();
+        self.mode = ModeKind::Normal;
         self.window.request_redraw();
     }
 
@@ -459,7 +711,7 @@ impl App {
         };
         match self.build_webview(&url, disable_js) {
             Ok(webview) => {
-                self.tabs.push(Tab { webview, url: url.clone() });
+                self.tabs.push(Tab { webview, url: url.clone(), nojs: disable_js });
                 self.active = Some(self.tabs.len() - 1);
                 self.refresh_visibility();
                 // Keep the keyboard on the shell; the page-load handler re-asserts
@@ -482,11 +734,21 @@ impl App {
             // Ctrl+F/P, F12, …) so our own keybindings own the keyboard. Standard
             // editing keys (Ctrl+C/V/X) are unaffected.
             .with_browser_accelerator_keys(false)
-            .with_initialization_script(ESC_SCRIPT)
-            .with_ipc_handler(move |req| {
-                if req.body().as_str() == "leave-passthrough" {
-                    let _ = ipc_proxy.send_event(UserEvent::ReturnFocus);
+            .with_initialization_script(BRIDGE_JS)
+            .with_ipc_handler(move |req| match req.body().as_str() {
+                "leave-passthrough" | "insert-escape" | "insert-blur" => {
+                    let _ = ipc_proxy.send_event(UserEvent::ExitToNormal);
                 }
+                "to-passthrough" => {
+                    let _ = ipc_proxy.send_event(UserEvent::InsertToPassthrough);
+                }
+                "hint-exit" => {
+                    let _ = ipc_proxy.send_event(UserEvent::ExitHint);
+                }
+                "hint-edit" => {
+                    let _ = ipc_proxy.send_event(UserEvent::HintEdit);
+                }
+                _ => {}
             })
             // WebView2 tends to grab focus when navigation completes; reclaim it
             // for the shell so the keyboard UI keeps working in Normal mode.
@@ -663,6 +925,19 @@ impl App {
                 ("[MOVE]".into(), draw::ACCENT),
                 ("  hjkl move window · Esc done".into(), draw::DIM),
             ],
+            ModeKind::Hint => vec![
+                ("[HINT]".into(), draw::ACCENT),
+                (format!(" {}", self.hint_input), draw::BAR_FG),
+                ("   type a label · Esc cancel".into(), draw::DIM),
+            ],
+            ModeKind::Insert => {
+                let url = self.active_url().unwrap_or("").to_string();
+                vec![
+                    ("[INSERT]".into(), draw::ACCENT),
+                    (url, draw::BAR_FG),
+                    ("   (Esc normal · Ctrl+V passthrough)".into(), draw::DIM),
+                ]
+            }
             ModeKind::Passthrough => {
                 let url = self.active_url().unwrap_or("").to_string();
                 vec![
@@ -738,8 +1013,10 @@ fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize) {
     for (keys, desc) in [
         (":open <url>   or   o <url>", "open a page (boots the engine on demand)"),
         ("j / k / Space / d / u", "scroll the page"),
-        ("Ctrl+V  (or i)", "passthrough: all keys go to the page (for ttyd, web apps)"),
-        ("Shift+Esc", "leave passthrough (bare Esc passes through to the page)"),
+        ("f", "hint mode: label every link, type the label to follow it"),
+        ("i", "insert mode: type in a field (Esc leaves, click-away leaves)"),
+        ("Ctrl+V", "passthrough: send EVERY key to the page (for ttyd, web apps)"),
+        ("Shift+Esc", "leave passthrough (it persists across clicks & links)"),
         (":nojs            ", "toggle JavaScript off for new tabs"),
         (":nojs <url>", "open a page with JavaScript disabled"),
         ("n / p", "next / previous tab"),

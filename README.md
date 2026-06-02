@@ -72,18 +72,26 @@ WebView2 process set; quitting (or even a crash) returns to baseline — no orph
 
 **Modes (qutebrowser-style):**
 - **Normal** — shell has focus; `:`/`o` open the command bar; `j`/`k`/`Space`/`d`/`u`
-  scroll the page; `n`/`p` switch tabs; `1`–`9` jump to a tab; `<`/`>` reorder the
+  scroll; `f` hint mode; `n`/`p` switch tabs; `1`–`9` jump to a tab; `<`/`>` reorder the
   current tab; `x` close tab; `H`/`L` history. A native tab bar shows all open tabs.
+- **Hint** — `f` labels every clickable element (qutebrowser-style); type the label to
+  follow it, `Esc` cancels. Injected JS draws the badges and clicks the target, while the
+  shell keeps the keyboard — so it works on CSP-strict sites (needs JS, so not on `:nojs` tabs).
+  A hint on a text field / search box focuses it and drops into Insert so you can type
+  (Esc or click-away to leave).
 - **Command** — `:open <url>`, `:close`, `:tabnext`/`:tabprev`, `:reload`, `:quit`,
   `:nojs` (toggle JS-off for new tabs) / `:nojs <url>`, `:f` (toggle fullscreen),
   `:resize` and `:move` (window-control modes — then `hjkl`, `Esc` to finish).
 - **Resize / Move** — entered by `:resize` / `:move`; `hjkl` size or reposition the
   window, `Esc` exits. The window is **borderless** (no OS title bar) — all window
   control is command-driven.
-- **Passthrough** — `Ctrl+V` (or `i`) sends *all* keys to the page, for terminals (ttyd)
-  and web apps. Leave with **Shift+Esc** — bare `Esc` passes through to the page, so vim
-  etc. work. Shift+Esc is caught by an injected JS→IPC hook even while the page is focused.
-  (Note: a `:nojs` tab can't run that hook; ttyd needs JS anyway, so they don't co-occur.)
+- **Insert** — `i` (or a hint on a text field) to type into a field. The shell still honors
+  **Esc** (leave) and **Ctrl+V** (→ passthrough); it auto-exits when focus leaves the field
+  (you click away). Temporary, for filling in inputs.
+- **Passthrough** — `Ctrl+V` sends *every* keystroke to the page with no exceptions and
+  **persists across clicks and navigation**; the only way out is **Shift+Esc**. For ttyd and
+  full web apps. (Both Insert and Passthrough use an injected JS bridge, so they need
+  JavaScript — not available on `:nojs` tabs.)
 
 Roadmap: image-block for a leaner read mode, a native YouTube mode (thumbnails via
 Piped/Invidious + `mpv`), and Servo for the read tier.
