@@ -72,13 +72,16 @@ WebView2 process set; quitting (or even a crash) returns to baseline — no orph
 
 **Modes (qutebrowser-style):**
 - **Normal** — shell has focus; `:`/`o` open the command bar; `j`/`k`/`Space`/`d`/`u`
-  scroll the page; `i` interact; `n`/`p` switch tabs; `x` close tab; `H`/`L` history.
-- **Command** — type `:open <url>`, `:close`, `:tabnext`/`:tabprev`, `:reload`, `:quit`.
-- **Insert** — `i` hands keyboard focus to the page (e.g. to click YouTube); `Esc`
-  returns to Normal (works even while the page has focus, via an injected JS→IPC hook).
+  scroll the page; `n`/`p` switch tabs; `x` close tab; `H`/`L` history.
+- **Command** — `:open <url>`, `:close`, `:tabnext`/`:tabprev`, `:reload`, `:quit`,
+  and `:nojs` (toggle JavaScript-off for new tabs) / `:nojs <url>` (open one JS-disabled).
+- **Passthrough** — `Ctrl+V` (or `i`) sends *all* keys to the page, for terminals (ttyd)
+  and web apps. Leave with **Shift+Esc** — bare `Esc` passes through to the page, so vim
+  etc. work. Shift+Esc is caught by an injected JS→IPC hook even while the page is focused.
+  (Note: a `:nojs` tab can't run that hook; ttyd needs JS anyway, so they don't co-occur.)
 
-Roadmap: per-mode engine config (JS off / image-block for a lean read mode), a native
-YouTube mode (thumbnails via Piped/Invidious + `mpv`), and Servo for the read tier.
+Roadmap: image-block for a leaner read mode, a native YouTube mode (thumbnails via
+Piped/Invidious + `mpv`), and Servo for the read tier.
 
 ## Architecture
 

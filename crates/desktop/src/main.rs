@@ -19,10 +19,10 @@ use std::rc::Rc;
 use anyhow::{Context as _, Result};
 use tao::event::{ElementState, Event, KeyEvent, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
-use tao::keyboard::Key;
+use tao::keyboard::{Key, KeyCode, ModifiersState};
 use tao::window::{Window, WindowBuilder};
 use wry::dpi::{PhysicalPosition, PhysicalSize};
-use wry::{Rect, WebView, WebViewBuilder};
+use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder};
 
 mod draw;
 use draw::Painter;
@@ -30,19 +30,27 @@ use draw::Painter;
 /// Height of the bottom command/status bar, in physical pixels.
 const BAR_H: u32 = 28;
 
-/// Injected into every page: report Escape back to the shell so we can leave
-/// Insert mode even while the page holds keyboard focus.
+/// Injected into every page: report Shift+Escape back to the shell so we can
+/// leave passthrough mode even while the page holds keyboard focus. Bare Escape
+/// is deliberately NOT intercepted, so terminal apps (vim in ttyd, etc.) keep it.
 const ESC_SCRIPT: &str = r#"
 (function () {
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') { window.ipc.postMessage('blur'); }
+    if (e.key === 'Escape' && e.shiftKey) {
+      e.preventDefault();
+      window.ipc.postMessage('leave-passthrough');
+    }
   }, true);
 })();
 "#;
 
 /// Events posted from webview IPC back into the event loop.
 enum UserEvent {
+    /// Leave passthrough: move focus from the page back to the shell.
     ReturnFocus,
+    /// Reclaim keyboard focus for the shell (e.g. after a page finishes loading
+    /// and WebView2 has grabbed focus), unless we are intentionally in passthrough.
+    FocusShell,
     Quit,
 }
 
@@ -50,7 +58,9 @@ enum UserEvent {
 enum ModeKind {
     Normal,
     Command,
-    Insert,
+    /// All keys go to the page (qutebrowser passthrough). Enter: Ctrl+V or `i`.
+    /// Leave: Shift+Esc (handled by the injected script while the page is focused).
+    Passthrough,
 }
 
 struct Tab {
@@ -71,6 +81,10 @@ struct App {
     status: String,
     tabs: Vec<Tab>,
     active: Option<usize>,
+    /// Current keyboard modifier state (tracked via ModifiersChanged).
+    modifiers: ModifiersState,
+    /// When true, new tabs are opened with JavaScript disabled.
+    nojs: bool,
     quit: bool,
 }
 
@@ -103,12 +117,20 @@ fn main() -> Result<()> {
         status: String::new(),
         tabs: Vec::new(),
         active: None,
+        modifiers: ModifiersState::default(),
+        nojs: false,
         quit: false,
     };
 
-    // Optional: open a page immediately, e.g. `browser-desktop youtube.com`.
+    // Optional: open a page immediately, e.g. `browser-desktop youtube.com`,
+    // or run a command, e.g. `browser-desktop ":nojs youtube.com"`.
     if let Some(target) = std::env::args().nth(1) {
-        app.open_tab(&target);
+        let t = target.trim_start();
+        if let Some(cmd) = t.strip_prefix(':') {
+            app.run_command(cmd);
+        } else {
+            app.open_tab(&target, false);
+        }
     }
 
     // Test hook: auto-quit after N ms so cleanup can be verified headlessly.
@@ -135,6 +157,7 @@ fn main() -> Result<()> {
                 WindowEvent::Resized(size) => {
                     app.on_resize(size.width, size.height);
                 }
+                WindowEvent::ModifiersChanged(state) => app.modifiers = state,
                 WindowEvent::KeyboardInput { event: key, .. } => {
                     if key.state == ElementState::Pressed {
                         app.handle_key(&key);
@@ -147,6 +170,13 @@ fn main() -> Result<()> {
                 _ => {}
             },
             Event::UserEvent(UserEvent::ReturnFocus) => app.return_focus(),
+            Event::UserEvent(UserEvent::FocusShell) => {
+                // The page just loaded and may have stolen focus; take it back
+                // unless the user deliberately switched to passthrough.
+                if app.mode != ModeKind::Passthrough {
+                    app.window.set_focus();
+                }
+            }
             Event::UserEvent(UserEvent::Quit) => {
                 app.teardown();
                 *control_flow = ControlFlow::Exit;
@@ -202,9 +232,10 @@ impl App {
     fn handle_key(&mut self, key: &KeyEvent) {
         match self.mode {
             ModeKind::Command => self.key_command(key),
-            ModeKind::Insert => {
-                // The page usually has focus here; this only fires if it doesn't.
-                if matches!(key.logical_key, Key::Escape) {
+            ModeKind::Passthrough => {
+                // The page usually has OS focus, so the injected Shift+Esc hook is
+                // what leaves passthrough. This only fires if the page isn't focused.
+                if matches!(key.logical_key, Key::Escape) && self.modifiers.shift_key() {
                     self.return_focus();
                 }
             }
@@ -214,6 +245,13 @@ impl App {
     }
 
     fn key_normal(&mut self, key: &KeyEvent) {
+        // Chords (with Ctrl) take precedence over plain keys.
+        if self.modifiers.control_key() {
+            if key.physical_key == KeyCode::KeyV {
+                self.enter_passthrough();
+            }
+            return;
+        }
         let (_, h) = self.inner();
         let page = (h as i32 - BAR_H as i32).max(40);
         match &key.logical_key {
@@ -224,7 +262,7 @@ impl App {
                 "k" => self.scroll(-80),
                 "d" => self.scroll(page / 2),
                 "u" => self.scroll(-page / 2),
-                "i" => self.enter_insert(),
+                "i" => self.enter_passthrough(),
                 "x" => self.close_active(),
                 "r" => {
                     if let Some(wv) = self.active_webview() {
@@ -270,12 +308,12 @@ impl App {
         self.status.clear();
     }
 
-    fn enter_insert(&mut self) {
+    fn enter_passthrough(&mut self) {
         if let Some(wv) = self.active_webview() {
             let _ = wv.focus();
-            self.mode = ModeKind::Insert;
+            self.mode = ModeKind::Passthrough;
         } else {
-            self.status = "no page to interact with".into();
+            self.status = "no page — open one first".into();
         }
     }
 
@@ -284,6 +322,7 @@ impl App {
             let _ = wv.focus_parent();
         }
         self.mode = ModeKind::Normal;
+        self.window.set_focus();
         self.window.request_redraw();
     }
 
@@ -296,7 +335,16 @@ impl App {
             None => (line, ""),
         };
         match verb {
-            "open" | "o" | "tabopen" | "t" => self.open_tab(rest),
+            "open" | "o" | "tabopen" | "t" => self.open_tab(rest, self.nojs),
+            "nojs" => {
+                if rest.is_empty() {
+                    self.nojs = !self.nojs;
+                    self.status =
+                        format!("new tabs: JavaScript {}", if self.nojs { "OFF" } else { "ON" });
+                } else {
+                    self.open_tab(rest, true);
+                }
+            }
             "close" | "tabclose" | "bd" => self.close_active(),
             "quit" | "q" => self.quit = true,
             "reload" | "r" => {
@@ -313,37 +361,51 @@ impl App {
         }
     }
 
-    fn open_tab(&mut self, target: &str) {
+    fn open_tab(&mut self, target: &str, disable_js: bool) {
         let Some(url) = browser_core::normalize_url(target) else {
             self.status = format!("invalid url: {target}");
             return;
         };
-        match self.build_webview(&url) {
+        match self.build_webview(&url, disable_js) {
             Ok(webview) => {
                 self.tabs.push(Tab { webview, url: url.clone() });
                 self.active = Some(self.tabs.len() - 1);
                 self.refresh_visibility();
-                self.status.clear();
+                // Keep the keyboard on the shell; the page-load handler re-asserts
+                // this once navigation finishes (which is when focus tends to move).
+                self.window.set_focus();
+                self.status = if disable_js { "(no-js)".into() } else { String::new() };
             }
             Err(e) => self.status = format!("failed to open: {e:#}"),
         }
     }
 
-    fn build_webview(&self, url: &str) -> Result<WebView> {
-        let proxy = self.proxy.clone();
-        let webview = WebViewBuilder::new()
+    fn build_webview(&self, url: &str, disable_js: bool) -> Result<WebView> {
+        let ipc_proxy = self.proxy.clone();
+        let load_proxy = self.proxy.clone();
+        let mut builder = WebViewBuilder::new()
             .with_url(url)
             .with_bounds(self.content_rect())
             .with_focused(false)
             .with_initialization_script(ESC_SCRIPT)
             .with_ipc_handler(move |req| {
-                if req.body().as_str() == "blur" {
-                    let _ = proxy.send_event(UserEvent::ReturnFocus);
+                if req.body().as_str() == "leave-passthrough" {
+                    let _ = ipc_proxy.send_event(UserEvent::ReturnFocus);
                 }
             })
+            // WebView2 tends to grab focus when navigation completes; reclaim it
+            // for the shell so the keyboard UI keeps working in Normal mode.
+            .with_on_page_load_handler(move |event, _url| {
+                if matches!(event, PageLoadEvent::Finished) {
+                    let _ = load_proxy.send_event(UserEvent::FocusShell);
+                }
+            });
+        if disable_js {
+            builder = builder.with_javascript_disabled();
+        }
+        builder
             .build_as_child(&*self.window)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        Ok(webview)
+            .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     fn close_active(&mut self) {
@@ -359,6 +421,7 @@ impl App {
             Some(i.min(self.tabs.len() - 1))
         };
         self.refresh_visibility();
+        self.window.set_focus();
     }
 
     fn switch_tab(&mut self, delta: i32) {
@@ -456,12 +519,12 @@ impl App {
     fn bar_segments(&self) -> Vec<(String, draw::Rgb)> {
         match self.mode {
             ModeKind::Command => vec![(format!(":{}", self.command), draw::BAR_FG)],
-            ModeKind::Insert => {
+            ModeKind::Passthrough => {
                 let url = self.active_url().unwrap_or("").to_string();
                 vec![
-                    ("[I]".into(), draw::ACCENT),
+                    ("[PASS]".into(), draw::ACCENT),
                     (url, draw::BAR_FG),
-                    ("   (Esc to return)".into(), draw::DIM),
+                    ("   (Shift+Esc to exit)".into(), draw::DIM),
                 ]
             }
             ModeKind::Normal => {
@@ -474,6 +537,9 @@ impl App {
                     None => ":open <url>  (or press o)".to_string(),
                 };
                 let mut segs = vec![("[N]".into(), draw::ACCENT), (label, draw::BAR_FG)];
+                if self.nojs {
+                    segs.push(("   [no-js]".into(), draw::ACCENT));
+                }
                 if !self.status.is_empty() {
                     segs.push((format!("   {}", self.status), draw::DIM));
                 }
@@ -493,8 +559,10 @@ fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize) {
     for (keys, desc) in [
         (":open <url>   or   o <url>", "open a page (boots the engine on demand)"),
         ("j / k / Space / d / u", "scroll the page"),
-        ("i", "interact with the page (click, type)"),
-        ("Esc", "return to normal mode"),
+        ("Ctrl+V  (or i)", "passthrough: all keys go to the page (for ttyd, web apps)"),
+        ("Shift+Esc", "leave passthrough (bare Esc passes through to the page)"),
+        (":nojs            ", "toggle JavaScript off for new tabs"),
+        (":nojs <url>", "open a page with JavaScript disabled"),
         ("n / p", "next / previous tab"),
         ("x", "close the current tab (frees its memory)"),
         ("H / L", "history back / forward"),
