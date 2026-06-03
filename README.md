@@ -73,7 +73,9 @@ WebView2 process set; quitting (or even a crash) returns to baseline — no orph
 **Modes (qutebrowser-style):**
 - **Normal** — shell has focus; `:`/`o` open the command bar; `j`/`k`/`Space`/`d`/`u`
   scroll; `f` hint mode; `n`/`p` switch tabs; `1`–`9` jump to a tab; `<`/`>` reorder the
-  current tab; `x` close tab; `H`/`L` history. A native tab bar shows all open tabs.
+  current tab; `x` close tab; `H`/`L` history; **`Ctrl +`/`Ctrl -`/`Ctrl 0`** zoom the
+  whole UI (native chrome + web pages + terminal) in / out / reset. A native tab bar shows
+  all open tabs.
 - **Hint** — `f` labels every clickable element (qutebrowser-style); type the label to
   follow it, `Esc` cancels. Injected JS draws the badges and clicks the target, while the
   shell keeps the keyboard — so it works on CSP-strict sites (needs JS, so not on `:nojs` tabs).
@@ -83,9 +85,15 @@ WebView2 process set; quitting (or even a crash) returns to baseline — no orph
   command), `:close`, `:tabnext`/`:tabprev`, `:reload`, `:quit`, `:nojs` (toggle JS-off for new
   tabs) / `:nojs <url>`, `:f` (toggle fullscreen), `:resize` and `:move` (window-control modes —
   then `hjkl`, `Esc` to finish).
-- **`:te` (built-in command runner)** — runs a local shell command on a background thread.
-  Single-line output shows in the command bar (e.g. `:te echo hi`); multi-line output opens a
-  scrollable output tab. **Strictly shell-initiated** — never reachable from page content.
+- **`:te <command>` (command runner)** — runs a local shell command on a background thread;
+  the result replaces the command-bar text (vim-style). **Strictly shell-initiated** — never
+  reachable from page content.
+- **`:te` (embedded terminal)** — opens a real terminal tab: **xterm.js** in a webview bridged
+  to your shell (`:config <shell>`, default `nu`). The PTY + shell run in a separate
+  `browser-pty-host` companion process — so a live ConPTY can't deadlock the browser's exit —
+  confined to a kill-on-close **job object** so the OS reaps it (and its conhost + shell) when
+  the tab closes, the browser quits, or even crashes. Terminal tabs are tinted orange; type
+  freely, `Shift+Esc` returns to the shell.
 - **Read mode** — `:read <url>` extracts the article with the `dom_smoothie` readability
   pipeline and renders just that (clean dark stylesheet, `<base>` for relative links) in a
   WebView2 tab. Leanness comes from the **stripped article DOM** (no ads/trackers/page scripts —
@@ -116,6 +124,7 @@ backend-search  reqwest + DDG-lite / SearXNG → Document
 tui             ratatui app: command bar, viewport, history, find-in-page
 cli             the `browser` (terminal) binary
 desktop         tao + wry (WebView2) + softbuffer/fontdue native chrome; `browser-desktop`
+pty-host        `browser-pty-host`: companion process owning a PTY+shell, bridged over a pipe
 ```
 
 Every backend produces a `Document`; the TUI only knows how to render a

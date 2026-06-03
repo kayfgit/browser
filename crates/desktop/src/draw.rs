@@ -16,6 +16,7 @@ pub const BAR_BG: Rgb = (0x2d, 0x2d, 0x2d);
 pub const BAR_FG: Rgb = (0xf0, 0xf0, 0xf0);
 pub const ACCENT: Rgb = (0x6c, 0xb6, 0xff);
 pub const READ: Rgb = (0x7c, 0xd9, 0x92);
+pub const TERM: Rgb = (0xe6, 0xa5, 0x5e);
 
 pub struct Painter {
     font: Font,
@@ -33,6 +34,12 @@ impl Painter {
 
     pub fn line_height(&self) -> usize {
         (self.px * 1.45).ceil() as usize
+    }
+
+    /// Rescale the font (for global zoom). Glyphs are rasterized per-draw, so a
+    /// new size takes effect on the next paint with no cache to invalidate.
+    pub fn set_px(&mut self, px: f32) {
+        self.px = px;
     }
 
     /// Draw a string with its baseline at `baseline`, left edge at `x`.
