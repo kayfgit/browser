@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+description = "A modal, mode-dispatching browser — only what's needed, when needed."
 
 [[bin]]
 name = "browser-desktop"

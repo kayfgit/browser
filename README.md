@@ -70,6 +70,19 @@ cargo run -p browser-desktop youtube.com     # open a page on startup
 Verified on Windows 11: idle ≈ 30 MB with zero WebView2 processes; one tab adds the
 WebView2 process set; quitting (or even a crash) returns to baseline — no orphans.
 
+### Install (Windows, per-user)
+
+```powershell
+pwsh -File install.ps1          # build release, install, Start Menu shortcut, add to PATH
+```
+
+Installs `browser.exe` (+ its `browser-pty-host.exe` companion) to
+`%LOCALAPPDATA%\Programs\browser`, adds a Start Menu shortcut named **browser**, and puts
+it on your PATH (so `browser <url>` works in a new terminal). No admin required; nothing
+else is needed at runtime (WebView2 ships with Windows 11; assets are baked into the exe).
+Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it with
+`pwsh -File uninstall.ps1`.
+
 **Modes (qutebrowser-style):**
 - **Normal** — shell has focus; `:`/`o` open the command bar; `j`/`k`/`Space`/`d`/`u`
   scroll; `f` hint mode; `n`/`p` switch tabs; `1`–`9` jump to a tab; `<`/`>` reorder the
@@ -81,15 +94,17 @@ WebView2 process set; quitting (or even a crash) returns to baseline — no orph
   shell keeps the keyboard — so it works on CSP-strict sites (needs JS, so not on `:nojs` tabs).
   A hint on a text field / search box focuses it and drops into Insert so you can type
   (Esc or click-away to leave).
-- **Command** — `:open <url>`, `:read <url>` (reader mode), `:te <command>` (run a local
-  command), `:close`, `:tabnext`/`:tabprev`, `:reload`, `:quit`, `:nojs` (toggle JS-off for new
-  tabs) / `:nojs <url>`, `:f` (toggle fullscreen), `:resize` and `:move` (window-control modes —
-  then `hjkl`, `Esc` to finish).
+- **Command** — `:open <url>`, `:edit`/`:e` (edit the current URL), `:read <url>` (reader mode),
+  `:te <command>` (run a local command), `:close`, `:tabnext`/`:tabprev`, `:reload`, `:quit`,
+  `:nojs` (toggle JS-off for new tabs) / `:nojs <url>`, `:f` (toggle fullscreen), `:resize` and
+  `:move` (window-control modes — then `hjkl`, `Esc` to finish), `:commands` (full keybind/command
+  reference), `:version` (build info). The command bar shows a blinking block cursor and supports
+  readline editing: `Ctrl+W` delete word, `Ctrl+U` clear line, `Ctrl+H` backspace, `Ctrl+C` cancel.
 - **`:te <command>` (command runner)** — runs a local shell command on a background thread;
   the result replaces the command-bar text (vim-style). **Strictly shell-initiated** — never
   reachable from page content.
 - **`:te` (embedded terminal)** — opens a real terminal tab: **xterm.js** in a webview bridged
-  to your shell (`:config <shell>`, default `nu`). The PTY + shell run in a separate
+  to your shell (`:shell <program>`, default `nu`). The PTY + shell run in a separate
   `browser-pty-host` companion process — so a live ConPTY can't deadlock the browser's exit —
   confined to a kill-on-close **job object** so the OS reaps it (and its conhost + shell) when
   the tab closes, the browser quits, or even crashes. Terminal tabs are tinted orange; type

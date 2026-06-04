@@ -42,6 +42,16 @@ impl Painter {
         self.px = px;
     }
 
+    /// Pixel width of `s` at the current size — matches what [`Painter::text`]
+    /// advances, so it can position a caret at a byte offset within a string.
+    pub fn measure(&self, s: &str) -> usize {
+        let mut pen = 0f32;
+        for ch in s.chars() {
+            pen += self.font.metrics(ch, self.px).advance_width;
+        }
+        pen as usize
+    }
+
     /// Draw a string with its baseline at `baseline`, left edge at `x`.
     /// Returns the pen x position after the string.
     #[allow(clippy::too_many_arguments)]
@@ -86,6 +96,29 @@ pub fn fill_band(buf: &mut [u32], w: usize, h: usize, y0: usize, y1: usize, colo
     for y in y0..y1 {
         let row = &mut buf[y * w..y * w + w];
         row.iter_mut().for_each(|p| *p = v);
+    }
+}
+
+/// Fill a rectangle [x0, x1) × [y0, y1) with a solid color (used for the caret).
+#[allow(clippy::too_many_arguments)]
+pub fn fill_rect(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    x0: usize,
+    y0: usize,
+    x1: usize,
+    y1: usize,
+    color: Rgb,
+) {
+    let v = pack(color);
+    let x1 = x1.min(w);
+    let y1 = y1.min(h);
+    if x0 >= x1 {
+        return;
+    }
+    for y in y0..y1 {
+        buf[y * w + x0..y * w + x1].iter_mut().for_each(|p| *p = v);
     }
 }
 

@@ -21,7 +21,9 @@ use std::thread::JoinHandle;
 
 use anyhow::{Context as _, Result};
 use base64::Engine as _;
-use tao::event::{ElementState, Event, KeyEvent, WindowEvent};
+use std::time::{Duration, Instant};
+
+use tao::event::{ElementState, Event, KeyEvent, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::keyboard::{Key, KeyCode, ModifiersState};
 use tao::window::{Window, WindowBuilder};
@@ -369,6 +371,8 @@ struct App {
 
     mode: ModeKind,
     command: String,
+    /// Caret position within `command`, as a byte offset on a char boundary.
+    command_cursor: usize,
     /// Accumulated label characters while in Hint mode.
     hint_input: String,
     status: String,
@@ -385,6 +389,8 @@ struct App {
     /// Global UI zoom factor (1.0 = 100%). Scales native chrome, web content,
     /// and terminal font together.
     zoom: f64,
+    /// Blink state for the command-bar cursor (toggled on a timer in Command mode).
+    cursor_on: bool,
     quit: bool,
 }
 
@@ -415,6 +421,7 @@ fn main() -> Result<()> {
         proxy,
         mode: ModeKind::Normal,
         command: String::new(),
+        command_cursor: 0,
         hint_input: String::new(),
         status: String::new(),
         tabs: Vec::new(),
@@ -424,6 +431,7 @@ fn main() -> Result<()> {
         term_command: vec!["nu".to_string()],
         next_term_id: 0,
         zoom: 1.0,
+        cursor_on: true,
         quit: false,
     };
 
@@ -454,6 +462,14 @@ fn main() -> Result<()> {
     event_loop.run(move |event, _target, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
+            // Command-bar cursor blink: the WaitUntil deadline (set below while in
+            // Command mode) wakes us here to flip the cursor and repaint.
+            Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
+                if app.mode == ModeKind::Command {
+                    app.cursor_on = !app.cursor_on;
+                    app.window.request_redraw();
+                }
+            }
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => {
                     app.teardown();
@@ -500,6 +516,9 @@ fn main() -> Result<()> {
                 }
                 // A fresh navigation can reset the page's zoom factor — re-apply.
                 app.apply_active_zoom();
+                // Track the post-navigation URL in the status bar.
+                app.refresh_active_url();
+                app.window.request_redraw();
             }
             Event::UserEvent(UserEvent::GrabFocus) => {
                 // Only in Normal mode: the shell owns the keyboard there. In
@@ -565,6 +584,13 @@ fn main() -> Result<()> {
                 }
             }
             _ => {}
+        }
+        // While typing a command, keep waking to blink the cursor (unless we're
+        // already exiting). Outside Command mode we stay on plain Wait.
+        if !matches!(*control_flow, ControlFlow::Exit | ControlFlow::ExitWithCode(_))
+            && app.mode == ModeKind::Command
+        {
+            *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(530));
         }
     });
 }
@@ -691,6 +717,37 @@ impl App {
         self.active.and_then(|i| self.tabs.get(i)).map(|t| t.url.as_str())
     }
 
+    /// The live URL of the active web tab (from WebView2, so it reflects in-page
+    /// navigation), falling back to the stored URL. `None` for terminal tabs.
+    fn current_url(&self) -> Option<String> {
+        let tab = self.tabs.get(self.active?)?;
+        if tab.term.is_some() {
+            return None;
+        }
+        if let Ok(u) = tab.webview.url() {
+            if u.starts_with("http") {
+                return Some(u);
+            }
+        }
+        Some(tab.url.clone())
+    }
+
+    /// Refresh the stored URL of the active web tab from its live WebView2 URL,
+    /// so the status bar tracks navigation. Skips terminal/internal/html tabs
+    /// (their live URL is a data:/about: URL, not a real address).
+    fn refresh_active_url(&mut self) {
+        if let Some(tab) = self.active.and_then(|i| self.tabs.get_mut(i)) {
+            if tab.term.is_some() {
+                return;
+            }
+            if let Ok(u) = tab.webview.url() {
+                if u.starts_with("http") {
+                    tab.url = u;
+                }
+            }
+        }
+    }
+
     // --- input ----------------------------------------------------------------
 
     fn handle_key(&mut self, key: &KeyEvent) {
@@ -778,28 +835,90 @@ impl App {
     }
 
     fn key_command(&mut self, key: &KeyEvent) {
+        // Readline/vim-style line editing chords take precedence over text input.
+        if self.modifiers.control_key() {
+            match key.physical_key {
+                // Ctrl+W: delete the word before the caret (and trailing spaces).
+                KeyCode::KeyW => self.cmd_delete_word(),
+                // Ctrl+U: delete from the caret back to the start of the line.
+                KeyCode::KeyU => {
+                    self.command.replace_range(0..self.command_cursor, "");
+                    self.command_cursor = 0;
+                }
+                KeyCode::KeyH => self.cmd_backspace(),
+                // Ctrl+C: cancel, like Escape.
+                KeyCode::KeyC => {
+                    self.command.clear();
+                    self.command_cursor = 0;
+                    self.mode = ModeKind::Normal;
+                }
+                _ => {}
+            }
+            self.cursor_on = true;
+            return;
+        }
         match &key.logical_key {
             Key::Enter => {
                 let line = std::mem::take(&mut self.command);
+                self.command_cursor = 0;
                 self.mode = ModeKind::Normal;
                 self.run_command(&line);
             }
             Key::Escape => {
                 self.command.clear();
+                self.command_cursor = 0;
                 self.mode = ModeKind::Normal;
             }
-            Key::Backspace => {
-                self.command.pop();
+            Key::Backspace => self.cmd_backspace(),
+            // Left/Right move the caret one character (arrow keys only, per design).
+            Key::ArrowLeft => {
+                if let Some((i, _)) =
+                    self.command[..self.command_cursor].char_indices().next_back()
+                {
+                    self.command_cursor = i;
+                }
             }
-            Key::Space => self.command.push(' '),
-            Key::Character(s) => self.command.push_str(s),
+            Key::ArrowRight => {
+                if let Some(c) = self.command[self.command_cursor..].chars().next() {
+                    self.command_cursor += c.len_utf8();
+                }
+            }
+            Key::Space => {
+                self.command.insert(self.command_cursor, ' ');
+                self.command_cursor += 1;
+            }
+            Key::Character(s) => {
+                self.command.insert_str(self.command_cursor, s);
+                self.command_cursor += s.len();
+            }
             _ => {}
         }
+        // Any edit should show the cursor immediately (don't wait for the blink).
+        self.cursor_on = true;
+    }
+
+    /// Delete the character before the caret.
+    fn cmd_backspace(&mut self) {
+        if let Some((i, _)) = self.command[..self.command_cursor].char_indices().next_back() {
+            self.command.remove(i);
+            self.command_cursor = i;
+        }
+    }
+
+    /// Delete the word before the caret (trailing spaces, then back to a space).
+    fn cmd_delete_word(&mut self) {
+        let before = &self.command[..self.command_cursor];
+        let trimmed = before.trim_end_matches(' ');
+        let start = trimmed.rfind(' ').map(|i| i + 1).unwrap_or(0);
+        self.command.replace_range(start..self.command_cursor, "");
+        self.command_cursor = start;
     }
 
     fn enter_command(&mut self, prefill: &str) {
         self.mode = ModeKind::Command;
         self.command = prefill.to_string();
+        self.command_cursor = self.command.len();
+        self.cursor_on = true;
         self.status.clear();
     }
 
@@ -963,6 +1082,14 @@ impl App {
         };
         match verb {
             "open" | "o" | "tabopen" | "t" => self.open_tab(rest, self.nojs),
+            // Edit the current URL: drop into the command bar pre-filled with
+            // `open <current url>` so you can tweak and re-open it. Reads the LIVE
+            // document URL (so in-page/SPA navigation, e.g. a YouTube video, gives
+            // the real address — not the stale URL the tab was first opened with).
+            "edit" | "e" => match self.current_url() {
+                Some(url) => self.enter_command(&format!("open {url}")),
+                None => self.status = "no page to edit".into(),
+            },
             "read" => {
                 if rest.is_empty() {
                     self.status = "usage: :read <url>".into();
@@ -977,7 +1104,7 @@ impl App {
                     self.run_term(rest);
                 }
             }
-            "config" => {
+            "shell" => {
                 if rest.is_empty() {
                     self.status = format!("shell = {}", self.term_command.join(" "));
                 } else {
@@ -1014,6 +1141,8 @@ impl App {
                 self.mode = ModeKind::Move;
                 self.status.clear();
             }
+            "commands" | "help" => self.open_local_page("commands", commands_document()),
+            "version" => self.open_local_page("version", version_document()),
             "" => {}
             other => self.status = format!("unknown command: {other}"),
         }
@@ -1366,6 +1495,26 @@ impl App {
         }
     }
 
+    /// Open an internal HTML page (e.g. `:commands`, `:version`) in a new tab.
+    fn open_local_page(&mut self, label: &str, html: String) {
+        match self.build_content_webview(Source::Html(html), false) {
+            Ok(webview) => {
+                self.tabs.push(Tab {
+                    webview,
+                    url: format!("browser://{label}"),
+                    nojs: false,
+                    read: false,
+                    term: None,
+                });
+                self.active = Some(self.tabs.len() - 1);
+                self.refresh_visibility();
+                self.window.set_focus();
+                self.status.clear();
+            }
+            Err(e) => self.status = format!("failed to open {label}: {e:#}"),
+        }
+    }
+
     fn close_active(&mut self) {
         let Some(i) = self.active else {
             self.status = "no tab to close".into();
@@ -1498,6 +1647,15 @@ impl App {
         let welcome = self.active.is_none();
         let bar_h = self.bar_h() as usize;
         let tab_h = self.tab_bar_h() as usize;
+        // Caret for the command bar (x pixel, width) — only while typing and lit.
+        let caret = if self.mode == ModeKind::Command && self.cursor_on {
+            let prefix = format!(":{}", &self.command[..self.command_cursor]);
+            let x = 8 + self.painter.measure(&prefix);
+            let cw = ((self.zoom * 2.0).round() as usize).max(2);
+            Some((x, cw))
+        } else {
+            None
+        };
 
         self.surface
             .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
@@ -1519,6 +1677,12 @@ impl App {
             let mut x = 8;
             for (text, color) in &segments {
                 x = p.text(buf, wz, hz, x, baseline, text, *color) + 6;
+            }
+            if let Some((cx, cw)) = caret {
+                let lh = p.line_height();
+                let y0 = baseline.saturating_sub(lh * 3 / 4);
+                let y1 = (baseline + lh / 6).min(hz);
+                draw::fill_rect(buf, wz, hz, cx, y0, cx + cw, y1, draw::BAR_FG);
             }
         };
 
@@ -1582,6 +1746,8 @@ impl App {
     /// Build the bar as a sequence of (text, color) segments drawn left to right.
     fn bar_segments(&self) -> Vec<(String, draw::Rgb)> {
         match self.mode {
+            // The blinking caret is drawn separately (at the byte cursor), so the
+            // text segment is just the literal command line.
             ModeKind::Command => vec![(format!(":{}", self.command), draw::BAR_FG)],
             ModeKind::Resize => vec![
                 ("[RESIZE]".into(), draw::ACCENT),
@@ -1771,6 +1937,130 @@ fn read_document(url: &str, title: &str, article_html: &str) -> String {
     )
 }
 
+/// Stylesheet for the internal `:commands` / `:version` pages.
+const HELP_CSS: &str = "html{background:#1e1e1e;color:#d0d0d0}body{margin:0}\
+main{max-width:820px;margin:40px auto;padding:0 22px;\
+font:16px/1.6 -apple-system,Segoe UI,Roboto,sans-serif}\
+h1{color:#fff;font-size:1.7em;margin:0 0 .2em}h2{color:#6cb6ff;font-size:1.1em;\
+margin:1.6em 0 .4em;border-bottom:1px solid #333;padding-bottom:.2em}\
+p.sub{color:#888;margin:0 0 1em}table{border-collapse:collapse;width:100%}\
+td{padding:3px 10px 3px 0;vertical-align:top}td.k{white-space:nowrap;color:#e6a55e;\
+font-family:Consolas,monospace;width:1%}kbd{background:#2a2a2a;border:1px solid #444;\
+border-radius:4px;padding:1px 6px;font-family:Consolas,monospace;font-size:.9em;color:#f0f0f0}\
+td.d{color:#cfcfcf}";
+
+/// Minimal HTML-escaping for text interpolated into the internal pages.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Render rows of (key, description) into a `<table>`, escaping both columns.
+fn help_table(rows: &[(&str, &str)]) -> String {
+    let mut s = String::from("<table>");
+    for (k, d) in rows {
+        s.push_str(&format!(
+            "<tr><td class=\"k\">{}</td><td class=\"d\">{}</td></tr>",
+            html_escape(k),
+            html_escape(d)
+        ));
+    }
+    s.push_str("</table>");
+    s
+}
+
+/// The `:commands` page: every keybind and command (not customizable yet).
+fn commands_document() -> String {
+    let normal = help_table(&[
+        (":", "open the command bar"),
+        ("o", "open a page (prefills “open ”)"),
+        ("j / k", "scroll down / up"),
+        ("d / u", "scroll half a page down / up"),
+        ("Space", "scroll a page down"),
+        ("i", "insert mode (passthrough on a terminal tab)"),
+        ("f", "hint mode — label every link, type the label to follow"),
+        ("x", "close the current tab"),
+        ("r", "reload the page"),
+        ("H / L", "history back / forward"),
+        ("n / p", "next / previous tab"),
+        ("1 – 9", "jump straight to tab N"),
+        ("< / >", "move the current tab left / right"),
+        ("Ctrl+V", "passthrough mode (every key to the page)"),
+        ("Ctrl +/-/0", "zoom the whole UI in / out / reset"),
+    ]);
+    let cmdline = help_table(&[
+        ("Enter", "run the command"),
+        ("Esc / Ctrl+C", "cancel"),
+        ("Ctrl+W", "delete the previous word"),
+        ("Ctrl+U", "clear the line"),
+        ("Ctrl+H", "delete the previous character"),
+    ]);
+    let modes = help_table(&[
+        ("Insert", "type into a field; Esc or click-away leaves, Ctrl+V → passthrough"),
+        ("Passthrough", "every key goes to the page; Shift+Esc leaves"),
+        ("Hint", "type a label to follow it; Esc cancels"),
+        ("Resize / Move", "hjkl to size / reposition the window; Esc finishes"),
+    ]);
+    let cmds = help_table(&[
+        (":open <url> · :o · :t", "open a page"),
+        (":edit · :e", "edit the current URL in the command bar"),
+        (":read <url>", "reader mode (extract the article, no ads/JS)"),
+        (":te", "open a terminal tab"),
+        (":te <command>", "run a local command, result in the command bar"),
+        (":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
+        (":nojs", "toggle JavaScript off for new tabs"),
+        (":nojs <url>", "open a page with JavaScript disabled"),
+        (":close · :bd", "close the current tab"),
+        (":reload · :r", "reload"),
+        (":tabnext · :tn · :tabprev · :tp", "switch tabs"),
+        (":back · :forward", "history navigation"),
+        (":f · :fullscreen", "toggle fullscreen"),
+        (":resize · :move", "window-control modes (then hjkl, Esc)"),
+        (":commands · :help", "this page"),
+        (":version", "version and build information"),
+        (":quit · :q", "quit the browser"),
+    ]);
+    format!(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <title>commands</title><style>{HELP_CSS}</style></head><body><main>\
+         <h1>Commands &amp; keybindings</h1>\
+         <p class=\"sub\">Not customizable yet — these are the built-in bindings.</p>\
+         <h2>Normal mode</h2>{normal}\
+         <h2>Command-line editing</h2>{cmdline}\
+         <h2>Other modes</h2>{modes}\
+         <h2>Commands</h2>{cmds}\
+         </main></body></html>"
+    )
+}
+
+/// The `:version` page: build/runtime details about this browser.
+fn version_document() -> String {
+    let rows = help_table(&[
+        ("Name", env!("CARGO_PKG_NAME")),
+        ("Version", env!("CARGO_PKG_VERSION")),
+        ("Description", env!("CARGO_PKG_DESCRIPTION")),
+        ("Authors", env!("CARGO_PKG_AUTHORS")),
+        ("Engine", "WebView2 (Chromium) via wry 0.55 — loaded on demand"),
+        ("Windowing", "tao 0.35 + softbuffer/fontdue native chrome"),
+        ("Terminal", "xterm.js + a browser-pty-host companion (ConPTY)"),
+        ("Platform", std::env::consts::OS),
+        ("Architecture", std::env::consts::ARCH),
+    ]);
+    format!(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <title>version</title><style>{HELP_CSS}</style></head><body><main>\
+         <h1>{} {}</h1>\
+         <p class=\"sub\">{}</p>{rows}\
+         <p class=\"sub\" style=\"margin-top:1.6em\">A modal, mode-dispatching browser — \
+         only what's needed, when needed.</p>\
+         </main></body></html>",
+        html_escape(env!("CARGO_PKG_NAME")),
+        html_escape(env!("CARGO_PKG_VERSION")),
+        html_escape(env!("CARGO_PKG_DESCRIPTION")),
+    )
+}
+
 /// Locate the companion `browser-pty-host` binary next to our own executable.
 fn pty_host_path() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -1831,10 +2121,11 @@ fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize, scale: f32) {
     y += lh * 2;
     for (keys, desc) in [
         (":open <url>   or   o <url>", "open a page (boots the engine on demand)"),
+        (":edit   or   :e", "edit the current URL in the command bar"),
         (":read <url>", "reader mode: extract the article, no JS/ads (green tab)"),
         (":te", "open a terminal tab (xterm.js + your shell; Shift+Esc to leave)"),
         (":te <command>", "run a local command; result shows in the command bar"),
-        (":config <shell>", "set the shell for :te (e.g. :config nu, :config pwsh)"),
+        (":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
         ("j / k / Space / d / u", "scroll the page"),
         ("f", "hint mode: label every link, type the label to follow it"),
         ("i", "insert mode: type in a field (Esc leaves, click-away leaves)"),
@@ -1851,6 +2142,8 @@ fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize, scale: f32) {
         (":f", "toggle fullscreen"),
         (":resize", "resize mode — then hjkl to size, Esc to finish"),
         (":move", "move mode — then hjkl to reposition, Esc to finish"),
+        (":commands", "open the full list of commands & keybinds"),
+        (":version", "version and build information"),
         (":q", "quit"),
     ] {
         p.text(buf, w, h, x, y, keys, draw::FG);
