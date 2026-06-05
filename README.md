@@ -84,7 +84,7 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
 `pwsh -File uninstall.ps1`.
 
 **Modes (qutebrowser-style):**
-- **Normal** — shell has focus; `:`/`o` open the command bar; `j`/`k`/`d`/`u`
+- **Normal** — shell has focus; `:`/`o` open the command bar; `/` find-in-page; `j`/`k`/`d`/`u`
   scroll and `g`/`G` jump to top/bottom; `f` hint mode; `n`/`p` switch tabs; `1`–`9` jump to a tab; `<`/`>` reorder the
   current tab; `x` close tab; `H`/`L` history; **`Ctrl +`/`Ctrl -`/`Ctrl 0`** zoom the
   whole UI (native chrome + web pages + terminal) in / out / reset. A native tab bar shows
@@ -148,6 +148,14 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   operator motions/text objects — so to lift a code out of `WindowsError(HRESULT(0x8007139f))` you put
   the cursor inside and press **`yi(`** (or `yiw`, or `yf)`). A block cursor shows your position; the
   tab is tinted red and shows `[error]`. (`1`–`9` still switch tabs; `n`/`p` are inert here.)
+- **Find in page** — `/` opens a search that highlights **every** match as you type and jumps to
+  the first; **`n`/`N`** step forward/back through matches and **`Esc`** clears. It works in every
+  tab type: web pages (via the CSS Custom Highlight API — no DOM mutation, so it can't break the
+  page), engine-free **read** tabs, and the **error** pager. Matching is case-insensitive; the status
+  bar shows the query and (on native tabs) a `cur/total` counter.
+- **No auto-translate** — Edge's "translate this page?" bar is disabled, and any navigation that gets
+  routed through Google's `*.translate.goog` proxy (which mangles the URL) is intercepted and
+  redirected to the original site, so you always see the real page at its real address.
 - **Resize / Move** — entered by `:resize` / `:move`; `hjkl` size or reposition the
   window, `Esc` exits. The window is **borderless** (no OS title bar) — all window
   control is command-driven.

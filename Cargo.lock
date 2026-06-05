@@ -294,6 +294,7 @@ dependencies = [
  "fontdue",
  "softbuffer",
  "tao",
+ "url",
  "windows 0.62.2",
  "wry",
 ]

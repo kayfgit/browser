@@ -77,6 +77,14 @@ impl TextBuffer {
         }
     }
 
+    /// Place the cursor at `(row, col)` and scroll it into a `rows`×`cols` viewport.
+    /// Used by find-in-page to jump to a match.
+    pub fn place_cursor(&mut self, row: usize, col: usize, rows: usize, cols: usize) {
+        self.cy = row.min(self.lines.len().saturating_sub(1));
+        self.cx = col.min(self.line_len(self.cy));
+        self.ensure_visible(rows.max(1), cols.max(1));
+    }
+
     /// Status-bar mode tag, if a visual selection is active.
     pub fn mode_label(&self) -> Option<&'static str> {
         self.anchor.map(|_| if self.linewise { "VISUAL LINE" } else { "VISUAL" })

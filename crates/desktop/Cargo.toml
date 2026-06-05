@@ -14,6 +14,7 @@ path = "src/main.rs"
 browser-core.workspace = true
 browser-backend-text.workspace = true
 anyhow.workspace = true
+url.workspace = true
 tao.workspace = true
 wry.workspace = true
 softbuffer.workspace = true

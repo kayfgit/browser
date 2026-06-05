@@ -22,6 +22,9 @@ pub const RESEARCH: Rgb = (0x5e, 0xc8, 0xd9);
 pub const ERR: Rgb = (0xe0, 0x6c, 0x6c);
 /// Command-bar text-selection highlight.
 pub const SEL: Rgb = (0x2d, 0x4f, 0x7a);
+/// Find-in-page: all matches (dim) and the current match (bright).
+pub const FIND: Rgb = (0x5a, 0x52, 0x14);
+pub const FIND_CUR: Rgb = (0xc8, 0x64, 0x1e);
 
 pub struct Painter {
     font: Font,

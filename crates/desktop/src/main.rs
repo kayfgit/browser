@@ -236,6 +236,72 @@ const RESEARCH_JS: &str = r#"
 })();
 "#;
 
+// Page-side find-in-page: `__find(q)` highlights every match (CSS Custom Highlight
+// API — no DOM mutation, so it can't break the page), scrolls to the first, and
+// `__findNext`/`__findPrev` move the "current" highlight. `__findClear` removes it.
+const FIND_JS: &str = r#"
+(function () {
+  if (window.__find) return;
+  var all = [], cur = -1;
+  var hAll = null, hCur = null;
+  function ready() {
+    if (hAll || typeof Highlight === 'undefined' || !CSS || !CSS.highlights) return;
+    hAll = new Highlight(); hCur = new Highlight();
+    CSS.highlights.set('bfind', hAll);
+    CSS.highlights.set('bfindcur', hCur);
+    var st = document.createElement('style');
+    st.textContent = '::highlight(bfind){background:#5a5214;color:#fff}' +
+                     '::highlight(bfindcur){background:#c8641e;color:#000}';
+    (document.head || document.documentElement).appendChild(st);
+  }
+  function clear() {
+    all = []; cur = -1;
+    if (hAll) hAll.clear();
+    if (hCur) hCur.clear();
+  }
+  function show() {
+    if (!hCur) return;
+    hCur.clear();
+    if (cur < 0 || cur >= all.length) return;
+    hCur.add(all[cur]);
+    var r = all[cur].getBoundingClientRect();
+    window.scrollBy(0, r.top - window.innerHeight / 2);
+  }
+  window.__find = function (q) {
+    ready();
+    clear();
+    if (!q || !hAll) return 0;
+    var ql = q.toLowerCase();
+    var walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode: function (n) {
+        if (!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+        var p = n.parentElement; if (!p) return NodeFilter.FILTER_REJECT;
+        var t = p.tagName; if (t === 'SCRIPT' || t === 'STYLE' || t === 'NOSCRIPT') return NodeFilter.FILTER_REJECT;
+        var s = getComputedStyle(p);
+        if (s.display === 'none' || s.visibility === 'hidden') return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+    var n;
+    while ((n = walk.nextNode())) {
+      var low = n.nodeValue.toLowerCase(), i = 0;
+      while ((i = low.indexOf(ql, i)) !== -1) {
+        var r = document.createRange();
+        r.setStart(n, i); r.setEnd(n, i + ql.length);
+        all.push(r); hAll.add(r);
+        i += ql.length;
+      }
+    }
+    cur = all.length ? 0 : -1;
+    show();
+    return all.length;
+  };
+  window.__findNext = function () { if (all.length) { cur = (cur + 1) % all.length; show(); } };
+  window.__findPrev = function () { if (all.length) { cur = (cur - 1 + all.length) % all.length; show(); } };
+  window.__findClear = clear;
+})();
+"#;
+
 /// Events posted from webview IPC back into the event loop.
 enum UserEvent {
     /// Leave insert/passthrough: move focus from the page back to the shell.
@@ -258,6 +324,9 @@ enum UserEvent {
     ReadReady { doc: Box<browser_core::Document>, replace: bool },
     /// A `:read` extraction failed.
     ReadFailed(String),
+    /// Redirect the active tab to this URL (e.g. de-proxying a `translate.goog`
+    /// navigation back to the original site).
+    Navigate(String),
     /// A `:te` command finished: combined output and exit code.
     TermDone { cmd: String, output: String, code: Option<i32> },
     /// Keystrokes from a terminal's xterm → write to its PTY (routed by tab id).
@@ -295,6 +364,31 @@ enum ModeKind {
     Move,
     /// Link hints are shown; typed characters select one. Entered with `f`.
     Hint,
+    /// Find-in-page: `/` opened a search prompt. Typing searches live; Enter keeps
+    /// the highlights and returns to Normal (where `n`/`N` step through matches).
+    Find,
+}
+
+/// A find-in-page match on a native (read/vim) tab: a line index plus the char
+/// range `[start, end)` within that line's plain text.
+struct NativeMatch {
+    line: usize,
+    start: usize,
+    end: usize,
+}
+
+/// Find-in-page state, shared across tab types. For web tabs the matches live in
+/// the page (injected JS); for native read/vim tabs they live in `matches`.
+#[derive(Default)]
+struct FindState {
+    /// The confirmed query (`n`/`N` navigate it while this is non-empty + `active`).
+    query: String,
+    /// Whether a search is live (highlights shown, `n`/`N` active).
+    active: bool,
+    /// Matches on a native tab; empty for web tabs (JS owns those).
+    matches: Vec<NativeMatch>,
+    /// Index of the current match within `matches`.
+    current: usize,
 }
 
 /// Where a content webview gets its page from.
@@ -475,6 +569,8 @@ struct App {
     /// The command line currently executing (`:open foo`), so a failure it raises
     /// can be attributed to it in the error log. `None` outside `run_command`.
     current_command: Option<String>,
+    /// Find-in-page state (the `/` search and its matches).
+    find: FindState,
     tabs: Vec<Tab>,
     active: Option<usize>,
     /// Current keyboard modifier state (tracked via ModifiersChanged).
@@ -590,6 +686,7 @@ fn main() -> Result<()> {
         status_is_error: false,
         errors: Vec::new(),
         current_command: None,
+        find: FindState::default(),
         tabs: Vec::new(),
         active: None,
         modifiers: ModifiersState::default(),
@@ -632,7 +729,7 @@ fn main() -> Result<()> {
             // Command-bar cursor blink: the WaitUntil deadline (set below while in
             // Command mode) wakes us here to flip the cursor and repaint.
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
-                if app.mode == ModeKind::Command {
+                if matches!(app.mode, ModeKind::Command | ModeKind::Find) {
                     app.cursor_on = !app.cursor_on;
                     app.window.request_redraw();
                 }
@@ -719,6 +816,19 @@ fn main() -> Result<()> {
                 app.set_error(format!("read failed: {e}"));
                 app.window.request_redraw();
             }
+            Event::UserEvent(UserEvent::Navigate(url)) => {
+                if let Some(i) = app.active {
+                    if let Some(wv) = app.tabs.get(i).and_then(|t| t.webview.as_ref()) {
+                        let _ = wv.load_url(&url);
+                    }
+                    // Reflect the de-proxied address in the status bar right away
+                    // (the live URL refresh on page-load will confirm it).
+                    if let Some(t) = app.tabs.get_mut(i) {
+                        t.url = url;
+                    }
+                    app.window.request_redraw();
+                }
+            }
             Event::UserEvent(UserEvent::TermDone { cmd, output, code }) => {
                 app.show_term_result(&cmd, &output, code);
             }
@@ -755,7 +865,7 @@ fn main() -> Result<()> {
         // While typing a command, keep waking to blink the cursor (unless we're
         // already exiting). Outside Command mode we stay on plain Wait.
         if !matches!(*control_flow, ControlFlow::Exit | ControlFlow::ExitWithCode(_))
-            && app.mode == ModeKind::Command
+            && matches!(app.mode, ModeKind::Command | ModeKind::Find)
         {
             *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(530));
         }
@@ -974,7 +1084,7 @@ impl App {
 
     fn handle_key(&mut self, key: &KeyEvent) {
         match self.mode {
-            ModeKind::Command => self.key_command(key),
+            ModeKind::Command | ModeKind::Find => self.key_command(key),
             ModeKind::Resize => self.key_resize(key),
             ModeKind::Move => self.key_move(key),
             ModeKind::Hint => self.key_hint(key),
@@ -999,6 +1109,26 @@ impl App {
     }
 
     fn key_normal(&mut self, key: &KeyEvent) {
+        // Once a `/` search is live, `n`/`N` step through matches and Esc clears it
+        // (qutebrowser-style) — in every tab type, so this takes precedence over both
+        // the vim pager and the normal tab/scroll bindings.
+        if self.find.active && !self.modifiers.control_key() {
+            match &key.logical_key {
+                Key::Character(s) if *s == "n" => {
+                    self.find_step(true);
+                    return;
+                }
+                Key::Character(s) if *s == "N" => {
+                    self.find_step(false);
+                    return;
+                }
+                Key::Escape => {
+                    self.find_clear();
+                    return;
+                }
+                _ => {}
+            }
+        }
         // A `:error`/`:errors` tab is a read-only vim pager: let it claim the motion/
         // visual/yank keys first; anything it doesn't want (`:`, n/p, x, …) falls
         // through to the normal browser bindings below.
@@ -1029,6 +1159,7 @@ impl App {
                 "u" => self.scroll(-page / 2),
                 "g" => self.scroll_edge(false),
                 "G" => self.scroll_edge(true),
+                "/" => self.enter_find(),
                 "i" => {
                     if self.active_is_term() {
                         self.enter_passthrough();
@@ -1166,15 +1297,25 @@ impl App {
                 _ => {}
             }
             self.cursor_on = true;
+            if self.mode == ModeKind::Find {
+                self.find_update();
+            }
             return;
         }
         // Alt+Backspace: delete the word before the caret (a common alias).
         if self.modifiers.alt_key() && key.physical_key == KeyCode::Backspace {
             self.cmd_delete_word();
             self.cursor_on = true;
+            if self.mode == ModeKind::Find {
+                self.find_update();
+            }
             return;
         }
         match &key.logical_key {
+            Key::Enter if self.mode == ModeKind::Find => {
+                self.find_confirm();
+                return;
+            }
             Key::Enter => {
                 let line = std::mem::take(&mut self.command);
                 self.command_cursor = 0;
@@ -1227,13 +1368,21 @@ impl App {
         }
         // Any edit should show the cursor immediately (don't wait for the blink).
         self.cursor_on = true;
+        // In Find mode, search live as the query changes.
+        if self.mode == ModeKind::Find {
+            self.find_update();
+        }
     }
 
     /// Leave the command bar, discarding the line (Esc / Ctrl+C with no selection).
+    /// In Find mode this also drops the search and its highlights.
     fn cancel_command(&mut self) {
         self.command.clear();
         self.command_cursor = 0;
         self.command_anchor = None;
+        if self.mode == ModeKind::Find {
+            self.find_clear();
+        }
         self.mode = ModeKind::Normal;
     }
 
@@ -1292,24 +1441,14 @@ impl App {
         self.command[pos..].chars().next().map(|c| pos + c.len_utf8()).unwrap_or(pos)
     }
 
-    /// Start of the word before `pos`: skip trailing whitespace, then the word.
+    /// Start of the word before `pos` in the command line (see [`prev_word_boundary`]).
     fn prev_word(&self, pos: usize) -> usize {
-        let trimmed = self.command[..pos].trim_end_matches(char::is_whitespace);
-        trimmed
-            .char_indices()
-            .rev()
-            .find(|(_, c)| c.is_whitespace())
-            .map(|(i, c)| i + c.len_utf8())
-            .unwrap_or(0)
+        prev_word_boundary(&self.command, pos)
     }
 
-    /// End of the word after `pos`: skip leading whitespace, then the word.
+    /// End of the word after `pos` in the command line (see [`next_word_boundary`]).
     fn next_word(&self, pos: usize) -> usize {
-        let rest = &self.command[pos..];
-        let after_ws = rest.trim_start_matches(char::is_whitespace);
-        let ws = rest.len() - after_ws.len();
-        let word = after_ws.find(char::is_whitespace).unwrap_or(after_ws.len());
-        pos + ws + word
+        next_word_boundary(&self.command, pos)
     }
 
     /// Delete the character before the caret (or the selection, if any).
@@ -1350,6 +1489,170 @@ impl App {
         }
         let end = self.next_word(self.command_cursor);
         self.command.replace_range(self.command_cursor..end, "");
+    }
+
+    // --- find in page ---------------------------------------------------------
+
+    /// Open the `/` find prompt: searches live as you type; Enter keeps the
+    /// highlights (then `n`/`N` step through matches), Esc cancels.
+    fn enter_find(&mut self) {
+        self.find_clear();
+        self.mode = ModeKind::Find;
+        self.command.clear();
+        self.command_cursor = 0;
+        self.command_anchor = None;
+        self.cursor_on = true;
+        self.window.request_redraw();
+    }
+
+    /// Live-update the search from the current `/` input.
+    fn find_update(&mut self) {
+        let q = self.command.clone();
+        self.find.query = q.clone();
+        self.find_search(&q, true);
+        self.window.request_redraw();
+    }
+
+    /// Confirm the search: keep the highlights and enable `n`/`N`, or clear it if
+    /// the query is empty (or matched nothing on a native tab).
+    fn find_confirm(&mut self) {
+        self.command.clear();
+        self.command_cursor = 0;
+        self.command_anchor = None;
+        self.mode = ModeKind::Normal;
+        let native_empty = self.active_webview().is_none() && self.find.matches.is_empty();
+        if self.find.query.is_empty() || native_empty {
+            self.find_clear();
+        } else {
+            self.find.active = true;
+            if self.active_webview().is_none() {
+                self.set_status(self.find_count_label());
+            }
+        }
+        self.window.request_redraw();
+    }
+
+    /// Drop the active search and clear any highlights (page-side and native).
+    fn find_clear(&mut self) {
+        self.find.active = false;
+        self.find.query.clear();
+        self.find.matches.clear();
+        self.find.current = 0;
+        if let Some(wv) = self.active_webview() {
+            let _ = wv.evaluate_script("window.__findClear&&window.__findClear()");
+        }
+        self.window.request_redraw();
+    }
+
+    /// Reset find state without touching page highlights — used when the active tab
+    /// changes (the old page's highlights fade on its own; `n`/`N` shouldn't carry).
+    fn find_reset(&mut self) {
+        self.find.active = false;
+        self.find.query.clear();
+        self.find.matches.clear();
+        self.find.current = 0;
+    }
+
+    /// Run a search for `q` on the active tab (web → injected JS; read/vim → a
+    /// native match list). `reveal` scrolls/moves to the first match.
+    fn find_search(&mut self, q: &str, reveal: bool) {
+        self.find.matches.clear();
+        self.find.current = 0;
+        // Web tab: hand off to the page's injected search.
+        if let Some(wv) = self.active_webview() {
+            let js = if q.is_empty() {
+                "window.__findClear&&window.__findClear()".to_string()
+            } else {
+                format!("window.__find&&window.__find({})", js_string(q))
+            };
+            let _ = wv.evaluate_script(&js);
+            return;
+        }
+        if q.is_empty() {
+            return;
+        }
+        // Native tab: collect this tab's lines and match against them.
+        if let Some(lines) = self.find_native_lines() {
+            self.find.matches = find_in_lines(&lines, q);
+            if reveal && !self.find.matches.is_empty() {
+                self.find_reveal_current();
+            }
+        }
+    }
+
+    /// Step to the next (`forward`) or previous match.
+    fn find_step(&mut self, forward: bool) {
+        if !self.find.active {
+            return;
+        }
+        if let Some(wv) = self.active_webview() {
+            let js = if forward {
+                "window.__findNext&&window.__findNext()"
+            } else {
+                "window.__findPrev&&window.__findPrev()"
+            };
+            let _ = wv.evaluate_script(js);
+            return;
+        }
+        let n = self.find.matches.len();
+        if n == 0 {
+            return;
+        }
+        self.find.current =
+            if forward { (self.find.current + 1) % n } else { (self.find.current + n - 1) % n };
+        self.find_reveal_current();
+        self.set_status(self.find_count_label());
+        self.window.request_redraw();
+    }
+
+    /// The active tab's searchable lines (read = laid-out lines, vim = buffer lines).
+    fn find_native_lines(&mut self) -> Option<Vec<String>> {
+        let i = self.active?;
+        if self.tabs.get(i).is_some_and(|t| t.native.is_some()) {
+            self.refresh_read_layout();
+            let nr = self.tabs[i].native.as_ref()?;
+            return Some(
+                nr.layout
+                    .lines
+                    .iter()
+                    .map(|l| l.runs.iter().map(|r| r.text.as_str()).collect::<String>())
+                    .collect(),
+            );
+        }
+        let vb = self.tabs.get(i)?.vim.as_ref()?;
+        Some(vb.lines.iter().map(|l| l.iter().collect::<String>()).collect())
+    }
+
+    /// Scroll a read tab (or move a vim tab's cursor) so the current match shows.
+    fn find_reveal_current(&mut self) {
+        let Some(&NativeMatch { line, start, .. }) = self.find.matches.get(self.find.current) else {
+            return;
+        };
+        let view = self.content_view_h();
+        let Some(i) = self.active else { return };
+        if let Some(nr) = self.tabs.get_mut(i).and_then(|t| t.native.as_mut()) {
+            let line_h = nr.layout.line_h.max(1);
+            let max = (nr.layout.height - view).max(0);
+            nr.scroll = (line as i32 * line_h - view / 2).clamp(0, max);
+            return;
+        }
+        let (w, _) = self.inner();
+        let cw = self.painter.measure("M").max(1);
+        let line_h = self.painter.line_height().max(1);
+        let cols = (w as usize).saturating_sub(16) / cw;
+        let rows = (view as usize) / line_h;
+        if let Some(vb) = self.tabs.get_mut(i).and_then(|t| t.vim.as_mut()) {
+            vb.place_cursor(line, start, rows, cols);
+        }
+    }
+
+    /// `"/query  cur/total"` (or `no matches`) for the status bar on native tabs.
+    fn find_count_label(&self) -> String {
+        if self.find.matches.is_empty() {
+            format!("/{}  no matches", self.find.query)
+        } else {
+            format!("/{}  {}/{}", self.find.query, self.find.current + 1, self.find.matches.len())
+        }
     }
 
     fn enter_command(&mut self, prefill: &str) {
@@ -1777,6 +2080,7 @@ impl App {
     ) -> Result<WebView> {
         let ipc_proxy = self.proxy.clone();
         let load_proxy = self.proxy.clone();
+        let nav_proxy = self.proxy.clone();
         let mut builder = WebViewBuilder::new();
         builder = match source {
             Source::Url(u) => builder.with_url(u),
@@ -1800,9 +2104,9 @@ impl App {
             // The shell bridge always loads; `extra_init` (e.g. research-mode DOM
             // pruning) is appended so it runs in the same document-create pass.
             .with_initialization_script(if extra_init.is_empty() {
-                BRIDGE_JS.to_string()
+                format!("{BRIDGE_JS}\n{FIND_JS}")
             } else {
-                format!("{BRIDGE_JS}\n{extra_init}")
+                format!("{BRIDGE_JS}\n{FIND_JS}\n{extra_init}")
             })
             .with_ipc_handler(move |req| match req.body().as_str() {
                 "leave-passthrough" | "insert-escape" | "insert-blur" => {
@@ -1830,6 +2134,19 @@ impl App {
                 if matches!(event, PageLoadEvent::Finished) {
                     let _ = load_proxy.send_event(UserEvent::FocusShell);
                 }
+            })
+            // Kill auto-translate: a foreign-language site (or a saved/clicked link)
+            // can land us on Google's `*.translate.goog` proxy, which mangles the URL
+            // and rewrites the page. Cancel any such navigation and load the original
+            // (de-proxied) URL instead, so we always show the real page.
+            .with_navigation_handler(move |url| {
+                if is_translate_proxy(&url) {
+                    if let Some(original) = deproxy_translate(&url) {
+                        let _ = nav_proxy.send_event(UserEvent::Navigate(original));
+                        return false;
+                    }
+                }
+                true
             });
         if disable_js {
             builder = builder.with_javascript_disabled();
@@ -2213,6 +2530,7 @@ impl App {
         } else {
             Some(i.min(self.tabs.len() - 1))
         };
+        self.find_reset();
         self.refresh_visibility();
         self.window.set_focus();
     }
@@ -2250,6 +2568,7 @@ impl App {
         let cur = self.active.unwrap_or(0) as i32;
         let next = (cur + delta).rem_euclid(n) as usize;
         self.active = Some(next);
+        self.find_reset();
         self.refresh_visibility();
         self.window.set_focus();
     }
@@ -2258,6 +2577,7 @@ impl App {
     fn jump_to(&mut self, index: usize) {
         if index < self.tabs.len() {
             self.active = Some(index);
+            self.find_reset();
             self.refresh_visibility();
             self.window.set_focus();
         }
@@ -2393,9 +2713,12 @@ impl App {
         // block cursor (x, width) already shifted by the same scroll.
         const MARGIN: i32 = 8;
         let cw = ((self.zoom * 2.0).round() as i32).max(2);
-        let (segments, cmd, caret, sel) = if self.mode == ModeKind::Command {
-            let line = format!(":{}", self.command);
-            let prefix = format!(":{}", &self.command[..self.command_cursor]);
+        let (segments, cmd, caret, sel) = if matches!(self.mode, ModeKind::Command | ModeKind::Find)
+        {
+            // `:` for a command, `/` for a find-in-page search.
+            let pre = if self.mode == ModeKind::Find { '/' } else { ':' };
+            let line = format!("{pre}{}", self.command);
+            let prefix = format!("{pre}{}", &self.command[..self.command_cursor]);
             let caret_un = MARGIN + self.painter.measure(&prefix) as i32;
             // Keep the caret a hair inside the right edge; scroll only when it would
             // otherwise fall off the end of the bar.
@@ -2410,7 +2733,8 @@ impl App {
             // clipped to the left margin.
             let sel = self.sel_range().map(|(a, b)| {
                 let x_of = |k: usize| {
-                    MARGIN - scroll + self.painter.measure(&format!(":{}", &self.command[..k])) as i32
+                    MARGIN - scroll
+                        + self.painter.measure(&format!("{pre}{}", &self.command[..k])) as i32
                 };
                 (x_of(a).max(MARGIN).max(0) as usize, x_of(b).max(0) as usize)
             });
@@ -2497,6 +2821,29 @@ impl App {
                     if baseline < 0 {
                         continue;
                     }
+                    // Find-in-page highlights behind this line's matches.
+                    if self.find.active {
+                        let chars: Vec<char> =
+                            line.runs.iter().flat_map(|r| r.text.chars()).collect();
+                        let base = MARGIN + line.indent;
+                        for (mi, m) in self.find.matches.iter().enumerate() {
+                            if m.line != li {
+                                continue;
+                            }
+                            let s = m.start.min(chars.len());
+                            let e = m.end.min(chars.len());
+                            let pre: String = chars[..s].iter().collect();
+                            let mid: String = chars[s..e].iter().collect();
+                            let x0 = base + p.measure(&pre) as i32;
+                            let x1 = x0 + p.measure(&mid) as i32;
+                            let col =
+                                if mi == self.find.current { draw::FIND_CUR } else { draw::FIND };
+                            draw::fill_rect(
+                                &mut buf, wz, hz, x0.max(0) as usize, y_top.max(0) as usize,
+                                x1.max(0) as usize, (y_top + line_h).max(0) as usize, col,
+                            );
+                        }
+                    }
                     let mut x = MARGIN + line.indent;
                     for run in &line.runs {
                         x = p.text_clipped(
@@ -2565,6 +2912,21 @@ impl App {
                         let x1 = col_x(line, s1).max(MARGIN) as usize;
                         if x1 > x0 {
                             draw::fill_rect(&mut buf, wz, hz, x0, yt, x1, yb, draw::SEL);
+                        }
+                    }
+                    // Find-in-page highlights for this row.
+                    if self.find.active {
+                        for (mi, m) in self.find.matches.iter().enumerate() {
+                            if m.line != r {
+                                continue;
+                            }
+                            let x0 = col_x(line, m.start).max(MARGIN) as usize;
+                            let x1 = col_x(line, m.end).max(MARGIN) as usize;
+                            if x1 > x0 {
+                                let col =
+                                    if mi == self.find.current { draw::FIND_CUR } else { draw::FIND };
+                                draw::fill_rect(&mut buf, wz, hz, x0, yt, x1, yb, col);
+                            }
                         }
                     }
                     // The visible slice of the line, scrolled left by `vb.left` cols.
@@ -2661,8 +3023,10 @@ impl App {
     fn bar_segments(&self) -> Vec<(String, draw::Rgb)> {
         match self.mode {
             // The blinking caret is drawn separately (at the byte cursor), so the
-            // text segment is just the literal command line.
+            // text segment is just the literal command line. (Command/Find are drawn
+            // via the dedicated caret path in `draw`, so these arms are unreached.)
             ModeKind::Command => vec![(format!(":{}", self.command), draw::BAR_FG)],
+            ModeKind::Find => vec![(format!("/{}", self.command), draw::BAR_FG)],
             ModeKind::Resize => vec![
                 ("[RESIZE]".into(), draw::ACCENT),
                 ("  hjkl resize window · Esc done".into(), draw::DIM),
@@ -2725,6 +3089,16 @@ impl App {
                 }
                 if self.nojs {
                     segs.push(("   [no-js]".into(), draw::ACCENT));
+                }
+                // Active find-in-page: show the query and (for native tabs) the
+                // current/total match counter; `n`/`N` step, Esc clears.
+                if self.find.active {
+                    let label = if self.active_webview().is_some() {
+                        format!("   /{}  · n/N · Esc", self.find.query)
+                    } else {
+                        format!("   {}  · n/N · Esc", self.find_count_label())
+                    };
+                    segs.push((label, draw::FIND_CUR));
                 }
                 if !self.status.is_empty() {
                     let color = if self.status_is_error { draw::ERR } else { draw::DIM };
@@ -2908,6 +3282,131 @@ fn error_lines(errors: &[ErrorEntry], all: bool) -> Vec<String> {
     out
 }
 
+/// A "word" character for command-bar word motions (`Ctrl+W`, `Ctrl+←/→`):
+/// alphanumerics and `_`. Everything else — `/ . : - ? & = # @ ~ + …` — is a
+/// separator, so word jumps/deletes stop at URL and path boundaries.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Byte offset of the start of the word before `pos`: skip trailing separators,
+/// then the word run. So `Ctrl+W` on `…/foo/bar` erases `bar` (then `/`, then
+/// `foo`), not the entire URL.
+fn prev_word_boundary(s: &str, pos: usize) -> usize {
+    let trimmed = s[..pos].trim_end_matches(|c| !is_word_char(c));
+    trimmed
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !is_word_char(*c))
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0)
+}
+
+/// Byte offset of the end of the word after `pos`: skip leading separators, then
+/// the word run.
+fn next_word_boundary(s: &str, pos: usize) -> usize {
+    let rest = &s[pos..];
+    let after_sep = rest.trim_start_matches(|c| !is_word_char(c));
+    let sep = rest.len() - after_sep.len();
+    let word = after_sep.find(|c| !is_word_char(c)).unwrap_or(after_sep.len());
+    pos + sep + word
+}
+
+/// Encode `s` as a JavaScript string literal (quoted, with control/quote/`<`
+/// escaped) for safe interpolation into an `evaluate_script` call.
+fn js_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '<' => out.push_str("\\u003c"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Case-insensitive (ASCII) find-in-page over `lines`, returning every match as a
+/// `(line, char-range)`. Matches don't span lines (each visual/buffer line is
+/// searched independently), which is fine for the short queries this is for.
+fn find_in_lines(lines: &[String], q: &str) -> Vec<NativeMatch> {
+    let needle: Vec<char> = q.chars().map(|c| c.to_ascii_lowercase()).collect();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for (li, line) in lines.iter().enumerate() {
+        let hay: Vec<char> = line.chars().map(|c| c.to_ascii_lowercase()).collect();
+        let mut i = 0;
+        while i + needle.len() <= hay.len() {
+            if hay[i..i + needle.len()] == needle[..] {
+                out.push(NativeMatch { line: li, start: i, end: i + needle.len() });
+                i += needle.len();
+            } else {
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Whether `url` points at Google Translate's page-proxy (`*.translate.goog`).
+fn is_translate_proxy(url: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.ends_with(".translate.goog")))
+        .unwrap_or(false)
+}
+
+/// Reverse a `*.translate.goog` proxy URL back to the original site. Google encodes
+/// the host (`.`→`-`, `-`→`--`) and appends `_x_tr_*` query params; we decode the
+/// host, keep the path and any genuine query params, and drop the `_x_tr_*` ones.
+/// Returns `None` if `url` isn't a translate-proxy URL we can decode.
+fn deproxy_translate(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let encoded = parsed.host_str()?.strip_suffix(".translate.goog")?;
+    // '--' is a literal '-'; a lone '-' is a '.'.
+    let mut decoded = String::with_capacity(encoded.len());
+    let mut chars = encoded.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '-' {
+            if chars.peek() == Some(&'-') {
+                chars.next();
+                decoded.push('-');
+            } else {
+                decoded.push('.');
+            }
+        } else {
+            decoded.push(c);
+        }
+    }
+    let mut out = parsed.clone();
+    out.set_host(Some(&decoded)).ok()?;
+    // The proxy serves over its own host on 443; the original default port applies.
+    let _ = out.set_port(None);
+    let kept: Vec<(String, String)> = parsed
+        .query_pairs()
+        .filter(|(k, _)| !k.starts_with("_x_tr"))
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    if kept.is_empty() {
+        out.set_query(None);
+    } else {
+        let mut ser = url::form_urlencoded::Serializer::new(String::new());
+        for (k, v) in &kept {
+            ser.append_pair(k, v);
+        }
+        out.set_query(Some(&ser.finish()));
+    }
+    Some(out.to_string())
+}
+
 /// Local wall-clock time as `HH:MM:SS`, for stamping logged errors.
 #[cfg(windows)]
 fn now_hms() -> String {
@@ -2932,6 +3431,8 @@ fn commands_document() -> String {
         ("j / k", "scroll down / up"),
         ("d / u", "scroll half a page down / up"),
         ("g / G", "jump to top / bottom"),
+        ("/", "find in page — type to search live; works on web, read & error tabs"),
+        ("n / N", "next / previous match (while a search is active); Esc clears"),
         ("i", "insert mode (passthrough on a terminal tab)"),
         ("f", "hint mode — label every link, type the label to follow"),
         ("x", "close the current tab"),
@@ -3134,7 +3635,73 @@ fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize, scale: f32) {
 #[cfg(test)]
 mod tests {
     use super::vim::{Key, TextBuffer};
-    use super::{error_lines, ErrorEntry};
+    use super::{
+        deproxy_translate, error_lines, is_translate_proxy, next_word_boundary, prev_word_boundary,
+        ErrorEntry,
+    };
+
+    #[test]
+    fn ctrl_w_deletes_one_url_segment_at_a_time() {
+        let url = "https://example.com/foo/bar";
+        // Caret at the end: prev word is `bar`, leaving the trailing slash.
+        let p1 = prev_word_boundary(url, url.len());
+        assert_eq!(&url[..p1], "https://example.com/foo/");
+        // Again from there: skip the `/`, delete `foo`.
+        let p2 = prev_word_boundary(url, p1);
+        assert_eq!(&url[..p2], "https://example.com/");
+        // Not the whole thing in one go.
+        assert_ne!(p1, 0);
+    }
+
+    #[test]
+    fn word_motions_step_over_separators() {
+        let s = "ab.cd";
+        assert_eq!(next_word_boundary(s, 0), 2); // end of `ab`
+        assert_eq!(next_word_boundary(s, 2), 5); // skip `.`, end of `cd`
+        assert_eq!(prev_word_boundary(s, 5), 3); // start of `cd`
+    }
+
+    #[test]
+    fn find_in_lines_is_case_insensitive_and_per_line() {
+        let lines = vec!["The Rust language".to_string(), "rust rust".to_string()];
+        let m = super::find_in_lines(&lines, "rust");
+        // One on line 0 (case-insensitive), two on line 1.
+        assert_eq!(m.len(), 3);
+        assert_eq!((m[0].line, m[0].start, m[0].end), (0, 4, 8));
+        assert_eq!((m[1].line, m[1].start), (1, 0));
+        assert_eq!((m[2].line, m[2].start), (1, 5));
+    }
+
+    #[test]
+    fn js_string_escapes_quotes_newlines_and_angle() {
+        assert_eq!(super::js_string(r#"a"b\c"#), r#""a\"b\\c""#);
+        assert_eq!(super::js_string("a\nb"), r#""a\nb""#);
+        // `<` becomes the unicode escape < (guard against `</script>`).
+        assert!(super::js_string("x<y").contains("\\u003c"));
+    }
+
+    #[test]
+    fn detects_and_deproxies_translate_urls() {
+        let proxied = "https://monsterhunterrise-wiki-fextralife-com.translate.goog/Monster+Hunter+Rise+Wiki?_x_tr_sl=en&_x_tr_tl=pt&_x_tr_hl=pt-BR";
+        assert!(is_translate_proxy(proxied));
+        assert_eq!(
+            deproxy_translate(proxied).as_deref(),
+            Some("https://monsterhunterrise.wiki.fextralife.com/Monster+Hunter+Rise+Wiki")
+        );
+    }
+
+    #[test]
+    fn deproxy_keeps_real_query_and_decodes_literal_dashes() {
+        // `my--site` decodes to `my-site` (a literal dash); `q=1` is a real param.
+        let url = "https://my--site-com.translate.goog/p?q=1&_x_tr_sl=en";
+        assert_eq!(deproxy_translate(url).as_deref(), Some("https://my-site.com/p?q=1"));
+    }
+
+    #[test]
+    fn non_translate_urls_are_left_alone() {
+        assert!(!is_translate_proxy("https://example.com/translate"));
+        assert_eq!(deproxy_translate("https://example.com/"), None);
+    }
 
     fn entry(time: &str, command: Option<&str>, message: &str) -> ErrorEntry {
         ErrorEntry {
