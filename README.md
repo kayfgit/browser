@@ -85,7 +85,7 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
 
 **Modes (qutebrowser-style):**
 - **Normal** — shell has focus; `:`/`o` open the command bar; `j`/`k`/`d`/`u`
-  scroll; `f` hint mode; `n`/`p` switch tabs; `1`–`9` jump to a tab; `<`/`>` reorder the
+  scroll and `g`/`G` jump to top/bottom; `f` hint mode; `n`/`p` switch tabs; `1`–`9` jump to a tab; `<`/`>` reorder the
   current tab; `x` close tab; `H`/`L` history; **`Ctrl +`/`Ctrl -`/`Ctrl 0`** zoom the
   whole UI (native chrome + web pages + terminal) in / out / reset. A native tab bar shows
   all open tabs.
@@ -100,7 +100,8 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   `:nojs` (toggle JS-off for new tabs) / `:nojs <url>`, `:f` (toggle fullscreen), `:resize` and
   `:move` (window-control modes — then `hjkl`, `Esc` to finish), `:search [template]` (show/set the
   search engine; `%s` = query), `:commands` (full keybind/command reference), `:version` (build
-  info), `:y`/`:yank` (copy the current URL to the clipboard). `:open <text>` that isn't a URL
+  info), `:y`/`:yank` (copy the current URL to the clipboard), `:error`/`:errors` (review failures —
+  see below). `:open <text>` that isn't a URL
   (e.g. `:open rust ownership`, or a bare word like `rustlang`) goes to the search engine — Google
   by default, changeable with `:search`. `:edit`/`:e` re-opens in the tab's own mode (a `:research`
   tab edits back to `:research`, not `:open`). The command bar is a full single-line editor with a
@@ -136,6 +137,17 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   dozen ad frames. Research tabs are tinted **cyan** and show `[research]`. (Page scripts still run,
   so this prunes the DOM rather than blocking requests — true network-level ad/tracker blocking
   would need dropping to the raw WebView2 COM API, a possible later upgrade.)
+- **Errors** — failures (a `:open` that the WebView2 engine rejects, a read that won't extract,
+  an unknown command, a terminal that won't start) are shown **in red** in the status bar and kept
+  in a per-session log, each tagged with the **command that raised it and a timestamp**. Because the
+  status bar is one truncated line, `:error` (or `:err`) opens the most recent failure — and
+  `:errors` (`:errs`) every failure this session, newest first — in an **engine-free, read-only vim
+  pager** (no WebView2), oldest error first. It's a real vim buffer you can't edit but *can* navigate
+  and copy from: `hjkl`/arrows, `w`/`b`/`e`, `0`/`^`/`$`, **`f`/`t` (and `F`/`T`, `;`/`,`) to jump to a
+  char inline**, `gg`/`G`, `Ctrl+D`/`Ctrl+U`; **`v`/`V` to visually select** then **`y` to yank**; and
+  operator motions/text objects — so to lift a code out of `WindowsError(HRESULT(0x8007139f))` you put
+  the cursor inside and press **`yi(`** (or `yiw`, or `yf)`). A block cursor shows your position; the
+  tab is tinted red and shows `[error]`. (`1`–`9` still switch tabs; `n`/`p` are inert here.)
 - **Resize / Move** — entered by `:resize` / `:move`; `hjkl` size or reposition the
   window, `Esc` exits. The window is **borderless** (no OS title bar) — all window
   control is command-driven.

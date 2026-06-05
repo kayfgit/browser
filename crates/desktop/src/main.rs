@@ -32,6 +32,7 @@ use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewBuilderExtWindows
 
 mod draw;
 mod read_view;
+mod vim;
 use draw::Painter;
 
 /// Height of the bottom command/status bar, in physical pixels (at zoom 1.0).
@@ -317,6 +318,9 @@ struct Tab {
     /// Present for an engine-free read tab: the extracted Document + its native
     /// layout/scroll state. Mutually exclusive with `webview`.
     native: Option<NativeRead>,
+    /// Present for an engine-free `:error`/`:errors` tab: a read-only vim-style text
+    /// buffer over the session error log. Mutually exclusive with `webview`.
+    vim: Option<vim::TextBuffer>,
     /// Present if this tab is an embedded terminal (xterm.js + PTY).
     term: Option<TermSession>,
 }
@@ -334,6 +338,16 @@ struct NativeRead {
     layout_w: i32,
     layout_px: f32,
     dirty: bool,
+}
+
+/// One recorded failure: when it happened, the command that triggered it (if
+/// known), and the message. Rendered by `:error` / `:errors`.
+struct ErrorEntry {
+    /// Local wall-clock time, `HH:MM:SS`.
+    time: String,
+    /// The command line that raised it (e.g. `:open foo`), if any.
+    command: Option<String>,
+    message: String,
 }
 
 /// A placed hint label over a native read link: the typed label and target URL.
@@ -452,6 +466,15 @@ struct App {
     /// Placed hint labels for an engine-free read tab (web tabs hint via JS).
     native_hints: Vec<NativeHint>,
     status: String,
+    /// Whether the current `status` is an error (rendered red instead of dim).
+    status_is_error: bool,
+    /// Session error log: every failure (message + the command that triggered it +
+    /// a wall-clock timestamp), newest last. Inspected with `:error` (latest) and
+    /// `:errors` (all), capped to avoid unbounded growth.
+    errors: Vec<ErrorEntry>,
+    /// The command line currently executing (`:open foo`), so a failure it raises
+    /// can be attributed to it in the error log. `None` outside `run_command`.
+    current_command: Option<String>,
     tabs: Vec<Tab>,
     active: Option<usize>,
     /// Current keyboard modifier state (tracked via ModifiersChanged).
@@ -564,6 +587,9 @@ fn main() -> Result<()> {
         hint_input: String::new(),
         native_hints: Vec::new(),
         status: String::new(),
+        status_is_error: false,
+        errors: Vec::new(),
+        current_command: None,
         tabs: Vec::new(),
         active: None,
         modifiers: ModifiersState::default(),
@@ -690,7 +716,7 @@ fn main() -> Result<()> {
                 app.show_read_document(*doc, replace);
             }
             Event::UserEvent(UserEvent::ReadFailed(e)) => {
-                app.status = format!("read failed: {e}");
+                app.set_error(format!("read failed: {e}"));
                 app.window.request_redraw();
             }
             Event::UserEvent(UserEvent::TermDone { cmd, output, code }) => {
@@ -852,7 +878,7 @@ impl App {
         if let Some(wv) = self.active_webview() {
             let _ = wv.set_bounds(rect);
         }
-        self.status = format!("zoom {}%", (z * 100.0).round() as i32);
+        self.set_status(format!("zoom {}%", (z * 100.0).round() as i32));
         self.window.request_redraw();
     }
 
@@ -897,6 +923,11 @@ impl App {
     /// Mutable access to the active engine-free read tab's state, if any.
     fn active_native_mut(&mut self) -> Option<&mut NativeRead> {
         self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.native.as_mut())
+    }
+
+    /// Whether the active tab is an engine-free `:error`/`:errors` vim tab.
+    fn active_is_vim(&self) -> bool {
+        self.active.and_then(|i| self.tabs.get(i)).is_some_and(|t| t.vim.is_some())
     }
 
     fn active_url(&self) -> Option<&str> {
@@ -968,6 +999,12 @@ impl App {
     }
 
     fn key_normal(&mut self, key: &KeyEvent) {
+        // A `:error`/`:errors` tab is a read-only vim pager: let it claim the motion/
+        // visual/yank keys first; anything it doesn't want (`:`, n/p, x, …) falls
+        // through to the normal browser bindings below.
+        if self.active_is_vim() && self.key_vim(key) {
+            return;
+        }
         // Chords (with Ctrl) take precedence over plain keys.
         if self.modifiers.control_key() {
             match key.physical_key {
@@ -990,6 +1027,8 @@ impl App {
                 "k" => self.scroll(-80),
                 "d" => self.scroll(page / 2),
                 "u" => self.scroll(-page / 2),
+                "g" => self.scroll_edge(false),
+                "G" => self.scroll_edge(true),
                 "i" => {
                     if self.active_is_term() {
                         self.enter_passthrough();
@@ -1018,6 +1057,59 @@ impl App {
             Key::ArrowUp => self.scroll(-80),
             _ => {}
         }
+    }
+
+    /// Feed a key to the active `:error`/`:errors` vim pager. Returns `true` if the
+    /// pager consumed it (the shell should then do nothing else with the key).
+    fn key_vim(&mut self, key: &KeyEvent) -> bool {
+        let ctrl = self.modifiers.control_key();
+        // Map the raw key to a pager key. Ctrl+D/Ctrl+U are half-page; any other
+        // Ctrl chord (zoom, …) is left for the shell.
+        let vk = if ctrl {
+            match key.physical_key {
+                KeyCode::KeyD => vim::Key::HalfDown,
+                KeyCode::KeyU => vim::Key::HalfUp,
+                _ => return false,
+            }
+        } else {
+            match &key.logical_key {
+                Key::ArrowLeft => vim::Key::Left,
+                Key::ArrowRight => vim::Key::Right,
+                Key::ArrowUp => vim::Key::Up,
+                Key::ArrowDown => vim::Key::Down,
+                Key::Home => vim::Key::Home,
+                Key::End => vim::Key::End,
+                Key::Escape => vim::Key::Esc,
+                Key::Character(s) => {
+                    let mut chars = s.chars();
+                    match (chars.next(), chars.next()) {
+                        (Some(c), None) => vim::Key::Char(c),
+                        _ => return false,
+                    }
+                }
+                _ => return false,
+            }
+        };
+        // Viewport in cells (monospace), matching the draw geometry below.
+        let (w, _) = self.inner();
+        let cw = self.painter.measure("M").max(1);
+        let line_h = self.painter.line_height().max(1);
+        let cols = ((w as usize).saturating_sub(2 * 8)) / cw;
+        let rows = (self.content_view_h() as usize) / line_h;
+        let Some(buf) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.vim.as_mut())
+        else {
+            return false;
+        };
+        let res = buf.key(vk, rows, cols);
+        if let Some(text) = res.yanked {
+            let n = text.chars().count();
+            clipboard_set(&text);
+            self.set_status(format!("yanked {n} chars"));
+        }
+        if res.consumed {
+            self.window.request_redraw();
+        }
+        res.consumed
     }
 
     fn key_command(&mut self, key: &KeyEvent) {
@@ -1266,12 +1358,12 @@ impl App {
         self.command_cursor = self.command.len();
         self.command_anchor = None;
         self.cursor_on = true;
-        self.status.clear();
+        self.clear_status();
     }
 
     fn enter_insert(&mut self) {
         if self.active_webview().is_none() {
-            self.status = "no page — open one first".into();
+            self.set_status("no page — open one first");
             return;
         }
         self.mode = ModeKind::Insert;
@@ -1283,7 +1375,7 @@ impl App {
 
     fn enter_passthrough(&mut self) {
         if self.active_webview().is_none() {
-            self.status = "no page — open one first".into();
+            self.set_status("no page — open one first");
             return;
         }
         self.mode = ModeKind::Passthrough;
@@ -1315,7 +1407,7 @@ impl App {
 
     fn enter_hint(&mut self) {
         let Some(idx) = self.active else {
-            self.status = "no page — open one first".into();
+            self.set_status("no page — open one first");
             return;
         };
         // Engine-free read tab: hints are computed and drawn natively.
@@ -1325,13 +1417,13 @@ impl App {
             self.build_native_hints();
             if self.native_hints.is_empty() {
                 self.mode = ModeKind::Normal;
-                self.status = "no links on screen".into();
+                self.set_status("no links on screen");
             }
             self.window.request_redraw();
             return;
         }
         if self.tabs[idx].nojs {
-            self.status = "hint mode needs JavaScript (this tab is no-js)".into();
+            self.set_status("hint mode needs JavaScript (this tab is no-js)");
             return;
         }
         self.hint_input.clear();
@@ -1479,8 +1571,39 @@ impl App {
 
     // --- commands -------------------------------------------------------------
 
+    /// Set an informational status message (rendered dim). Clears the error flag.
+    fn set_status(&mut self, msg: impl Into<String>) {
+        self.status = msg.into();
+        self.status_is_error = false;
+    }
+
+    /// Clear the status line.
+    fn clear_status(&mut self) {
+        self.status.clear();
+        self.status_is_error = false;
+    }
+
+    /// Record a failure: show it in the status bar (red) and append it to the
+    /// session error log for `:error`/`:errors`.
+    fn set_error(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        self.errors.push(ErrorEntry {
+            time: now_hms(),
+            command: self.current_command.clone(),
+            message: msg.clone(),
+        });
+        if self.errors.len() > ERROR_LOG_CAP {
+            let overflow = self.errors.len() - ERROR_LOG_CAP;
+            self.errors.drain(0..overflow);
+        }
+        self.status = msg;
+        self.status_is_error = true;
+    }
+
     fn run_command(&mut self, line: &str) {
         let line = line.trim();
+        // Attribute any failure raised below to this command in the error log.
+        self.current_command = if line.is_empty() { None } else { Some(format!(":{line}")) };
         let (verb, rest) = match line.split_once(char::is_whitespace) {
             Some((v, r)) => (v, r.trim()),
             None => (line, ""),
@@ -1497,23 +1620,27 @@ impl App {
                     let verb = self.active_reopen_verb();
                     self.enter_command(&format!("{verb} {url}"));
                 }
-                None => self.status = "no page to edit".into(),
+                None => self.set_status("no page to edit"),
             },
             // Yank (copy) the current URL to the system clipboard.
             "y" | "yank" => match self.current_url() {
                 Some(url) => {
                     clipboard_set(&url);
-                    self.status = format!("yanked {url}");
+                    self.set_status(format!("yanked {url}"));
                 }
-                None => self.status = "no url to yank".into(),
+                None => self.set_status("no url to yank"),
             },
             "read" => {
                 if rest.is_empty() {
-                    self.status = "usage: :read <url>".into();
+                    self.set_status("usage: :read <url>");
                 } else {
                     self.start_read(rest, false);
                 }
             }
+            // Inspect this session's errors in an engine-free, scrollable tab:
+            // `:error` shows the most recent one, `:errors` shows them all.
+            "error" | "err" => self.open_error_page(false),
+            "errors" | "errs" => self.open_error_page(true),
             // Like :open (URL or → search engine) but lighter: JS on, images kept,
             // heavy media/embeds stripped. For "how do I…" / "best way to…" lookups.
             "research" | "rs" => self.open_research(rest),
@@ -1526,27 +1653,29 @@ impl App {
             }
             "shell" => {
                 if rest.is_empty() {
-                    self.status = format!("shell = {}", self.term_command.join(" "));
+                    self.set_status(format!("shell = {}", self.term_command.join(" ")));
                 } else {
                     self.term_command = rest.split_whitespace().map(String::from).collect();
-                    self.status = format!("shell set to: {}", self.term_command.join(" "));
+                    self.set_status(format!("shell set to: {}", self.term_command.join(" ")));
                 }
             }
             // Customize the search engine used when `:open <query>` isn't a URL.
             // `%s` in the template is replaced with the percent-encoded query.
             "search" => {
                 if rest.is_empty() {
-                    self.status = format!("search = {}", self.search_template);
+                    self.set_status(format!("search = {}", self.search_template));
                 } else {
                     self.search_template = rest.to_string();
-                    self.status = format!("search engine set to: {}", self.search_template);
+                    self.set_status(format!("search engine set to: {}", self.search_template));
                 }
             }
             "nojs" => {
                 if rest.is_empty() {
                     self.nojs = !self.nojs;
-                    self.status =
-                        format!("new tabs: JavaScript {}", if self.nojs { "OFF" } else { "ON" });
+                    self.set_status(format!(
+                        "new tabs: JavaScript {}",
+                        if self.nojs { "OFF" } else { "ON" }
+                    ));
                 } else {
                     self.open_tab(rest, true);
                 }
@@ -1561,17 +1690,18 @@ impl App {
             "f" | "fullscreen" => self.toggle_fullscreen(),
             "resize" => {
                 self.mode = ModeKind::Resize;
-                self.status.clear();
+                self.clear_status();
             }
             "move" => {
                 self.mode = ModeKind::Move;
-                self.status.clear();
+                self.clear_status();
             }
             "commands" | "help" => self.open_local_page("commands", commands_document()),
             "version" => self.open_local_page("version", version_document()),
             "" => {}
-            other => self.status = format!("unknown command: {other}"),
+            other => self.set_error(format!("unknown command: {other}")),
         }
+        self.current_command = None;
     }
 
     /// Turn a command-bar target into a URL the way `:open` does: a bare query
@@ -1597,6 +1727,7 @@ impl App {
                     read: false,
                     research: false,
                     native: None,
+                    vim: None,
                     term: None,
                 });
                 self.active = Some(self.tabs.len() - 1);
@@ -1604,9 +1735,9 @@ impl App {
                 // Keep the keyboard on the shell; the page-load handler re-asserts
                 // this once navigation finishes (which is when focus tends to move).
                 self.window.set_focus();
-                self.status = if disable_js { "(no-js)".into() } else { String::new() };
+                self.set_status(if disable_js { "(no-js)" } else { "" });
             }
-            Err(e) => self.status = format!("failed to open: {e:#}"),
+            Err(e) => self.set_error(format!("failed to open: {e:#}")),
         }
     }
 
@@ -1624,14 +1755,15 @@ impl App {
                     read: false,
                     research: true,
                     native: None,
+                    vim: None,
                     term: None,
                 });
                 self.active = Some(self.tabs.len() - 1);
                 self.refresh_visibility();
                 self.window.set_focus();
-                self.status = "(research — media stripped)".into();
+                self.set_status("(research — media stripped)");
             }
-            Err(e) => self.status = format!("failed to open: {e:#}"),
+            Err(e) => self.set_error(format!("failed to open: {e:#}")),
         }
     }
 
@@ -1712,7 +1844,7 @@ impl App {
     /// responsive. `replace` swaps the active read tab's doc in place (link-follow
     /// / reload) rather than opening a new tab.
     fn start_read(&mut self, target: &str, replace: bool) {
-        self.status = format!("reading {target} …");
+        self.set_status(format!("reading {target} …"));
         let proxy = self.proxy.clone();
         let target = target.to_string();
         std::thread::spawn(move || {
@@ -1728,7 +1860,7 @@ impl App {
     /// Run a local shell command in the background. Result arrives as TermDone.
     /// Strictly shell-initiated — never reachable from page content.
     fn run_term(&mut self, cmd: &str) {
-        self.status = format!("$ {cmd}");
+        self.set_status(format!("$ {cmd}"));
         let proxy = self.proxy.clone();
         let cmd = cmd.to_string();
         std::thread::spawn(move || {
@@ -1756,7 +1888,7 @@ impl App {
         };
 
         let Some(host) = pty_host_path() else {
-            self.status = "could not locate browser-pty-host".into();
+            self.set_error("could not locate browser-pty-host");
             return;
         };
 
@@ -1775,7 +1907,7 @@ impl App {
         let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => {
-                self.status = format!("failed to start pty-host: {e}");
+                self.set_error(format!("failed to start pty-host: {e}"));
                 return;
             }
         };
@@ -1798,7 +1930,7 @@ impl App {
         let webview = match self.build_terminal_webview(id) {
             Ok(wv) => wv,
             Err(e) => {
-                self.status = format!("terminal webview: {e:#}");
+                self.set_error(format!("terminal webview: {e:#}"));
                 let _ = child.kill();
                 return;
             }
@@ -1832,6 +1964,7 @@ impl App {
             read: false,
             research: false,
             native: None,
+            vim: None,
             term: Some(TermSession {
                 id,
                 child,
@@ -1848,7 +1981,7 @@ impl App {
         if let Some(wv) = self.active_webview() {
             let _ = wv.focus();
         }
-        self.status = "terminal — Shift+Esc returns to the shell".into();
+        self.set_status("terminal — Shift+Esc returns to the shell");
     }
 
     /// Build the terminal webview. The PTY handles live in the [`TermSession`]; the
@@ -1954,12 +2087,13 @@ impl App {
     /// text (collapsed to one line).
     fn show_term_result(&mut self, _cmd: &str, output: &str, code: Option<i32>) {
         let trimmed = output.trim();
-        self.status = if trimmed.is_empty() {
+        let msg = if trimmed.is_empty() {
             let codestr = code.map(|c| c.to_string()).unwrap_or_else(|| "?".into());
             format!("(exit {codestr})")
         } else {
             trimmed.replace(['\r', '\n'], " ")
         };
+        self.set_status(msg);
         self.window.request_redraw();
     }
 
@@ -1976,16 +2110,23 @@ impl App {
                 nr.doc = doc;
                 nr.scroll = 0;
                 nr.dirty = true;
-                self.status.clear();
+                self.clear_status();
                 self.window.request_redraw();
                 return;
             }
         }
+        self.push_native_tab(doc, url, true);
+    }
+
+    /// Open a new engine-free native tab rendering `doc` (no WebView2 process). Used
+    /// by read mode (`read = true`, tinted green + `f` hint) and the `:error(s)`
+    /// pages (`read = false`). Activates and focuses the new tab.
+    fn push_native_tab(&mut self, doc: browser_core::Document, url: String, read: bool) {
         self.tabs.push(Tab {
             webview: None,
             url,
             nojs: false,
-            read: true,
+            read,
             research: false,
             native: Some(NativeRead {
                 doc,
@@ -1995,12 +2136,41 @@ impl App {
                 layout_px: 0.0,
                 dirty: true,
             }),
+            vim: None,
             term: None,
         });
         self.active = Some(self.tabs.len() - 1);
         self.refresh_visibility();
         self.window.set_focus();
-        self.status.clear();
+        self.clear_status();
+        self.window.request_redraw();
+    }
+
+    /// Open the `:error` / `:errors` page: render the session error log in an
+    /// engine-free, read-only **vim-style** tab so the full text (which may be long,
+    /// like the WebView2 HRESULT messages) is readable, navigable, and — crucially —
+    /// selectable/yankable without retyping. `all = false` shows just the most recent
+    /// error; `all = true` shows every error this session, newest first.
+    fn open_error_page(&mut self, all: bool) {
+        if self.errors.is_empty() {
+            self.set_status("no errors this session");
+            return;
+        }
+        let lines = error_lines(&self.errors, all);
+        self.tabs.push(Tab {
+            webview: None,
+            url: "browser://error".into(),
+            nojs: false,
+            read: false,
+            research: false,
+            native: None,
+            vim: Some(vim::TextBuffer::new(lines)),
+            term: None,
+        });
+        self.active = Some(self.tabs.len() - 1);
+        self.refresh_visibility();
+        self.window.set_focus();
+        self.clear_status();
         self.window.request_redraw();
     }
 
@@ -2015,20 +2185,21 @@ impl App {
                     read: false,
                     research: false,
                     native: None,
+                    vim: None,
                     term: None,
                 });
                 self.active = Some(self.tabs.len() - 1);
                 self.refresh_visibility();
                 self.window.set_focus();
-                self.status.clear();
+                self.clear_status();
             }
-            Err(e) => self.status = format!("failed to open {label}: {e:#}"),
+            Err(e) => self.set_error(format!("failed to open {label}: {e:#}")),
         }
     }
 
     fn close_active(&mut self) {
         let Some(i) = self.active else {
-            self.status = "no tab to close".into();
+            self.set_status("no tab to close");
             return;
         };
         // Shut a terminal down deterministically (kill shell, close PTY, join reader)
@@ -2149,6 +2320,24 @@ impl App {
         }
     }
 
+    /// Jump to the top (`g`) or bottom (`G`) of the active page/document.
+    fn scroll_edge(&mut self, bottom: bool) {
+        let view = self.content_view_h();
+        if let Some(nr) = self.active_native_mut() {
+            nr.scroll = if bottom { (nr.layout.height - view).max(0) } else { 0 };
+            self.window.request_redraw();
+            return;
+        }
+        if let Some(wv) = self.active_webview() {
+            let js = if bottom {
+                "window.scrollTo(0,document.body.scrollHeight);"
+            } else {
+                "window.scrollTo(0,0);"
+            };
+            let _ = wv.evaluate_script(js);
+        }
+    }
+
     fn history(&mut self, forward: bool) {
         if let Some(wv) = self.active_webview() {
             let js = if forward { "history.forward();" } else { "history.back();" };
@@ -2165,7 +2354,10 @@ impl App {
             .and_then(|t| t.native.as_ref())
             .map(|nr| nr.doc.url.clone())
         {
-            self.start_read(&url, true);
+            // Internal native pages (e.g. `:error`) have nothing to re-extract.
+            if !url.starts_with("browser://") {
+                self.start_read(&url, true);
+            }
             return;
         }
         if let Some(wv) = self.active_webview() {
@@ -2188,6 +2380,10 @@ impl App {
             .active
             .and_then(|i| self.tabs.get(i))
             .is_some_and(|t| t.native.is_some());
+        let vim_active = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .is_some_and(|t| t.vim.is_some());
         let bar_h = self.bar_h() as usize;
         let tab_h = self.tab_bar_h() as usize;
         // Command bar: draw the `:`-line with horizontal scroll-to-caret so editing
@@ -2328,6 +2524,70 @@ impl App {
             draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels);
             draw_bar(&mut buf);
             buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
+        } else if vim_active {
+            // Engine-free `:error`/`:errors` vim pager: a monospace text grid with a
+            // block cursor and (in visual mode) a selection highlight. Content first,
+            // then the opaque bars on top.
+            draw::fill_band(&mut buf, wz, hz, 0, bar_top, draw::BG);
+            let content_top = tab_h as i32;
+            let line_h = p.line_height() as i32;
+            let cw = p.measure("M").max(1) as i32;
+            if let Some(vb) =
+                self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.vim.as_ref())
+            {
+                // Pixel x of (absolute) column `col`, measured from the actual glyph
+                // advances of the visible slice — so the cursor/selection line up with
+                // the text exactly, at any zoom (a fixed cell width drifts on long
+                // lines). Columns past end-of-line use the nominal cell width.
+                let left = vb.left;
+                let col_x = |line: &[char], col: usize| -> i32 {
+                    if col <= left {
+                        return MARGIN;
+                    }
+                    let end = col.min(line.len());
+                    let slice: String = line[left..end].iter().collect();
+                    let mut x = MARGIN + p.measure(&slice) as i32;
+                    if col > line.len() {
+                        x += (col - line.len()) as i32 * cw;
+                    }
+                    x
+                };
+                for r in vb.top..vb.lines.len() {
+                    let y_top = content_top + (r - vb.top) as i32 * line_h;
+                    if y_top >= bar_top as i32 {
+                        break;
+                    }
+                    let line = &vb.lines[r];
+                    let (yt, yb) = (y_top.max(0) as usize, (y_top + line_h).max(0) as usize);
+                    // Selection highlight band for this row (visual mode).
+                    if let Some((s0, s1)) = vb.selection_on_row(r) {
+                        let x0 = col_x(line, s0).max(MARGIN) as usize;
+                        let x1 = col_x(line, s1).max(MARGIN) as usize;
+                        if x1 > x0 {
+                            draw::fill_rect(&mut buf, wz, hz, x0, yt, x1, yb, draw::SEL);
+                        }
+                    }
+                    // The visible slice of the line, scrolled left by `vb.left` cols.
+                    let baseline = (y_top + line_h * 3 / 4) as usize;
+                    if vb.left < line.len() {
+                        let text: String = line[vb.left..].iter().collect();
+                        p.text_clipped(&mut buf, wz, hz, MARGIN, baseline, &text, draw::FG, MARGIN);
+                    }
+                    // Block cursor (inverse cell) on the cursor row.
+                    if r == vb.cy {
+                        let cx0 = col_x(line, vb.cx);
+                        let cx1 = col_x(line, vb.cx + 1).max(cx0 + cw);
+                        draw::fill_rect(&mut buf, wz, hz, cx0 as usize, yt, cx1 as usize, yb, draw::FG);
+                        if let Some(ch) = line.get(vb.cx) {
+                            p.text(&mut buf, wz, hz, cx0 as usize, baseline, &ch.to_string(), draw::BG);
+                        }
+                    }
+                }
+            }
+            draw::fill_band(&mut buf, wz, hz, 0, tab_h, draw::BAR_BG);
+            draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels);
+            draw_bar(&mut buf);
+            buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
         } else {
             draw_bar(&mut buf);
             // A webview covers the middle; redraw only the top tab bar and the
@@ -2361,6 +2621,8 @@ impl App {
                 let active = Some(i) == self.active;
                 let color = if t.term.is_some() {
                     draw::TERM
+                } else if t.vim.is_some() {
+                    draw::ERR
                 } else if t.read {
                     draw::READ
                 } else if t.research {
@@ -2449,11 +2711,24 @@ impl App {
                 if self.active_is_term() {
                     segs.push(("   [term]".into(), draw::TERM));
                 }
+                // `:error`/`:errors` vim pager: show [error], or [VISUAL]/[VISUAL LINE]
+                // while selecting, plus a short motion hint.
+                if let Some(vb) = self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.vim.as_ref())
+                {
+                    match vb.mode_label() {
+                        Some(m) => segs.push((format!("   [{m}]"), draw::ACCENT)),
+                        None => segs.push((
+                            "   [error]  v select · y yank · yi( inner ()".into(),
+                            draw::ERR,
+                        )),
+                    }
+                }
                 if self.nojs {
                     segs.push(("   [no-js]".into(), draw::ACCENT));
                 }
                 if !self.status.is_empty() {
-                    segs.push((format!("   {}", self.status), draw::DIM));
+                    let color = if self.status_is_error { draw::ERR } else { draw::DIM };
+                    segs.push((format!("   {}", self.status), color));
                 }
                 segs
             }
@@ -2463,6 +2738,9 @@ impl App {
 
 /// Cap captured command output so a runaway command can't balloon memory.
 const TERM_OUTPUT_CAP: usize = 200_000;
+
+/// Maximum number of past errors kept in the session log (oldest dropped first).
+const ERROR_LOG_CAP: usize = 200;
 
 /// Run `cmd` through the platform shell, returning combined stdout+stderr and the
 /// exit code. Blocking — call from a background thread.
@@ -2599,6 +2877,53 @@ fn help_table(rows: &[(&str, &str)]) -> String {
     s
 }
 
+/// Build the plain-text lines shown by `:error` / `:errors` in the vim pager. Each
+/// error becomes a header line (`[HH:MM:SS] :command — error N`) followed by its
+/// message (split on newlines), with a blank line between entries. `all = false`
+/// renders only the most recent error; `all = true` renders every logged error in
+/// chronological order (oldest first, newest last). The text is intentionally flat
+/// so vim motions/text-objects work cleanly over it (e.g. `yi(` to grab a
+/// `HRESULT(0x…)` token).
+fn error_lines(errors: &[ErrorEntry], all: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut emit = |n: usize, e: &ErrorEntry| {
+        let cmd = e.command.as_deref().unwrap_or("(no command)");
+        out.push(format!("[{}] {} — error {}", e.time, cmd, n + 1));
+        for line in e.message.lines() {
+            out.push(line.to_string());
+        }
+        out.push(String::new());
+    };
+    if all {
+        for (n, e) in errors.iter().enumerate() {
+            emit(n, e);
+        }
+    } else if let Some(e) = errors.last() {
+        emit(errors.len() - 1, e);
+    }
+    // Drop the trailing blank so the buffer doesn't end on an empty line.
+    if out.last().is_some_and(|l| l.is_empty()) {
+        out.pop();
+    }
+    out
+}
+
+/// Local wall-clock time as `HH:MM:SS`, for stamping logged errors.
+#[cfg(windows)]
+fn now_hms() -> String {
+    use windows::Win32::System::SystemInformation::GetLocalTime;
+    let st = unsafe { GetLocalTime() };
+    format!("{:02}:{:02}:{:02}", st.wHour, st.wMinute, st.wSecond)
+}
+
+#[cfg(not(windows))]
+fn now_hms() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let s = secs % 86_400;
+    format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
+}
+
 /// The `:commands` page: every keybind and command (not customizable yet).
 fn commands_document() -> String {
     let normal = help_table(&[
@@ -2606,6 +2931,7 @@ fn commands_document() -> String {
         ("o", "open a page (prefills “open ”)"),
         ("j / k", "scroll down / up"),
         ("d / u", "scroll half a page down / up"),
+        ("g / G", "jump to top / bottom"),
         ("i", "insert mode (passthrough on a terminal tab)"),
         ("f", "hint mode — label every link, type the label to follow"),
         ("x", "close the current tab"),
@@ -2637,6 +2963,16 @@ fn commands_document() -> String {
         ("Hint", "type a label to follow it; Esc cancels"),
         ("Resize / Move", "hjkl to size / reposition the window; Esc finishes"),
     ]);
+    let vimpager = help_table(&[
+        ("h j k l · arrows", "move the cursor"),
+        ("w / b / e", "next / previous / end of word"),
+        ("0 / ^ / $", "start / first non-blank / end of line"),
+        ("f / t  (F / T)", "jump to / before a char forward (back); ; , repeat"),
+        ("gg / G", "top / bottom; Ctrl+D / Ctrl+U half-page"),
+        ("v / V", "charwise / linewise visual select"),
+        ("y", "yank: the selection, or with a motion (yy, yw, y$, yf), yt;)"),
+        ("yiw · yi( · ya\"", "yank inner/around a text object (word, (), {}, [], <>, quotes)"),
+    ]);
     let cmds = help_table(&[
         (":open <url|query> · :o · :t", "open a page (non-URL → search engine)"),
         (":research <url|query> · :rs", "lighter browse: JS on, images kept, media/embeds stripped"),
@@ -2655,6 +2991,8 @@ fn commands_document() -> String {
         (":back · :forward", "history navigation"),
         (":f · :fullscreen", "toggle fullscreen"),
         (":resize · :move", "window-control modes (then hjkl, Esc)"),
+        (":error · :err", "latest error in a read-only vim tab (v/y to select & copy)"),
+        (":errors · :errs", "every error this session (newest first), same vim tab"),
         (":commands · :help", "this page"),
         (":version", "version and build information"),
         (":quit · :q", "quit the browser"),
@@ -2668,6 +3006,7 @@ fn commands_document() -> String {
          <h2>Normal mode</h2>{normal}\
          <h2>Command-line editing</h2>{cmdline}\
          <h2>Other modes</h2>{modes}\
+         <h2>Error pager (:error / :errors)</h2>{vimpager}\
          <h2>Commands</h2>{cmds}\
          </main></body></html>"
     )
@@ -2789,5 +3128,129 @@ fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize, scale: f32) {
         p.text(buf, w, h, x, y, keys, draw::FG);
         p.text(buf, w, h, x + col, y, desc, draw::DIM);
         y += lh + lh / 3;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::vim::{Key, TextBuffer};
+    use super::{error_lines, ErrorEntry};
+
+    fn entry(time: &str, command: Option<&str>, message: &str) -> ErrorEntry {
+        ErrorEntry {
+            time: time.into(),
+            command: command.map(Into::into),
+            message: message.into(),
+        }
+    }
+
+    #[test]
+    fn latest_error_has_header_then_message_lines() {
+        let errs = vec![
+            entry("00:00:01", Some(":open a"), "boom"),
+            entry("00:00:02", None, "bad\nthings"),
+        ];
+        let lines = error_lines(&errs, false);
+        assert_eq!(lines[0], "[00:00:02] (no command) — error 2");
+        assert_eq!(&lines[1..], &["bad".to_string(), "things".to_string()]);
+    }
+
+    #[test]
+    fn all_errors_are_oldest_first_with_command_and_time() {
+        let errs = vec![entry("00:00:01", Some(":open a"), "e1"), entry("00:00:09", Some(":bad"), "e2")];
+        let lines = error_lines(&errs, true);
+        assert_eq!(lines[0], "[00:00:01] :open a — error 1");
+        assert_eq!(lines[1], "e1");
+        assert_eq!(lines[2], ""); // blank separator
+        assert_eq!(lines[3], "[00:00:09] :bad — error 2");
+        assert_eq!(lines[4], "e2");
+    }
+
+    fn type_keys(b: &mut TextBuffer, chars: &str) -> Option<String> {
+        let mut last = None;
+        for c in chars.chars() {
+            last = b.key(Key::Char(c), 20, 80).yanked;
+        }
+        last
+    }
+
+    #[test]
+    fn yank_inside_parens_grabs_the_hresult_token() {
+        let mut b = TextBuffer::new(vec!["WindowsError(HRESULT(0x8007139f))".into()]);
+        b.cx = 25; // somewhere inside the inner parens
+        assert_eq!(type_keys(&mut b, "yi(").as_deref(), Some("0x8007139f"));
+    }
+
+    #[test]
+    fn yank_inner_word_grabs_the_whole_token() {
+        let mut b = TextBuffer::new(vec!["code 0x8007139f here".into()]);
+        b.cx = 8; // inside the hex token
+        assert_eq!(type_keys(&mut b, "yiw").as_deref(), Some("0x8007139f"));
+    }
+
+    #[test]
+    fn charwise_visual_selection_yanks_inclusively() {
+        let mut b = TextBuffer::new(vec!["HRESULT(0x..)".into()]);
+        assert!(b.key(Key::Char('v'), 20, 80).consumed);
+        assert_eq!(b.mode_label(), Some("VISUAL"));
+        for _ in 0..6 {
+            b.key(Key::Char('l'), 20, 80); // cursor 0 -> 6, inclusive of char 6
+        }
+        let yanked = b.key(Key::Char('y'), 20, 80).yanked;
+        assert_eq!(yanked.as_deref(), Some("HRESULT"));
+        assert_eq!(b.mode_label(), None); // visual cleared after yank
+    }
+
+    #[test]
+    fn yy_yanks_the_whole_line() {
+        let mut b = TextBuffer::new(vec!["first".into(), "second".into()]);
+        b.key(Key::Char('j'), 20, 80); // -> line 1
+        assert_eq!(type_keys(&mut b, "yy").as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn np_swallowed_colon_falls_through() {
+        let mut b = TextBuffer::new(vec!["x".into()]);
+        // `n`/`p` are swallowed (no tab switch from the pager); `:` falls through.
+        assert!(b.key(Key::Char('n'), 20, 80).consumed);
+        assert!(b.key(Key::Char('p'), 20, 80).consumed);
+        assert!(!b.key(Key::Char(':'), 20, 80).consumed);
+    }
+
+    #[test]
+    fn find_char_moves_cursor_onto_target() {
+        let mut b = TextBuffer::new(vec!["abc(def)ghi".into()]);
+        type_keys(&mut b, "f("); // jump to the '('
+        assert_eq!(b.cx, 3);
+        type_keys(&mut b, "f)"); // jump forward to the ')'
+        assert_eq!(b.cx, 7);
+        type_keys(&mut b, "F("); // jump back to the '('
+        assert_eq!(b.cx, 3);
+    }
+
+    #[test]
+    fn till_char_stops_before_target() {
+        let mut b = TextBuffer::new(vec!["abc(def)".into()]);
+        type_keys(&mut b, "t("); // land just before '('
+        assert_eq!(b.cx, 2);
+    }
+
+    #[test]
+    fn repeat_find_with_semicolon_and_comma() {
+        let mut b = TextBuffer::new(vec!["a.b.c.d".into()]);
+        type_keys(&mut b, "f."); // first '.'
+        assert_eq!(b.cx, 1);
+        type_keys(&mut b, ";"); // next '.'
+        assert_eq!(b.cx, 3);
+        type_keys(&mut b, ","); // back to previous '.'
+        assert_eq!(b.cx, 1);
+    }
+
+    #[test]
+    fn yank_find_includes_target_till_excludes_it() {
+        let mut b = TextBuffer::new(vec!["key=value;".into()]);
+        assert_eq!(type_keys(&mut b, "yf;").as_deref(), Some("key=value;"));
+        let mut b2 = TextBuffer::new(vec!["key=value;".into()]);
+        assert_eq!(type_keys(&mut b2, "yt;").as_deref(), Some("key=value"));
     }
 }

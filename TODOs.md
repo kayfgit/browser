@@ -10,6 +10,7 @@
 [] - search just like qutebrowser (press / and type, like /example highlights all the words "example" on the page, n goes forward/N goes backward, should work on all modes including read)
 [] - ctrl-w, should erase the last word in the url, not the entire url. same for ctrl+arrowkeys
 [] - issue when using ":open", it says "failed to open: WebView2 error: WindowsError(Error { code: HRESULT(0x8007139f), message: 'O grup})" and i cant read the rest because its all inline.
-[] - every error message should be highlighted in red
-[] - add a ":error" command to see the latest error in a new tab, allowing vim motions to manipulate the error text freely.
-[] - add a ":errors" command to see all of the errors in the current session one after the other vertically, same vim motions as above.
+[x] - every error message should be highlighted in red
+[x] - add a ":error" command to see the latest error in a new tab, allowing vim motions to manipulate the error text freely.
+[x] - add a ":errors" command to see all of the errors in the current session one after the other vertically, same vim motions as above.
+[] - maybe add tmux functionality? could be cool
