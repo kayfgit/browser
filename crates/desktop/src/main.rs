@@ -31,6 +31,7 @@ use wry::dpi::{PhysicalPosition, PhysicalSize};
 use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewBuilderExtWindows};
 
 mod draw;
+mod read_view;
 use draw::Painter;
 
 /// Height of the bottom command/status bar, in physical pixels (at zoom 1.0).
@@ -250,8 +251,10 @@ enum UserEvent {
     ExitHint,
     /// A hint selected an editable element: focus it and enter passthrough.
     HintEdit,
-    /// A `:read` extraction finished: open a reader tab with this article HTML.
-    ReadReady { url: String, title: String, html: String },
+    /// A `:read` extraction finished: render this Document in an engine-free read
+    /// tab. `replace` swaps the active read tab's doc in place (link-follow/reload)
+    /// instead of opening a new tab.
+    ReadReady { doc: Box<browser_core::Document>, replace: bool },
     /// A `:read` extraction failed.
     ReadFailed(String),
     /// A `:te` command finished: combined output and exit code.
@@ -300,7 +303,9 @@ enum Source {
 }
 
 struct Tab {
-    webview: WebView,
+    /// The engine. `None` for an engine-free read tab (rendered natively from a
+    /// `Document` — no WebView2 process at all); `Some` for every other tab.
+    webview: Option<WebView>,
     url: String,
     /// Whether this tab was opened with JavaScript disabled (hint mode needs JS).
     nojs: bool,
@@ -309,8 +314,34 @@ struct Tab {
     /// Whether this is a "research" tab: a normal page (JS on, images kept) with
     /// heavy media/embeds stripped on the fly for a lighter browse.
     research: bool,
+    /// Present for an engine-free read tab: the extracted Document + its native
+    /// layout/scroll state. Mutually exclusive with `webview`.
+    native: Option<NativeRead>,
     /// Present if this tab is an embedded terminal (xterm.js + PTY).
     term: Option<TermSession>,
+}
+
+/// State for an engine-free read tab: the extracted document, the vertical scroll
+/// offset, and a cache of the laid-out lines (recomputed when the width/zoom
+/// changes or the document is replaced by following a link).
+struct NativeRead {
+    doc: browser_core::Document,
+    /// Top-of-viewport scroll offset in pixels (>= 0).
+    scroll: i32,
+    layout: read_view::Layout,
+    /// Content width / font px the cached layout was built at; `dirty` forces a
+    /// rebuild after the document is swapped (the width/px may be unchanged).
+    layout_w: i32,
+    layout_px: f32,
+    dirty: bool,
+}
+
+/// A placed hint label over a native read link: the typed label and target URL.
+struct NativeHint {
+    label: String,
+    url: String,
+    x: i32,
+    y: i32,
 }
 
 /// A terminal tab's link to its companion `browser-pty-host` process. The ConPTY
@@ -418,6 +449,8 @@ struct App {
     command_anchor: Option<usize>,
     /// Accumulated label characters while in Hint mode.
     hint_input: String,
+    /// Placed hint labels for an engine-free read tab (web tabs hint via JS).
+    native_hints: Vec<NativeHint>,
     status: String,
     tabs: Vec<Tab>,
     active: Option<usize>,
@@ -465,6 +498,31 @@ fn clipboard_get() -> Option<String> {
     arboard::Clipboard::new().ok()?.get_text().ok()
 }
 
+/// Generate `n` fixed-width, prefix-free hint labels from the home-row charset
+/// (matches the web HINT_JS scheme, so the muscle memory is the same).
+fn hint_labels(n: usize) -> Vec<String> {
+    const CH: &[u8] = b"asdfghjkl";
+    if n == 0 {
+        return Vec::new();
+    }
+    let (mut width, mut cap) = (1usize, CH.len());
+    while cap < n {
+        width += 1;
+        cap *= CH.len();
+    }
+    (0..n)
+        .map(|i| {
+            let mut buf = vec![0u8; width];
+            let mut x = i;
+            for w in 0..width {
+                buf[width - 1 - w] = CH[x % CH.len()];
+                x /= CH.len();
+            }
+            String::from_utf8(buf).unwrap()
+        })
+        .collect()
+}
+
 fn main() -> Result<()> {
     // Give this process a single explicit AppUserModelID *before* anything is
     // spawned. Child processes inherit it at creation time, so every descendant —
@@ -504,6 +562,7 @@ fn main() -> Result<()> {
         command_cursor: 0,
         command_anchor: None,
         hint_input: String::new(),
+        native_hints: Vec::new(),
         status: String::new(),
         tabs: Vec::new(),
         active: None,
@@ -627,8 +686,8 @@ fn main() -> Result<()> {
                 }
                 app.window.request_redraw();
             }
-            Event::UserEvent(UserEvent::ReadReady { url, title, html }) => {
-                app.open_read_tab(&url, &title, &html);
+            Event::UserEvent(UserEvent::ReadReady { doc, replace }) => {
+                app.show_read_document(*doc, replace);
             }
             Event::UserEvent(UserEvent::ReadFailed(e)) => {
                 app.status = format!("read failed: {e}");
@@ -722,6 +781,45 @@ impl App {
         self.window.request_redraw();
     }
 
+    /// Top/bottom y of the content band (between the tab bar and command bar), px.
+    fn content_y_bounds(&self) -> (i32, i32) {
+        let (_, h) = self.inner();
+        (self.tab_bar_h() as i32, h as i32 - self.bar_h() as i32)
+    }
+
+    /// Visible height of the content band, in px (>= 1).
+    fn content_view_h(&self) -> i32 {
+        let (top, bottom) = self.content_y_bounds();
+        (bottom - top).max(1)
+    }
+
+    /// (Re)build the active read tab's native layout when the width, zoom, or the
+    /// document itself changed; then clamp the scroll to the new content height.
+    /// Cheap no-op when the cache is still valid (called every frame).
+    fn refresh_read_layout(&mut self) {
+        let Some(i) = self.active else { return };
+        if self.tabs[i].native.is_none() {
+            return;
+        }
+        let (w, _) = self.inner();
+        let cw = w as i32;
+        let px = self.painter.px();
+        let view = self.content_view_h();
+        // Split borrow: `painter` and this tab's `native` are disjoint fields.
+        let painter = &self.painter;
+        let nr = self.tabs[i].native.as_mut().unwrap();
+        if !nr.dirty && nr.layout_w == cw && (nr.layout_px - px).abs() < f32::EPSILON {
+            return;
+        }
+        // Leave an 8px margin on each side (matches the draw offset).
+        nr.layout = read_view::layout(&nr.doc, cw - 16, painter);
+        nr.layout_w = cw;
+        nr.layout_px = px;
+        nr.dirty = false;
+        let max = (nr.layout.height - view).max(0);
+        nr.scroll = nr.scroll.clamp(0, max);
+    }
+
     // --- zoom -----------------------------------------------------------------
 
     fn zoom_by(&mut self, steps: i32) {
@@ -742,12 +840,11 @@ impl App {
         self.painter.set_px(BASE_PX * z as f32);
         let term_px = (BASE_TERM_PX * z).round();
         for tab in &self.tabs {
+            let Some(wv) = &tab.webview else { continue };
             if tab.term.is_some() {
-                let _ = tab
-                    .webview
-                    .evaluate_script(&format!("window.__setZoom&&window.__setZoom({term_px})"));
+                let _ = wv.evaluate_script(&format!("window.__setZoom&&window.__setZoom({term_px})"));
             } else {
-                let _ = tab.webview.zoom(z);
+                let _ = wv.zoom(z);
             }
         }
         // Tab/command bars changed height → refit the visible page.
@@ -784,7 +881,9 @@ impl App {
     fn apply_active_zoom(&self) {
         if let Some(tab) = self.active.and_then(|i| self.tabs.get(i)) {
             if tab.term.is_none() {
-                let _ = tab.webview.zoom(self.zoom);
+                if let Some(wv) = &tab.webview {
+                    let _ = wv.zoom(self.zoom);
+                }
             }
         }
     }
@@ -792,7 +891,12 @@ impl App {
     // --- tab access -----------------------------------------------------------
 
     fn active_webview(&self) -> Option<&WebView> {
-        self.active.and_then(|i| self.tabs.get(i)).map(|t| &t.webview)
+        self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.webview.as_ref())
+    }
+
+    /// Mutable access to the active engine-free read tab's state, if any.
+    fn active_native_mut(&mut self) -> Option<&mut NativeRead> {
+        self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.native.as_mut())
     }
 
     fn active_url(&self) -> Option<&str> {
@@ -806,7 +910,11 @@ impl App {
         if tab.term.is_some() {
             return None;
         }
-        if let Ok(u) = tab.webview.url() {
+        // Engine-free read tab: the stored url is the canonical document URL.
+        let Some(wv) = &tab.webview else {
+            return Some(tab.url.clone());
+        };
+        if let Ok(u) = wv.url() {
             if u.starts_with("http") {
                 return Some(u);
             }
@@ -822,7 +930,8 @@ impl App {
             if tab.term.is_some() {
                 return;
             }
-            if let Ok(u) = tab.webview.url() {
+            let Some(wv) = &tab.webview else { return };
+            if let Ok(u) = wv.url() {
                 if u.starts_with("http") {
                     tab.url = u;
                 }
@@ -890,11 +999,7 @@ impl App {
                 }
                 "f" => self.enter_hint(),
                 "x" => self.close_active(),
-                "r" => {
-                    if let Some(wv) = self.active_webview() {
-                        let _ = wv.reload();
-                    }
-                }
+                "r" => self.reload_active(),
                 "H" => self.history(false),
                 "L" => self.history(true),
                 "n" => self.switch_tab(1),
@@ -1213,27 +1318,69 @@ impl App {
             self.status = "no page — open one first".into();
             return;
         };
+        // Engine-free read tab: hints are computed and drawn natively.
+        if self.tabs[idx].native.is_some() {
+            self.hint_input.clear();
+            self.mode = ModeKind::Hint;
+            self.build_native_hints();
+            if self.native_hints.is_empty() {
+                self.mode = ModeKind::Normal;
+                self.status = "no links on screen".into();
+            }
+            self.window.request_redraw();
+            return;
+        }
         if self.tabs[idx].nojs {
             self.status = "hint mode needs JavaScript (this tab is no-js)".into();
             return;
         }
         self.hint_input.clear();
         self.mode = ModeKind::Hint;
-        let _ = self.tabs[idx].webview.evaluate_script(HINT_JS);
+        if let Some(wv) = &self.tabs[idx].webview {
+            let _ = wv.evaluate_script(HINT_JS);
+        }
+    }
+
+    /// Place hint labels over the links currently visible in the native read tab.
+    fn build_native_hints(&mut self) {
+        self.native_hints.clear();
+        let Some(i) = self.active else { return };
+        let (top, bottom) = self.content_y_bounds();
+        let painter = &self.painter;
+        let Some(nr) = self.tabs[i].native.as_ref() else { return };
+        let links = read_view::visible_links(&nr.layout, nr.scroll, top, bottom, painter);
+        let labels = hint_labels(links.len());
+        let mut hints = Vec::with_capacity(links.len());
+        for ((id, x, y), label) in links.into_iter().zip(labels) {
+            if let Some(url) = nr.doc.link_url(id) {
+                // +8 to match the content's left draw margin.
+                hints.push(NativeHint { label, url: url.to_string(), x: x + 8, y });
+            }
+        }
+        self.native_hints = hints;
     }
 
     fn key_hint(&mut self, key: &KeyEvent) {
+        let native = !self.native_hints.is_empty();
         match &key.logical_key {
             Key::Escape => self.exit_hint(),
             Key::Backspace => {
                 self.hint_input.pop();
-                self.hint_send();
+                if native {
+                    self.window.request_redraw();
+                } else {
+                    self.hint_send();
+                }
             }
             Key::Character(s) => {
                 let c = *s;
                 if !c.is_empty() && c.chars().all(|ch| ch.is_ascii_alphabetic()) {
                     self.hint_input.push_str(&c.to_lowercase());
-                    self.hint_send();
+                    if native {
+                        self.hint_match_native();
+                    } else {
+                        self.hint_send();
+                    }
                 }
             }
             _ => {}
@@ -1250,10 +1397,26 @@ impl App {
         }
     }
 
+    /// Native hint input: on an exact label match, follow the link (re-extract it
+    /// into the current read tab); reset if the typed prefix matches nothing.
+    fn hint_match_native(&mut self) {
+        if let Some(h) = self.native_hints.iter().find(|h| h.label == self.hint_input) {
+            let url = h.url.clone();
+            self.exit_hint();
+            self.start_read(&url, true);
+            return;
+        }
+        if !self.native_hints.iter().any(|h| h.label.starts_with(&self.hint_input)) {
+            self.hint_input.clear();
+        }
+        self.window.request_redraw();
+    }
+
     fn exit_hint(&mut self) {
         if let Some(wv) = self.active_webview() {
             let _ = wv.evaluate_script("window.__hintClear&&window.__hintClear()");
         }
+        self.native_hints.clear();
         self.hint_input.clear();
         self.mode = ModeKind::Normal;
         self.window.request_redraw();
@@ -1348,7 +1511,7 @@ impl App {
                 if rest.is_empty() {
                     self.status = "usage: :read <url>".into();
                 } else {
-                    self.start_read(rest);
+                    self.start_read(rest, false);
                 }
             }
             // Like :open (URL or → search engine) but lighter: JS on, images kept,
@@ -1390,11 +1553,7 @@ impl App {
             }
             "close" | "tabclose" | "bd" => self.close_active(),
             "quit" | "q" => self.quit = true,
-            "reload" | "r" => {
-                if let Some(wv) = self.active_webview() {
-                    let _ = wv.reload();
-                }
-            }
+            "reload" | "r" => self.reload_active(),
             "next" | "tabnext" | "tn" => self.switch_tab(1),
             "prev" | "tabprev" | "tp" => self.switch_tab(-1),
             "back" => self.history(false),
@@ -1432,11 +1591,12 @@ impl App {
         match self.build_content_webview(Source::Url(url.clone()), disable_js, "") {
             Ok(webview) => {
                 self.tabs.push(Tab {
-                    webview,
+                    webview: Some(webview),
                     url: url.clone(),
                     nojs: disable_js,
                     read: false,
                     research: false,
+                    native: None,
                     term: None,
                 });
                 self.active = Some(self.tabs.len() - 1);
@@ -1458,11 +1618,12 @@ impl App {
         match self.build_content_webview(Source::Url(url.clone()), false, RESEARCH_JS) {
             Ok(webview) => {
                 self.tabs.push(Tab {
-                    webview,
+                    webview: Some(webview),
                     url: url.clone(),
                     nojs: false,
                     read: false,
                     research: true,
+                    native: None,
                     term: None,
                 });
                 self.active = Some(self.tabs.len() - 1);
@@ -1546,15 +1707,17 @@ impl App {
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
-    /// Kick off a background readability extraction; the result arrives as a
-    /// ReadReady/ReadFailed user event so the UI stays responsive.
-    fn start_read(&mut self, target: &str) {
+    /// Kick off a background readability extraction into the Document model; the
+    /// result arrives as a ReadReady/ReadFailed user event so the UI stays
+    /// responsive. `replace` swaps the active read tab's doc in place (link-follow
+    /// / reload) rather than opening a new tab.
+    fn start_read(&mut self, target: &str, replace: bool) {
         self.status = format!("reading {target} …");
         let proxy = self.proxy.clone();
         let target = target.to_string();
         std::thread::spawn(move || {
-            let event = match browser_backend_text::fetch_readable_blocking(&target) {
-                Ok(r) => UserEvent::ReadReady { url: r.url, title: r.title, html: r.html },
+            let event = match browser_backend_text::fetch_document_blocking(&target) {
+                Ok(doc) => UserEvent::ReadReady { doc: Box::new(doc), replace },
                 Err(e) => UserEvent::ReadFailed(format!("{e:#}")),
             };
             let _ = proxy.send_event(event);
@@ -1663,11 +1826,12 @@ impl App {
         });
 
         self.tabs.push(Tab {
-            webview,
+            webview: Some(webview),
             url: format!("term: {}", shell[0]),
             nojs: false,
             read: false,
             research: false,
+            native: None,
             term: Some(TermSession {
                 id,
                 child,
@@ -1749,7 +1913,9 @@ impl App {
         };
         let Some(session) = tab.term.as_mut() else { return };
         if session.ready {
-            let _ = tab.webview.evaluate_script(&format!("window.__feed(\"{data}\")"));
+            if let Some(wv) = &tab.webview {
+                let _ = wv.evaluate_script(&format!("window.__feed(\"{data}\")"));
+            }
         } else {
             session.pending.push(data);
         }
@@ -1765,16 +1931,21 @@ impl App {
         let Some(session) = tab.term.as_mut() else { return };
         session.ready = true;
         let pending = std::mem::take(&mut session.pending);
-        for data in pending {
-            let _ = tab.webview.evaluate_script(&format!("window.__feed(\"{data}\")"));
+        if let Some(wv) = &tab.webview {
+            for data in pending {
+                let _ = wv.evaluate_script(&format!("window.__feed(\"{data}\")"));
+            }
         }
         // Adopt the current global zoom (the page starts at 100%).
         if (self.zoom - 1.0).abs() > f64::EPSILON {
             let term_px = (BASE_TERM_PX * self.zoom).round();
-            if let Some(tab) =
-                self.tabs.iter().find(|t| t.term.as_ref().map(|s| s.id) == Some(id))
+            if let Some(wv) = self
+                .tabs
+                .iter()
+                .find(|t| t.term.as_ref().map(|s| s.id) == Some(id))
+                .and_then(|t| t.webview.as_ref())
             {
-                let _ = tab.webview.evaluate_script(&format!("window.__setZoom({term_px})"));
+                let _ = wv.evaluate_script(&format!("window.__setZoom({term_px})"));
             }
         }
     }
@@ -1792,30 +1963,45 @@ impl App {
         self.window.request_redraw();
     }
 
-    /// Open a reader tab from already-extracted article HTML.
-    fn open_read_tab(&mut self, url: &str, title: &str, article_html: &str) {
-        let doc = read_document(url, title, article_html);
-        // The article carries a strict CSP (no scripts/images/media/fonts) and the
-        // reader CSS hides any media, so a read tab is truly text-only. Engine JS
-        // stays on solely for our host-injected bridge (scroll/focus), which runs
-        // regardless of page CSP — there are no *page* scripts left to execute.
-        match self.build_content_webview(Source::Html(doc), false, "") {
-            Ok(webview) => {
-                self.tabs.push(Tab {
-                    webview,
-                    url: url.to_string(),
-                    nojs: false,
-                    read: true,
-                    research: false,
-                    term: None,
-                });
-                self.active = Some(self.tabs.len() - 1);
-                self.refresh_visibility();
-                self.window.set_focus();
+    /// Render an extracted Document in an engine-free read tab (no WebView2). With
+    /// `replace`, swap the active read tab's document in place (link-follow/reload);
+    /// otherwise open a new read tab.
+    fn show_read_document(&mut self, doc: browser_core::Document, replace: bool) {
+        let url = doc.url.clone();
+        if replace {
+            if let Some(nr) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| {
+                t.url = url.clone();
+                t.native.as_mut()
+            }) {
+                nr.doc = doc;
+                nr.scroll = 0;
+                nr.dirty = true;
                 self.status.clear();
+                self.window.request_redraw();
+                return;
             }
-            Err(e) => self.status = format!("read failed: {e:#}"),
         }
+        self.tabs.push(Tab {
+            webview: None,
+            url,
+            nojs: false,
+            read: true,
+            research: false,
+            native: Some(NativeRead {
+                doc,
+                scroll: 0,
+                layout: read_view::Layout { lines: Vec::new(), line_h: 1, height: 0 },
+                layout_w: -1,
+                layout_px: 0.0,
+                dirty: true,
+            }),
+            term: None,
+        });
+        self.active = Some(self.tabs.len() - 1);
+        self.refresh_visibility();
+        self.window.set_focus();
+        self.status.clear();
+        self.window.request_redraw();
     }
 
     /// Open an internal HTML page (e.g. `:commands`, `:version`) in a new tab.
@@ -1823,11 +2009,12 @@ impl App {
         match self.build_content_webview(Source::Html(html), false, "") {
             Ok(webview) => {
                 self.tabs.push(Tab {
-                    webview,
+                    webview: Some(webview),
                     url: format!("browser://{label}"),
                     nojs: false,
                     read: false,
                     research: false,
+                    native: None,
                     term: None,
                 });
                 self.active = Some(self.tabs.len() - 1);
@@ -1921,13 +2108,14 @@ impl App {
     fn refresh_visibility(&mut self) {
         let rect = self.content_rect();
         for (i, tab) in self.tabs.iter().enumerate() {
+            let Some(wv) = &tab.webview else { continue };
             let visible = Some(i) == self.active;
-            let _ = tab.webview.set_visible(visible);
+            let _ = wv.set_visible(visible);
             if visible {
-                let _ = tab.webview.set_bounds(rect);
+                let _ = wv.set_bounds(rect);
                 if tab.term.is_some() {
                     // Re-fit xterm to the new size; it reports back to resize the PTY.
-                    let _ = tab.webview.evaluate_script("window.__fit&&window.__fit()");
+                    let _ = wv.evaluate_script("window.__fit&&window.__fit()");
                 }
             }
         }
@@ -1948,6 +2136,14 @@ impl App {
     }
 
     fn scroll(&mut self, dy: i32) {
+        // Engine-free read tab: move the native scroll offset, clamped to content.
+        let view = self.content_view_h();
+        if let Some(nr) = self.active_native_mut() {
+            let max = (nr.layout.height - view).max(0);
+            nr.scroll = (nr.scroll + dy).clamp(0, max);
+            self.window.request_redraw();
+            return;
+        }
         if let Some(wv) = self.active_webview() {
             let _ = wv.evaluate_script(&format!("window.scrollBy(0,{dy});"));
         }
@@ -1960,14 +2156,38 @@ impl App {
         }
     }
 
+    /// Reload the active tab: re-extract for an engine-free read tab, else reload
+    /// the webview.
+    fn reload_active(&mut self) {
+        if let Some(url) = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.native.as_ref())
+            .map(|nr| nr.doc.url.clone())
+        {
+            self.start_read(&url, true);
+            return;
+        }
+        if let Some(wv) = self.active_webview() {
+            let _ = wv.reload();
+        }
+    }
+
     // --- rendering ------------------------------------------------------------
 
     fn draw(&mut self) -> Result<()> {
+        // Keep the engine-free read layout current (cheap no-op unless something
+        // that affects layout changed) before we read it for painting.
+        self.refresh_read_layout();
         let (w, h) = self.inner();
         // Gather all dynamic text + zoom-scaled metrics up front, while we can
         // still borrow &self.
         let tab_labels = self.tab_labels();
         let welcome = self.active.is_none();
+        let native_active = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .is_some_and(|t| t.native.is_some());
         let bar_h = self.bar_h() as usize;
         let tab_h = self.tab_bar_h() as usize;
         // Command bar: draw the `:`-line with horizontal scroll-to-caret so editing
@@ -2050,6 +2270,62 @@ impl App {
             // long welcome list can't bleed into the command bar.
             draw::fill_band(&mut buf, wz, hz, 0, bar_top, draw::BG);
             draw_welcome(p, &mut buf, wz, hz, self.zoom as f32);
+            draw_bar(&mut buf);
+            buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
+        } else if native_active {
+            // Engine-free read tab: paint the document ourselves. Content is drawn
+            // first; the opaque tab bar and command bar are painted on top, so lines
+            // scrolled past either edge are simply covered (no per-line y-clipping).
+            draw::fill_band(&mut buf, wz, hz, 0, bar_top, draw::BG);
+            let content_top = tab_h as i32;
+            if let Some(nr) =
+                self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.native.as_ref())
+            {
+                let line_h = nr.layout.line_h;
+                for (li, line) in nr.layout.lines.iter().enumerate() {
+                    let y_top = content_top - nr.scroll + li as i32 * line_h;
+                    if y_top + line_h < content_top || y_top > bar_top as i32 {
+                        continue;
+                    }
+                    if line.rule {
+                        let ry = y_top + line_h / 2;
+                        if ry >= 0 {
+                            draw::fill_rect(
+                                &mut buf, wz, hz, MARGIN as usize, ry as usize,
+                                wz.saturating_sub(MARGIN as usize), ry as usize + 1, draw::DIM,
+                            );
+                        }
+                        continue;
+                    }
+                    let baseline = y_top + line_h * 3 / 4;
+                    if baseline < 0 {
+                        continue;
+                    }
+                    let mut x = MARGIN + line.indent;
+                    for run in &line.runs {
+                        x = p.text_clipped(
+                            &mut buf, wz, hz, x, baseline as usize, &run.text, run.color, MARGIN,
+                        );
+                    }
+                }
+            }
+            // Hint labels over the visible links (filtered by what's been typed).
+            if self.mode == ModeKind::Hint {
+                let lh = p.line_height();
+                for hint in &self.native_hints {
+                    if !hint.label.starts_with(&self.hint_input) {
+                        continue;
+                    }
+                    let lw = p.measure(&hint.label);
+                    let bx = hint.x.max(0) as usize;
+                    let by = (hint.y - (lh as i32) * 3 / 4).max(0) as usize;
+                    draw::fill_rect(&mut buf, wz, hz, bx, by, bx + lw + 4, by + lh, (0xff, 0xd4, 0x00));
+                    p.text(&mut buf, wz, hz, bx + 2, hint.y.max(0) as usize, &hint.label, (0x10, 0x10, 0x10));
+                }
+            }
+            // Tab bar + command bar painted on top of the content.
+            draw::fill_band(&mut buf, wz, hz, 0, tab_h, draw::BAR_BG);
+            draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels);
             draw_bar(&mut buf);
             buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
         } else {
@@ -2292,39 +2568,6 @@ fn terminal_page() -> String {
     s
 }
 
-/// A clean dark reading stylesheet for read mode.
-const READ_CSS: &str = "html{background:#1e1e1e;color:#d0d0d0}body{margin:0}\
-main{max-width:760px;margin:48px auto;padding:0 22px;\
-font:17px/1.65 -apple-system,Segoe UI,Roboto,sans-serif}\
-h1,h2,h3,h4{line-height:1.25;color:#fff}h1{font-size:1.9em}\
-a{color:#6cb6ff}img,picture,svg,video,audio,iframe,figure,object,embed{display:none}\
-pre,code{font-family:Consolas,monospace;font-size:.92em}\
-pre{background:#2a2a2a;padding:12px;overflow:auto;border-radius:6px}\
-code{background:#2a2a2a;padding:1px 4px;border-radius:3px}\
-pre code{background:none;padding:0}\
-blockquote{border-left:3px solid #444;margin:0 0 1em;padding-left:16px;color:#a8a8a8}\
-hr{border:none;border-top:1px solid #333}";
-
-/// Wrap extracted article HTML in a full document with a `<base>` (so relative
-/// links/images resolve against the source) and the reading stylesheet.
-fn read_document(url: &str, title: &str, article_html: &str) -> String {
-    // Strict CSP makes read mode truly text-only: no scripts, images, media or web
-    // fonts are fetched (real memory/bandwidth savings), only inline styles for our
-    // reader CSS. Our host-injected bridge (scroll/focus) runs via WebView2's
-    // document-create hook, which is exempt from page CSP — so navigation keys keep
-    // working even though page scripts can't.
-    const CSP: &str = "default-src 'none'; img-src 'none'; media-src 'none'; \
-                       font-src 'none'; object-src 'none'; connect-src 'none'; \
-                       style-src 'unsafe-inline'";
-    format!(
-        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
-         <meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">\
-         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-         <base href=\"{url}\"><title>{title}</title><style>{READ_CSS}</style></head>\
-         <body><main>{article_html}</main></body></html>"
-    )
-}
-
 /// Stylesheet for the internal `:commands` / `:version` pages.
 const HELP_CSS: &str = "html{background:#1e1e1e;color:#d0d0d0}body{margin:0}\
 main{max-width:820px;margin:40px auto;padding:0 22px;\
@@ -2399,7 +2642,7 @@ fn commands_document() -> String {
         (":research <url|query> · :rs", "lighter browse: JS on, images kept, media/embeds stripped"),
         (":edit · :e", "edit the current URL (re-opens in the tab's own mode)"),
         (":y · :yank", "copy the current URL to the clipboard"),
-        (":read <url>", "reader mode: text only, no JS/images/ads"),
+        (":read <url>", "engine-free reader: native text render, no WebView2 (j/k scroll, f hint)"),
         (":search [template]", "show/set the search engine (%s = query)"),
         (":te", "open a terminal tab"),
         (":te <command>", "run a local command, result in the command bar"),

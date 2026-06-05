@@ -109,6 +109,23 @@ pub fn extract_article(url: &str, html: &str) -> Result<(String, String)> {
     Ok((title, article.content.to_string()))
 }
 
+/// Blocking fetch + readability extraction into the [`Document`] model, for the
+/// GUI shell's engine-free read mode (it renders the Document natively, with no
+/// WebView2). Spins up a short-lived current-thread runtime.
+pub fn fetch_document_blocking(target: &str) -> Result<Document> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building runtime")?;
+    rt.block_on(async move {
+        let url = intent::normalize_url(target)
+            .ok_or_else(|| anyhow!("not a valid URL: {target}"))?;
+        let backend = TextBackend::new()?;
+        let (final_url, html) = backend.get_html(&url).await?;
+        extract(&final_url, &html)
+    })
+}
+
 /// Blocking fetch + readability extraction, for callers without an async runtime
 /// (e.g. the GUI shell). Spins up a short-lived current-thread runtime.
 pub fn fetch_readable_blocking(target: &str) -> Result<Readable> {

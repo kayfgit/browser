@@ -117,15 +117,16 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   confined to a kill-on-close **job object** so the OS reaps it (and its conhost + shell) when
   the tab closes, the browser quits, or even crashes. Terminal tabs are tinted orange; type
   freely, `Shift+Esc` returns to the shell.
-- **Read mode** — `:read <url>` extracts the article with the `dom_smoothie` readability
-  pipeline and renders **just the text** (clean dark stylesheet, `<base>` for relative links) in a
-  WebView2 tab. It's deliberately the leanest tier: readability strips ads/trackers/page scripts,
-  and a strict **Content-Security-Policy** on the generated document blocks all images, media, web
-  fonts and scripts from loading at all — so a read tab fetches almost nothing. The only JS that
-  runs is the shell's own host-injected scroll/focus bridge (exempt from the page CSP, like hint
-  mode), so navigation keys still work with zero page scripts. Best for docs/wikis/news. Read tabs
-  are tinted **green** and show `[read]` in the status line. (Servo remains a possible future
-  drop-in behind the same `:read` command once it matures.)
+- **Read mode** — `:read <url>` extracts the article with the `dom_smoothie` readability pipeline
+  and renders it **engine-free**: the cleaned `Document` is painted by the shell's own softbuffer
+  text renderer, so a read tab spawns **zero WebView2 processes** (verified: 0 child engine procs vs.
+  a normal tab's set). This is the leanest tier by far — a few MB instead of a Chromium process group
+  — ideal on low-RAM machines. `j`/`k`/`d`/`u` scroll the laid-out text and **`f` hint mode** labels
+  the links natively (home-row labels, same as web hint mode); typing a label follows it by
+  re-extracting that page in place, `r` reloads. Headings, code, lists, quotes and links are styled;
+  images/media are simply absent. Best for docs/wikis/news. Read tabs are tinted **green** and show
+  `[read]` in the status line. (No back/forward yet on read tabs; Servo remains a possible future
+  richer drop-in behind the same `:read`.)
 - **Research mode** — `:research <url|query>` / `:rs` is the middle tier between `:read` and a full
   `:open`: a normal page with **JavaScript on and images kept** (so SPAs and visual lookups work),
   but an injected pruner removes the heavy/noisy stuff — `<video>`, `<audio>`, `<iframe>`/`<embed>`/

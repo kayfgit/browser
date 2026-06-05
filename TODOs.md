@@ -12,3 +12,4 @@
 [x] - allow free normal movement, like ctrl-w, ctrl-backspace, alt-backspace, ctrl-x etc.
 [x] - allow copy and paste on command bar
 [x] - make :edit use the same mode as the tab was opened (currently if i open a tab using :research and type :edit it goes to :open <url> instead of :research <url>)
+[] - search just like qutebrowser (press / and type, like /example highlights all the words "example" on the page, n goes forward/N goes backward, should work on all modes including read)

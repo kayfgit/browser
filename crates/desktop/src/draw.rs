@@ -39,6 +39,11 @@ impl Painter {
         (self.px * 1.45).ceil() as usize
     }
 
+    /// Current font size in px (used to key the read-mode layout cache to zoom).
+    pub fn px(&self) -> f32 {
+        self.px
+    }
+
     /// Rescale the font (for global zoom). Glyphs are rasterized per-draw, so a
     /// new size takes effect on the next paint with no cache to invalidate.
     pub fn set_px(&mut self, px: f32) {
