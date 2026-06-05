@@ -65,6 +65,25 @@ impl Painter {
         s: &str,
         color: Rgb,
     ) -> usize {
+        self.text_clipped(buf, w, h, x as i32, baseline, s, color, 0).max(0) as usize
+    }
+
+    /// Like [`Painter::text`] but the start `x` may be negative (for horizontal
+    /// scrolling) and pixels left of `clip_x0` are dropped, so text can scroll
+    /// under a left margin with a clean vertical edge. Returns the pen x after the
+    /// string (may exceed `w`; right/top/bottom are clipped to the buffer).
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_clipped(
+        &self,
+        buf: &mut [u32],
+        w: usize,
+        h: usize,
+        x: i32,
+        baseline: usize,
+        s: &str,
+        color: Rgb,
+        clip_x0: i32,
+    ) -> i32 {
         let mut pen = x as f32;
         for ch in s.chars() {
             let (m, bitmap) = self.font.rasterize(ch, self.px);
@@ -76,7 +95,7 @@ impl Painter {
                     }
                     let gx = pen as i32 + m.xmin + col as i32;
                     let gy = baseline as i32 - m.ymin - m.height as i32 + row as i32;
-                    if gx < 0 || gy < 0 || gx >= w as i32 || gy >= h as i32 {
+                    if gx < clip_x0 || gy < 0 || gx >= w as i32 || gy >= h as i32 {
                         continue;
                     }
                     let idx = gy as usize * w + gx as usize;
@@ -85,7 +104,7 @@ impl Painter {
             }
             pen += m.advance_width;
         }
-        pen as usize
+        pen as i32
     }
 }
 

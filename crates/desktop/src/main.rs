@@ -394,7 +394,29 @@ struct App {
     quit: bool,
 }
 
+/// Tag this process with an explicit AppUserModelID so Windows (taskbar + Task
+/// Manager) treats it and every process it spawns as one application. The id is
+/// inherited by child processes, which is what collapses the WebView2 engine and
+/// pty-host trees under the shell. Best-effort: any failure is ignored.
+#[cfg(windows)]
+fn set_app_user_model_id() {
+    use windows::core::w;
+    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+    unsafe {
+        let _ = SetCurrentProcessExplicitAppUserModelID(w!("kayf.browser.Shell"));
+    }
+}
+
 fn main() -> Result<()> {
+    // Give this process a single explicit AppUserModelID *before* anything is
+    // spawned. Child processes inherit it at creation time, so every descendant —
+    // the on-demand WebView2 engine and its renderer/GPU/utility processes, the
+    // browser-pty-host companion, its conhost + shell — shares one identity and
+    // Task Manager groups the whole tree under a single "browser" entry instead of
+    // scattering the WebView2 manager and friends as separate top-level apps.
+    #[cfg(windows)]
+    set_app_user_model_id();
+
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
@@ -827,7 +849,6 @@ impl App {
                 }
                 _ => {}
             },
-            Key::Space => self.scroll(page * 9 / 10),
             Key::ArrowDown => self.scroll(80),
             Key::ArrowUp => self.scroll(-80),
             _ => {}
@@ -1642,19 +1663,33 @@ impl App {
         let (w, h) = self.inner();
         // Gather all dynamic text + zoom-scaled metrics up front, while we can
         // still borrow &self.
-        let segments = self.bar_segments();
         let tab_labels = self.tab_labels();
         let welcome = self.active.is_none();
         let bar_h = self.bar_h() as usize;
         let tab_h = self.tab_bar_h() as usize;
-        // Caret for the command bar (x pixel, width) — only while typing and lit.
-        let caret = if self.mode == ModeKind::Command && self.cursor_on {
+        // Command bar: draw the `:`-line with horizontal scroll-to-caret so editing
+        // a long URL (e.g. after `:edit`, caret parked at the end) keeps the caret —
+        // and the tail of the URL — visible. `cmd` is Some((line, scroll_px)) in
+        // Command mode and replaces the normal segment list; `caret` is the lit
+        // block cursor (x, width) already shifted by the same scroll.
+        const MARGIN: i32 = 8;
+        let cw = ((self.zoom * 2.0).round() as i32).max(2);
+        let (segments, cmd, caret) = if self.mode == ModeKind::Command {
+            let line = format!(":{}", self.command);
             let prefix = format!(":{}", &self.command[..self.command_cursor]);
-            let x = 8 + self.painter.measure(&prefix);
-            let cw = ((self.zoom * 2.0).round() as usize).max(2);
-            Some((x, cw))
+            let caret_un = MARGIN + self.painter.measure(&prefix) as i32;
+            // Keep the caret a hair inside the right edge; scroll only when it would
+            // otherwise fall off the end of the bar.
+            let right_bound = (w as i32 - cw - 2).max(MARGIN);
+            let scroll = (caret_un - right_bound).max(0);
+            let caret = if self.cursor_on {
+                Some(((caret_un - scroll) as usize, cw as usize))
+            } else {
+                None
+            };
+            (Vec::new(), Some((line, scroll)), caret)
         } else {
-            None
+            (self.bar_segments(), None, None)
         };
 
         self.surface
@@ -1674,9 +1709,15 @@ impl App {
         // Draw the opaque command bar; called LAST so nothing bleeds through it.
         let draw_bar = |buf: &mut [u32]| {
             draw::fill_band(buf, wz, hz, bar_top, hz, draw::BAR_BG);
-            let mut x = 8;
-            for (text, color) in &segments {
-                x = p.text(buf, wz, hz, x, baseline, text, *color) + 6;
+            if let Some((text, scroll)) = &cmd {
+                // Command line, scrolled left by `scroll` px; clip at the left
+                // margin so scrolled-off text doesn't bleed into the edge.
+                p.text_clipped(buf, wz, hz, MARGIN - *scroll, baseline, text, draw::BAR_FG, MARGIN);
+            } else {
+                let mut x = 8;
+                for (text, color) in &segments {
+                    x = p.text(buf, wz, hz, x, baseline, text, *color) + 6;
+                }
             }
             if let Some((cx, cw)) = caret {
                 let lh = p.line_height();

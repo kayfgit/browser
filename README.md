@@ -84,7 +84,7 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
 `pwsh -File uninstall.ps1`.
 
 **Modes (qutebrowser-style):**
-- **Normal** — shell has focus; `:`/`o` open the command bar; `j`/`k`/`Space`/`d`/`u`
+- **Normal** — shell has focus; `:`/`o` open the command bar; `j`/`k`/`d`/`u`
   scroll; `f` hint mode; `n`/`p` switch tabs; `1`–`9` jump to a tab; `<`/`>` reorder the
   current tab; `x` close tab; `H`/`L` history; **`Ctrl +`/`Ctrl -`/`Ctrl 0`** zoom the
   whole UI (native chrome + web pages + terminal) in / out / reset. A native tab bar shows
