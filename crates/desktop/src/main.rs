@@ -413,6 +413,9 @@ struct App {
     command: String,
     /// Caret position within `command`, as a byte offset on a char boundary.
     command_cursor: usize,
+    /// Selection anchor (byte offset). When `Some` and != cursor, the text between
+    /// it and the caret is selected (Shift-movement extends it; typing replaces it).
+    command_anchor: Option<usize>,
     /// Accumulated label characters while in Hint mode.
     hint_input: String,
     status: String,
@@ -448,6 +451,18 @@ fn set_app_user_model_id() {
     unsafe {
         let _ = SetCurrentProcessExplicitAppUserModelID(w!("kayf.browser.Shell"));
     }
+}
+
+/// Put `text` on the system clipboard (best-effort; failures are ignored).
+fn clipboard_set(text: &str) {
+    if let Ok(mut cb) = arboard::Clipboard::new() {
+        let _ = cb.set_text(text.to_string());
+    }
+}
+
+/// Read UTF-8 text from the system clipboard, or `None` if unavailable/non-text.
+fn clipboard_get() -> Option<String> {
+    arboard::Clipboard::new().ok()?.get_text().ok()
 }
 
 fn main() -> Result<()> {
@@ -487,6 +502,7 @@ fn main() -> Result<()> {
         mode: ModeKind::Normal,
         command: String::new(),
         command_cursor: 0,
+        command_anchor: None,
         hint_input: String::new(),
         status: String::new(),
         tabs: Vec::new(),
@@ -900,25 +916,64 @@ impl App {
     }
 
     fn key_command(&mut self, key: &KeyEvent) {
-        // Readline/vim-style line editing chords take precedence over text input.
+        let shift = self.modifiers.shift_key();
+        // Ctrl chords: clipboard, word movement/deletion, line editing. They take
+        // precedence over text input. (Alt+Backspace is handled just below.)
         if self.modifiers.control_key() {
             match key.physical_key {
-                // Ctrl+W: delete the word before the caret (and trailing spaces).
-                KeyCode::KeyW => self.cmd_delete_word(),
+                // Clipboard. Ctrl+C copies the selection (or, with nothing selected,
+                // cancels — the old behavior); Ctrl+X cuts; Ctrl+V pastes.
+                KeyCode::KeyC => {
+                    if let Some((a, b)) = self.sel_range() {
+                        clipboard_set(&self.command[a..b]);
+                    } else {
+                        self.cancel_command();
+                        return;
+                    }
+                }
+                KeyCode::KeyX => {
+                    if let Some((a, b)) = self.sel_range() {
+                        clipboard_set(&self.command[a..b]);
+                        self.delete_selection();
+                    }
+                }
+                KeyCode::KeyV => {
+                    if let Some(text) = clipboard_get() {
+                        self.cmd_insert(&text);
+                    }
+                }
+                KeyCode::KeyA => {
+                    self.command_anchor = Some(0);
+                    self.command_cursor = self.command.len();
+                }
+                // Word-wise caret movement (Ctrl+Shift extends the selection).
+                KeyCode::ArrowLeft => {
+                    let p = self.prev_word(self.command_cursor);
+                    self.move_caret(p, shift);
+                }
+                KeyCode::ArrowRight => {
+                    let p = self.next_word(self.command_cursor);
+                    self.move_caret(p, shift);
+                }
+                // Ctrl+W / Ctrl+Backspace: delete the word before the caret.
+                KeyCode::KeyW | KeyCode::Backspace => self.cmd_delete_word(),
+                // Ctrl+Delete: delete the word after the caret.
+                KeyCode::Delete => self.cmd_delete_word_forward(),
                 // Ctrl+U: delete from the caret back to the start of the line.
                 KeyCode::KeyU => {
                     self.command.replace_range(0..self.command_cursor, "");
                     self.command_cursor = 0;
+                    self.command_anchor = None;
                 }
                 KeyCode::KeyH => self.cmd_backspace(),
-                // Ctrl+C: cancel, like Escape.
-                KeyCode::KeyC => {
-                    self.command.clear();
-                    self.command_cursor = 0;
-                    self.mode = ModeKind::Normal;
-                }
                 _ => {}
             }
+            self.cursor_on = true;
+            return;
+        }
+        // Alt+Backspace: delete the word before the caret (a common alias).
+        if self.modifiers.alt_key() && key.physical_key == KeyCode::Backspace {
+            self.cmd_delete_word();
             self.cursor_on = true;
             return;
         }
@@ -926,63 +981,185 @@ impl App {
             Key::Enter => {
                 let line = std::mem::take(&mut self.command);
                 self.command_cursor = 0;
+                self.command_anchor = None;
                 self.mode = ModeKind::Normal;
                 self.run_command(&line);
             }
-            Key::Escape => {
-                self.command.clear();
-                self.command_cursor = 0;
-                self.mode = ModeKind::Normal;
+            Key::Escape => self.cancel_command(),
+            Key::Backspace => {
+                if !self.delete_selection() {
+                    self.cmd_backspace();
+                }
             }
-            Key::Backspace => self.cmd_backspace(),
-            // Left/Right move the caret one character (arrow keys only, per design).
+            Key::Delete => {
+                if !self.delete_selection() {
+                    self.cmd_delete_forward();
+                }
+            }
+            // Plain arrow with a selection collapses to that edge; otherwise moves a
+            // character. Shift extends (or starts) the selection.
             Key::ArrowLeft => {
-                if let Some((i, _)) =
-                    self.command[..self.command_cursor].char_indices().next_back()
-                {
-                    self.command_cursor = i;
+                if !shift {
+                    if let Some((a, _)) = self.sel_range() {
+                        self.command_cursor = a;
+                        self.command_anchor = None;
+                    } else {
+                        self.move_caret(self.prev_char(self.command_cursor), false);
+                    }
+                } else {
+                    self.move_caret(self.prev_char(self.command_cursor), true);
                 }
             }
             Key::ArrowRight => {
-                if let Some(c) = self.command[self.command_cursor..].chars().next() {
-                    self.command_cursor += c.len_utf8();
+                if !shift {
+                    if let Some((_, b)) = self.sel_range() {
+                        self.command_cursor = b;
+                        self.command_anchor = None;
+                    } else {
+                        self.move_caret(self.next_char(self.command_cursor), false);
+                    }
+                } else {
+                    self.move_caret(self.next_char(self.command_cursor), true);
                 }
             }
-            Key::Space => {
-                self.command.insert(self.command_cursor, ' ');
-                self.command_cursor += 1;
-            }
-            Key::Character(s) => {
-                self.command.insert_str(self.command_cursor, s);
-                self.command_cursor += s.len();
-            }
+            Key::Home => self.move_caret(0, shift),
+            Key::End => self.move_caret(self.command.len(), shift),
+            Key::Space => self.cmd_insert(" "),
+            Key::Character(s) => self.cmd_insert(s),
             _ => {}
         }
         // Any edit should show the cursor immediately (don't wait for the blink).
         self.cursor_on = true;
     }
 
-    /// Delete the character before the caret.
-    fn cmd_backspace(&mut self) {
-        if let Some((i, _)) = self.command[..self.command_cursor].char_indices().next_back() {
-            self.command.remove(i);
-            self.command_cursor = i;
+    /// Leave the command bar, discarding the line (Esc / Ctrl+C with no selection).
+    fn cancel_command(&mut self) {
+        self.command.clear();
+        self.command_cursor = 0;
+        self.command_anchor = None;
+        self.mode = ModeKind::Normal;
+    }
+
+    /// The current selection as an ordered byte range, or `None` if empty.
+    fn sel_range(&self) -> Option<(usize, usize)> {
+        let a = self.command_anchor?;
+        let c = self.command_cursor;
+        (a != c).then(|| (a.min(c), a.max(c)))
+    }
+
+    /// Move the caret to `pos`. `extend` keeps/starts a selection (Shift held);
+    /// otherwise the selection is dropped. A zero-width selection is normalized away.
+    fn move_caret(&mut self, pos: usize, extend: bool) {
+        if extend {
+            if self.command_anchor.is_none() {
+                self.command_anchor = Some(self.command_cursor);
+            }
+        } else {
+            self.command_anchor = None;
+        }
+        self.command_cursor = pos;
+        if self.command_anchor == Some(pos) {
+            self.command_anchor = None;
         }
     }
 
-    /// Delete the word before the caret (trailing spaces, then back to a space).
+    /// Replace the selection (if any) with `text`, then place the caret after it.
+    /// Control characters (e.g. newlines from a paste) are dropped — it's one line.
+    fn cmd_insert(&mut self, text: &str) {
+        self.delete_selection();
+        let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+        self.command.insert_str(self.command_cursor, &clean);
+        self.command_cursor += clean.len();
+    }
+
+    /// Remove the selection if there is one; returns whether anything was deleted.
+    fn delete_selection(&mut self) -> bool {
+        if let Some((a, b)) = self.sel_range() {
+            self.command.replace_range(a..b, "");
+            self.command_cursor = a;
+            self.command_anchor = None;
+            true
+        } else {
+            self.command_anchor = None;
+            false
+        }
+    }
+
+    /// Byte offset of the char before `pos` (or `pos` if at the start).
+    fn prev_char(&self, pos: usize) -> usize {
+        self.command[..pos].char_indices().next_back().map(|(i, _)| i).unwrap_or(pos)
+    }
+
+    /// Byte offset just after the char at `pos` (or `pos` if at the end).
+    fn next_char(&self, pos: usize) -> usize {
+        self.command[pos..].chars().next().map(|c| pos + c.len_utf8()).unwrap_or(pos)
+    }
+
+    /// Start of the word before `pos`: skip trailing whitespace, then the word.
+    fn prev_word(&self, pos: usize) -> usize {
+        let trimmed = self.command[..pos].trim_end_matches(char::is_whitespace);
+        trimmed
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0)
+    }
+
+    /// End of the word after `pos`: skip leading whitespace, then the word.
+    fn next_word(&self, pos: usize) -> usize {
+        let rest = &self.command[pos..];
+        let after_ws = rest.trim_start_matches(char::is_whitespace);
+        let ws = rest.len() - after_ws.len();
+        let word = after_ws.find(char::is_whitespace).unwrap_or(after_ws.len());
+        pos + ws + word
+    }
+
+    /// Delete the character before the caret (or the selection, if any).
+    fn cmd_backspace(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
+        let start = self.prev_char(self.command_cursor);
+        if start != self.command_cursor {
+            self.command.replace_range(start..self.command_cursor, "");
+            self.command_cursor = start;
+        }
+    }
+
+    /// Delete the character after the caret (or the selection, if any).
+    fn cmd_delete_forward(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
+        let end = self.next_char(self.command_cursor);
+        self.command.replace_range(self.command_cursor..end, "");
+    }
+
+    /// Delete the word before the caret (or the selection, if any).
     fn cmd_delete_word(&mut self) {
-        let before = &self.command[..self.command_cursor];
-        let trimmed = before.trim_end_matches(' ');
-        let start = trimmed.rfind(' ').map(|i| i + 1).unwrap_or(0);
+        if self.delete_selection() {
+            return;
+        }
+        let start = self.prev_word(self.command_cursor);
         self.command.replace_range(start..self.command_cursor, "");
         self.command_cursor = start;
+    }
+
+    /// Delete the word after the caret (or the selection, if any).
+    fn cmd_delete_word_forward(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
+        let end = self.next_word(self.command_cursor);
+        self.command.replace_range(self.command_cursor..end, "");
     }
 
     fn enter_command(&mut self, prefill: &str) {
         self.mode = ModeKind::Command;
         self.command = prefill.to_string();
         self.command_cursor = self.command.len();
+        self.command_anchor = None;
         self.cursor_on = true;
         self.status.clear();
     }
@@ -1148,12 +1325,24 @@ impl App {
         match verb {
             "open" | "o" | "tabopen" | "t" => self.open_tab(rest, self.nojs),
             // Edit the current URL: drop into the command bar pre-filled with
-            // `open <current url>` so you can tweak and re-open it. Reads the LIVE
-            // document URL (so in-page/SPA navigation, e.g. a YouTube video, gives
-            // the real address — not the stale URL the tab was first opened with).
+            // `<verb> <current url>` so you can tweak and re-open it — `<verb>` is the
+            // mode the tab was opened in (open/research/read/nojs) so e.g. editing a
+            // `:research` tab re-opens with `:research`, not `:open`. Reads the LIVE
+            // document URL (so in-page/SPA navigation gives the real address).
             "edit" | "e" => match self.current_url() {
-                Some(url) => self.enter_command(&format!("open {url}")),
+                Some(url) => {
+                    let verb = self.active_reopen_verb();
+                    self.enter_command(&format!("{verb} {url}"));
+                }
                 None => self.status = "no page to edit".into(),
+            },
+            // Yank (copy) the current URL to the system clipboard.
+            "y" | "yank" => match self.current_url() {
+                Some(url) => {
+                    clipboard_set(&url);
+                    self.status = format!("yanked {url}");
+                }
+                None => self.status = "no url to yank".into(),
             },
             "read" => {
                 if rest.is_empty() {
@@ -1788,7 +1977,7 @@ impl App {
         // block cursor (x, width) already shifted by the same scroll.
         const MARGIN: i32 = 8;
         let cw = ((self.zoom * 2.0).round() as i32).max(2);
-        let (segments, cmd, caret) = if self.mode == ModeKind::Command {
+        let (segments, cmd, caret, sel) = if self.mode == ModeKind::Command {
             let line = format!(":{}", self.command);
             let prefix = format!(":{}", &self.command[..self.command_cursor]);
             let caret_un = MARGIN + self.painter.measure(&prefix) as i32;
@@ -1801,9 +1990,17 @@ impl App {
             } else {
                 None
             };
-            (Vec::new(), Some((line, scroll)), caret)
+            // Selection highlight rect (x range), in the same scrolled coordinates,
+            // clipped to the left margin.
+            let sel = self.sel_range().map(|(a, b)| {
+                let x_of = |k: usize| {
+                    MARGIN - scroll + self.painter.measure(&format!(":{}", &self.command[..k])) as i32
+                };
+                (x_of(a).max(MARGIN).max(0) as usize, x_of(b).max(0) as usize)
+            });
+            (Vec::new(), Some((line, scroll)), caret, sel)
         } else {
-            (self.bar_segments(), None, None)
+            (self.bar_segments(), None, None, None)
         };
 
         self.surface
@@ -1824,6 +2021,13 @@ impl App {
         let draw_bar = |buf: &mut [u32]| {
             draw::fill_band(buf, wz, hz, bar_top, hz, draw::BAR_BG);
             if let Some((text, scroll)) = &cmd {
+                // Selection highlight first, so the text paints on top of it.
+                if let Some((sx0, sx1)) = sel {
+                    let lh = p.line_height();
+                    let y0 = baseline.saturating_sub(lh * 3 / 4);
+                    let y1 = (baseline + lh / 6).min(hz);
+                    draw::fill_rect(buf, wz, hz, sx0, y0, sx1, y1, draw::SEL);
+                }
                 // Command line, scrolled left by `scroll` px; clip at the left
                 // margin so scrolled-off text doesn't bleed into the edge.
                 p.text_clipped(buf, wz, hz, MARGIN - *scroll, baseline, text, draw::BAR_FG, MARGIN);
@@ -1903,6 +2107,16 @@ impl App {
     /// Whether the active tab is a research-mode tab.
     fn active_is_research(&self) -> bool {
         self.active.and_then(|i| self.tabs.get(i)).map(|t| t.research).unwrap_or(false)
+    }
+
+    /// The command verb that re-opens the active tab in its own mode, for `:edit`.
+    fn active_reopen_verb(&self) -> &'static str {
+        match self.active.and_then(|i| self.tabs.get(i)) {
+            Some(t) if t.research => "research",
+            Some(t) if t.read => "read",
+            Some(t) if t.nojs => "nojs",
+            _ => "open",
+        }
     }
 
     /// Build the bar as a sequence of (text, color) segments drawn left to right.
@@ -2162,10 +2376,17 @@ fn commands_document() -> String {
     ]);
     let cmdline = help_table(&[
         ("Enter", "run the command"),
-        ("Esc / Ctrl+C", "cancel"),
-        ("Ctrl+W", "delete the previous word"),
-        ("Ctrl+U", "clear the line"),
-        ("Ctrl+H", "delete the previous character"),
+        ("Esc / Ctrl+C", "cancel (Ctrl+C copies first if text is selected)"),
+        ("Left / Right", "move the caret a character"),
+        ("Ctrl+Left / Right", "move the caret a word"),
+        ("Home / End", "jump to start / end of line"),
+        ("Shift+ movement", "extend the selection (with arrows, Ctrl+arrows, Home/End)"),
+        ("Ctrl+A", "select the whole line"),
+        ("Ctrl+C / Ctrl+X / Ctrl+V", "copy / cut / paste"),
+        ("Backspace / Delete", "delete back / forward (or the selection)"),
+        ("Ctrl+W · Ctrl/Alt+Backspace", "delete the previous word"),
+        ("Ctrl+Delete", "delete the next word"),
+        ("Ctrl+U", "delete to the start of the line"),
     ]);
     let modes = help_table(&[
         ("Insert", "type into a field; Esc or click-away leaves, Ctrl+V → passthrough"),
@@ -2176,7 +2397,8 @@ fn commands_document() -> String {
     let cmds = help_table(&[
         (":open <url|query> · :o · :t", "open a page (non-URL → search engine)"),
         (":research <url|query> · :rs", "lighter browse: JS on, images kept, media/embeds stripped"),
-        (":edit · :e", "edit the current URL in the command bar"),
+        (":edit · :e", "edit the current URL (re-opens in the tab's own mode)"),
+        (":y · :yank", "copy the current URL to the clipboard"),
         (":read <url>", "reader mode: text only, no JS/images/ads"),
         (":search [template]", "show/set the search engine (%s = query)"),
         (":te", "open a terminal tab"),

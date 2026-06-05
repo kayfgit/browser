@@ -19,6 +19,8 @@ wry.workspace = true
 softbuffer.workspace = true
 fontdue.workspace = true
 base64 = "0.22"
+# default-features off drops the image/png clipboard stack — we only do text.
+arboard = { version = "3", default-features = false }
 
 [target.'cfg(windows)'.build-dependencies]
 embed-manifest = "1.4"

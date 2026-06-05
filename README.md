@@ -100,10 +100,14 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   `:nojs` (toggle JS-off for new tabs) / `:nojs <url>`, `:f` (toggle fullscreen), `:resize` and
   `:move` (window-control modes — then `hjkl`, `Esc` to finish), `:search [template]` (show/set the
   search engine; `%s` = query), `:commands` (full keybind/command reference), `:version` (build
-  info). `:open <text>` that isn't a URL (e.g. `:open rust ownership`, or a bare word like
-  `rustlang`) goes to the search engine — Google by default, changeable with `:search`. The command
-  bar shows a blinking block cursor and supports readline editing: `Ctrl+W` delete word, `Ctrl+U`
-  clear line, `Ctrl+H` backspace, `Ctrl+C` cancel.
+  info), `:y`/`:yank` (copy the current URL to the clipboard). `:open <text>` that isn't a URL
+  (e.g. `:open rust ownership`, or a bare word like `rustlang`) goes to the search engine — Google
+  by default, changeable with `:search`. `:edit`/`:e` re-opens in the tab's own mode (a `:research`
+  tab edits back to `:research`, not `:open`). The command bar is a full single-line editor with a
+  blinking caret: `Left`/`Right` (and `Ctrl+`+arrows for words) move the caret, `Home`/`End` jump,
+  **`Shift`+movement selects** text (and `Ctrl+A` selects all), `Ctrl+C`/`Ctrl+X`/`Ctrl+V`
+  copy/cut/paste, `Backspace`/`Delete` (and the selection), `Ctrl+W` / `Ctrl`/`Alt+Backspace` delete
+  a word, `Ctrl+Delete` the next word, `Ctrl+U` to the line start, `Esc`/`Ctrl+C` cancel.
 - **`:te <command>` (command runner)** — runs a local shell command on a background thread;
   the result replaces the command-bar text (vim-style). **Strictly shell-initiated** — never
   reachable from page content.
