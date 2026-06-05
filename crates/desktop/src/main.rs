@@ -754,6 +754,10 @@ fn main() -> Result<()> {
                 if matches!(app.mode, ModeKind::Command | ModeKind::Find) {
                     app.cursor_on = !app.cursor_on;
                     app.window.request_redraw();
+                } else if app.mode == ModeKind::Normal {
+                    // Focus backstop: reclaim keyboard focus if a click handed it to
+                    // the webview (see reclaim_focus_tick).
+                    app.reclaim_focus_tick();
                 }
             }
             Event::WindowEvent { event, .. } => match event {
@@ -886,10 +890,15 @@ fn main() -> Result<()> {
         }
         // While typing a command, keep waking to blink the cursor (unless we're
         // already exiting). Outside Command mode we stay on plain Wait.
-        if !matches!(*control_flow, ControlFlow::Exit | ControlFlow::ExitWithCode(_))
-            && matches!(app.mode, ModeKind::Command | ModeKind::Find)
-        {
-            *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(530));
+        if !matches!(*control_flow, ControlFlow::Exit | ControlFlow::ExitWithCode(_)) {
+            if matches!(app.mode, ModeKind::Command | ModeKind::Find) {
+                // Blink the command-bar cursor.
+                *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(530));
+            } else if app.mode == ModeKind::Normal && app.active_has_webview() {
+                // Poll to keep keyboard focus on the shell while a web tab is up (the
+                // click-focus backstop). Idle otherwise — no wakeups on welcome/read tabs.
+                *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(300));
+            }
         }
     });
 }
@@ -1032,6 +1041,45 @@ impl App {
     #[cfg(not(windows))]
     fn reclaim_shell_focus(&self) {
         self.window.set_focus();
+    }
+
+    /// Backstop for the click-focus trap (TODO #1). In Normal mode the shell must
+    /// own the keyboard, but a click can hand keyboard focus to the webview child
+    /// and lock the user out of shell keys (`:` / `Esc` / `hjkl`) until they alt-tab.
+    /// The injected `BRIDGE_JS` bounces most clicks back immediately, but it misses
+    /// cases — clicks inside cross-origin iframes (no `window.ipc` there) and
+    /// re-steals within its throttle window. This runs on a low-frequency timer
+    /// (only while a web tab is active in Normal mode) and pulls focus back whenever
+    /// we're the foreground app yet the shell window doesn't hold keyboard focus.
+    /// No-op when we already have focus, so it's idle the rest of the time.
+    #[cfg(windows)]
+    fn reclaim_focus_tick(&self) {
+        use tao::platform::windows::WindowExtWindows;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
+        use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+        let hwnd = HWND(self.window.hwnd() as *mut core::ffi::c_void);
+        unsafe {
+            // Don't fight for focus while the user has switched to another app.
+            if GetForegroundWindow() != hwnd {
+                return;
+            }
+            // Already own keyboard focus → nothing to reclaim (the common case).
+            if GetFocus() == hwnd {
+                return;
+            }
+            let _ = SetFocus(Some(hwnd));
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn reclaim_focus_tick(&self) {}
+
+    /// Whether the active tab is a webview (web/research/nojs/terminal) — i.e. one
+    /// that can trap keyboard focus on click. Engine-free read/error tabs and the
+    /// empty welcome screen can't, so they don't need the focus backstop.
+    fn active_has_webview(&self) -> bool {
+        self.active.and_then(|i| self.tabs.get(i)).is_some_and(|t| t.webview.is_some())
     }
 
     /// Re-assert the current zoom on the active web tab (e.g. after a navigation,
@@ -2880,7 +2928,13 @@ impl App {
 
         // `p` is a disjoint field borrow from `self.surface`, so it coexists with `buf`.
         let p = &self.painter;
-        let (wz, hz) = (w as usize, h as usize);
+        // Width is row stride; height is derived from the buffer's ACTUAL length, not
+        // the requested size. During a rapid window resize softbuffer can hand back a
+        // buffer whose length still reflects the previous (smaller) size, so trusting
+        // `h` here would let a glyph write past the slice and panic. Clamping `hz` to
+        // `buf.len() / wz` keeps every `gy*wz + gx` index inside the buffer.
+        let wz = w as usize;
+        let hz = (buf.len() / wz.max(1)).min(h as usize);
         let bar_top = hz.saturating_sub(bar_h);
 
         let baseline = bar_top + (bar_h * 2 / 3);
