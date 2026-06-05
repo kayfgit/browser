@@ -94,12 +94,16 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   shell keeps the keyboard — so it works on CSP-strict sites (needs JS, so not on `:nojs` tabs).
   A hint on a text field / search box focuses it and drops into Insert so you can type
   (Esc or click-away to leave).
-- **Command** — `:open <url>`, `:edit`/`:e` (edit the current URL), `:read <url>` (reader mode),
+- **Command** — `:open <url>`, `:research <url|query>`/`:rs` (lighter browse), `:edit`/`:e` (edit
+  the current URL), `:read <url>` (text-only reader),
   `:te <command>` (run a local command), `:close`, `:tabnext`/`:tabprev`, `:reload`, `:quit`,
   `:nojs` (toggle JS-off for new tabs) / `:nojs <url>`, `:f` (toggle fullscreen), `:resize` and
-  `:move` (window-control modes — then `hjkl`, `Esc` to finish), `:commands` (full keybind/command
-  reference), `:version` (build info). The command bar shows a blinking block cursor and supports
-  readline editing: `Ctrl+W` delete word, `Ctrl+U` clear line, `Ctrl+H` backspace, `Ctrl+C` cancel.
+  `:move` (window-control modes — then `hjkl`, `Esc` to finish), `:search [template]` (show/set the
+  search engine; `%s` = query), `:commands` (full keybind/command reference), `:version` (build
+  info). `:open <text>` that isn't a URL (e.g. `:open rust ownership`, or a bare word like
+  `rustlang`) goes to the search engine — Google by default, changeable with `:search`. The command
+  bar shows a blinking block cursor and supports readline editing: `Ctrl+W` delete word, `Ctrl+U`
+  clear line, `Ctrl+H` backspace, `Ctrl+C` cancel.
 - **`:te <command>` (command runner)** — runs a local shell command on a background thread;
   the result replaces the command-bar text (vim-style). **Strictly shell-initiated** — never
   reachable from page content.
@@ -110,12 +114,23 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   the tab closes, the browser quits, or even crashes. Terminal tabs are tinted orange; type
   freely, `Shift+Esc` returns to the shell.
 - **Read mode** — `:read <url>` extracts the article with the `dom_smoothie` readability
-  pipeline and renders just that (clean dark stylesheet, `<base>` for relative links) in a
-  WebView2 tab. Leanness comes from the **stripped article DOM** (no ads/trackers/page scripts —
-  readability removes them), not from disabling the engine: JS stays on so scrolling, hint mode,
-  and focus handling work normally. Works on docs/wikis/news where a from-scratch engine
-  struggles. Read tabs are tinted **green** in the tab bar and show `[read]` in the status line.
-  (Servo remains a possible future drop-in behind the same `:read` command once it matures.)
+  pipeline and renders **just the text** (clean dark stylesheet, `<base>` for relative links) in a
+  WebView2 tab. It's deliberately the leanest tier: readability strips ads/trackers/page scripts,
+  and a strict **Content-Security-Policy** on the generated document blocks all images, media, web
+  fonts and scripts from loading at all — so a read tab fetches almost nothing. The only JS that
+  runs is the shell's own host-injected scroll/focus bridge (exempt from the page CSP, like hint
+  mode), so navigation keys still work with zero page scripts. Best for docs/wikis/news. Read tabs
+  are tinted **green** and show `[read]` in the status line. (Servo remains a possible future
+  drop-in behind the same `:read` command once it matures.)
+- **Research mode** — `:research <url|query>` / `:rs` is the middle tier between `:read` and a full
+  `:open`: a normal page with **JavaScript on and images kept** (so SPAs and visual lookups work),
+  but an injected pruner removes the heavy/noisy stuff — `<video>`, `<audio>`, `<iframe>`/`<embed>`/
+  `<object>` (players, ad and social embeds) — on load and as the page mutates. Like `:open`, a
+  non-URL argument (e.g. `:rs best rust http client`) goes to the search engine. For the genuinely
+  "how do I…/what's the best…" Google browsing where you want pictures but not a video player and a
+  dozen ad frames. Research tabs are tinted **cyan** and show `[research]`. (Page scripts still run,
+  so this prunes the DOM rather than blocking requests — true network-level ad/tracker blocking
+  would need dropping to the raw WebView2 COM API, a possible later upgrade.)
 - **Resize / Move** — entered by `:resize` / `:move`; `hjkl` size or reposition the
   window, `Esc` exits. The window is **borderless** (no OS title bar) — all window
   control is command-driven.

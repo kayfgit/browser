@@ -197,6 +197,43 @@ const HINT_JS: &str = r#"
 })();
 "#;
 
+/// Injected into `:research` tabs. Strips the heavy/noisy stuff (video, audio,
+/// embeds, ad/social iframes) on document-create and as the page mutates, while
+/// leaving images and text intact — a lighter browse for "how do I…" research.
+/// Page scripts still run (so SPAs work); this only prunes the DOM after the fact,
+/// since wry exposes no sub-resource request blocker to stop the loads outright.
+const RESEARCH_JS: &str = r#"
+(function () {
+  if (window.__researchLite) return;
+  window.__researchLite = true;
+  var SEL = 'video,audio,iframe,embed,object,track,source';
+  function strip(root) {
+    try {
+      var r = root && root.querySelectorAll ? root : document;
+      var hits = r.querySelectorAll(SEL);
+      for (var i = 0; i < hits.length; i++) hits[i].remove();
+    } catch (e) {}
+  }
+  strip(document);
+  document.addEventListener('DOMContentLoaded', function () { strip(document); });
+  function observe() {
+    if (!document.documentElement) { setTimeout(observe, 0); return; }
+    new MutationObserver(function (muts) {
+      for (var i = 0; i < muts.length; i++) {
+        var added = muts[i].addedNodes;
+        for (var j = 0; j < added.length; j++) {
+          var n = added[j];
+          if (n.nodeType !== 1) continue;
+          if (n.matches && n.matches(SEL)) n.remove();
+          else strip(n);
+        }
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  }
+  observe();
+})();
+"#;
+
 /// Events posted from webview IPC back into the event loop.
 enum UserEvent {
     /// Leave insert/passthrough: move focus from the page back to the shell.
@@ -269,6 +306,9 @@ struct Tab {
     nojs: bool,
     /// Whether this is a readability "read mode" tab.
     read: bool,
+    /// Whether this is a "research" tab: a normal page (JS on, images kept) with
+    /// heavy media/embeds stripped on the fly for a lighter browse.
+    research: bool,
     /// Present if this tab is an embedded terminal (xterm.js + PTY).
     term: Option<TermSession>,
 }
@@ -384,6 +424,9 @@ struct App {
     nojs: bool,
     /// Shell command for `:te` (program + args), set via `:config`.
     term_command: Vec<String>,
+    /// Search-engine URL template (`%s` = query) for a non-URL `:open`. Defaults
+    /// to Google; change it with `:search <template>`.
+    search_template: String,
     /// Monotonic id for routing PTY output to the right terminal tab.
     next_term_id: u64,
     /// Global UI zoom factor (1.0 = 100%). Scales native chrome, web content,
@@ -451,6 +494,7 @@ fn main() -> Result<()> {
         modifiers: ModifiersState::default(),
         nojs: false,
         term_command: vec!["nu".to_string()],
+        search_template: browser_core::DEFAULT_SEARCH_URL.to_string(),
         next_term_id: 0,
         zoom: 1.0,
         cursor_on: true,
@@ -1118,6 +1162,9 @@ impl App {
                     self.start_read(rest);
                 }
             }
+            // Like :open (URL or → search engine) but lighter: JS on, images kept,
+            // heavy media/embeds stripped. For "how do I…" / "best way to…" lookups.
+            "research" | "rs" => self.open_research(rest),
             "te" | "term" => {
                 if rest.is_empty() {
                     self.open_terminal();
@@ -1131,6 +1178,16 @@ impl App {
                 } else {
                     self.term_command = rest.split_whitespace().map(String::from).collect();
                     self.status = format!("shell set to: {}", self.term_command.join(" "));
+                }
+            }
+            // Customize the search engine used when `:open <query>` isn't a URL.
+            // `%s` in the template is replaced with the percent-encoded query.
+            "search" => {
+                if rest.is_empty() {
+                    self.status = format!("search = {}", self.search_template);
+                } else {
+                    self.search_template = rest.to_string();
+                    self.status = format!("search engine set to: {}", self.search_template);
                 }
             }
             "nojs" => {
@@ -1169,18 +1226,28 @@ impl App {
         }
     }
 
+    /// Turn a command-bar target into a URL the way `:open` does: a bare query
+    /// (spaces, or no scheme/dot like `rustlang`) — or anything that won't parse as
+    /// a URL — goes to the configured search engine; a real address opens directly.
+    fn resolve_target(&self, target: &str) -> String {
+        if browser_core::looks_like_query(target) {
+            browser_core::search_url(&self.search_template, target)
+        } else {
+            browser_core::normalize_url(target)
+                .unwrap_or_else(|| browser_core::search_url(&self.search_template, target))
+        }
+    }
+
     fn open_tab(&mut self, target: &str, disable_js: bool) {
-        let Some(url) = browser_core::normalize_url(target) else {
-            self.status = format!("invalid url: {target}");
-            return;
-        };
-        match self.build_content_webview(Source::Url(url.clone()), disable_js) {
+        let url = self.resolve_target(target);
+        match self.build_content_webview(Source::Url(url.clone()), disable_js, "") {
             Ok(webview) => {
                 self.tabs.push(Tab {
                     webview,
                     url: url.clone(),
                     nojs: disable_js,
                     read: false,
+                    research: false,
                     term: None,
                 });
                 self.active = Some(self.tabs.len() - 1);
@@ -1194,9 +1261,38 @@ impl App {
         }
     }
 
+    /// Open a "research" tab: like `:open` (URL or → search engine), but JS-on with
+    /// the [`RESEARCH_JS`] pruner injected so video/audio/embeds are stripped while
+    /// images and text stay. A lighter browse for "how do I…" lookups.
+    fn open_research(&mut self, target: &str) {
+        let url = self.resolve_target(target);
+        match self.build_content_webview(Source::Url(url.clone()), false, RESEARCH_JS) {
+            Ok(webview) => {
+                self.tabs.push(Tab {
+                    webview,
+                    url: url.clone(),
+                    nojs: false,
+                    read: false,
+                    research: true,
+                    term: None,
+                });
+                self.active = Some(self.tabs.len() - 1);
+                self.refresh_visibility();
+                self.window.set_focus();
+                self.status = "(research — media stripped)".into();
+            }
+            Err(e) => self.status = format!("failed to open: {e:#}"),
+        }
+    }
+
     /// Build a child webview from either a URL or an inline HTML document, with
     /// the full shell bridge (keybindings, focus reclaim, hint mode).
-    fn build_content_webview(&self, source: Source, disable_js: bool) -> Result<WebView> {
+    fn build_content_webview(
+        &self,
+        source: Source,
+        disable_js: bool,
+        extra_init: &str,
+    ) -> Result<WebView> {
         let ipc_proxy = self.proxy.clone();
         let load_proxy = self.proxy.clone();
         let mut builder = WebViewBuilder::new();
@@ -1211,7 +1307,21 @@ impl App {
             // Ctrl+F/P, F12, …) so our own keybindings own the keyboard. Standard
             // editing keys (Ctrl+C/V/X) are unaffected.
             .with_browser_accelerator_keys(false)
-            .with_initialization_script(BRIDGE_JS)
+            // Browser process flags. This overrides wry's default arg string, so we
+            // re-include its defaults (mini-menu / PDF UI / SmartScreen off, plus
+            // gesture-free autoplay) and add `Translate,msAutoTranslate` to kill the
+            // "translate this page?" bar that Edge pops on foreign-language pages.
+            .with_additional_browser_args(
+                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,Translate,\
+                 msAutoTranslate --autoplay-policy=no-user-gesture-required",
+            )
+            // The shell bridge always loads; `extra_init` (e.g. research-mode DOM
+            // pruning) is appended so it runs in the same document-create pass.
+            .with_initialization_script(if extra_init.is_empty() {
+                BRIDGE_JS.to_string()
+            } else {
+                format!("{BRIDGE_JS}\n{extra_init}")
+            })
             .with_ipc_handler(move |req| match req.body().as_str() {
                 "leave-passthrough" | "insert-escape" | "insert-blur" => {
                     let _ = ipc_proxy.send_event(UserEvent::ExitToNormal);
@@ -1368,6 +1478,7 @@ impl App {
             url: format!("term: {}", shell[0]),
             nojs: false,
             read: false,
+            research: false,
             term: Some(TermSession {
                 id,
                 child,
@@ -1495,16 +1606,18 @@ impl App {
     /// Open a reader tab from already-extracted article HTML.
     fn open_read_tab(&mut self, url: &str, title: &str, article_html: &str) {
         let doc = read_document(url, title, article_html);
-        // JS stays enabled: the article has no page scripts (readability stripped
-        // them), but our bridge/scroll/hint need JS. Leanness comes from the
-        // stripped DOM, not from disabling the engine.
-        match self.build_content_webview(Source::Html(doc), false) {
+        // The article carries a strict CSP (no scripts/images/media/fonts) and the
+        // reader CSS hides any media, so a read tab is truly text-only. Engine JS
+        // stays on solely for our host-injected bridge (scroll/focus), which runs
+        // regardless of page CSP — there are no *page* scripts left to execute.
+        match self.build_content_webview(Source::Html(doc), false, "") {
             Ok(webview) => {
                 self.tabs.push(Tab {
                     webview,
                     url: url.to_string(),
                     nojs: false,
                     read: true,
+                    research: false,
                     term: None,
                 });
                 self.active = Some(self.tabs.len() - 1);
@@ -1518,13 +1631,14 @@ impl App {
 
     /// Open an internal HTML page (e.g. `:commands`, `:version`) in a new tab.
     fn open_local_page(&mut self, label: &str, html: String) {
-        match self.build_content_webview(Source::Html(html), false) {
+        match self.build_content_webview(Source::Html(html), false, "") {
             Ok(webview) => {
                 self.tabs.push(Tab {
                     webview,
                     url: format!("browser://{label}"),
                     nojs: false,
                     read: false,
+                    research: false,
                     term: None,
                 });
                 self.active = Some(self.tabs.len() - 1);
@@ -1769,6 +1883,8 @@ impl App {
                     draw::TERM
                 } else if t.read {
                     draw::READ
+                } else if t.research {
+                    draw::RESEARCH
                 } else if active {
                     draw::ACCENT
                 } else {
@@ -1782,6 +1898,11 @@ impl App {
     /// Whether the active tab is a read-mode tab.
     fn active_is_read(&self) -> bool {
         self.active.and_then(|i| self.tabs.get(i)).map(|t| t.read).unwrap_or(false)
+    }
+
+    /// Whether the active tab is a research-mode tab.
+    fn active_is_research(&self) -> bool {
+        self.active.and_then(|i| self.tabs.get(i)).map(|t| t.research).unwrap_or(false)
     }
 
     /// Build the bar as a sequence of (text, color) segments drawn left to right.
@@ -1831,6 +1952,9 @@ impl App {
                 let mut segs = vec![("[N]".into(), draw::ACCENT), (label, draw::BAR_FG)];
                 if self.active_is_read() {
                     segs.push(("   [read]".into(), draw::READ));
+                }
+                if self.active_is_research() {
+                    segs.push(("   [research]".into(), draw::RESEARCH));
                 }
                 if self.active_is_term() {
                     segs.push(("   [term]".into(), draw::TERM));
@@ -1959,7 +2083,7 @@ const READ_CSS: &str = "html{background:#1e1e1e;color:#d0d0d0}body{margin:0}\
 main{max-width:760px;margin:48px auto;padding:0 22px;\
 font:17px/1.65 -apple-system,Segoe UI,Roboto,sans-serif}\
 h1,h2,h3,h4{line-height:1.25;color:#fff}h1{font-size:1.9em}\
-a{color:#6cb6ff}img,video{max-width:100%;height:auto}\
+a{color:#6cb6ff}img,picture,svg,video,audio,iframe,figure,object,embed{display:none}\
 pre,code{font-family:Consolas,monospace;font-size:.92em}\
 pre{background:#2a2a2a;padding:12px;overflow:auto;border-radius:6px}\
 code{background:#2a2a2a;padding:1px 4px;border-radius:3px}\
@@ -1970,8 +2094,17 @@ hr{border:none;border-top:1px solid #333}";
 /// Wrap extracted article HTML in a full document with a `<base>` (so relative
 /// links/images resolve against the source) and the reading stylesheet.
 fn read_document(url: &str, title: &str, article_html: &str) -> String {
+    // Strict CSP makes read mode truly text-only: no scripts, images, media or web
+    // fonts are fetched (real memory/bandwidth savings), only inline styles for our
+    // reader CSS. Our host-injected bridge (scroll/focus) runs via WebView2's
+    // document-create hook, which is exempt from page CSP — so navigation keys keep
+    // working even though page scripts can't.
+    const CSP: &str = "default-src 'none'; img-src 'none'; media-src 'none'; \
+                       font-src 'none'; object-src 'none'; connect-src 'none'; \
+                       style-src 'unsafe-inline'";
     format!(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
+         <meta http-equiv=\"Content-Security-Policy\" content=\"{CSP}\">\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
          <base href=\"{url}\"><title>{title}</title><style>{READ_CSS}</style></head>\
          <body><main>{article_html}</main></body></html>"
@@ -2016,7 +2149,6 @@ fn commands_document() -> String {
         ("o", "open a page (prefills “open ”)"),
         ("j / k", "scroll down / up"),
         ("d / u", "scroll half a page down / up"),
-        ("Space", "scroll a page down"),
         ("i", "insert mode (passthrough on a terminal tab)"),
         ("f", "hint mode — label every link, type the label to follow"),
         ("x", "close the current tab"),
@@ -2042,9 +2174,11 @@ fn commands_document() -> String {
         ("Resize / Move", "hjkl to size / reposition the window; Esc finishes"),
     ]);
     let cmds = help_table(&[
-        (":open <url> · :o · :t", "open a page"),
+        (":open <url|query> · :o · :t", "open a page (non-URL → search engine)"),
+        (":research <url|query> · :rs", "lighter browse: JS on, images kept, media/embeds stripped"),
         (":edit · :e", "edit the current URL in the command bar"),
-        (":read <url>", "reader mode (extract the article, no ads/JS)"),
+        (":read <url>", "reader mode: text only, no JS/images/ads"),
+        (":search [template]", "show/set the search engine (%s = query)"),
         (":te", "open a terminal tab"),
         (":te <command>", "run a local command, result in the command bar"),
         (":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
