@@ -32,6 +32,7 @@ use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewBuilderExtWindows
 
 mod draw;
 mod read_view;
+mod session;
 mod vim;
 use draw::Painter;
 
@@ -617,6 +618,17 @@ fn clipboard_get() -> Option<String> {
     arboard::Clipboard::new().ok()?.get_text().ok()
 }
 
+/// Format a "quick maths" result: drop the decimal point for whole numbers,
+/// otherwise show up to 6 decimal places with trailing zeros trimmed.
+fn format_number(n: f64) -> String {
+    if n == n.trunc() && n.abs() < 1e15 {
+        format!("{}", n as i64)
+    } else {
+        let s = format!("{n:.6}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
 /// Generate `n` fixed-width, prefix-free hint labels from the home-row charset
 /// (matches the web HINT_JS scheme, so the muscle memory is the same).
 fn hint_labels(n: usize) -> Vec<String> {
@@ -700,14 +712,24 @@ fn main() -> Result<()> {
     };
 
     // Optional: open a page immediately, e.g. `browser-desktop youtube.com`,
-    // or run a command, e.g. `browser-desktop ":nojs youtube.com"`.
-    if let Some(target) = std::env::args().nth(1) {
-        let t = target.trim_start();
-        if let Some(cmd) = t.strip_prefix(':') {
-            app.run_command(cmd);
-        } else {
-            app.open_tab(&target, false);
+    // or run a command, e.g. `browser-desktop ":nojs youtube.com"`. An explicit
+    // CLI target takes precedence over (and skips) session restore. With no
+    // argument, restore the previous session's tabs + UI state.
+    match std::env::args().nth(1) {
+        Some(target) => {
+            let t = target.trim_start();
+            if let Some(cmd) = t.strip_prefix(':') {
+                app.run_command(cmd);
+            } else {
+                app.open_tab(&target, false);
+            }
         }
+        None if std::env::var("BROWSER_TEST_QUIT_MS").is_err() => {
+            if let Some(s) = session::load() {
+                app.restore_session(s);
+            }
+        }
+        None => {}
     }
 
     // Test hook: auto-quit after N ms so cleanup can be verified headlessly.
@@ -1317,6 +1339,18 @@ impl App {
                 return;
             }
             Key::Enter => {
+                // Quick maths: if the line is an arithmetic expression, evaluate it
+                // in place — replace the bar contents with the result so you can copy
+                // it or keep calculating (`20*8` → `160` → `160+10`) instead of
+                // running it as a command.
+                if let Some(result) = self.math_preview() {
+                    self.command = result;
+                    self.command_cursor = self.command.len();
+                    self.command_anchor = None;
+                    self.cursor_on = true;
+                    self.clear_status();
+                    return;
+                }
                 let line = std::mem::take(&mut self.command);
                 self.command_cursor = 0;
                 self.command_anchor = None;
@@ -1880,6 +1914,17 @@ impl App {
         self.status_is_error = false;
     }
 
+    /// "Quick maths": if the command-bar line is an arithmetic expression, return
+    /// its formatted result. Gated on the presence of a maths operator so plain
+    /// inputs (a lone number, a URL, a command) don't show a spurious result.
+    fn math_preview(&self) -> Option<String> {
+        let line = self.command.trim();
+        if !line.contains(['+', '-', '*', '/', '%', '^']) {
+            return None;
+        }
+        browser_core::math_eval(line).map(format_number)
+    }
+
     /// Clear the status line.
     fn clear_status(&mut self) {
         self.status.clear();
@@ -2002,6 +2047,8 @@ impl App {
             "commands" | "help" => self.open_local_page("commands", commands_document()),
             "version" => self.open_local_page("version", version_document()),
             "" => {}
+            // A bare bang (`:!yt cats`) opens the whole line as a bang target.
+            other if other.starts_with('!') => self.open_tab(line, self.nojs),
             other => self.set_error(format!("unknown command: {other}")),
         }
         self.current_command = None;
@@ -2011,6 +2058,11 @@ impl App {
     /// (spaces, or no scheme/dot like `rustlang`) — or anything that won't parse as
     /// a URL — goes to the configured search engine; a real address opens directly.
     fn resolve_target(&self, target: &str) -> String {
+        // DuckDuckGo-style bangs (`!yt cats`, `!osrs dragon`) take priority: they
+        // redirect to a specific site's search regardless of the default engine.
+        if let Some(url) = browser_core::expand_bang(target) {
+            return url;
+        }
         if browser_core::looks_like_query(target) {
             browser_core::search_url(&self.search_template, target)
         } else {
@@ -2617,6 +2669,7 @@ impl App {
     /// webview before exiting — so WebView2 processes and ConPTYs close cleanly
     /// rather than leaving a stuck thread that deadlocks process teardown.
     fn teardown(&mut self) {
+        self.save_session();
         for tab in &mut self.tabs {
             if let Some(session) = tab.term.take() {
                 session.shutdown();
@@ -2624,6 +2677,74 @@ impl App {
         }
         self.tabs.clear();
         self.active = None;
+    }
+
+    /// Snapshot the open tabs + UI state to disk so the next launch restores them.
+    /// Internal pages (`browser://…`, the `:error(s)` log) are session-specific and
+    /// skipped. No-op during headless test runs so they don't clobber a real session.
+    fn save_session(&self) {
+        if std::env::var("BROWSER_TEST_QUIT_MS").is_ok() {
+            return;
+        }
+        let mut tabs = Vec::new();
+        let mut active = 0;
+        for (i, tab) in self.tabs.iter().enumerate() {
+            if tab.url.starts_with("browser://") || tab.vim.is_some() {
+                continue;
+            }
+            let kind = if tab.term.is_some() {
+                "term"
+            } else if tab.read || tab.native.is_some() {
+                "read"
+            } else if tab.research {
+                "research"
+            } else if tab.nojs {
+                "nojs"
+            } else {
+                "open"
+            };
+            if Some(i) == self.active {
+                active = tabs.len();
+            }
+            tabs.push(session::SavedTab { kind: kind.to_string(), url: tab.url.clone() });
+        }
+        session::save(&session::Session {
+            zoom: self.zoom,
+            nojs: self.nojs,
+            search_template: self.search_template.clone(),
+            term_command: self.term_command.clone(),
+            active,
+            tabs,
+        });
+    }
+
+    /// Reopen the tabs + UI state saved by a previous run. Read tabs are re-fetched
+    /// (so they may arrive slightly out of order, since fetching is async) and
+    /// terminals are reopened fresh.
+    fn restore_session(&mut self, s: session::Session) {
+        self.search_template = s.search_template;
+        if !s.term_command.is_empty() {
+            self.term_command = s.term_command;
+        }
+        self.nojs = s.nojs;
+        if s.zoom != 1.0 {
+            self.set_zoom(s.zoom);
+        }
+        for tab in &s.tabs {
+            match tab.kind.as_str() {
+                "term" => self.open_terminal(),
+                "read" => self.start_read(&tab.url, false),
+                "research" => self.open_research(&tab.url),
+                "nojs" => self.open_tab(&tab.url, true),
+                _ => self.open_tab(&tab.url, false),
+            }
+        }
+        if !self.tabs.is_empty() {
+            self.active = Some(s.active.min(self.tabs.len() - 1));
+            self.refresh_visibility();
+        }
+        self.clear_status();
+        self.window.request_redraw();
     }
 
     fn scroll(&mut self, dy: i32) {
@@ -2742,6 +2863,12 @@ impl App {
         } else {
             (self.bar_segments(), None, None, None)
         };
+        // Quick-maths live result, shown right-aligned in the command bar while the
+        // typed line is an arithmetic expression (`:20*8` → `= 160`).
+        let math = (self.mode == ModeKind::Command)
+            .then(|| self.math_preview())
+            .flatten()
+            .map(|r| format!("= {r}"));
 
         self.surface
             .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
@@ -2782,6 +2909,12 @@ impl App {
                 let y0 = baseline.saturating_sub(lh * 3 / 4);
                 let y1 = (baseline + lh / 6).min(hz);
                 draw::fill_rect(buf, wz, hz, cx, y0, cx + cw, y1, draw::BAR_FG);
+            }
+            // Right-aligned quick-maths result, painted last so it sits on top.
+            if let Some(text) = &math {
+                let tw = p.measure(text) as i32;
+                let x = (wz as i32 - MARGIN - tw).max(0) as usize;
+                p.text(buf, wz, hz, x, baseline, text, draw::ACCENT);
             }
         };
 
@@ -3498,6 +3631,12 @@ fn commands_document() -> String {
         (":version", "version and build information"),
         (":quit · :q", "quit the browser"),
     ]);
+    // Bangs: build `!key → description` rows from the core table.
+    let bang_rows: Vec<(String, &str)> =
+        browser_core::bang_list().into_iter().map(|(k, d)| (format!("!{k} <query>"), d)).collect();
+    let bangs = help_table(
+        &bang_rows.iter().map(|(k, d)| (k.as_str(), *d)).collect::<Vec<_>>(),
+    );
     format!(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
@@ -3509,6 +3648,15 @@ fn commands_document() -> String {
          <h2>Other modes</h2>{modes}\
          <h2>Error pager (:error / :errors)</h2>{vimpager}\
          <h2>Commands</h2>{cmds}\
+         <h2>Bangs</h2>\
+         <p class=\"sub\">A <code>!key</code> token in any open/search target jumps to that \
+         site's search (no query → the site's home). Trailing form works too: \
+         <code>dragon scimitar !osrs</code>.</p>{bangs}\
+         <h2>Quick maths</h2>\
+         <p class=\"sub\">Type an arithmetic expression in the command bar \
+         (<code>+ - * / %  ^</code>, parentheses) to see the result live, e.g. \
+         <code>:20*8</code> → <code>= 160</code>. Press Enter to replace the line with the \
+         result so you can copy it or keep calculating (<code>160+10</code>).</p>\
          </main></body></html>"
     )
 }

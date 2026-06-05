@@ -109,6 +109,17 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   **`Shift`+movement selects** text (and `Ctrl+A` selects all), `Ctrl+C`/`Ctrl+X`/`Ctrl+V`
   copy/cut/paste, `Backspace`/`Delete` (and the selection), `Ctrl+W` / `Ctrl`/`Alt+Backspace` delete
   a word, `Ctrl+Delete` the next word, `Ctrl+U` to the line start, `Esc`/`Ctrl+C` cancel.
+- **Bangs** — a `!key` token in any `:open`/`:research` target (or typed straight: `:!yt cats`)
+  redirects to that site's search, DuckDuckGo-style: `!yt lofi` → YouTube, `!osrs dragon` → the Old
+  School RuneScape Wiki, `!w`/`!gh`/`!so`/`!cr`/`!dr`/`!mdn`/`!ddg`/`!g`/… (see `:commands`). A bang
+  with no query opens the site's home; the bang can also trail the query (`dragon scimitar !osrs`).
+- **Quick maths** — type an arithmetic expression in the command bar (`+ - * / % ^`, parentheses)
+  and the result shows live, right-aligned (`:20*8` → `= 160`). Press `Enter` to replace the line
+  with the result so you can copy it or keep calculating (`160` → `160+10`).
+- **Session restore** — on quit the open tabs (web/`:nojs`/`:research`/`:read` and terminals) plus
+  zoom, JS-off, and search-engine settings are saved to `session.toml` in the data dir; the next
+  launch with no CLI argument reopens them exactly. Passing a URL/command on the command line skips
+  restore for that run.
 - **`:te <command>` (command runner)** — runs a local shell command on a background thread;
   the result replaces the command-bar text (vim-style). **Strictly shell-initiated** — never
   reachable from page content.
