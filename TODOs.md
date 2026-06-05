@@ -3,13 +3,13 @@
 [] - remember last session
 [] - command bar freezes while loading content
 [] - add bangs
-[] - :qm for easy quick maths
-[x] - join all of the browser process in one, in task manager its all over the place
+[] - allow math on command bar for easy quick maths, for example ":20*8" shows the result inline like "160", allowing copying or continuing the maths like "160+10"
+[x] - join all of the browser process in one, in task manager its all over the place (still doesnt work, maybe because im using "cargo run -p browser-desktop"?)
 [] - autocomplete based on history, if i have accessed youtube.com recently and write ":open yout-" it should show the auto complete, which i can press tab to accept the autocomplete.
 [] - look for a way to make the browser consume the least amount of resources from the pc, even with the heavy engine running
-[x] - command to yank current url
-[x] - be able to highlight stuff on command bar (shift, ctrl+shift+arrowkeys should work)
-[x] - allow free normal movement, like ctrl-w, ctrl-backspace, alt-backspace, ctrl-x etc.
-[x] - allow copy and paste on command bar
-[x] - make :edit use the same mode as the tab was opened (currently if i open a tab using :research and type :edit it goes to :open <url> instead of :research <url>)
 [] - search just like qutebrowser (press / and type, like /example highlights all the words "example" on the page, n goes forward/N goes backward, should work on all modes including read)
+[] - ctrl-w, should erase the last word in the url, not the entire url. same for ctrl+arrowkeys
+[] - issue when using ":open", it says "failed to open: WebView2 error: WindowsError(Error { code: HRESULT(0x8007139f), message: 'O grup})" and i cant read the rest because its all inline.
+[] - every error message should be highlighted in red
+[] - add a ":error" command to see the latest error in a new tab, allowing vim motions to manipulate the error text freely.
+[] - add a ":errors" command to see all of the errors in the current session one after the other vertically, same vim motions as above.
