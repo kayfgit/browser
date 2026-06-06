@@ -137,7 +137,7 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   confined to a kill-on-close **job object** so the OS reaps it (and its conhost + shell) when
   the tab closes, the browser quits, or even crashes. Terminal tabs are tinted orange; type
   freely, `Shift+Esc` returns to the shell.
-- **Read mode** — `:read <url>` extracts the article with the `dom_smoothie` readability pipeline
+- **Read mode** — `:read <url>` (or `:read <query>`, which reads the search-results page) extracts the article with the `dom_smoothie` readability pipeline
   and renders it **engine-free**: the cleaned `Document` is painted by the shell's own softbuffer
   text renderer, so a read tab spawns **zero WebView2 processes** (verified: 0 child engine procs vs.
   a normal tab's set). This is the leanest tier by far — a few MB instead of a Chromium process group

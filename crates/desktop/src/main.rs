@@ -224,11 +224,19 @@ const RESEARCH_JS: &str = r#"
   if (window.__researchLite) return;
   window.__researchLite = true;
   var SEL = 'video,audio,iframe,embed,object,track,source';
+  // Don't strip CAPTCHA / bot-challenge iframes — removing them leaves a page you
+  // can't get past (the missing-checkbox case). Match common providers by src/title.
+  var KEEP = /recaptcha|hcaptcha|turnstile|challenges?\.cloudflare|cf[-_]?chl|captcha/i;
+  function keep(el) {
+    if (el.tagName !== 'IFRAME') return false;
+    var s = (el.getAttribute('src') || '') + ' ' + (el.title || '') + ' ' + (el.name || '');
+    return KEEP.test(s);
+  }
   function strip(root) {
     try {
       var r = root && root.querySelectorAll ? root : document;
       var hits = r.querySelectorAll(SEL);
-      for (var i = 0; i < hits.length; i++) hits[i].remove();
+      for (var i = 0; i < hits.length; i++) { if (!keep(hits[i])) hits[i].remove(); }
     } catch (e) {}
   }
   strip(document);
@@ -241,7 +249,7 @@ const RESEARCH_JS: &str = r#"
         for (var j = 0; j < added.length; j++) {
           var n = added[j];
           if (n.nodeType !== 1) continue;
-          if (n.matches && n.matches(SEL)) n.remove();
+          if (n.matches && n.matches(SEL)) { if (!keep(n)) n.remove(); }
           else strip(n);
         }
       }
@@ -1409,15 +1417,44 @@ impl App {
         if lines.iter().all(|l| l.is_empty()) {
             return;
         }
+        let n = lines.len();
         let lh = nr.layout.line_h.max(1);
-        let mid_line = ((nr.scroll + view / 2) / lh).max(0) as usize;
+        // Keep the view put: the caret starts at the line already at the middle of
+        // the CURRENT viewport, so entering visual doesn't scroll (it's redundant to
+        // re-center on a cursor we just placed mid-screen). Seed the buffer's own
+        // scroll to match, and snap the read scroll to that line boundary.
+        let top_line = (nr.scroll / lh).max(0) as usize;
+        let mid_line = (top_line + rows / 2).min(n.saturating_sub(1));
         let mut tb = vim::TextBuffer::new(lines);
+        tb.top = top_line;
         tb.place_cursor(mid_line, 0, rows, cols);
         tb.key(if linewise { vim::Key::Char('V') } else { vim::Key::Char('v') }, rows, cols);
         nr.scroll = tb.top as i32 * lh;
         nr.caret = Some(tb);
         self.set_status("[VISUAL]  motions select · y yank · Esc exit");
         self.window.request_redraw();
+    }
+
+    /// Place a selection-less read-mode caret at `(line, col)` so the cursor sits on
+    /// a specific word (e.g. a find match) and `hjkl` move relative to it instead of
+    /// scrolling the page. Keeps the current scroll context.
+    fn place_read_caret_at(&mut self, line: usize, col: usize) {
+        let (w, _) = self.inner();
+        let cw = self.painter.measure("M").max(1);
+        let line_h = self.painter.line_height().max(1);
+        let cols = (((w as usize).saturating_sub(16)) / cw).max(1);
+        let rows = (self.content_view_h() as usize / line_h).max(1);
+        let Some(nr) = self.active_native_mut() else { return };
+        let lines = nr.layout.text_lines();
+        if lines.is_empty() {
+            return;
+        }
+        let lh = nr.layout.line_h.max(1);
+        let mut tb = vim::TextBuffer::new(lines);
+        tb.top = (nr.scroll / lh).max(0) as usize;
+        tb.place_cursor(line, col, rows, cols);
+        nr.scroll = tb.top as i32 * lh;
+        nr.caret = Some(tb);
     }
 
     /// Feed a key to the read-mode caret. Returns `true` if it was consumed. `Esc`
@@ -1759,6 +1796,15 @@ impl App {
             if self.active_webview().is_none() {
                 self.set_status(self.find_count_label());
             }
+            // On a read tab, drop a caret on the matched word so hjkl move relative to
+            // it (j below, k above) instead of scrolling the page from the top.
+            if self.active_is_read_native() {
+                if let Some(&NativeMatch { line, start, .. }) =
+                    self.find.matches.get(self.find.current)
+                {
+                    self.place_read_caret_at(line, start);
+                }
+            }
         }
         self.window.request_redraw();
     }
@@ -1832,6 +1878,12 @@ impl App {
         self.find.current =
             if forward { (self.find.current + 1) % n } else { (self.find.current + n - 1) % n };
         self.find_reveal_current();
+        // Keep the read-mode caret on the current match as you step with n/N.
+        if self.active_is_read_native() && self.read_caret_active() {
+            if let Some(&NativeMatch { line, start, .. }) = self.find.matches.get(self.find.current) {
+                self.place_read_caret_at(line, start);
+            }
+        }
         self.set_status(self.find_count_label());
         self.window.request_redraw();
     }
@@ -2409,11 +2461,14 @@ impl App {
     /// responsive. `replace` swaps the active read tab's doc in place (link-follow
     /// / reload) rather than opening a new tab.
     fn start_read(&mut self, target: &str, replace: bool) {
-        self.set_status(format!("reading {target} …"));
+        // A non-URL target (bare word / has spaces, or a `!bang`) goes to the search
+        // engine — `:read rust ownership` reads the Google results page (its links are
+        // followable with hint mode), not a failed fetch of "rust ownership".
+        let url = self.resolve_target(target);
+        self.set_status(format!("reading {url} …"));
         let proxy = self.proxy.clone();
-        let target = target.to_string();
         std::thread::spawn(move || {
-            let event = match browser_backend_text::fetch_document_blocking(&target) {
+            let event = match browser_backend_text::fetch_document_blocking(&url) {
                 Ok(doc) => UserEvent::ReadReady { doc: Box::new(doc), replace },
                 Err(e) => UserEvent::ReadFailed(format!("{e:#}")),
             };
@@ -3322,8 +3377,9 @@ impl App {
                     if baseline < 0 {
                         continue;
                     }
-                    // Find-in-page highlights behind this line's matches.
-                    if self.find.active {
+                    // Find-in-page highlights behind this line's matches — shown both
+                    // once confirmed (find.active) AND live while typing the `/` query.
+                    if self.find.active || self.mode == ModeKind::Find {
                         let chars: Vec<char> =
                             line.runs.iter().flat_map(|r| r.text.chars()).collect();
                         let base = MARGIN + line.indent;
@@ -3456,8 +3512,8 @@ impl App {
                             draw::fill_rect(&mut buf, wz, hz, x0, yt, x1, yb, draw::SEL);
                         }
                     }
-                    // Find-in-page highlights for this row.
-                    if self.find.active {
+                    // Find-in-page highlights for this row (confirmed or live-typing).
+                    if self.find.active || self.mode == ModeKind::Find {
                         for (mi, m) in self.find.matches.iter().enumerate() {
                             if m.line != r {
                                 continue;
@@ -4036,7 +4092,7 @@ fn commands_document() -> String {
         (":research <url|query> · :rs", "lighter browse: JS on, images kept, media/embeds stripped"),
         (":edit · :e", "edit the current URL (re-opens in the tab's own mode)"),
         (":y · :yank", "copy the current URL to the clipboard"),
-        (":read <url>", "engine-free reader: native text render, no WebView2 (j/k scroll, f hint)"),
+        (":read <url|query>", "engine-free reader (no WebView2): j/k scroll, f hint, v/V select; non-URL → search"),
         (":search [template]", "show/set the search engine (%s = query)"),
         (":te", "open a terminal tab"),
         (":te <command>", "run a local command, result in the command bar"),
