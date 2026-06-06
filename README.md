@@ -135,12 +135,14 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
 - **`:te <command>` (command runner)** — runs a local shell command on a background thread;
   the result replaces the command-bar text (vim-style). **Strictly shell-initiated** — never
   reachable from page content.
-- **`:te` (embedded terminal)** — opens a real terminal tab: **xterm.js** in a webview bridged
-  to your shell (`:shell <program>`, default `nu`). The PTY + shell run in a separate
-  `browser-pty-host` companion process — so a live ConPTY can't deadlock the browser's exit —
-  confined to a kill-on-close **job object** so the OS reaps it (and its conhost + shell) when
-  the tab closes, the browser quits, or even crashes. Terminal tabs are tinted orange; type
-  freely, `Shift+Esc` returns to the shell.
+- **`:te` (native terminal)** — opens a real terminal tab rendered **engine-free**: an in-process
+  `alacritty_terminal` VT engine parses the shell's output and the shell's own softbuffer/fontdue
+  painter draws the cell grid — so a terminal tab spawns **zero WebView2 processes** (the engine is
+  Rust, the renderer is ours). The PTY + shell run in a separate `browser-pty-host` companion process —
+  so a live ConPTY can't deadlock the browser's exit — confined to a kill-on-close **job object** so the
+  OS reaps it (and its conhost + shell) when the tab closes, the browser quits, or even crashes. Set the
+  shell with `:shell <program>` (default `nu`). Terminal tabs are tinted orange; `Shift+Esc` returns to
+  the shell, `i`/`:te` re-enter. (Scrollback scrolling and selection are on the roadmap.)
 - **Read mode** — `:read <url>` (or `:read <query>`, which reads the search-results page) extracts the article with the `dom_smoothie` readability pipeline
   and renders it **engine-free**: the cleaned `Document` is painted by the shell's own softbuffer
   text renderer, so a read tab spawns **zero WebView2 processes** (verified: 0 child engine procs vs.

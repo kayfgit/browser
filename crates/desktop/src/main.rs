@@ -20,7 +20,6 @@ use std::rc::Rc;
 use std::thread::JoinHandle;
 
 use anyhow::{Context as _, Result};
-use base64::Engine as _;
 use std::time::{Duration, Instant};
 
 use tao::event::{ElementState, Event, KeyEvent, MouseButton, StartCause, WindowEvent};
@@ -32,6 +31,7 @@ use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewBuilderExtWindows
 
 mod draw;
 mod procmon;
+mod pty_term;
 mod read_view;
 mod session;
 mod vim;
@@ -43,8 +43,6 @@ const BAR_H: u32 = 28;
 const TAB_BAR_H: u32 = 24;
 /// Native chrome font size in px at zoom 1.0.
 const BASE_PX: f32 = 17.0;
-/// Terminal (xterm) font size in px at zoom 1.0.
-const BASE_TERM_PX: f64 = 16.0;
 /// Global zoom bounds and step.
 const ZOOM_MIN: f64 = 0.5;
 const ZOOM_MAX: f64 = 3.0;
@@ -52,6 +50,9 @@ const ZOOM_STEP: f64 = 0.1;
 
 /// Max visited URLs kept for autocomplete (also the cap persisted in the session).
 const HISTORY_CAP: usize = 300;
+
+/// Left/right padding (px) inside a native terminal tab's content area.
+const TERM_PAD: i32 = 4;
 
 /// Command verbs offered by command-bar autocomplete (`:ver`→`:version`). Longest-
 /// useful canonical spellings; ordered so the first prefix match is the best one.
@@ -485,21 +486,10 @@ enum UserEvent {
     Navigate(String),
     /// A `:te` command finished: combined output and exit code.
     TermDone { cmd: String, output: String, code: Option<i32> },
-    /// Keystrokes from a terminal's xterm → write to its PTY (routed by tab id).
-    TermInput { id: u64, data: String },
-    /// xterm reflow → resize the PTY (cols/rows), routed by tab id.
-    TermResize { id: u64, cols: u16, rows: u16 },
-    /// Output bytes (base64) from a terminal's PTY → feed to its xterm.
-    TermOutput { id: u64, data: String },
-    /// The terminal page has set up `window.__feed` and is ready to receive
-    /// output → flush anything buffered before it loaded.
-    TermReady { id: u64 },
+    /// Raw output bytes from a terminal's PTY → feed to its native VT engine.
+    TermOutput { id: u64, data: Vec<u8> },
     /// The terminal's shell exited (pty-host stdout EOF) → close that tab.
     TermClosed { id: u64 },
-    /// Zoom the whole UI by N steps (forwarded from a focused page, e.g. terminal).
-    ZoomStep(i32),
-    /// Reset zoom to 100% (forwarded from a focused page).
-    ZoomReset,
     /// Web caret mode yanked a selection → put this text on the clipboard.
     CaretYank(String),
     /// Web caret mode exited (Esc with no selection) → return the shell to Normal.
@@ -579,7 +569,7 @@ struct Tab {
     /// Present for an engine-free `:error`/`:errors` tab: a read-only vim-style text
     /// buffer over the session error log. Mutually exclusive with `webview`.
     vim: Option<vim::TextBuffer>,
-    /// Present if this tab is an embedded terminal (xterm.js + PTY).
+    /// Present if this tab is a native terminal (alacritty_terminal VT engine + PTY).
     term: Option<TermSession>,
 }
 
@@ -631,12 +621,8 @@ struct TermSession {
     /// closing it reaps the whole tree. 0 if jobs are unavailable.
     job: isize,
     reader: Option<JoinHandle<()>>,
-    /// Has the xterm page set up `window.__feed` yet? ConPTY emits its init
-    /// sequence (including the `ESC[6n` cursor query the terminal MUST answer or
-    /// the shell stalls) the instant it spawns — well before the webview loads.
-    /// Until the page reports ready we buffer output here instead of dropping it.
-    ready: bool,
-    pending: Vec<String>,
+    /// The native VT engine + grid this terminal renders from (no WebView2).
+    pty: pty_term::PtyTerm,
 }
 
 impl TermSession {
@@ -1075,23 +1061,7 @@ fn main() -> Result<()> {
             Event::UserEvent(UserEvent::TermDone { cmd, output, code }) => {
                 app.show_term_result(&cmd, &output, code);
             }
-            Event::UserEvent(UserEvent::TermInput { id, data }) => {
-                if let Some(s) = app.term_session_mut(id) {
-                    s.send(0, data.as_bytes());
-                }
-            }
-            Event::UserEvent(UserEvent::TermResize { id, cols, rows }) => {
-                if let Some(s) = app.term_session_mut(id) {
-                    let mut p = [0u8; 4];
-                    p[0..2].copy_from_slice(&cols.to_le_bytes());
-                    p[2..4].copy_from_slice(&rows.to_le_bytes());
-                    s.send(1, &p);
-                }
-            }
-            Event::UserEvent(UserEvent::TermOutput { id, data }) => app.feed_terminal(id, data),
-            Event::UserEvent(UserEvent::TermReady { id }) => app.terminal_ready(id),
-            Event::UserEvent(UserEvent::ZoomStep(steps)) => app.zoom_by(steps),
-            Event::UserEvent(UserEvent::ZoomReset) => app.zoom_reset(),
+            Event::UserEvent(UserEvent::TermOutput { id, data }) => app.feed_terminal(id, &data),
             Event::UserEvent(UserEvent::CaretYank(text)) => {
                 let n = text.chars().count();
                 clipboard_set(&text);
@@ -1235,20 +1205,17 @@ impl App {
         self.set_zoom(1.0);
     }
 
-    /// Set the global zoom and apply it to every layer at once: the native chrome
-    /// font (painter), each web tab (WebView2 zoom factor), and each terminal tab
-    /// (xterm font). Bar/tab-bar heights scale too, so the active webview is
+    /// Set the global zoom and apply it to every layer: the native chrome font
+    /// (painter) and each web tab (WebView2 zoom). Native terminals scale with the
+    /// painter too — their grid is re-sized to the new cell count on the next draw
+    /// (`sync_active_term_size`). Bar/tab-bar heights scale, so the active webview is
     /// re-laid-out to fit between them.
     fn set_zoom(&mut self, factor: f64) {
         let z = ((factor.clamp(ZOOM_MIN, ZOOM_MAX)) * 100.0).round() / 100.0;
         self.zoom = z;
         self.painter.set_px(BASE_PX * z as f32);
-        let term_px = (BASE_TERM_PX * z).round();
         for tab in &self.tabs {
-            let Some(wv) = &tab.webview else { continue };
-            if tab.term.is_some() {
-                let _ = wv.evaluate_script(&format!("window.__setZoom&&window.__setZoom({term_px})"));
-            } else {
+            if let Some(wv) = &tab.webview {
                 let _ = wv.zoom(z);
             }
         }
@@ -1426,7 +1393,21 @@ impl App {
             ModeKind::Passthrough => {
                 if matches!(key.logical_key, Key::Escape) && self.modifiers.shift_key() {
                     self.exit_to_normal();
+                } else if self.active_is_term() {
+                    // Native terminal: forward every key to the PTY, except the
+                    // global zoom chords (Ctrl +/-/0), which still resize the UI.
+                    if self.modifiers.control_key() {
+                        match key.physical_key {
+                            KeyCode::Equal => return self.zoom_by(1),
+                            KeyCode::Minus => return self.zoom_by(-1),
+                            KeyCode::Digit0 => return self.zoom_reset(),
+                            _ => {}
+                        }
+                    }
+                    self.key_term(key);
                 }
+                // For a webview in passthrough the page itself has focus and the
+                // injected bridge handles keys; nothing to do here.
             }
             ModeKind::Normal => self.key_normal(key),
         }
@@ -2268,6 +2249,15 @@ impl App {
     }
 
     fn enter_passthrough(&mut self) {
+        // Native terminal: Passthrough is the terminal's input mode, but the SHELL
+        // keeps keyboard focus (there's no webview) and forwards keys to the PTY.
+        if self.active_is_term() {
+            self.mode = ModeKind::Passthrough;
+            self.window.set_focus();
+            self.set_status("terminal — Shift+Esc returns to the shell");
+            self.window.request_redraw();
+            return;
+        }
         if self.active_webview().is_none() {
             self.set_status("no page — open one first");
             return;
@@ -2843,9 +2833,25 @@ impl App {
             .unwrap_or(false)
     }
 
-    /// Open an embedded terminal tab. The ConPTY + shell run in a companion
-    /// `browser-pty-host` process (so they can't deadlock our exit); we bridge
-    /// keystrokes/resize to its stdin and its stdout (PTY output) back to xterm.
+    /// Monospace cell size (width, height) in px at the current zoom.
+    fn term_cell(&self) -> (i32, i32) {
+        (self.painter.measure("M").max(1) as i32, self.painter.line_height().max(1) as i32)
+    }
+
+    /// The terminal grid size (cols, rows) that fits the current content band.
+    fn term_grid_size(&self) -> (usize, usize) {
+        let (cw, ch) = self.term_cell();
+        let (w, _) = self.inner();
+        let cols = (((w as i32 - 2 * TERM_PAD) / cw).max(1)) as usize;
+        let rows = ((self.content_view_h() / ch).max(1)) as usize;
+        (cols, rows)
+    }
+
+    /// Open a native terminal tab (no WebView2). The ConPTY + shell run in the
+    /// `browser-pty-host` companion (so they can't deadlock our exit); its raw
+    /// output is parsed by an in-process `alacritty_terminal` engine and painted by
+    /// our own renderer. Enters Passthrough (shell keeps keyboard focus and forwards
+    /// every key to the PTY; Shift+Esc returns to Normal).
     fn open_terminal(&mut self) {
         let shell = if self.term_command.is_empty() {
             vec!["cmd".to_string()]
@@ -2858,18 +2864,18 @@ impl App {
             return;
         };
 
+        let (cols, rows) = self.term_grid_size();
         let mut command = Command::new(&host);
         command
-            .arg("80")
-            .arg("24")
+            .arg(cols.to_string())
+            .arg(rows.to_string())
             .args(&shell)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        // NOTE: do NOT pass CREATE_NO_WINDOW here. A console-less host can fail
-        // to back its ConPTY (the shell starts but no output flows — a terminal
-        // stuck at a blinking cursor). The console popup is suppressed instead by
-        // building browser-pty-host as a GUI-subsystem binary.
+        // NOTE: do NOT pass CREATE_NO_WINDOW here. A console-less host can fail to
+        // back its ConPTY (the shell starts but no output flows). The console popup
+        // is suppressed by building browser-pty-host as a GUI-subsystem binary.
         let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -2893,16 +2899,7 @@ impl App {
         let id = self.next_term_id;
         self.next_term_id += 1;
 
-        let webview = match self.build_terminal_webview(id) {
-            Ok(wv) => wv,
-            Err(e) => {
-                self.set_error(format!("terminal webview: {e:#}"));
-                let _ = child.kill();
-                return;
-            }
-        };
-
-        // Pump the pty-host's stdout (raw PTY output) to the UI thread → xterm.
+        // Pump the pty-host's stdout (raw PTY bytes) to the UI thread → VT parser.
         let proxy = self.proxy.clone();
         let reader_handle = std::thread::spawn(move || {
             let mut stdout = stdout;
@@ -2914,7 +2911,7 @@ impl App {
                         break;
                     }
                     Ok(n) => {
-                        let data = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+                        let data = buf[..n].to_vec();
                         if proxy.send_event(UserEvent::TermOutput { id, data }).is_err() {
                             break;
                         }
@@ -2924,7 +2921,7 @@ impl App {
         });
 
         self.tabs.push(Tab {
-            webview: Some(webview),
+            webview: None,
             url: format!("term: {}", shell[0]),
             nojs: false,
             read: false,
@@ -2937,118 +2934,64 @@ impl App {
                 stdin,
                 job,
                 reader: Some(reader_handle),
-                ready: false,
-                pending: Vec::new(),
+                pty: pty_term::PtyTerm::new(cols, rows),
             }),
         });
         self.active = Some(self.tabs.len() - 1);
         self.refresh_visibility();
-        self.mode = ModeKind::Passthrough;
-        if let Some(wv) = self.active_webview() {
-            let _ = wv.focus();
-        }
+        self.mode = ModeKind::Passthrough; // terminal input mode; shell keeps focus
+        self.window.set_focus();
         self.set_status("terminal — Shift+Esc returns to the shell");
-    }
-
-    /// Build the terminal webview. The PTY handles live in the [`TermSession`]; the
-    /// page only relays keystrokes/resizes/leave via IPC events (tagged with `id`).
-    fn build_terminal_webview(&self, id: u64) -> Result<WebView> {
-        let proxy = self.proxy.clone();
-        WebViewBuilder::new()
-            .with_html(terminal_page())
-            .with_bounds(self.content_rect())
-            .with_focused(false)
-            .with_browser_accelerator_keys(false)
-            // Must match the content webviews' args or WebView2 fails to create a
-            // second environment on the shared user-data folder (0x8007139F) — this
-            // is what broke `:te` opened after a page tab.
-            .with_additional_browser_args(BROWSER_ARGS)
-            .with_ipc_handler(move |req| {
-                let body = req.body().as_str();
-                // Exact-match control messages MUST be checked before the prefix
-                // messages: "ready" starts with 'r', so the resize ('r') branch
-                // would otherwise swallow it and the terminal would never flush.
-                match body {
-                    "ready" => {
-                        let _ = proxy.send_event(UserEvent::TermReady { id });
-                    }
-                    "zoom+" => {
-                        let _ = proxy.send_event(UserEvent::ZoomStep(1));
-                    }
-                    "zoom-" => {
-                        let _ = proxy.send_event(UserEvent::ZoomStep(-1));
-                    }
-                    "zoom0" => {
-                        let _ = proxy.send_event(UserEvent::ZoomReset);
-                    }
-                    "leave-passthrough" => {
-                        let _ = proxy.send_event(UserEvent::ExitToNormal);
-                    }
-                    _ if body.starts_with('i') => {
-                        let _ = proxy
-                            .send_event(UserEvent::TermInput { id, data: body[1..].to_string() });
-                    }
-                    _ if body.starts_with('r') => {
-                        if let Some((c, r)) = body[1..].split_once(',') {
-                            if let (Ok(cols), Ok(rows)) = (c.parse::<u16>(), r.parse::<u16>()) {
-                                let _ = proxy.send_event(UserEvent::TermResize { id, cols, rows });
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            })
-            .build_as_child(&*self.window)
-            .map_err(|e| anyhow::anyhow!("{e}"))
+        self.window.request_redraw();
     }
 
     fn term_session_mut(&mut self, id: u64) -> Option<&mut TermSession> {
         self.tabs.iter_mut().find_map(|t| t.term.as_mut().filter(|s| s.id == id))
     }
 
-    /// Feed a chunk of PTY output (base64) to the terminal's xterm. Before the
-    /// page reports ready, `window.__feed` doesn't exist yet, so buffer instead
-    /// of dropping (dropping the early `ESC[6n` would stall the shell forever).
-    fn feed_terminal(&mut self, id: u64, data: String) {
-        let Some(tab) = self.tabs.iter_mut().find(|t| t.term.as_ref().map(|s| s.id) == Some(id))
-        else {
-            return;
-        };
-        let Some(session) = tab.term.as_mut() else { return };
-        if session.ready {
-            if let Some(wv) = &tab.webview {
-                let _ = wv.evaluate_script(&format!("window.__feed(\"{data}\")"));
+    /// Feed raw PTY output bytes to a terminal's VT engine and repaint it. Any reply
+    /// the engine produced (e.g. the `ESC[6n` cursor-position answer the shell waits
+    /// for) is written straight back to the PTY.
+    fn feed_terminal(&mut self, id: u64, data: &[u8]) {
+        if let Some(s) = self.term_session_mut(id) {
+            s.pty.feed(data);
+            let reply = s.pty.take_reply();
+            if !reply.is_empty() {
+                s.send(0, &reply);
             }
-        } else {
-            session.pending.push(data);
+            self.window.request_redraw();
         }
     }
 
-    /// The xterm page finished initializing `window.__feed`: mark it ready and
-    /// flush everything buffered while it was loading (in arrival order).
-    fn terminal_ready(&mut self, id: u64) {
-        let Some(tab) = self.tabs.iter_mut().find(|t| t.term.as_ref().map(|s| s.id) == Some(id))
+    /// Match the active terminal's grid to the current window/zoom, resizing the PTY
+    /// if the cell count changed.
+    fn sync_active_term_size(&mut self) {
+        let (cols, rows) = self.term_grid_size();
+        let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
         else {
             return;
         };
-        let Some(session) = tab.term.as_mut() else { return };
-        session.ready = true;
-        let pending = std::mem::take(&mut session.pending);
-        if let Some(wv) = &tab.webview {
-            for data in pending {
-                let _ = wv.evaluate_script(&format!("window.__feed(\"{data}\")"));
-            }
+        if s.pty.resize(cols, rows) {
+            let mut p = [0u8; 4];
+            p[0..2].copy_from_slice(&(cols as u16).to_le_bytes());
+            p[2..4].copy_from_slice(&(rows as u16).to_le_bytes());
+            s.send(1, &p);
         }
-        // Adopt the current global zoom (the page starts at 100%).
-        if (self.zoom - 1.0).abs() > f64::EPSILON {
-            let term_px = (BASE_TERM_PX * self.zoom).round();
-            if let Some(wv) = self
-                .tabs
-                .iter()
-                .find(|t| t.term.as_ref().map(|s| s.id) == Some(id))
-                .and_then(|t| t.webview.as_ref())
+    }
+
+    /// Encode a key for the active terminal and write it to the PTY.
+    fn key_term(&mut self, key: &KeyEvent) {
+        let app_cursor = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.term.as_ref())
+            .is_some_and(|s| s.pty.app_cursor());
+        let ctrl = self.modifiers.control_key();
+        let alt = self.modifiers.alt_key();
+        if let Some(bytes) = encode_term_key(&key.logical_key, ctrl, alt, app_cursor) {
+            if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
             {
-                let _ = wv.evaluate_script(&format!("window.__setZoom({term_px})"));
+                s.send(0, &bytes);
             }
         }
     }
@@ -3405,10 +3348,6 @@ impl App {
             let _ = wv.set_visible(visible);
             if visible {
                 let _ = wv.set_bounds(rect);
-                if tab.term.is_some() {
-                    // Re-fit xterm to the new size; it reports back to resize the PTY.
-                    let _ = wv.evaluate_script("window.__fit&&window.__fit()");
-                }
             }
         }
         self.window.request_redraw();
@@ -3576,6 +3515,8 @@ impl App {
         // Keep the engine-free read layout current (cheap no-op unless something
         // that affects layout changed) before we read it for painting.
         self.refresh_read_layout();
+        // Keep the active terminal's grid matched to the window/zoom.
+        self.sync_active_term_size();
         let (w, h) = self.inner();
         // Gather all dynamic text + zoom-scaled metrics up front, while we can
         // still borrow &self.
@@ -3589,6 +3530,10 @@ impl App {
             .active
             .and_then(|i| self.tabs.get(i))
             .is_some_and(|t| t.vim.is_some());
+        let term_active = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .is_some_and(|t| t.term.is_some());
         let bar_h = self.bar_h() as usize;
         let tab_h = self.tab_bar_h() as usize;
         // Minimized / degenerate size: skip the frame. The tab + command bars are a
@@ -3898,6 +3843,23 @@ impl App {
             draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels);
             draw_bar(&mut buf);
             buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
+        } else if term_active {
+            // Native terminal: paint the VT grid ourselves (no WebView2). Fill the
+            // content band with the terminal background, draw the cells, then the
+            // opaque bars on top.
+            draw::fill_band(&mut buf, wz, hz, 0, bar_top, pty_term::BG);
+            let content_top = tab_h as i32;
+            let (cw, ch) = (p.measure("M").max(1) as i32, p.line_height() as i32);
+            if let Some(s) = self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.term.as_ref())
+            {
+                pty_term::render(
+                    &s.pty, p, &mut buf, wz, hz, TERM_PAD, content_top, cw, ch, bar_top as i32,
+                );
+            }
+            draw::fill_band(&mut buf, wz, hz, 0, tab_h, draw::BAR_BG);
+            draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels);
+            draw_bar(&mut buf);
+            buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
         } else {
             draw_bar(&mut buf);
             // A webview covers the middle; redraw only the top tab bar and the
@@ -4001,12 +3963,20 @@ impl App {
                 ]
             }
             ModeKind::Passthrough => {
-                let url = self.active_url().unwrap_or("").to_string();
-                vec![
-                    ("[PASS]".into(), draw::ACCENT),
-                    (url, draw::BAR_FG),
-                    ("   (Shift+Esc to exit)".into(), draw::DIM),
-                ]
+                // A native terminal's input mode reads as [TERM]; a web page as [PASS].
+                if self.active_is_term() {
+                    vec![
+                        ("[TERM]".into(), draw::TERM),
+                        ("   typing to the shell · Shift+Esc to leave".into(), draw::DIM),
+                    ]
+                } else {
+                    let url = self.active_url().unwrap_or("").to_string();
+                    vec![
+                        ("[PASS]".into(), draw::ACCENT),
+                        (url, draw::BAR_FG),
+                        ("   (Shift+Esc to exit)".into(), draw::DIM),
+                    ]
+                }
             }
             ModeKind::Normal => {
                 let label = match self.active_url() {
@@ -4115,75 +4085,6 @@ fn exec_command(cmd: &str) -> (String, Option<i32>) {
         }
         Err(e) => (format!("failed to run command: {e}"), None),
     }
-}
-
-// Vendored xterm.js (UMD), its CSS, and the fit addon — embedded so the terminal
-// works offline with no CDN/CSP issues.
-const XTERM_JS: &str = include_str!("../assets/xterm.js");
-const XTERM_CSS: &str = include_str!("../assets/xterm.css");
-const FIT_JS: &str = include_str!("../assets/addon-fit.js");
-
-/// Page script: wire xterm.js to our IPC bridge. Input → `i<data>`, resize →
-/// `r<cols>,<rows>`, Shift+Esc → `leave-passthrough`; `window.__feed`/`__fit` are
-/// driven by the shell. (Built with string concat to avoid `format!` brace issues.)
-const TERM_INIT: &str = r#"
-var DEFAULT_SIZE = 16;
-var term = new Terminal({ fontFamily: 'Consolas, monospace', fontSize: DEFAULT_SIZE, cursorBlink: true,
-  theme: { background: '#1a1a1a', foreground: '#d6d6d6' } });
-var fit = new FitAddon.FitAddon();
-term.loadAddon(fit);
-term.open(document.getElementById('term'));
-function refit() { try { fit.fit(); } catch (e) {} }
-refit();
-term.focus();
-window.__fit = refit;
-window.__feed = function (b64) {
-  term.write(Uint8Array.from(atob(b64), function (c) { return c.charCodeAt(0); }));
-};
-// The shell drives zoom globally (native chrome + web tabs + terminal together),
-// so it pushes an absolute font size here rather than us zooming locally.
-window.__setZoom = function (px) { term.options.fontSize = px; refit(); };
-term.onData(function (d) { if (window.ipc) window.ipc.postMessage('i' + d); });
-term.onResize(function (s) { if (window.ipc) window.ipc.postMessage('r' + s.cols + ',' + s.rows); });
-document.addEventListener('keydown', function (e) {
-  if (e.key === 'Escape' && e.shiftKey) {
-    e.preventDefault(); e.stopPropagation();
-    if (window.ipc) window.ipc.postMessage('leave-passthrough');
-    return;
-  }
-  // Ctrl +/-/0 zoom the WHOLE browser — forward to the shell, which scales the
-  // native chrome and every tab (including this one via __setZoom).
-  if (e.ctrlKey && (e.key === '=' || e.key === '+')) { e.preventDefault(); if (window.ipc) window.ipc.postMessage('zoom+'); return; }
-  if (e.ctrlKey && e.key === '-') { e.preventDefault(); if (window.ipc) window.ipc.postMessage('zoom-'); return; }
-  if (e.ctrlKey && e.key === '0') { e.preventDefault(); if (window.ipc) window.ipc.postMessage('zoom0'); return; }
-}, true);
-window.addEventListener('resize', refit);
-// __feed and onData are now wired, so the browser can safely flush any output it
-// buffered while we loaded (notably ConPTY's ESC[6n, which xterm answers via
-// onData — without that reply the shell never prints its prompt).
-if (window.ipc) window.ipc.postMessage('ready');
-setTimeout(function () { refit(); if (window.ipc) window.ipc.postMessage('r' + term.cols + ',' + term.rows); }, 0);
-"#;
-
-/// Assemble the full terminal page (xterm.css + xterm.js + fit + init).
-fn terminal_page() -> String {
-    let mut s = String::with_capacity(XTERM_JS.len() + XTERM_CSS.len() + 2048);
-    s.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>");
-    s.push_str(XTERM_CSS);
-    s.push_str(
-        "html,body{margin:0;height:100%;background:#1a1a1a;overflow:hidden}\
-         #term{position:fixed;inset:0;padding:4px}\
-         .xterm-viewport{overflow-y:hidden!important}\
-         .xterm-viewport::-webkit-scrollbar{width:0;height:0;display:none}",
-    );
-    s.push_str("</style></head><body><div id=\"term\"></div><script>");
-    s.push_str(XTERM_JS);
-    s.push_str("</script><script>");
-    s.push_str(FIT_JS);
-    s.push_str("</script><script>");
-    s.push_str(TERM_INIT);
-    s.push_str("</script></body></html>");
-    s
 }
 
 /// Stylesheet for the internal `:commands` / `:version` pages.
@@ -4507,7 +4408,7 @@ fn version_lines() -> Vec<String> {
         ("Authors", env!("CARGO_PKG_AUTHORS")),
         ("Engine", "WebView2 (Chromium) via wry 0.55 — loaded on demand"),
         ("Windowing", "tao 0.35 + softbuffer/fontdue native chrome"),
-        ("Terminal", "xterm.js + a browser-pty-host companion (ConPTY)"),
+        ("Terminal", "native alacritty_terminal VT engine + a browser-pty-host companion (ConPTY)"),
         ("Platform", std::env::consts::OS),
         ("Architecture", std::env::consts::ARCH),
     ];
@@ -4596,6 +4497,66 @@ fn line_col_x(runs: &[read_view::Run], col: usize, base: i32, p: &Painter) -> i3
         x = x.floor(); // text_clipped returns `pen as i32` between runs
     }
     x as i32
+}
+
+/// Encode a key event into the bytes a PTY expects (the inverse of what xterm.js
+/// used to do). Covers printable input, Ctrl-combos → control codes, Enter/Tab/
+/// Backspace/Esc, and the cursor/navigation keys (honoring DECCKM app-cursor mode).
+/// `None` for keys with no terminal meaning. Alt prefixes the sequence with ESC.
+fn encode_term_key(key: &Key, ctrl: bool, alt: bool, app_cursor: bool) -> Option<Vec<u8>> {
+    let cursor = |c: u8| -> Vec<u8> {
+        let mut v = if app_cursor { vec![0x1b, b'O'] } else { vec![0x1b, b'['] };
+        v.push(c);
+        v
+    };
+    let mut out: Vec<u8> = match key {
+        Key::Character(s) => {
+            if ctrl {
+                vec![ctrl_byte(s.chars().next()?)?]
+            } else {
+                s.as_bytes().to_vec()
+            }
+        }
+        Key::Enter => vec![b'\r'],
+        Key::Backspace => vec![0x7f],
+        Key::Tab => vec![b'\t'],
+        Key::Escape => vec![0x1b],
+        Key::Space => vec![b' '],
+        Key::ArrowUp => cursor(b'A'),
+        Key::ArrowDown => cursor(b'B'),
+        Key::ArrowRight => cursor(b'C'),
+        Key::ArrowLeft => cursor(b'D'),
+        Key::Home => cursor(b'H'),
+        Key::End => cursor(b'F'),
+        Key::PageUp => b"\x1b[5~".to_vec(),
+        Key::PageDown => b"\x1b[6~".to_vec(),
+        Key::Delete => b"\x1b[3~".to_vec(),
+        Key::Insert => b"\x1b[2~".to_vec(),
+        _ => return None,
+    };
+    // Alt = Meta: prefix with ESC (unless the sequence already starts with one).
+    if alt && out.first() != Some(&0x1b) {
+        let mut v = vec![0x1b];
+        v.append(&mut out);
+        out = v;
+    }
+    Some(out)
+}
+
+/// Control code for Ctrl+<char>: `Ctrl+A`→0x01 … `Ctrl+Z`→0x1a, `Ctrl+[`→ESC,
+/// `Ctrl+Space`→NUL, etc. `None` for non-controllable keys.
+fn ctrl_byte(c: char) -> Option<u8> {
+    if !c.is_ascii() {
+        return None;
+    }
+    let u = c.to_ascii_uppercase() as u8;
+    if (0x40..=0x5f).contains(&u) {
+        Some(u & 0x1f)
+    } else if u == b' ' {
+        Some(0)
+    } else {
+        None
+    }
 }
 
 /// Compact display form of a URL for autocomplete: scheme + `www.` + trailing

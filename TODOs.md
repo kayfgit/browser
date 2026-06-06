@@ -3,7 +3,7 @@
 [] - look for a way to make the browser consume the least amount of resources from the pc, even with the heavy engine running
 [] - maybe add tmux functionality? could be cool
 [] - maybe add a :engine command to change browser engine? might be overkill
-[] - make own dedicated terminal to use as little resources as possible
-[~] - add the same vim motions of :error and :resources on :version and :te (on the terminal it should activate while exiting passthrough mode)  [:version DONE (now a native vim pager); :te terminal vim-on-passthrough-exit still TODO]
+[x] - make own dedicated terminal to use as little resources as possible  [v1 DONE: :te is now a native alacritty_terminal VT engine rendered by our own softbuffer painter — ZERO WebView2 per terminal (verified: stays at SearchHost baseline). xterm.js/WebView2 dropped. PTY still in browser-pty-host. roadmap: scrollback scrolling, mouse selection, tiling/splits.]
+[~] - add the same vim motions of :error and :resources on :version and :te (on the terminal it should activate while exiting passthrough mode)  [:version DONE (native vim pager); :te now native (alacritty grid) so vim-over-scrollback is feasible — still TODO]
 [x] - same visual issue as before, cursor is slightly offset, scales with how far to the right it is and zoom  [read lines are multi-run; text_clipped floors the pen at each run boundary but the caret used measure() of the whole prefix (floored once) → drift grew with column*zoom. fixed with line_col_x() which replicates the per-run flooring; used for caret cursor, selection, and find highlight]
 [x] - make top bar (where the links sit) draggable with a mouse, just a quality of life.  [left mouse-down in the tab-bar strip calls window.drag_window() (OS move); cursor tracked via CursorMoved]
