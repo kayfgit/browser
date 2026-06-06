@@ -111,7 +111,14 @@ impl Painter {
                     if gx < clip_x0 || gy < 0 || gx >= w as i32 || gy >= h as i32 {
                         continue;
                     }
+                    // Defensive: callers pass chrome metrics (tab/command-bar height)
+                    // that can momentarily exceed the buffer during minimize/resize.
+                    // The `gy >= h` check above normally covers this, but guard the
+                    // raw index too so a geometry mismatch can never panic the render.
                     let idx = gy as usize * w + gx as usize;
+                    if idx >= buf.len() {
+                        continue;
+                    }
                     buf[idx] = blend(buf[idx], color, cov);
                 }
             }

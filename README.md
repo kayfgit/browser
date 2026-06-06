@@ -116,6 +116,13 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
 - **Quick maths** — type an arithmetic expression in the command bar (`+ - * / % ^`, parentheses)
   and the result shows live, right-aligned (`:20*8` → `= 160`). Press `Enter` to replace the line
   with the result so you can copy it or keep calculating (`160` → `160+10`).
+- **`:res` (resource readout)** — a **live** monitor of the browser's real footprint across its
+  **whole process tree** (the shell + every WebView2 engine process + any terminal `pty-host`s): a
+  grand total + per-process **memory, CPU%, and disk I/O**, sorted by memory, in an engine-free pager
+  that auto-refreshes ~1×/sec. Press **Space to pause/freeze** it so you can navigate and copy
+  pids/figures with vim motions, Space again to resume. Task Manager scatters the WebView2 engine
+  processes under their own "WebView2 Manager" group (the Edge runtime gives its broker a separate app
+  identity), so this is the one place you see the true total.
 - **Session restore** — on quit the open tabs (web/`:nojs`/`:research`/`:read` and terminals), the
   window position + size, zoom, JS-off, and search-engine settings are saved to `session.toml` in the
   data dir; the next launch with no CLI argument reopens them exactly. Passing a URL/command on the

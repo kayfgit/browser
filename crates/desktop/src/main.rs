@@ -31,6 +31,7 @@ use wry::dpi::{PhysicalPosition, PhysicalSize};
 use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewBuilderExtWindows};
 
 mod draw;
+mod procmon;
 mod read_view;
 mod session;
 mod vim;
@@ -608,6 +609,12 @@ struct App {
     /// close, `:q`, then `LoopDestroyed`); without this guard the second call would
     /// re-save the session with the now-cleared tab list, wiping the good snapshot.
     torn_down: bool,
+    /// `:res` resource monitor: whether it's auto-refreshing (vs paused so the vim
+    /// pager can be navigated/copied), the previous per-pid (cpu_100ns, io_bytes)
+    /// sample for computing CPU%/disk rate, and when that sample was taken.
+    res_live: bool,
+    res_prev: std::collections::HashMap<u32, (u64, u64)>,
+    res_at: Instant,
 }
 
 /// Tag this process with an explicit AppUserModelID so Windows (taskbar + Task
@@ -738,6 +745,9 @@ fn main() -> Result<()> {
         cursor_on: true,
         quit: false,
         torn_down: false,
+        res_live: false,
+        res_prev: std::collections::HashMap::new(),
+        res_at: Instant::now(),
     };
 
     // Optional: open a page immediately, e.g. `browser-desktop youtube.com`,
@@ -787,6 +797,11 @@ fn main() -> Result<()> {
                     // Focus backstop: reclaim keyboard focus if a click handed it to
                     // the webview (see reclaim_focus_tick).
                     app.reclaim_focus_tick();
+                    // Live `:res` monitor: re-sample on the tick.
+                    if app.res_live && app.active_is_res() {
+                        app.refresh_res();
+                        app.window.request_redraw();
+                    }
                 }
             }
             Event::WindowEvent { event, .. } => match event {
@@ -927,6 +942,9 @@ fn main() -> Result<()> {
                 // Poll to keep keyboard focus on the shell while a web tab is up (the
                 // click-focus backstop). Idle otherwise — no wakeups on welcome/read tabs.
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(300));
+            } else if app.mode == ModeKind::Normal && app.res_live && app.active_is_res() {
+                // Auto-refresh the live resource monitor about once a second.
+                *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(1000));
             }
         }
     });
@@ -1227,6 +1245,13 @@ impl App {
                 }
                 _ => {}
             }
+        }
+        // Resource monitor (`:res`): Space toggles live/paused. The spacebar arrives
+        // as `Key::Space` (not `Key::Character(" ")`), so match that. Claim it before
+        // the vim pager sees it.
+        if self.active_is_res() && matches!(&key.logical_key, Key::Space) {
+            self.toggle_res_live();
+            return;
         }
         // A `:error`/`:errors` tab is a read-only vim pager: let it claim the motion/
         // visual/yank keys first; anything it doesn't want (`:`, n/p, x, …) falls
@@ -2123,6 +2148,10 @@ impl App {
             }
             "commands" | "help" => self.open_local_page("commands", commands_document()),
             "version" => self.open_local_page("version", version_document()),
+            // Total the browser's real footprint across its whole process tree
+            // (browser.exe + WebView2 engine procs + pty-hosts), which Task Manager
+            // scatters under a separate "WebView2 Manager" group.
+            "res" | "resources" => self.open_resource_page(),
             "" => {}
             // A bare bang (`:!yt cats`) opens the whole line as a bang target.
             other if other.starts_with('!') => self.open_tab(line, self.nojs),
@@ -2619,6 +2648,147 @@ impl App {
         self.window.request_redraw();
     }
 
+    /// `:res` — the browser's whole-tree resource usage (browser.exe + WebView2
+    /// engine procs + pty-hosts): memory, CPU%, and disk I/O per process plus a
+    /// grand total, in an engine-free vim-style tab. Task Manager won't give this in
+    /// one place (it scatters WebView2 under its own group). Opens **live**
+    /// (auto-refreshing); press Space to pause/freeze it so you can navigate and copy
+    /// pids/figures with vim motions, Space again to resume.
+    fn open_resource_page(&mut self) {
+        // Start a fresh monitor: live, no previous sample yet (so the first frame
+        // shows memory immediately and CPU/disk fill in on the next refresh).
+        self.res_live = true;
+        self.res_prev.clear();
+        self.res_at = Instant::now();
+        let lines = self.sample_res_lines();
+        if lines.is_empty() {
+            self.set_status("resource info unavailable");
+            self.res_live = false;
+            return;
+        }
+        self.tabs.push(Tab {
+            webview: None,
+            url: "browser://res".into(),
+            nojs: false,
+            read: false,
+            research: false,
+            native: None,
+            vim: Some(vim::TextBuffer::new(lines)),
+            term: None,
+        });
+        self.active = Some(self.tabs.len() - 1);
+        self.refresh_visibility();
+        self.window.set_focus();
+        self.clear_status();
+        self.window.request_redraw();
+    }
+
+    /// Whether the active tab is the `:res` resource monitor.
+    fn active_is_res(&self) -> bool {
+        self.active.and_then(|i| self.tabs.get(i)).is_some_and(|t| t.url == "browser://res")
+    }
+
+    /// Toggle the resource monitor between live (auto-refresh) and paused (frozen so
+    /// the vim pager can be navigated/copied). Resuming refreshes immediately.
+    fn toggle_res_live(&mut self) {
+        self.res_live = !self.res_live;
+        if self.res_live {
+            self.res_at = Instant::now();
+            self.res_prev.clear();
+        }
+        self.refresh_res();
+        self.window.request_redraw();
+    }
+
+    /// If the active tab is the resource monitor, re-sample and update its buffer
+    /// **in place** — keeping the cursor, selection, and scroll — so a live refresh
+    /// never disturbs navigation/copy. Freezes (skips the update) while a visual
+    /// selection is active, so the highlighted text can't shift mid-copy; the
+    /// refresh resumes once the selection is cleared (after yank/Esc). Called on the
+    /// ~1s tick and on pause/resume.
+    fn refresh_res(&mut self) {
+        if !self.active_is_res() {
+            return;
+        }
+        let selecting = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.vim.as_ref())
+            .is_some_and(|b| b.has_selection());
+        if selecting {
+            return;
+        }
+        let lines = self.sample_res_lines();
+        if let Some(buf) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.vim.as_mut())
+        {
+            buf.set_lines(lines);
+        }
+    }
+
+    /// Take a fresh process-tree sample, fold in CPU%/disk-rate deltas against the
+    /// previous sample, format the breakdown, and update `res_prev`/`res_at`.
+    fn sample_res_lines(&mut self) -> Vec<String> {
+        let sample = procmon::tree_sample();
+        if sample.is_empty() {
+            return Vec::new();
+        }
+        let elapsed = self.res_at.elapsed().as_secs_f64();
+        let ncores = procmon::cpu_count() as f64;
+        let have_prev = !self.res_prev.is_empty() && elapsed > 0.05;
+
+        // Per-process CPU% and disk B/s from the cumulative-counter deltas.
+        let rate = |s: &procmon::ProcSample| -> (Option<f64>, Option<f64>) {
+            if !have_prev {
+                return (None, None);
+            }
+            match self.res_prev.get(&s.pid) {
+                Some(&(pc, pio)) => {
+                    let cpu = (s.cpu_100ns.saturating_sub(pc)) as f64
+                        / (elapsed * 1e7 * ncores)
+                        * 100.0;
+                    let disk = (s.io_bytes.saturating_sub(pio)) as f64 / elapsed;
+                    (Some(cpu), Some(disk))
+                }
+                None => (None, None),
+            }
+        };
+
+        let total_mem: u64 = sample.iter().map(|p| p.working_set).sum();
+        let (mut total_cpu, mut total_disk) = (0.0f64, 0.0f64);
+        let mut rows = Vec::with_capacity(sample.len());
+        for p in &sample {
+            let (cpu, disk) = rate(p);
+            total_cpu += cpu.unwrap_or(0.0);
+            total_disk += disk.unwrap_or(0.0);
+            let cpu_s = cpu.map(|c| format!("{c:.1}%")).unwrap_or_else(|| "—".into());
+            let disk_s = disk.map(procmon::fmt_rate).unwrap_or_else(|| "—".into());
+            rows.push(format!(
+                "{:>9}  {:>6}  {:>9}  {:<22} {}",
+                procmon::fmt_bytes(p.working_set),
+                cpu_s,
+                disk_s,
+                p.name,
+                p.pid
+            ));
+        }
+
+        let state = if self.res_live { "[LIVE]  space=pause" } else { "[PAUSED]  space=resume" };
+        let cpu_total = if have_prev { format!("CPU {total_cpu:.1}%") } else { "CPU —".into() };
+        let disk_total =
+            if have_prev { format!("disk {}", procmon::fmt_rate(total_disk)) } else { "disk —".into() };
+        let mut lines = Vec::with_capacity(rows.len() + 5);
+        lines.push(format!("browser — {} processes    {}", sample.len(), state));
+        lines.push(format!("{} · {} · {}", procmon::fmt_bytes(total_mem), cpu_total, disk_total));
+        lines.push(String::new());
+        lines.push(format!("{:>9}  {:>6}  {:>9}  {:<22} {}", "MEM", "CPU", "DISK", "PROCESS", "PID"));
+        lines.extend(rows);
+
+        // Roll the sample forward for the next delta.
+        self.res_prev = sample.iter().map(|p| (p.pid, (p.cpu_100ns, p.io_bytes))).collect();
+        self.res_at = Instant::now();
+        lines
+    }
+
     /// Open an internal HTML page (e.g. `:commands`, `:version`) in a new tab.
     fn open_local_page(&mut self, label: &str, html: String) {
         match self.build_content_webview(Source::Html(html), false, "") {
@@ -2915,6 +3085,14 @@ impl App {
             .is_some_and(|t| t.vim.is_some());
         let bar_h = self.bar_h() as usize;
         let tab_h = self.tab_bar_h() as usize;
+        // Minimized / degenerate size: skip the frame. The tab + command bars are a
+        // FIXED height; in a window shorter than they are (e.g. during Show Desktop /
+        // minimize, where the client area collapses) drawing them writes past the
+        // bottom of the pixel buffer (buf.len() == w*h) and panics. Nothing is
+        // visible when minimized anyway, so there's nothing to paint.
+        if (h as usize) < tab_h + bar_h + 4 || w < 8 {
+            return Ok(());
+        }
         // Command bar: draw the `:`-line with horizontal scroll-to-caret so editing
         // a long URL (e.g. after `:edit`, caret parked at the end) keeps the caret —
         // and the tail of the URL — visible. `cmd` is Some((line, scroll_px)) in
@@ -2968,13 +3146,7 @@ impl App {
 
         // `p` is a disjoint field borrow from `self.surface`, so it coexists with `buf`.
         let p = &self.painter;
-        // Width is row stride; height is derived from the buffer's ACTUAL length, not
-        // the requested size. During a rapid window resize softbuffer can hand back a
-        // buffer whose length still reflects the previous (smaller) size, so trusting
-        // `h` here would let a glyph write past the slice and panic. Clamping `hz` to
-        // `buf.len() / wz` keeps every `gy*wz + gx` index inside the buffer.
-        let wz = w as usize;
-        let hz = (buf.len() / wz.max(1)).min(h as usize);
+        let (wz, hz) = (w as usize, h as usize);
         let bar_top = hz.saturating_sub(bar_h);
 
         let baseline = bar_top + (bar_h * 2 / 3);
@@ -3721,6 +3893,7 @@ fn commands_document() -> String {
         (":resize · :move", "window-control modes (then hjkl, Esc)"),
         (":error · :err", "latest error in a read-only vim tab (v/y to select & copy)"),
         (":errors · :errs", "every error this session (newest first), same vim tab"),
+        (":res · :resources", "live memory/CPU/disk across the whole browser tree (Space pauses to copy)"),
         (":commands · :help", "this page"),
         (":version", "version and build information"),
         (":quit · :q", "quit the browser"),

@@ -77,6 +77,31 @@ impl TextBuffer {
         }
     }
 
+    /// Replace the text in place while KEEPING the cursor, visual selection, and
+    /// scroll offset (each clamped to the new bounds). Used by the live `:res`
+    /// monitor so an auto-refresh doesn't reset an in-progress selection/navigation.
+    pub fn set_lines(&mut self, lines: Vec<String>) {
+        self.lines = if lines.is_empty() {
+            vec![Vec::new()]
+        } else {
+            lines.into_iter().map(|l| l.chars().collect()).collect()
+        };
+        let last = self.lines.len().saturating_sub(1);
+        self.cy = self.cy.min(last);
+        self.cx = self.cx.min(self.line_len(self.cy));
+        self.top = self.top.min(last);
+        if let Some((ay, ax)) = self.anchor {
+            let ay = ay.min(last);
+            self.anchor = Some((ay, ax.min(self.line_len(ay))));
+        }
+    }
+
+    /// Whether a visual selection is currently active (used to freeze live updates
+    /// so the highlighted text can't shift under the user mid-copy).
+    pub fn has_selection(&self) -> bool {
+        self.anchor.is_some()
+    }
+
     /// Place the cursor at `(row, col)` and scroll it into a `rows`×`cols` viewport.
     /// Used by find-in-page to jump to a match.
     pub fn place_cursor(&mut self, row: usize, col: usize, rows: usize, cols: usize) {
