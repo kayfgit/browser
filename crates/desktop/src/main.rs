@@ -49,6 +49,19 @@ const ZOOM_MIN: f64 = 0.5;
 const ZOOM_MAX: f64 = 3.0;
 const ZOOM_STEP: f64 = 0.1;
 
+/// WebView2 browser-process arguments, applied to EVERY webview we build.
+///
+/// This MUST be identical across all webviews: WebView2 requires every
+/// environment sharing a user-data folder to be created with the same options,
+/// or the second creation fails with `ERROR_INVALID_STATE` (HRESULT 0x8007139F).
+/// (That's why a `:te` terminal opened after a content tab used to error — the
+/// terminal webview had no args while content tabs did.) Overrides wry's default
+/// arg string, so we re-include its defaults (mini-menu / PDF UI / SmartScreen off,
+/// plus gesture-free autoplay) and add `Translate,msAutoTranslate` to kill Edge's
+/// "translate this page?" bar.
+const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,\
+     Translate,msAutoTranslate --autoplay-policy=no-user-gesture-required";
+
 /// Injected into every page. Reads a synchronous `window.__mode` flag (kept in
 /// sync by the shell) and, per mode, intercepts exactly the keys the shell owns.
 /// In `insert` it takes Escape (leave) and Ctrl+V (to passthrough) and lets the
@@ -591,6 +604,10 @@ struct App {
     /// Blink state for the command-bar cursor (toggled on a timer in Command mode).
     cursor_on: bool,
     quit: bool,
+    /// Whether `teardown` has already run. It fires from multiple places (window
+    /// close, `:q`, then `LoopDestroyed`); without this guard the second call would
+    /// re-save the session with the now-cleared tab list, wiping the good snapshot.
+    torn_down: bool,
 }
 
 /// Tag this process with an explicit AppUserModelID so Windows (taskbar + Task
@@ -667,12 +684,23 @@ fn main() -> Result<()> {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
-    let window = WindowBuilder::new()
+    // Decide up front whether we're restoring a session: only with no CLI target
+    // and outside headless test runs. Load it here so the saved window geometry can
+    // be applied at build time (no visible jump from the default size).
+    let cli_arg = std::env::args().nth(1);
+    let is_test = std::env::var("BROWSER_TEST_QUIT_MS").is_ok();
+    let restore = if cli_arg.is_none() && !is_test { session::load() } else { None };
+
+    let mut builder = WindowBuilder::new()
         .with_title("browser")
-        .with_decorations(false) // no OS title bar; window control is command-driven
-        .with_inner_size(tao::dpi::LogicalSize::new(1100.0, 740.0))
-        .build(&event_loop)
-        .context("creating window")?;
+        .with_decorations(false); // no OS title bar; window control is command-driven
+    builder = match restore.as_ref().and_then(|s| s.window.as_ref()) {
+        Some(g) => builder
+            .with_inner_size(tao::dpi::PhysicalSize::new(g.w, g.h))
+            .with_position(tao::dpi::PhysicalPosition::new(g.x, g.y)),
+        None => builder.with_inner_size(tao::dpi::LogicalSize::new(1100.0, 740.0)),
+    };
+    let window = builder.build(&event_loop).context("creating window")?;
     let window = Rc::new(window);
 
     let context = softbuffer::Context::new(window.clone())
@@ -709,13 +737,15 @@ fn main() -> Result<()> {
         zoom: 1.0,
         cursor_on: true,
         quit: false,
+        torn_down: false,
     };
 
     // Optional: open a page immediately, e.g. `browser-desktop youtube.com`,
     // or run a command, e.g. `browser-desktop ":nojs youtube.com"`. An explicit
     // CLI target takes precedence over (and skips) session restore. With no
-    // argument, restore the previous session's tabs + UI state.
-    match std::env::args().nth(1) {
+    // argument, restore the previous session's tabs + UI state (window geometry was
+    // already applied at build time above).
+    match cli_arg {
         Some(target) => {
             let t = target.trim_start();
             if let Some(cmd) = t.strip_prefix(':') {
@@ -724,12 +754,11 @@ fn main() -> Result<()> {
                 app.open_tab(&target, false);
             }
         }
-        None if std::env::var("BROWSER_TEST_QUIT_MS").is_err() => {
-            if let Some(s) = session::load() {
+        None => {
+            if let Some(s) = restore {
                 app.restore_session(s);
             }
         }
-        None => {}
     }
 
     // Test hook: auto-quit after N ms so cleanup can be verified headlessly.
@@ -2193,14 +2222,9 @@ impl App {
             // Ctrl+F/P, F12, …) so our own keybindings own the keyboard. Standard
             // editing keys (Ctrl+C/V/X) are unaffected.
             .with_browser_accelerator_keys(false)
-            // Browser process flags. This overrides wry's default arg string, so we
-            // re-include its defaults (mini-menu / PDF UI / SmartScreen off, plus
-            // gesture-free autoplay) and add `Translate,msAutoTranslate` to kill the
-            // "translate this page?" bar that Edge pops on foreign-language pages.
-            .with_additional_browser_args(
-                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,Translate,\
-                 msAutoTranslate --autoplay-policy=no-user-gesture-required",
-            )
+            // Browser process flags — see BROWSER_ARGS. MUST match every other
+            // webview (terminal included) or WebView2 creation fails with 0x8007139F.
+            .with_additional_browser_args(BROWSER_ARGS)
             // The shell bridge always loads; `extra_init` (e.g. research-mode DOM
             // pruning) is appended so it runs in the same document-create pass.
             .with_initialization_script(if extra_init.is_empty() {
@@ -2410,6 +2434,10 @@ impl App {
             .with_bounds(self.content_rect())
             .with_focused(false)
             .with_browser_accelerator_keys(false)
+            // Must match the content webviews' args or WebView2 fails to create a
+            // second environment on the shared user-data folder (0x8007139F) — this
+            // is what broke `:te` opened after a page tab.
+            .with_additional_browser_args(BROWSER_ARGS)
             .with_ipc_handler(move |req| {
                 let body = req.body().as_str();
                 // Exact-match control messages MUST be checked before the prefix
@@ -2717,6 +2745,11 @@ impl App {
     /// webview before exiting — so WebView2 processes and ConPTYs close cleanly
     /// rather than leaving a stuck thread that deadlocks process teardown.
     fn teardown(&mut self) {
+        // Idempotent: only the first call saves + tears down (see `torn_down`).
+        if self.torn_down {
+            return;
+        }
+        self.torn_down = true;
         self.save_session();
         for tab in &mut self.tabs {
             if let Some(session) = tab.term.take() {
@@ -2756,12 +2789,19 @@ impl App {
             }
             tabs.push(session::SavedTab { kind: kind.to_string(), url: tab.url.clone() });
         }
+        // Remember the window placement (outer position + inner size) so it reopens
+        // exactly where it was.
+        let window = self.window.outer_position().ok().map(|p| {
+            let s = self.window.inner_size();
+            session::WindowGeom { x: p.x, y: p.y, w: s.width, h: s.height }
+        });
         session::save(&session::Session {
             zoom: self.zoom,
             nojs: self.nojs,
             search_template: self.search_template.clone(),
             term_command: self.term_command.clone(),
             active,
+            window,
             tabs,
         });
     }

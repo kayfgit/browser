@@ -116,10 +116,10 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
 - **Quick maths** — type an arithmetic expression in the command bar (`+ - * / % ^`, parentheses)
   and the result shows live, right-aligned (`:20*8` → `= 160`). Press `Enter` to replace the line
   with the result so you can copy it or keep calculating (`160` → `160+10`).
-- **Session restore** — on quit the open tabs (web/`:nojs`/`:research`/`:read` and terminals) plus
-  zoom, JS-off, and search-engine settings are saved to `session.toml` in the data dir; the next
-  launch with no CLI argument reopens them exactly. Passing a URL/command on the command line skips
-  restore for that run.
+- **Session restore** — on quit the open tabs (web/`:nojs`/`:research`/`:read` and terminals), the
+  window position + size, zoom, JS-off, and search-engine settings are saved to `session.toml` in the
+  data dir; the next launch with no CLI argument reopens them exactly. Passing a URL/command on the
+  command line skips restore for that run.
 - **`:te <command>` (command runner)** — runs a local shell command on a background thread;
   the result replaces the command-bar text (vim-style). **Strictly shell-initiated** — never
   reachable from page content.

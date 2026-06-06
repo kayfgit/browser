@@ -19,8 +19,22 @@ pub struct Session {
     pub term_command: Vec<String>,
     /// Index of the focused tab within `tabs`.
     pub active: usize,
-    // NOTE: keep this last — TOML requires array-of-tables fields after scalars.
+    /// Last window geometry (outer position + inner size). `None` for sessions
+    /// written before this was tracked.
+    #[serde(default)]
+    pub window: Option<WindowGeom>,
+    // NOTE: keep this last — TOML requires array-of-tables fields after scalars/tables.
     pub tabs: Vec<SavedTab>,
+}
+
+/// Saved window placement: outer position `(x, y)` and inner size `(w, h)`, in
+/// physical pixels.
+#[derive(Serialize, Deserialize)]
+pub struct WindowGeom {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
 }
 
 /// One saved tab: how it was opened (`open` | `nojs` | `research` | `read` |
@@ -68,6 +82,7 @@ mod tests {
             search_template: "https://example.com/?q=%s".into(),
             term_command: vec!["nu".into()],
             active: 1,
+            window: Some(WindowGeom { x: 40, y: 60, w: 1280, h: 800 }),
             tabs: vec![
                 SavedTab { kind: "open".into(), url: "https://a.test/".into() },
                 SavedTab { kind: "term".into(), url: String::new() },
@@ -77,6 +92,8 @@ mod tests {
         let back: Session = toml::from_str(&text).expect("deserialize");
         assert_eq!(back.tabs.len(), 2);
         assert_eq!(back.active, 1);
+        let g = back.window.expect("window geom");
+        assert_eq!((g.x, g.y, g.w, g.h), (40, 60, 1280, 800));
         assert_eq!(back.tabs[0].url, "https://a.test/");
         assert_eq!(back.tabs[1].kind, "term");
     }
