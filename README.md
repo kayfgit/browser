@@ -119,8 +119,9 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
 - **`:res` (resource readout)** — a **live** monitor of the browser's real footprint across its
   **whole process tree** (the shell + every WebView2 engine process + any terminal `pty-host`s): a
   grand total + per-process **memory, CPU%, and disk I/O**, sorted by memory, in an engine-free pager
-  that auto-refreshes ~1×/sec. Press **Space to pause/freeze** it so you can navigate and copy
-  pids/figures with vim motions, Space again to resume. Task Manager scatters the WebView2 engine
+  that auto-refreshes ~1×/sec. It **freezes automatically while you're selecting text** (visual mode),
+  so you can highlight and yank pids/figures with vim motions without the rows shifting under you; the
+  refresh resumes once the selection clears. Task Manager scatters the WebView2 engine
   processes under their own "WebView2 Manager" group (the Edge runtime gives its broker a separate app
   identity), so this is the one place you see the true total.
 - **Session restore** — on quit the open tabs (web/`:nojs`/`:research`/`:read` and terminals), the
@@ -142,7 +143,9 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   a normal tab's set). This is the leanest tier by far — a few MB instead of a Chromium process group
   — ideal on low-RAM machines. `j`/`k`/`d`/`u` scroll the laid-out text and **`f` hint mode** labels
   the links natively (home-row labels, same as web hint mode); typing a label follows it by
-  re-extracting that page in place, `r` reloads. Headings, code, lists, quotes and links are styled;
+  re-extracting that page in place, `r` reloads. Press **`v`/`V` for caret/visual selection** — a
+  cursor appears mid-view and you highlight article text with vim motions and **`y` to yank** (copy),
+  `Esc` to leave. Headings, code, lists, quotes and links are styled;
   images/media are simply absent. Best for docs/wikis/news. Read tabs are tinted **green** and show
   `[read]` in the status line. (No back/forward yet on read tabs; Servo remains a possible future
   richer drop-in behind the same `:read`.)

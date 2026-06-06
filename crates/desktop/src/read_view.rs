@@ -46,6 +46,18 @@ pub struct Layout {
     pub height: i32,
 }
 
+impl Layout {
+    /// The plain text of each visual line (run texts concatenated, indent excluded)
+    /// — the grid the read-mode caret/visual selection operates on. Indices line up
+    /// 1:1 with `lines`, so a caret row maps straight to a `VLine`.
+    pub fn text_lines(&self) -> Vec<String> {
+        self.lines
+            .iter()
+            .map(|vl| vl.runs.iter().map(|r| r.text.as_str()).collect::<String>())
+            .collect()
+    }
+}
+
 /// A whitespace-delimited, non-breakable unit carrying one styled fragment.
 struct Word {
     text: String,

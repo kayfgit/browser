@@ -447,6 +447,10 @@ struct NativeRead {
     layout_w: i32,
     layout_px: f32,
     dirty: bool,
+    /// Vim caret/visual-selection state, when caret mode is active (`v`/`V`). Its
+    /// `lines` mirror `layout.text_lines()` so a row maps 1:1 to a visual line;
+    /// `None` means plain scroll mode.
+    caret: Option<vim::TextBuffer>,
 }
 
 /// One recorded failure: when it happened, the command that triggered it (if
@@ -609,10 +613,9 @@ struct App {
     /// close, `:q`, then `LoopDestroyed`); without this guard the second call would
     /// re-save the session with the now-cleared tab list, wiping the good snapshot.
     torn_down: bool,
-    /// `:res` resource monitor: whether it's auto-refreshing (vs paused so the vim
-    /// pager can be navigated/copied), the previous per-pid (cpu_100ns, io_bytes)
-    /// sample for computing CPU%/disk rate, and when that sample was taken.
-    res_live: bool,
+    /// `:res` resource monitor: the previous per-pid (cpu_100ns, io_bytes) sample
+    /// for computing CPU%/disk rate, and when that sample was taken. The monitor
+    /// always auto-refreshes; `refresh_res` just freezes while text is selected.
     res_prev: std::collections::HashMap<u32, (u64, u64)>,
     res_at: Instant,
 }
@@ -745,7 +748,6 @@ fn main() -> Result<()> {
         cursor_on: true,
         quit: false,
         torn_down: false,
-        res_live: false,
         res_prev: std::collections::HashMap::new(),
         res_at: Instant::now(),
     };
@@ -798,7 +800,7 @@ fn main() -> Result<()> {
                     // the webview (see reclaim_focus_tick).
                     app.reclaim_focus_tick();
                     // Live `:res` monitor: re-sample on the tick.
-                    if app.res_live && app.active_is_res() {
+                    if app.active_is_res() {
                         app.refresh_res();
                         app.window.request_redraw();
                     }
@@ -942,7 +944,7 @@ fn main() -> Result<()> {
                 // Poll to keep keyboard focus on the shell while a web tab is up (the
                 // click-focus backstop). Idle otherwise — no wakeups on welcome/read tabs.
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(300));
-            } else if app.mode == ModeKind::Normal && app.res_live && app.active_is_res() {
+            } else if app.mode == ModeKind::Normal && app.active_is_res() {
                 // Auto-refresh the live resource monitor about once a second.
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(1000));
             }
@@ -1030,6 +1032,11 @@ impl App {
         nr.layout_w = cw;
         nr.layout_px = px;
         nr.dirty = false;
+        // Re-wrapping changed the visual lines: refresh the caret's grid in place,
+        // keeping its cursor/selection (clamped) so caret mode survives resize/zoom.
+        if let Some(caret) = nr.caret.as_mut() {
+            caret.set_lines(nr.layout.text_lines());
+        }
         let max = (nr.layout.height - view).max(0);
         nr.scroll = nr.scroll.clamp(0, max);
     }
@@ -1246,17 +1253,15 @@ impl App {
                 _ => {}
             }
         }
-        // Resource monitor (`:res`): Space toggles live/paused. The spacebar arrives
-        // as `Key::Space` (not `Key::Character(" ")`), so match that. Claim it before
-        // the vim pager sees it.
-        if self.active_is_res() && matches!(&key.logical_key, Key::Space) {
-            self.toggle_res_live();
-            return;
-        }
         // A `:error`/`:errors` tab is a read-only vim pager: let it claim the motion/
         // visual/yank keys first; anything it doesn't want (`:`, n/p, x, …) falls
         // through to the normal browser bindings below.
         if self.active_is_vim() && self.key_vim(key) {
+            return;
+        }
+        // Read-mode caret/visual selection (engine-free read tab): once active it
+        // claims motion/visual/yank keys; `v`/`V` below enter it.
+        if self.read_caret_active() && self.key_read_caret(key) {
             return;
         }
         // Chords (with Ctrl) take precedence over plain keys.
@@ -1292,6 +1297,10 @@ impl App {
                     }
                 }
                 "f" => self.enter_hint(),
+                // Read tabs: enter caret/visual selection (highlight + yank article
+                // text with vim motions). On web tabs `v`/`V` are not bound yet.
+                "v" if self.active_is_read_native() => self.enter_read_caret(false),
+                "V" if self.active_is_read_native() => self.enter_read_caret(true),
                 "x" => self.close_active(),
                 "r" => self.reload_active(),
                 "H" => self.history(false),
@@ -1314,37 +1323,41 @@ impl App {
         }
     }
 
-    /// Feed a key to the active `:error`/`:errors` vim pager. Returns `true` if the
-    /// pager consumed it (the shell should then do nothing else with the key).
-    fn key_vim(&mut self, key: &KeyEvent) -> bool {
-        let ctrl = self.modifiers.control_key();
-        // Map the raw key to a pager key. Ctrl+D/Ctrl+U are half-page; any other
-        // Ctrl chord (zoom, …) is left for the shell.
-        let vk = if ctrl {
-            match key.physical_key {
-                KeyCode::KeyD => vim::Key::HalfDown,
-                KeyCode::KeyU => vim::Key::HalfUp,
-                _ => return false,
-            }
-        } else {
-            match &key.logical_key {
-                Key::ArrowLeft => vim::Key::Left,
-                Key::ArrowRight => vim::Key::Right,
-                Key::ArrowUp => vim::Key::Up,
-                Key::ArrowDown => vim::Key::Down,
-                Key::Home => vim::Key::Home,
-                Key::End => vim::Key::End,
-                Key::Escape => vim::Key::Esc,
-                Key::Character(s) => {
-                    let mut chars = s.chars();
-                    match (chars.next(), chars.next()) {
-                        (Some(c), None) => vim::Key::Char(c),
-                        _ => return false,
-                    }
+    /// Translate a raw key event into a vim-pager [`vim::Key`], or `None` if it
+    /// doesn't map (so the shell can handle it). Ctrl+D/Ctrl+U are half-page; any
+    /// other Ctrl chord (zoom, …) is left for the shell. Shared by the `:error`/
+    /// `:res` pagers and the read-mode caret.
+    fn map_vim_key(&self, key: &KeyEvent) -> Option<vim::Key> {
+        if self.modifiers.control_key() {
+            return match key.physical_key {
+                KeyCode::KeyD => Some(vim::Key::HalfDown),
+                KeyCode::KeyU => Some(vim::Key::HalfUp),
+                _ => None,
+            };
+        }
+        match &key.logical_key {
+            Key::ArrowLeft => Some(vim::Key::Left),
+            Key::ArrowRight => Some(vim::Key::Right),
+            Key::ArrowUp => Some(vim::Key::Up),
+            Key::ArrowDown => Some(vim::Key::Down),
+            Key::Home => Some(vim::Key::Home),
+            Key::End => Some(vim::Key::End),
+            Key::Escape => Some(vim::Key::Esc),
+            Key::Character(s) => {
+                let mut chars = s.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => Some(vim::Key::Char(c)),
+                    _ => None,
                 }
-                _ => return false,
             }
-        };
+            _ => None,
+        }
+    }
+
+    /// Feed a key to the active `:error`/`:errors`/`:res` vim pager. Returns `true`
+    /// if the pager consumed it (the shell should then do nothing else with the key).
+    fn key_vim(&mut self, key: &KeyEvent) -> bool {
+        let Some(vk) = self.map_vim_key(key) else { return false };
         // Viewport in cells (monospace), matching the draw geometry below.
         let (w, _) = self.inner();
         let cw = self.painter.measure("M").max(1);
@@ -1365,6 +1378,88 @@ impl App {
             self.window.request_redraw();
         }
         res.consumed
+    }
+
+    /// Whether the active tab is an engine-free read tab (native render).
+    fn active_is_read_native(&self) -> bool {
+        self.active.and_then(|i| self.tabs.get(i)).is_some_and(|t| t.native.is_some())
+    }
+
+    /// Whether read-mode caret/visual selection is currently active.
+    fn read_caret_active(&self) -> bool {
+        self.active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.native.as_ref())
+            .is_some_and(|n| n.caret.is_some())
+    }
+
+    /// Enter read-mode caret/visual selection (`v` charwise, `V` linewise): build a
+    /// caret over the read view's visual lines, place it near the middle of the
+    /// viewport, and start a visual selection so motions immediately highlight text.
+    fn enter_read_caret(&mut self, linewise: bool) {
+        // Geometry first (immutable borrows of painter), before borrowing the tab.
+        let (w, _) = self.inner();
+        let cw = self.painter.measure("M").max(1);
+        let line_h = self.painter.line_height().max(1);
+        let cols = (((w as usize).saturating_sub(16)) / cw).max(1);
+        let view = self.content_view_h();
+        let rows = (view as usize / line_h).max(1);
+        let Some(nr) = self.active_native_mut() else { return };
+        let lines = nr.layout.text_lines();
+        if lines.iter().all(|l| l.is_empty()) {
+            return;
+        }
+        let lh = nr.layout.line_h.max(1);
+        let mid_line = ((nr.scroll + view / 2) / lh).max(0) as usize;
+        let mut tb = vim::TextBuffer::new(lines);
+        tb.place_cursor(mid_line, 0, rows, cols);
+        tb.key(if linewise { vim::Key::Char('V') } else { vim::Key::Char('v') }, rows, cols);
+        nr.scroll = tb.top as i32 * lh;
+        nr.caret = Some(tb);
+        self.set_status("[VISUAL]  motions select · y yank · Esc exit");
+        self.window.request_redraw();
+    }
+
+    /// Feed a key to the read-mode caret. Returns `true` if it was consumed. `Esc`
+    /// with no selection leaves caret mode; the read view's pixel scroll is kept in
+    /// sync with the caret's line so the cursor stays on-screen.
+    fn key_read_caret(&mut self, key: &KeyEvent) -> bool {
+        let Some(vk) = self.map_vim_key(key) else { return false };
+        let (w, _) = self.inner();
+        let cw = self.painter.measure("M").max(1);
+        let line_h = self.painter.line_height().max(1);
+        let cols = (((w as usize).saturating_sub(16)) / cw).max(1);
+        let rows = (self.content_view_h() as usize / line_h).max(1);
+
+        let mut yanked: Option<String> = None;
+        let mut consumed = true;
+        let mut exit = false;
+        {
+            let Some(nr) = self.active_native_mut() else { return false };
+            let Some(buf) = nr.caret.as_mut() else { return false };
+            if vk == vim::Key::Esc && !buf.has_selection() {
+                exit = true;
+            } else {
+                let res = buf.key(vk, rows, cols);
+                yanked = res.yanked;
+                consumed = res.consumed;
+                nr.scroll = buf.top as i32 * nr.layout.line_h.max(1);
+            }
+            if exit {
+                nr.caret = None;
+            }
+        }
+        if let Some(text) = yanked {
+            let n = text.chars().count();
+            clipboard_set(&text);
+            self.set_status(format!("yanked {n} chars"));
+        } else if exit {
+            self.clear_status();
+        }
+        if consumed || exit {
+            self.window.request_redraw();
+        }
+        consumed || exit
     }
 
     fn key_command(&mut self, key: &KeyEvent) {
@@ -2147,7 +2242,7 @@ impl App {
                 self.clear_status();
             }
             "commands" | "help" => self.open_local_page("commands", commands_document()),
-            "version" => self.open_local_page("version", version_document()),
+            "version" => self.open_version_page(),
             // Total the browser's real footprint across its whole process tree
             // (browser.exe + WebView2 engine procs + pty-hosts), which Task Manager
             // scatters under a separate "WebView2 Manager" group.
@@ -2584,6 +2679,7 @@ impl App {
                 nr.doc = doc;
                 nr.scroll = 0;
                 nr.dirty = true;
+                nr.caret = None; // the text changed; drop any caret/selection
                 self.clear_status();
                 self.window.request_redraw();
                 return;
@@ -2609,6 +2705,7 @@ impl App {
                 layout_w: -1,
                 layout_px: 0.0,
                 dirty: true,
+                caret: None,
             }),
             vim: None,
             term: None,
@@ -2651,19 +2748,17 @@ impl App {
     /// `:res` — the browser's whole-tree resource usage (browser.exe + WebView2
     /// engine procs + pty-hosts): memory, CPU%, and disk I/O per process plus a
     /// grand total, in an engine-free vim-style tab. Task Manager won't give this in
-    /// one place (it scatters WebView2 under its own group). Opens **live**
-    /// (auto-refreshing); press Space to pause/freeze it so you can navigate and copy
-    /// pids/figures with vim motions, Space again to resume.
+    /// one place (it scatters WebView2 under its own group). Auto-refreshes ~1×/sec
+    /// and freezes automatically while you're selecting text (so you can copy figures
+    /// with vim motions without it shifting).
     fn open_resource_page(&mut self) {
-        // Start a fresh monitor: live, no previous sample yet (so the first frame
-        // shows memory immediately and CPU/disk fill in on the next refresh).
-        self.res_live = true;
+        // No previous sample yet, so the first frame shows memory immediately and
+        // CPU/disk fill in on the next refresh.
         self.res_prev.clear();
         self.res_at = Instant::now();
         let lines = self.sample_res_lines();
         if lines.is_empty() {
             self.set_status("resource info unavailable");
-            self.res_live = false;
             return;
         }
         self.tabs.push(Tab {
@@ -2686,18 +2781,6 @@ impl App {
     /// Whether the active tab is the `:res` resource monitor.
     fn active_is_res(&self) -> bool {
         self.active.and_then(|i| self.tabs.get(i)).is_some_and(|t| t.url == "browser://res")
-    }
-
-    /// Toggle the resource monitor between live (auto-refresh) and paused (frozen so
-    /// the vim pager can be navigated/copied). Resuming refreshes immediately.
-    fn toggle_res_live(&mut self) {
-        self.res_live = !self.res_live;
-        if self.res_live {
-            self.res_at = Instant::now();
-            self.res_prev.clear();
-        }
-        self.refresh_res();
-        self.window.request_redraw();
     }
 
     /// If the active tab is the resource monitor, re-sample and update its buffer
@@ -2772,12 +2855,11 @@ impl App {
             ));
         }
 
-        let state = if self.res_live { "[LIVE]  space=pause" } else { "[PAUSED]  space=resume" };
         let cpu_total = if have_prev { format!("CPU {total_cpu:.1}%") } else { "CPU —".into() };
         let disk_total =
             if have_prev { format!("disk {}", procmon::fmt_rate(total_disk)) } else { "disk —".into() };
         let mut lines = Vec::with_capacity(rows.len() + 5);
-        lines.push(format!("browser — {} processes    {}", sample.len(), state));
+        lines.push(format!("browser — {} processes    (live; select to freeze)", sample.len()));
         lines.push(format!("{} · {} · {}", procmon::fmt_bytes(total_mem), cpu_total, disk_total));
         lines.push(String::new());
         lines.push(format!("{:>9}  {:>6}  {:>9}  {:<22} {}", "MEM", "CPU", "DISK", "PROCESS", "PID"));
@@ -2789,7 +2871,27 @@ impl App {
         lines
     }
 
-    /// Open an internal HTML page (e.g. `:commands`, `:version`) in a new tab.
+    /// `:version` — build/runtime details in an engine-free vim pager (no WebView2),
+    /// so the text is navigable and yankable with the same motions as `:error`/`:res`.
+    fn open_version_page(&mut self) {
+        self.tabs.push(Tab {
+            webview: None,
+            url: "browser://version".into(),
+            nojs: false,
+            read: false,
+            research: false,
+            native: None,
+            vim: Some(vim::TextBuffer::new(version_lines())),
+            term: None,
+        });
+        self.active = Some(self.tabs.len() - 1);
+        self.refresh_visibility();
+        self.window.set_focus();
+        self.clear_status();
+        self.window.request_redraw();
+    }
+
+    /// Open an internal HTML page (e.g. `:commands`) in a new tab.
     fn open_local_page(&mut self, label: &str, html: String) {
         match self.build_content_webview(Source::Html(html), false, "") {
             Ok(webview) => {
@@ -3243,11 +3345,52 @@ impl App {
                             );
                         }
                     }
+                    // Read-mode caret: visual-selection highlight (behind the text).
+                    if let Some(caret) = &nr.caret {
+                        if let Some((s0, s1)) = caret.selection_on_row(li) {
+                            let chars: Vec<char> =
+                                line.runs.iter().flat_map(|r| r.text.chars()).collect();
+                            let base = MARGIN + line.indent;
+                            let colx = |c: usize| -> i32 {
+                                let s: String = chars[..c.min(chars.len())].iter().collect();
+                                base + p.measure(&s) as i32
+                            };
+                            let x0 = colx(s0).max(MARGIN);
+                            let x1 = colx(s1).max(MARGIN);
+                            if x1 > x0 {
+                                draw::fill_rect(
+                                    &mut buf, wz, hz, x0 as usize, y_top.max(0) as usize,
+                                    x1 as usize, (y_top + line_h).max(0) as usize, draw::SEL,
+                                );
+                            }
+                        }
+                    }
                     let mut x = MARGIN + line.indent;
                     for run in &line.runs {
                         x = p.text_clipped(
                             &mut buf, wz, hz, x, baseline as usize, &run.text, run.color, MARGIN,
                         );
+                    }
+                    // Read-mode caret: block cursor (inverse cell) on the cursor row.
+                    if let Some(caret) = &nr.caret {
+                        if li == caret.cy {
+                            let chars: Vec<char> =
+                                line.runs.iter().flat_map(|r| r.text.chars()).collect();
+                            let pre: String =
+                                chars[..caret.cx.min(chars.len())].iter().collect();
+                            let cx0 = MARGIN + line.indent + p.measure(&pre) as i32;
+                            let cwid = p.measure("M").max(1) as i32;
+                            draw::fill_rect(
+                                &mut buf, wz, hz, cx0.max(MARGIN) as usize, y_top.max(0) as usize,
+                                (cx0 + cwid) as usize, (y_top + line_h).max(0) as usize, draw::ACCENT,
+                            );
+                            if let Some(ch) = chars.get(caret.cx) {
+                                p.text(
+                                    &mut buf, wz, hz, cx0.max(MARGIN) as usize, baseline as usize,
+                                    &ch.to_string(), draw::BG,
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -3467,6 +3610,17 @@ impl App {
                 let mut segs = vec![("[N]".into(), draw::ACCENT), (label, draw::BAR_FG)];
                 if self.active_is_read() {
                     segs.push(("   [read]".into(), draw::READ));
+                    // Read-mode caret: show [VISUAL]/[VISUAL LINE] (or [CARET]) + hint.
+                    if let Some(caret) = self
+                        .active
+                        .and_then(|i| self.tabs.get(i))
+                        .and_then(|t| t.native.as_ref())
+                        .and_then(|n| n.caret.as_ref())
+                    {
+                        let m = caret.mode_label().unwrap_or("CARET");
+                        segs.push((format!("   [{m}]"), draw::ACCENT));
+                        segs.push(("  motions select · y yank · Esc exit".into(), draw::DIM));
+                    }
                 }
                 if self.active_is_research() {
                     segs.push(("   [research]".into(), draw::RESEARCH));
@@ -3474,16 +3628,19 @@ impl App {
                 if self.active_is_term() {
                     segs.push(("   [term]".into(), draw::TERM));
                 }
-                // `:error`/`:errors` vim pager: show [error], or [VISUAL]/[VISUAL LINE]
-                // while selecting, plus a short motion hint.
-                if let Some(vb) = self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.vim.as_ref())
-                {
-                    match vb.mode_label() {
-                        Some(m) => segs.push((format!("   [{m}]"), draw::ACCENT)),
-                        None => segs.push((
-                            "   [error]  v select · y yank · yi( inner ()".into(),
-                            draw::ERR,
-                        )),
+                // Vim pager tabs (`:error`/`:errors`, `:res`): show [VISUAL]/[VISUAL
+                // LINE] while selecting; otherwise a short motion hint keyed to the
+                // tab — the red [error] hint must NOT bleed onto the `:res` monitor.
+                if let Some(t) = self.active.and_then(|i| self.tabs.get(i)) {
+                    if let Some(vb) = t.vim.as_ref() {
+                        match vb.mode_label() {
+                            Some(m) => segs.push((format!("   [{m}]"), draw::ACCENT)),
+                            None if t.url == "browser://error" => segs.push((
+                                "   [error]  v select · y yank · yi( inner ()".into(),
+                                draw::ERR,
+                            )),
+                            None => segs.push(("   v select · y yank".into(), draw::DIM)),
+                        }
                     }
                 }
                 if self.nojs {
@@ -3834,6 +3991,7 @@ fn commands_document() -> String {
         ("n / N", "next / previous match (while a search is active); Esc clears"),
         ("i", "insert mode (passthrough on a terminal tab)"),
         ("f", "hint mode — label every link, type the label to follow"),
+        ("v / V", "read tabs: caret/visual select — highlight & yank text (y), Esc exits"),
         ("x", "close the current tab"),
         ("r", "reload the page"),
         ("H / L", "history back / forward"),
@@ -3893,7 +4051,7 @@ fn commands_document() -> String {
         (":resize · :move", "window-control modes (then hjkl, Esc)"),
         (":error · :err", "latest error in a read-only vim tab (v/y to select & copy)"),
         (":errors · :errs", "every error this session (newest first), same vim tab"),
-        (":res · :resources", "live memory/CPU/disk across the whole browser tree (Space pauses to copy)"),
+        (":res · :resources", "live memory/CPU/disk across the whole browser tree (freezes while you select)"),
         (":commands · :help", "this page"),
         (":version", "version and build information"),
         (":quit · :q", "quit the browser"),
@@ -3913,7 +4071,7 @@ fn commands_document() -> String {
          <h2>Normal mode</h2>{normal}\
          <h2>Command-line editing</h2>{cmdline}\
          <h2>Other modes</h2>{modes}\
-         <h2>Error pager (:error / :errors)</h2>{vimpager}\
+         <h2>Vim pager (:error · :errors · :res · :version · read-mode v/V)</h2>{vimpager}\
          <h2>Commands</h2>{cmds}\
          <h2>Bangs</h2>\
          <p class=\"sub\">A <code>!key</code> token in any open/search target jumps to that \
@@ -3929,8 +4087,9 @@ fn commands_document() -> String {
 }
 
 /// The `:version` page: build/runtime details about this browser.
-fn version_document() -> String {
-    let rows = help_table(&[
+/// Plain-text lines for the `:version` pager (navigable/yankable with vim motions).
+fn version_lines() -> Vec<String> {
+    let kv = [
         ("Name", env!("CARGO_PKG_NAME")),
         ("Version", env!("CARGO_PKG_VERSION")),
         ("Description", env!("CARGO_PKG_DESCRIPTION")),
@@ -3940,20 +4099,17 @@ fn version_document() -> String {
         ("Terminal", "xterm.js + a browser-pty-host companion (ConPTY)"),
         ("Platform", std::env::consts::OS),
         ("Architecture", std::env::consts::ARCH),
-    ]);
-    format!(
-        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
-         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-         <title>version</title><style>{HELP_CSS}</style></head><body><main>\
-         <h1>{} {}</h1>\
-         <p class=\"sub\">{}</p>{rows}\
-         <p class=\"sub\" style=\"margin-top:1.6em\">A modal, mode-dispatching browser — \
-         only what's needed, when needed.</p>\
-         </main></body></html>",
-        html_escape(env!("CARGO_PKG_NAME")),
-        html_escape(env!("CARGO_PKG_VERSION")),
-        html_escape(env!("CARGO_PKG_DESCRIPTION")),
-    )
+    ];
+    let mut lines = vec![
+        format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+        String::new(),
+    ];
+    for (k, v) in kv {
+        lines.push(format!("  {:<14}{}", format!("{k}:"), v));
+    }
+    lines.push(String::new());
+    lines.push("A modal, mode-dispatching browser — only what's needed, when needed.".into());
+    lines
 }
 
 /// Locate the companion `browser-pty-host` binary next to our own executable.
