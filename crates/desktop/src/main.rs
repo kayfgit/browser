@@ -259,6 +259,127 @@ const RESEARCH_JS: &str = r#"
 })();
 "#;
 
+// Page-side caret/visual browsing (TODO: vim selection on live web pages). The
+// shell forwards motions here; we drive a real DOM Selection via `Selection.modify`
+// (Chromium supports character/word/line/lineboundary/documentboundary), draw a thin
+// caret bar at the focus end, and post the yanked text back over IPC. `__caretEnter`
+// places the caret at the viewport center and starts visual; `__caretKey` moves or
+// extends (visual toggles which); `__caretYank` copies; `__caretEsc` collapses then
+// exits (posting `caret-exit` so the shell leaves caret mode).
+const CARET_JS: &str = r#"
+(function () {
+  if (window.__caretInit) return;
+  window.__caretInit = true;
+  var on = false, visual = false, pend = '', bar = null;
+  function sel() { return window.getSelection(); }
+  function ensureBar() {
+    if (bar && bar.isConnected) return bar;
+    bar = document.createElement('div');
+    bar.style.cssText = 'position:fixed;z-index:2147483647;width:2px;background:#6cb6ff;' +
+      'box-shadow:0 0 3px #6cb6ff;pointer-events:none;display:none';
+    (document.body || document.documentElement).appendChild(bar);
+    return bar;
+  }
+  function focusRect() {
+    var s = sel();
+    if (s.rangeCount === 0 || !s.focusNode) return null;
+    try {
+      var r = document.createRange();
+      r.setStart(s.focusNode, s.focusOffset);
+      r.collapse(true);
+      var rc = r.getClientRects()[0] || r.getBoundingClientRect();
+      if (rc && (rc.height || rc.width)) return rc;
+      // Fall back to the parent element's box (e.g. focus on an element boundary).
+      var el = s.focusNode.nodeType === 1 ? s.focusNode : s.focusNode.parentElement;
+      return el ? el.getBoundingClientRect() : null;
+    } catch (e) { return null; }
+  }
+  function updateBar() {
+    var b = ensureBar();
+    if (!on) { b.style.display = 'none'; return; }
+    var rc = focusRect();
+    if (!rc) { b.style.display = 'none'; return; }
+    b.style.display = 'block';
+    b.style.left = Math.max(0, rc.left) + 'px';
+    b.style.top = Math.max(0, rc.top) + 'px';
+    b.style.height = (rc.height || 16) + 'px';
+  }
+  function rangeAt(x, y) {
+    if (document.caretRangeFromPoint) return document.caretRangeFromPoint(x, y);
+    if (document.caretPositionFromPoint) {
+      var p = document.caretPositionFromPoint(x, y);
+      if (p) { var r = document.createRange(); r.setStart(p.offsetNode, p.offset); return r; }
+    }
+    return null;
+  }
+  function caretAtCenter() {
+    var x = Math.floor(innerWidth / 2), r = null;
+    // Probe outward from the vertical center for a TEXT node — a page's middle is
+    // often whitespace (caret would land on an element, where word/line motions
+    // can't move). Fall back to the first text node in the document.
+    var ys = [0.5, 0.4, 0.6, 0.3, 0.7, 0.25, 0.75, 0.15, 0.85];
+    for (var i = 0; i < ys.length && !r; i++) {
+      var rr = rangeAt(x, Math.floor(innerHeight * ys[i]));
+      if (rr && rr.startContainer && rr.startContainer.nodeType === 3) r = rr;
+    }
+    if (!r) {
+      var root = document.body || document.documentElement;
+      var tw = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+      var n;
+      while ((n = tw.nextNode())) { if (n.nodeValue && n.nodeValue.trim()) break; }
+      r = document.createRange();
+      if (n) r.setStart(n, 0); else r.selectNodeContents(root);
+    }
+    r.collapse(true);
+    var s = sel(); s.removeAllRanges(); s.addRange(r);
+  }
+  window.__caretEnter = function (linewise) {
+    on = true; visual = true; pend = '';
+    caretAtCenter();
+    if (linewise) { var s = sel(); s.modify('move','left','lineboundary'); s.modify('extend','right','lineboundary'); }
+    updateBar();
+  };
+  window.__caretExit = function () {
+    on = false; visual = false; pend = '';
+    try { sel().removeAllRanges(); } catch (e) {}
+    if (bar) bar.style.display = 'none';
+  };
+  window.__caretEsc = function () {
+    if (!on) return;
+    if (visual && !sel().isCollapsed) { sel().collapseToEnd(); visual = false; updateBar(); }
+    else { window.__caretExit(); if (window.ipc) window.ipc.postMessage('caret-exit'); }
+  };
+  window.__caretYank = function () {
+    var t = sel().toString();
+    if (window.ipc) window.ipc.postMessage('caret-yank:' + t);
+    sel().collapseToEnd(); visual = false; updateBar();
+  };
+  window.__caretKey = function (k) {
+    if (!on) return;
+    var s = sel(), alter = visual ? 'extend' : 'move';
+    if (pend === 'g') { pend = ''; if (k === 'g') { s.modify(alter,'backward','documentboundary'); updateBar(); return; } }
+    switch (k) {
+      case 'h': s.modify(alter,'left','character'); break;
+      case 'l': s.modify(alter,'right','character'); break;
+      case 'j': s.modify(alter,'forward','line'); break;
+      case 'k': s.modify(alter,'backward','line'); break;
+      case 'w': s.modify(alter,'forward','word'); break;
+      case 'e': s.modify(alter,'forward','word'); break;
+      case 'b': s.modify(alter,'backward','word'); break;
+      case '0': s.modify(alter,'left','lineboundary'); break;
+      case '$': s.modify(alter,'right','lineboundary'); break;
+      case 'G': s.modify(alter,'forward','documentboundary'); break;
+      case 'g': pend = 'g'; break;
+      case 'v': case 'V': visual = !visual; if (!visual) s.collapseToEnd(); break;
+      default: break;
+    }
+    updateBar();
+  };
+  window.addEventListener('scroll', function () { if (on) updateBar(); }, true);
+  window.addEventListener('resize', function () { if (on) updateBar(); });
+})();
+"#;
+
 // Page-side find-in-page: `__find(q)` highlights every match (CSS Custom Highlight
 // API — no DOM mutation, so it can't break the page), scrolls to the first, and
 // `__findNext`/`__findPrev` move the "current" highlight. `__findClear` removes it.
@@ -367,6 +488,10 @@ enum UserEvent {
     ZoomStep(i32),
     /// Reset zoom to 100% (forwarded from a focused page).
     ZoomReset,
+    /// Web caret mode yanked a selection → put this text on the clipboard.
+    CaretYank(String),
+    /// Web caret mode exited (Esc with no selection) → return the shell to Normal.
+    CaretExit,
     Quit,
 }
 
@@ -390,6 +515,10 @@ enum ModeKind {
     /// Find-in-page: `/` opened a search prompt. Typing searches live; Enter keeps
     /// the highlights and returns to Normal (where `n`/`N` step through matches).
     Find,
+    /// Caret/visual browsing on a WEB tab (`v`/`V`): the shell forwards vim motions
+    /// to an injected page caret that moves/extends a real DOM Selection; `y` yanks,
+    /// `Esc` collapses then exits. (Engine-free read tabs use `NativeRead.caret`.)
+    Caret,
 }
 
 /// A find-in-page match on a native (read/vim) tab: a line index plus the char
@@ -850,8 +979,9 @@ fn main() -> Result<()> {
                             let _ = wv.focus();
                         }
                     }
-                    // Insert is temporary; a navigation ends the editing context.
-                    ModeKind::Insert => {
+                    // Insert and Caret are tied to the old page's DOM; a navigation
+                    // ends them (the injected caret is gone on the new document).
+                    ModeKind::Insert | ModeKind::Caret => {
                         app.mode = ModeKind::Normal;
                         app.window.set_focus();
                         app.window.request_redraw();
@@ -929,6 +1059,19 @@ fn main() -> Result<()> {
             Event::UserEvent(UserEvent::TermReady { id }) => app.terminal_ready(id),
             Event::UserEvent(UserEvent::ZoomStep(steps)) => app.zoom_by(steps),
             Event::UserEvent(UserEvent::ZoomReset) => app.zoom_reset(),
+            Event::UserEvent(UserEvent::CaretYank(text)) => {
+                let n = text.chars().count();
+                clipboard_set(&text);
+                app.set_status(format!("yanked {n} chars"));
+                app.window.request_redraw();
+            }
+            Event::UserEvent(UserEvent::CaretExit) => {
+                if app.mode == ModeKind::Caret {
+                    app.mode = ModeKind::Normal;
+                    app.clear_status();
+                    app.window.request_redraw();
+                }
+            }
             Event::UserEvent(UserEvent::TermClosed { id }) => app.close_term_tab(id),
             Event::UserEvent(UserEvent::Quit) => {
                 app.teardown();
@@ -1220,6 +1363,7 @@ impl App {
             ModeKind::Resize => self.key_resize(key),
             ModeKind::Move => self.key_move(key),
             ModeKind::Hint => self.key_hint(key),
+            ModeKind::Caret => self.key_caret(key),
             // In Insert/Passthrough the page normally has OS focus and the injected
             // bridge handles the shell keys; these arms are fallbacks for when the
             // shell still holds focus (e.g. right after entering the mode).
@@ -1305,10 +1449,23 @@ impl App {
                     }
                 }
                 "f" => self.enter_hint(),
-                // Read tabs: enter caret/visual selection (highlight + yank article
-                // text with vim motions). On web tabs `v`/`V` are not bound yet.
-                "v" if self.active_is_read_native() => self.enter_read_caret(false),
-                "V" if self.active_is_read_native() => self.enter_read_caret(true),
+                // Caret/visual selection — highlight & yank text with vim motions.
+                // Read tabs use the native caret; web tabs (open/research) use the
+                // injected page caret. Terminal tabs are excluded.
+                "v" => {
+                    if self.active_is_read_native() {
+                        self.enter_read_caret(false);
+                    } else if self.active_webview().is_some() && !self.active_is_term() {
+                        self.enter_web_caret(false);
+                    }
+                }
+                "V" => {
+                    if self.active_is_read_native() {
+                        self.enter_read_caret(true);
+                    } else if self.active_webview().is_some() && !self.active_is_term() {
+                        self.enter_web_caret(true);
+                    }
+                }
                 "x" => self.close_active(),
                 "r" => self.reload_active(),
                 "H" => self.history(false),
@@ -1497,6 +1654,47 @@ impl App {
             self.window.request_redraw();
         }
         consumed || exit
+    }
+
+    /// Enter caret/visual browsing on a WEB tab: tell the injected page caret to
+    /// place itself at the viewport center and start a visual selection. The shell
+    /// keeps keyboard focus (like hint mode) and forwards motions via `key_caret`.
+    fn enter_web_caret(&mut self, linewise: bool) {
+        let Some(wv) = self.active_webview() else { return };
+        let _ = wv.evaluate_script(&format!(
+            "window.__caretEnter&&window.__caretEnter({})",
+            if linewise { "true" } else { "false" }
+        ));
+        self.mode = ModeKind::Caret;
+        self.set_status("[CARET]  hjkl/w/b/0/$/gg/G move · v select · y yank · Esc exit");
+        self.window.request_redraw();
+    }
+
+    /// Forward a key to the web tab's injected caret. Motions/visual go to
+    /// `__caretKey`; `y` yanks; `Esc` collapses-then-exits (the page posts
+    /// `caret-exit` when it actually leaves, which returns the shell to Normal).
+    fn key_caret(&mut self, key: &KeyEvent) {
+        let Some(wv) = self.active_webview() else {
+            self.mode = ModeKind::Normal;
+            return;
+        };
+        match &key.logical_key {
+            Key::Escape => {
+                let _ = wv.evaluate_script("window.__caretEsc&&window.__caretEsc()");
+            }
+            Key::Character(s) => {
+                if *s == "y" {
+                    let _ = wv.evaluate_script("window.__caretYank&&window.__caretYank()");
+                } else if matches!(
+                    *s,
+                    "h" | "j" | "k" | "l" | "w" | "b" | "e" | "0" | "$" | "g" | "G" | "v" | "V"
+                ) {
+                    let _ = wv.evaluate_script(&format!("window.__caretKey&&window.__caretKey('{s}')"));
+                }
+            }
+            _ => {}
+        }
+        self.window.request_redraw();
     }
 
     fn key_command(&mut self, key: &KeyEvent) {
@@ -2257,13 +2455,18 @@ impl App {
                 }
             }
             // Customize the search engine used when `:open <query>` isn't a URL.
-            // `%s` in the template is replaced with the percent-encoded query.
+            // Accepts a short engine NAME (`:search ddg`, `:search google`, `:search
+            // wiki` — looked up in the bang table) OR a full `%s` URL template.
             "search" => {
                 if rest.is_empty() {
                     self.set_status(format!("search = {}", self.search_template));
-                } else {
-                    self.search_template = rest.to_string();
+                } else if let Some(t) = search_template_for(rest) {
+                    self.search_template = t;
                     self.set_status(format!("search engine set to: {}", self.search_template));
+                } else {
+                    self.set_error(format!(
+                        "unknown engine '{rest}' — use a name (ddg/google/wiki/…) or a %s URL template"
+                    ));
                 }
             }
             "nojs" => {
@@ -2404,9 +2607,9 @@ impl App {
             // The shell bridge always loads; `extra_init` (e.g. research-mode DOM
             // pruning) is appended so it runs in the same document-create pass.
             .with_initialization_script(if extra_init.is_empty() {
-                format!("{BRIDGE_JS}\n{FIND_JS}")
+                format!("{BRIDGE_JS}\n{FIND_JS}\n{CARET_JS}")
             } else {
-                format!("{BRIDGE_JS}\n{FIND_JS}\n{extra_init}")
+                format!("{BRIDGE_JS}\n{FIND_JS}\n{CARET_JS}\n{extra_init}")
             })
             .with_ipc_handler(move |req| match req.body().as_str() {
                 "leave-passthrough" | "insert-escape" | "insert-blur" => {
@@ -2427,7 +2630,15 @@ impl App {
                 "hint-edit" => {
                     let _ = ipc_proxy.send_event(UserEvent::HintEdit);
                 }
-                _ => {}
+                "caret-exit" => {
+                    let _ = ipc_proxy.send_event(UserEvent::CaretExit);
+                }
+                body => {
+                    // Web caret-mode yanked a selection: `caret-yank:<text>`.
+                    if let Some(text) = body.strip_prefix("caret-yank:") {
+                        let _ = ipc_proxy.send_event(UserEvent::CaretYank(text.to_string()));
+                    }
+                }
             })
             // Backup focus reclaim for non-JS tabs (page-ready covers JS tabs).
             .with_on_page_load_handler(move |event, _url| {
@@ -2461,19 +2672,36 @@ impl App {
     /// responsive. `replace` swaps the active read tab's doc in place (link-follow
     /// / reload) rather than opening a new tab.
     fn start_read(&mut self, target: &str, replace: bool) {
-        // A non-URL target (bare word / has spaces, or a `!bang`) goes to the search
-        // engine — `:read rust ownership` reads the Google results page (its links are
-        // followable with hint mode), not a failed fetch of "rust ownership".
-        let url = self.resolve_target(target);
-        self.set_status(format!("reading {url} …"));
         let proxy = self.proxy.clone();
-        std::thread::spawn(move || {
-            let event = match browser_backend_text::fetch_document_blocking(&url) {
-                Ok(doc) => UserEvent::ReadReady { doc: Box::new(doc), replace },
-                Err(e) => UserEvent::ReadFailed(format!("{e:#}")),
-            };
-            let _ = proxy.send_event(event);
-        });
+        // A plain query (no `!bang`, not a URL) is run through the SEARCH backend,
+        // which returns a clean, followable results document — readability can't parse
+        // a live search-results page (it errors "failed to grab the article"). A bang
+        // or a real address is fetched + run through readability as before.
+        let bang = browser_core::expand_bang(target);
+        if bang.is_none() && browser_core::looks_like_query(target) {
+            let query = target.to_string();
+            let config = browser_core::SearchConfig::default(); // DDG-lite, zero-config
+            self.set_status(format!("searching {query} …"));
+            std::thread::spawn(move || {
+                let event = match browser_backend_search::search_blocking(&query, config) {
+                    Ok(doc) => UserEvent::ReadReady { doc: Box::new(doc), replace },
+                    Err(e) => UserEvent::ReadFailed(format!("{e:#}")),
+                };
+                let _ = proxy.send_event(event);
+            });
+        } else {
+            let url = bang
+                .or_else(|| browser_core::normalize_url(target))
+                .unwrap_or_else(|| target.to_string());
+            self.set_status(format!("reading {url} …"));
+            std::thread::spawn(move || {
+                let event = match browser_backend_text::fetch_document_blocking(&url) {
+                    Ok(doc) => UserEvent::ReadReady { doc: Box::new(doc), replace },
+                    Err(e) => UserEvent::ReadFailed(format!("{e:#}")),
+                };
+                let _ = proxy.send_event(event);
+            });
+        }
         self.window.request_redraw();
     }
 
@@ -3638,6 +3866,10 @@ impl App {
                 (format!(" {}", self.hint_input), draw::BAR_FG),
                 ("   type a label · Esc cancel".into(), draw::DIM),
             ],
+            ModeKind::Caret => vec![
+                ("[CARET]".into(), draw::ACCENT),
+                ("  hjkl/w/b/0/$/gg/G move · v select · y yank · Esc exit".into(), draw::DIM),
+            ],
             ModeKind::Insert => {
                 let url = self.active_url().unwrap_or("").to_string();
                 vec![
@@ -4047,7 +4279,7 @@ fn commands_document() -> String {
         ("n / N", "next / previous match (while a search is active); Esc clears"),
         ("i", "insert mode (passthrough on a terminal tab)"),
         ("f", "hint mode — label every link, type the label to follow"),
-        ("v / V", "read tabs: caret/visual select — highlight & yank text (y), Esc exits"),
+        ("v / V", "caret/visual select on read & web tabs — hjkl/w/b move, y yank, Esc exits"),
         ("x", "close the current tab"),
         ("r", "reload the page"),
         ("H / L", "history back / forward"),
@@ -4093,7 +4325,7 @@ fn commands_document() -> String {
         (":edit · :e", "edit the current URL (re-opens in the tab's own mode)"),
         (":y · :yank", "copy the current URL to the clipboard"),
         (":read <url|query>", "engine-free reader (no WebView2): j/k scroll, f hint, v/V select; non-URL → search"),
-        (":search [template]", "show/set the search engine (%s = query)"),
+        (":search [name|template]", "show/set the search engine — a name (ddg/google/wiki…) or a %s URL"),
         (":te", "open a terminal tab"),
         (":te <command>", "run a local command, result in the command bar"),
         (":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
@@ -4179,6 +4411,18 @@ fn pty_host_path() -> Option<std::path::PathBuf> {
     Some(exe.parent()?.join(name))
 }
 
+/// Resolve a `:search` argument into a search-URL template: a bare engine name
+/// (looked up in the bang table — `ddg`, `google`, `wiki`, `yt`, …) maps to its
+/// template; anything containing `%s` or `://` is taken as a literal template.
+/// `None` for an unrecognized name with no `%s`.
+fn search_template_for(arg: &str) -> Option<String> {
+    let a = arg.trim();
+    if a.contains("%s") || a.contains("://") {
+        return Some(a.to_string());
+    }
+    browser_core::bang_search_template(a).map(|t| t.to_string())
+}
+
 /// A short tab label: the host without scheme/`www.`, truncated.
 fn short_label(url: &str) -> String {
     let s = url
@@ -4217,46 +4461,19 @@ fn draw_tab_bar(p: &Painter, buf: &mut [u32], w: usize, h: usize, labels: &[(Str
 
 /// Paint the engine-free welcome screen: title + a key/command cheat-sheet.
 /// `scale` is the global zoom factor so column offsets track the scaled font.
-fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize, scale: f32) {
+fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize, _scale: f32) {
     let lh = p.line_height();
-    let mut y = lh * 2;
-    let x = (40.0 * scale) as usize;
-    let gap = (16.0 * scale) as usize;
-    let col = (320.0 * scale) as usize;
-    let after = p.text(buf, w, h, x, y, "browser", draw::ACCENT);
-    p.text(buf, w, h, after + gap, y, "— lightweight modal shell", draw::DIM);
-    y += lh * 2;
-    for (keys, desc) in [
-        (":open <url>   or   o <url>", "open a page (boots the engine on demand)"),
-        (":edit   or   :e", "edit the current URL in the command bar"),
-        (":read <url>", "reader mode: extract the article, no JS/ads (green tab)"),
-        (":te", "open a terminal tab (xterm.js + your shell; Shift+Esc to leave)"),
-        (":te <command>", "run a local command; result shows in the command bar"),
-        (":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
-        ("j / k / Space / d / u", "scroll the page"),
-        ("f", "hint mode: label every link, type the label to follow it"),
-        ("i", "insert mode: type in a field (Esc leaves, click-away leaves)"),
-        ("Ctrl+V", "passthrough: send EVERY key to the page (for ttyd, web apps)"),
-        ("Shift+Esc", "leave passthrough (it persists across clicks & links)"),
-        (":nojs            ", "toggle JavaScript off for new tabs"),
-        (":nojs <url>", "open a page with JavaScript disabled"),
-        ("n / p", "next / previous tab"),
-        ("1 .. 9", "jump straight to tab N"),
-        ("< / >", "move the current tab left / right"),
-        ("x", "close the current tab (frees its memory)"),
-        ("H / L", "history back / forward"),
-        ("Ctrl + / - / 0", "zoom the whole UI in / out / reset"),
-        (":f", "toggle fullscreen"),
-        (":resize", "resize mode — then hjkl to size, Esc to finish"),
-        (":move", "move mode — then hjkl to reposition, Esc to finish"),
-        (":commands", "open the full list of commands & keybinds"),
-        (":version", "version and build information"),
-        (":q", "quit"),
-    ] {
-        p.text(buf, w, h, x, y, keys, draw::FG);
-        p.text(buf, w, h, x + col, y, desc, draw::DIM);
-        y += lh + lh / 3;
-    }
+    // A clean splash: the name + tagline centered, with one quiet hint below.
+    let name = "browser";
+    let tag = "  — lightweight modal shell";
+    let title_w = p.measure(name) + p.measure(tag);
+    let tx = w.saturating_sub(title_w) / 2;
+    let ty = h / 2 - lh;
+    let after = p.text(buf, w, h, tx, ty, name, draw::ACCENT);
+    p.text(buf, w, h, after, ty, tag, draw::DIM);
+    let hint = ":open <url> to start   ·   :commands for all keybindings";
+    let hint_w = p.measure(hint);
+    p.text(buf, w, h, w.saturating_sub(hint_w) / 2, ty + lh * 2, hint, draw::DIM);
 }
 
 #[cfg(test)]

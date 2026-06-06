@@ -105,6 +105,20 @@ impl Backend for SearchBackend {
     }
 }
 
+/// Blocking search → a results [`Document`] (titles are followable links), for
+/// callers without an async runtime (e.g. the GUI shell's `:read <query>`). Spins
+/// up a short-lived current-thread runtime.
+pub fn search_blocking(query: &str, config: SearchConfig) -> Result<Document> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building runtime")?;
+    rt.block_on(async move {
+        let backend = SearchBackend::new(config)?;
+        backend.fetch(query).await
+    })
+}
+
 #[derive(Debug, Deserialize)]
 struct SearxResponse {
     #[serde(default)]

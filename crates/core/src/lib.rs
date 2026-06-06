@@ -9,7 +9,7 @@ pub mod intent;
 pub mod matheval;
 
 pub use backend::Backend;
-pub use bangs::{bang_list, expand_bang};
+pub use bangs::{bang_list, bang_search_template, expand_bang};
 pub use config::{Config, KeyConfig, SearchConfig, SearchProvider};
 pub use content::{Block, Document, DocumentBuilder, Link, Span};
 pub use intent::{

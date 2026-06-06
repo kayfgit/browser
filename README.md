@@ -98,8 +98,8 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   the current URL), `:read <url>` (text-only reader),
   `:te <command>` (run a local command), `:close`, `:tabnext`/`:tabprev`, `:reload`, `:quit`,
   `:nojs` (toggle JS-off for new tabs) / `:nojs <url>`, `:f` (toggle fullscreen), `:resize` and
-  `:move` (window-control modes — then `hjkl`, `Esc` to finish), `:search [template]` (show/set the
-  search engine; `%s` = query), `:commands` (full keybind/command reference), `:version` (build
+  `:move` (window-control modes — then `hjkl`, `Esc` to finish), `:search [name|template]` (show/set the
+  search engine — a short name like `ddg`/`google`/`wiki` or a `%s` URL), `:commands` (full keybind/command reference), `:version` (build
   info), `:y`/`:yank` (copy the current URL to the clipboard), `:error`/`:errors` (review failures —
   see below). `:open <text>` that isn't a URL
   (e.g. `:open rust ownership`, or a bare word like `rustlang`) goes to the search engine — Google
@@ -109,6 +109,10 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   **`Shift`+movement selects** text (and `Ctrl+A` selects all), `Ctrl+C`/`Ctrl+X`/`Ctrl+V`
   copy/cut/paste, `Backspace`/`Delete` (and the selection), `Ctrl+W` / `Ctrl`/`Alt+Backspace` delete
   a word, `Ctrl+Delete` the next word, `Ctrl+U` to the line start, `Esc`/`Ctrl+C` cancel.
+- **Caret browsing** — press **`v`/`V`** on any page (read tabs, and `:open`/`:research` web tabs) to
+  drop a caret in the middle of the view and **select text with vim motions** (`hjkl`/`w`/`b`/`0`/`$`/
+  `gg`/`G`), then **`y` to yank** (copy) and `Esc` to leave. On web tabs this drives a real DOM
+  selection injected into the page; on engine-free read tabs it's the native renderer's own caret.
 - **Bangs** — a `!key` token in any `:open`/`:research` target (or typed straight: `:!yt cats`)
   redirects to that site's search, DuckDuckGo-style: `!yt lofi` → YouTube, `!osrs dragon` → the Old
   School RuneScape Wiki, `!w`/`!gh`/`!so`/`!cr`/`!dr`/`!mdn`/`!ddg`/`!g`/… (see `:commands`). A bang

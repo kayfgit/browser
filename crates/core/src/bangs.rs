@@ -167,6 +167,13 @@ pub fn bang_list() -> Vec<(&'static str, &'static str)> {
     BANGS.iter().map(|b| (b.keys[0], b.desc)).collect()
 }
 
+/// The search-URL template (`%s` = query) for a bang key — lets `:search <name>`
+/// (e.g. `:search ddg`, `:search google`) reuse the bang table instead of needing a
+/// full `%s` URL. Returns `None` for an unknown key.
+pub fn bang_search_template(key: &str) -> Option<&'static str> {
+    lookup(key).map(|b| b.search)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
