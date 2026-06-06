@@ -65,6 +65,15 @@ impl Painter {
         pen as usize
     }
 
+    /// Horizontal advance of a single glyph (f32), so callers can accumulate caret
+    /// positions exactly as [`Painter::text_clipped`] does (which keeps the pen in
+    /// f32 within a run). Using `measure()` of a whole multi-run prefix instead
+    /// drifts, because each run boundary floors the pen — the drift grows with the
+    /// column and the font size.
+    pub fn advance(&self, ch: char) -> f32 {
+        self.font.metrics(ch, self.px).advance_width
+    }
+
     /// Draw a string with its baseline at `baseline`, left edge at `x`.
     /// Returns the pen x position after the string.
     #[allow(clippy::too_many_arguments)]

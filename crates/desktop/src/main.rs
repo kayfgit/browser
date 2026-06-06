@@ -23,7 +23,7 @@ use anyhow::{Context as _, Result};
 use base64::Engine as _;
 use std::time::{Duration, Instant};
 
-use tao::event::{ElementState, Event, KeyEvent, StartCause, WindowEvent};
+use tao::event::{ElementState, Event, KeyEvent, MouseButton, StartCause, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::keyboard::{Key, KeyCode, ModifiersState};
 use tao::window::{Window, WindowBuilder};
@@ -49,6 +49,18 @@ const BASE_TERM_PX: f64 = 16.0;
 const ZOOM_MIN: f64 = 0.5;
 const ZOOM_MAX: f64 = 3.0;
 const ZOOM_STEP: f64 = 0.1;
+
+/// Max visited URLs kept for autocomplete (also the cap persisted in the session).
+const HISTORY_CAP: usize = 300;
+
+/// Command verbs offered by command-bar autocomplete (`:ver`→`:version`). Longest-
+/// useful canonical spellings; ordered so the first prefix match is the best one.
+const COMMANDS: &[&str] = &[
+    "open", "edit", "yank", "read", "research", "reload", "resize", "res", "resources",
+    "error", "errors", "te", "term", "shell", "search", "nojs", "next", "tabnext", "tabprev",
+    "prev", "back", "forward", "fullscreen", "move", "commands", "help", "version", "close",
+    "quit",
+];
 
 /// WebView2 browser-process arguments, applied to EVERY webview we build.
 ///
@@ -755,6 +767,11 @@ struct App {
     /// always auto-refreshes; `refresh_res` just freezes while text is selected.
     res_prev: std::collections::HashMap<u32, (u64, u64)>,
     res_at: Instant,
+    /// Last known cursor position (physical px), tracked for tab-bar drag.
+    cursor_pos: (f64, f64),
+    /// Visited URLs, most-recent first (deduped, capped). Drives command-bar
+    /// autocomplete for `:open <partial>` and is persisted in the session.
+    history: Vec<String>,
 }
 
 /// Tag this process with an explicit AppUserModelID so Windows (taskbar + Task
@@ -887,6 +904,8 @@ fn main() -> Result<()> {
         torn_down: false,
         res_prev: std::collections::HashMap::new(),
         res_at: Instant::now(),
+        cursor_pos: (0.0, 0.0),
+        history: Vec::new(),
     };
 
     // Optional: open a page immediately, e.g. `browser-desktop youtube.com`,
@@ -952,6 +971,20 @@ fn main() -> Result<()> {
                     app.on_resize(size.width, size.height);
                 }
                 WindowEvent::ModifiersChanged(state) => app.modifiers = state,
+                WindowEvent::CursorMoved { position, .. } => {
+                    app.cursor_pos = (position.x, position.y);
+                }
+                // Drag the borderless window by its top tab bar (QoL — like a title
+                // bar). Only the tab-bar strip; the webview owns clicks below it.
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                } => {
+                    if !app.tabs.is_empty() && app.cursor_pos.1 < app.tab_bar_h() as f64 {
+                        let _ = app.window.drag_window();
+                    }
+                }
                 WindowEvent::KeyboardInput { event: key, .. } => {
                     if key.state == ElementState::Pressed {
                         app.handle_key(&key);
@@ -1342,6 +1375,7 @@ impl App {
     /// so the status bar tracks navigation. Skips terminal/internal/html tabs
     /// (their live URL is a data:/about: URL, not a real address).
     fn refresh_active_url(&mut self) {
+        let mut visited = None;
         if let Some(tab) = self.active.and_then(|i| self.tabs.get_mut(i)) {
             if tab.term.is_some() {
                 return;
@@ -1349,10 +1383,25 @@ impl App {
             let Some(wv) = &tab.webview else { return };
             if let Ok(u) = wv.url() {
                 if u.starts_with("http") {
-                    tab.url = u;
+                    tab.url = u.clone();
+                    visited = Some(u);
                 }
             }
         }
+        if let Some(u) = visited {
+            self.record_history(&u);
+        }
+    }
+
+    /// Record a visited URL for autocomplete: move it to the front (most recent),
+    /// de-duplicated, and cap the list. Skips internal `browser://` pages.
+    fn record_history(&mut self, url: &str) {
+        if url.is_empty() || url.starts_with("browser://") {
+            return;
+        }
+        self.history.retain(|u| u != url);
+        self.history.insert(0, url.to_string());
+        self.history.truncate(HISTORY_CAP);
     }
 
     // --- input ----------------------------------------------------------------
@@ -1733,9 +1782,13 @@ impl App {
                     let p = self.prev_word(self.command_cursor);
                     self.move_caret(p, shift);
                 }
+                // Ctrl+Right accepts the autocomplete suggestion (if any) — else moves
+                // a word, as before.
                 KeyCode::ArrowRight => {
-                    let p = self.next_word(self.command_cursor);
-                    self.move_caret(p, shift);
+                    if !self.accept_suggestion() {
+                        let p = self.next_word(self.command_cursor);
+                        self.move_caret(p, shift);
+                    }
                 }
                 // Ctrl+W / Ctrl+Backspace: delete the word before the caret.
                 KeyCode::KeyW | KeyCode::Backspace => self.cmd_delete_word(),
@@ -1769,6 +1822,10 @@ impl App {
             Key::Enter if self.mode == ModeKind::Find => {
                 self.find_confirm();
                 return;
+            }
+            // Tab accepts the autocomplete suggestion (a no-op if there isn't one).
+            Key::Tab => {
+                self.accept_suggestion();
             }
             Key::Enter => {
                 // Quick maths: if the line is an arithmetic expression, evaluate it
@@ -2145,6 +2202,59 @@ impl App {
         self.clear_status();
     }
 
+    /// Command-bar autocomplete: the FULL completed line for the current input, or
+    /// `None`. Completes a verb (`ver`→`version`) before the first space, otherwise
+    /// an `:open`-style argument from visited history (`open yout`→`open youtube.com`).
+    /// Only when in Command mode with the caret at the end and no selection.
+    fn command_suggestion(&self) -> Option<String> {
+        if self.mode != ModeKind::Command
+            || self.command_cursor != self.command.len()
+            || self.command_anchor.is_some()
+        {
+            return None;
+        }
+        let cmd = &self.command;
+        if cmd.is_empty() {
+            return None;
+        }
+        match cmd.split_once(char::is_whitespace) {
+            // Verb completion.
+            None => COMMANDS
+                .iter()
+                .find(|c| c.len() > cmd.len() && c.starts_with(cmd.as_str()))
+                .map(|c| (*c).to_string()),
+            // Argument completion from history (open-like verbs only).
+            Some((verb, rest)) => {
+                let rest = rest.trim();
+                if rest.is_empty()
+                    || !matches!(
+                        verb,
+                        "open" | "o" | "read" | "research" | "rs" | "nojs" | "tabopen" | "t"
+                    )
+                {
+                    return None;
+                }
+                let needle = rest.to_ascii_lowercase();
+                let disp = self.history.iter().map(|u| history_display(u)).find(|d| {
+                    let dl = d.to_ascii_lowercase();
+                    dl.starts_with(&needle) || dl.contains(&format!("/{needle}"))
+                })?;
+                Some(format!("{verb} {disp}"))
+            }
+        }
+    }
+
+    /// Accept the current autocomplete suggestion into the command line (caret to
+    /// end). Returns whether there was one to accept.
+    fn accept_suggestion(&mut self) -> bool {
+        let Some(sug) = self.command_suggestion() else { return false };
+        self.command = sug;
+        self.command_cursor = self.command.len();
+        self.command_anchor = None;
+        self.cursor_on = true;
+        true
+    }
+
     fn enter_insert(&mut self) {
         if self.active_webview().is_none() {
             self.set_status("no page — open one first");
@@ -2450,8 +2560,15 @@ impl App {
                 if rest.is_empty() {
                     self.set_status(format!("shell = {}", self.term_command.join(" ")));
                 } else {
-                    self.term_command = rest.split_whitespace().map(String::from).collect();
-                    self.set_status(format!("shell set to: {}", self.term_command.join(" ")));
+                    let parts: Vec<String> = rest.split_whitespace().map(String::from).collect();
+                    // Verify the program exists before applying, so a typo doesn't
+                    // silently break `:te` (which would fail to spawn the shell).
+                    if program_exists(&parts[0]) {
+                        self.term_command = parts;
+                        self.set_status(format!("shell set to: {}", self.term_command.join(" ")));
+                    } else {
+                        self.set_error(format!("shell not found on PATH: {}", parts[0]));
+                    }
                 }
             }
             // Customize the search engine used when `:open <query>` isn't a URL.
@@ -2529,6 +2646,7 @@ impl App {
 
     fn open_tab(&mut self, target: &str, disable_js: bool) {
         let url = self.resolve_target(target);
+        self.record_history(&url);
         match self.build_content_webview(Source::Url(url.clone()), disable_js, "") {
             Ok(webview) => {
                 self.tabs.push(Tab {
@@ -3356,6 +3474,7 @@ impl App {
             search_template: self.search_template.clone(),
             term_command: self.term_command.clone(),
             active,
+            history: self.history.clone(),
             window,
             tabs,
         });
@@ -3369,6 +3488,8 @@ impl App {
         if !s.term_command.is_empty() {
             self.term_command = s.term_command;
         }
+        self.history = s.history;
+        self.history.truncate(HISTORY_CAP);
         self.nojs = s.nojs;
         if s.zoom != 1.0 {
             self.set_zoom(s.zoom);
@@ -3520,6 +3641,12 @@ impl App {
             .then(|| self.math_preview())
             .flatten()
             .map(|r| format!("= {r}"));
+        // Autocomplete ghost: the un-typed tail of the suggestion, drawn dim after
+        // the command text (Tab / Ctrl+Right accepts it).
+        let cmd_suffix = self
+            .command_suggestion()
+            .and_then(|s| s.strip_prefix(self.command.as_str()).map(str::to_string))
+            .filter(|t| !t.is_empty());
 
         self.surface
             .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
@@ -3548,7 +3675,12 @@ impl App {
                 }
                 // Command line, scrolled left by `scroll` px; clip at the left
                 // margin so scrolled-off text doesn't bleed into the edge.
-                p.text_clipped(buf, wz, hz, MARGIN - *scroll, baseline, text, draw::BAR_FG, MARGIN);
+                let endx =
+                    p.text_clipped(buf, wz, hz, MARGIN - *scroll, baseline, text, draw::BAR_FG, MARGIN);
+                // Autocomplete ghost text (dim) continuing from the caret.
+                if let Some(sfx) = &cmd_suffix {
+                    p.text_clipped(buf, wz, hz, endx, baseline, sfx, draw::DIM, MARGIN);
+                }
             } else {
                 let mut x = 8;
                 for (text, color) in &segments {
@@ -3617,10 +3749,8 @@ impl App {
                             }
                             let s = m.start.min(chars.len());
                             let e = m.end.min(chars.len());
-                            let pre: String = chars[..s].iter().collect();
-                            let mid: String = chars[s..e].iter().collect();
-                            let x0 = base + p.measure(&pre) as i32;
-                            let x1 = x0 + p.measure(&mid) as i32;
+                            let x0 = line_col_x(&line.runs, s, base, p);
+                            let x1 = line_col_x(&line.runs, e, base, p);
                             let col =
                                 if mi == self.find.current { draw::FIND_CUR } else { draw::FIND };
                             draw::fill_rect(
@@ -3632,15 +3762,9 @@ impl App {
                     // Read-mode caret: visual-selection highlight (behind the text).
                     if let Some(caret) = &nr.caret {
                         if let Some((s0, s1)) = caret.selection_on_row(li) {
-                            let chars: Vec<char> =
-                                line.runs.iter().flat_map(|r| r.text.chars()).collect();
                             let base = MARGIN + line.indent;
-                            let colx = |c: usize| -> i32 {
-                                let s: String = chars[..c.min(chars.len())].iter().collect();
-                                base + p.measure(&s) as i32
-                            };
-                            let x0 = colx(s0).max(MARGIN);
-                            let x1 = colx(s1).max(MARGIN);
+                            let x0 = line_col_x(&line.runs, s0, base, p).max(MARGIN);
+                            let x1 = line_col_x(&line.runs, s1, base, p).max(MARGIN);
                             if x1 > x0 {
                                 draw::fill_rect(
                                     &mut buf, wz, hz, x0 as usize, y_top.max(0) as usize,
@@ -3660,9 +3784,7 @@ impl App {
                         if li == caret.cy {
                             let chars: Vec<char> =
                                 line.runs.iter().flat_map(|r| r.text.chars()).collect();
-                            let pre: String =
-                                chars[..caret.cx.min(chars.len())].iter().collect();
-                            let cx0 = MARGIN + line.indent + p.measure(&pre) as i32;
+                            let cx0 = line_col_x(&line.runs, caret.cx, MARGIN + line.indent, p);
                             let cwid = p.measure("M").max(1) as i32;
                             draw::fill_rect(
                                 &mut buf, wz, hz, cx0.max(MARGIN) as usize, y_top.max(0) as usize,
@@ -4295,6 +4417,7 @@ fn commands_document() -> String {
         ("Left / Right", "move the caret a character"),
         ("Ctrl+Left / Right", "move the caret a word"),
         ("Home / End", "jump to start / end of line"),
+        ("Tab / Ctrl+Right", "accept the autocomplete suggestion (verb, or :open URL from history)"),
         ("Shift+ movement", "extend the selection (with arrows, Ctrl+arrows, Home/End)"),
         ("Ctrl+A", "select the whole line"),
         ("Ctrl+C / Ctrl+X / Ctrl+V", "copy / cut / paste"),
@@ -4400,6 +4523,37 @@ fn version_lines() -> Vec<String> {
     lines
 }
 
+/// Whether `program` resolves to an executable: an explicit path that exists, or a
+/// bare name found on `PATH` (trying `PATHEXT` extensions on Windows, so `:shell nu`
+/// matches `nu.exe`). Used to reject a `:shell` typo before it breaks `:te`.
+fn program_exists(program: &str) -> bool {
+    use std::path::{Path, PathBuf};
+    let exts: Vec<String> = if cfg!(windows) {
+        let mut v = vec![String::new()];
+        let pe = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        v.extend(pe.split(';').filter(|s| !s.is_empty()).map(|s| s.to_lowercase()));
+        v
+    } else {
+        vec![String::new()]
+    };
+    let exists_with_ext = |base: &Path| -> bool {
+        exts.iter().any(|ext| {
+            let cand = if ext.is_empty() {
+                base.to_path_buf()
+            } else {
+                PathBuf::from(format!("{}{}", base.display(), ext))
+            };
+            cand.is_file()
+        })
+    };
+    if program.contains(['/', '\\']) {
+        return exists_with_ext(Path::new(program));
+    }
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| exists_with_ext(&dir.join(program)))
+    })
+}
+
 /// Locate the companion `browser-pty-host` binary next to our own executable.
 fn pty_host_path() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -4421,6 +4575,36 @@ fn search_template_for(arg: &str) -> Option<String> {
         return Some(a.to_string());
     }
     browser_core::bang_search_template(a).map(|t| t.to_string())
+}
+
+/// Pixel x of character column `col` within a read-view line, computed by
+/// replicating exactly how the line is painted: the pen runs in f32 within a run
+/// but is floored to an `i32` at every run boundary (because `text_clipped` takes
+/// and returns an `i32` x). Using `measure()` of the flattened prefix instead drifts
+/// to the right as the column and zoom grow (TODO #8) — the per-run floors add up.
+fn line_col_x(runs: &[read_view::Run], col: usize, base: i32, p: &Painter) -> i32 {
+    let mut x = base as f32;
+    let mut c = 0usize;
+    for run in runs {
+        for ch in run.text.chars() {
+            if c == col {
+                return x as i32;
+            }
+            x += p.advance(ch);
+            c += 1;
+        }
+        x = x.floor(); // text_clipped returns `pen as i32` between runs
+    }
+    x as i32
+}
+
+/// Compact display form of a URL for autocomplete: scheme + `www.` + trailing
+/// slash stripped (e.g. `https://www.youtube.com/` → `youtube.com`). The result is
+/// still openable (`resolve_target` re-adds the scheme).
+fn history_display(url: &str) -> String {
+    let s = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")).unwrap_or(url);
+    let s = s.strip_prefix("www.").unwrap_or(s);
+    s.trim_end_matches('/').to_string()
 }
 
 /// A short tab label: the host without scheme/`www.`, truncated.

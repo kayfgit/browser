@@ -19,6 +19,10 @@ pub struct Session {
     pub term_command: Vec<String>,
     /// Index of the focused tab within `tabs`.
     pub active: usize,
+    /// Visited URLs (most-recent first) for command-bar autocomplete. Must stay
+    /// before the `window`/`tabs` tables (TOML: values precede tables).
+    #[serde(default)]
+    pub history: Vec<String>,
     /// Last window geometry (outer position + inner size). `None` for sessions
     /// written before this was tracked.
     #[serde(default)]
@@ -82,6 +86,7 @@ mod tests {
             search_template: "https://example.com/?q=%s".into(),
             term_command: vec!["nu".into()],
             active: 1,
+            history: vec!["https://example.com/".into()],
             window: Some(WindowGeom { x: 40, y: 60, w: 1280, h: 800 }),
             tabs: vec![
                 SavedTab { kind: "open".into(), url: "https://a.test/".into() },
