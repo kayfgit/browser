@@ -755,6 +755,9 @@ struct App {
     res_at: Instant,
     /// Last known cursor position (physical px), tracked for tab-bar drag.
     cursor_pos: (f64, f64),
+    /// When the window last gained focus — used to swallow the stray `Tab` that
+    /// Alt+Tab delivers to a focused terminal.
+    last_focus_gain: Instant,
     /// Visited URLs, most-recent first (deduped, capped). Drives command-bar
     /// autocomplete for `:open <partial>` and is persisted in the session.
     history: Vec<String>,
@@ -891,6 +894,7 @@ fn main() -> Result<()> {
         res_prev: std::collections::HashMap::new(),
         res_at: Instant::now(),
         cursor_pos: (0.0, 0.0),
+        last_focus_gain: Instant::now(),
         history: Vec::new(),
     };
 
@@ -957,6 +961,7 @@ fn main() -> Result<()> {
                     app.on_resize(size.width, size.height);
                 }
                 WindowEvent::ModifiersChanged(state) => app.modifiers = state,
+                WindowEvent::Focused(true) => app.last_focus_gain = Instant::now(),
                 WindowEvent::CursorMoved { position, .. } => {
                     app.cursor_pos = (position.x, position.y);
                 }
@@ -1434,6 +1439,12 @@ impl App {
                 }
                 _ => {}
             }
+        }
+        // Terminal copy/vi mode (Shift+Esc): vi motions move a cursor over the live
+        // grid, v/V select, y yanks, i/Enter resumes. Unhandled keys (`:`/x/n/p) fall
+        // through to the normal browser bindings.
+        if self.active_term_vi() && self.key_term_vi(key) {
+            return;
         }
         // A `:error`/`:errors` tab is a read-only vim pager: let it claim the motion/
         // visual/yank keys first; anything it doesn't want (`:`, n/p, x, …) falls
@@ -2252,6 +2263,13 @@ impl App {
         // Native terminal: Passthrough is the terminal's input mode, but the SHELL
         // keeps keyboard focus (there's no webview) and forwards keys to the PTY.
         if self.active_is_term() {
+            // Leave copy/vi mode (if active) so the live grid takes input again.
+            if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
+            {
+                if s.pty.is_vi() {
+                    s.pty.toggle_vi();
+                }
+            }
             self.mode = ModeKind::Passthrough;
             self.window.set_focus();
             self.set_status("terminal — Shift+Esc returns to the shell");
@@ -2278,6 +2296,22 @@ impl App {
     }
 
     fn exit_to_normal(&mut self) {
+        // Leaving a terminal's input (Shift+Esc) enters COPY MODE: flip the engine
+        // into Alacritty's own vi mode — a vi cursor over the LIVE colored grid, with
+        // grid selection + `selection_to_string` to yank. `i`/`Enter` resumes.
+        if self.active_is_term() {
+            if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
+            {
+                if !s.pty.is_vi() {
+                    s.pty.toggle_vi();
+                }
+            }
+            self.mode = ModeKind::Normal;
+            self.window.set_focus();
+            self.clear_status();
+            self.window.request_redraw();
+            return;
+        }
         self.set_page_mode("normal");
         if let Some(wv) = self.active_webview() {
             let _ = wv.focus_parent();
@@ -2981,6 +3015,13 @@ impl App {
 
     /// Encode a key for the active terminal and write it to the PTY.
     fn key_term(&mut self, key: &KeyEvent) {
+        // Swallow the stray `Tab` that Alt+Tab delivers right as the window regains
+        // focus — otherwise it gets typed into the shell.
+        if matches!(key.logical_key, Key::Tab)
+            && self.last_focus_gain.elapsed() < Duration::from_millis(150)
+        {
+            return;
+        }
         let app_cursor = self
             .active
             .and_then(|i| self.tabs.get(i))
@@ -2994,6 +3035,98 @@ impl App {
                 s.send(0, &bytes);
             }
         }
+    }
+
+    /// Whether the active terminal is in copy/vi mode.
+    fn active_term_vi(&self) -> bool {
+        self.active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.term.as_ref())
+            .is_some_and(|s| s.pty.is_vi())
+    }
+
+    /// Drive Alacritty's vi/copy mode from a key. Returns `true` if consumed;
+    /// unhandled keys fall through to the normal browser bindings.
+    fn key_term_vi(&mut self, key: &KeyEvent) -> bool {
+        use pty_term::ViMotion as M;
+        let ctrl = self.modifiers.control_key();
+        let mut yank: Option<String> = None;
+        let mut exit = false;
+        let mut consumed = true;
+        {
+            let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
+            else {
+                return false;
+            };
+            let pty = &mut s.pty;
+            let half = (pty.rows as i32 / 2).max(1);
+            let page = (pty.rows as i32 - 1).max(1);
+            if ctrl {
+                match key.physical_key {
+                    KeyCode::KeyU => pty.vi_scroll(-half),
+                    KeyCode::KeyD => pty.vi_scroll(half),
+                    _ => consumed = false,
+                }
+            } else {
+                match &key.logical_key {
+                    Key::Escape => {
+                        if !pty.clear_selection() {
+                            exit = true;
+                        }
+                    }
+                    Key::Enter => exit = true,
+                    Key::ArrowLeft => pty.vi_motion(M::Left),
+                    Key::ArrowRight => pty.vi_motion(M::Right),
+                    Key::ArrowUp => pty.vi_motion(M::Up),
+                    Key::ArrowDown => pty.vi_motion(M::Down),
+                    Key::PageUp => pty.vi_scroll(-page),
+                    Key::PageDown => pty.vi_scroll(page),
+                    Key::Character(c) => match *c {
+                        "h" => pty.vi_motion(M::Left),
+                        "j" => pty.vi_motion(M::Down),
+                        "k" => pty.vi_motion(M::Up),
+                        "l" => pty.vi_motion(M::Right),
+                        "w" => pty.vi_motion(M::WordRight),
+                        "b" => pty.vi_motion(M::WordLeft),
+                        "e" => pty.vi_motion(M::WordRightEnd),
+                        "0" => pty.vi_motion(M::First),
+                        "$" => pty.vi_motion(M::Last),
+                        "^" => pty.vi_motion(M::FirstOccupied),
+                        "H" => pty.vi_motion(M::High),
+                        "M" => pty.vi_motion(M::Middle),
+                        "L" => pty.vi_motion(M::Low),
+                        "G" => pty.vi_bottom(),
+                        "g" => pty.vi_top(),
+                        "v" => {
+                            if !pty.clear_selection() {
+                                pty.start_selection(false);
+                            }
+                        }
+                        "V" => {
+                            if !pty.clear_selection() {
+                                pty.start_selection(true);
+                            }
+                        }
+                        "y" => yank = pty.yank(),
+                        "i" => exit = true,
+                        _ => consumed = false,
+                    },
+                    _ => consumed = false,
+                }
+            }
+        }
+        if let Some(text) = yank {
+            let n = text.chars().count();
+            clipboard_set(&text);
+            self.set_status(format!("yanked {n} chars"));
+        }
+        if exit {
+            self.enter_passthrough(); // leaves vi mode + resumes the live shell
+        }
+        if consumed || exit {
+            self.window.request_redraw();
+        }
+        consumed || exit
     }
 
     /// Present a finished command vim-style: the result replaces the command-bar
@@ -4005,12 +4138,20 @@ impl App {
                 if self.active_is_research() {
                     segs.push(("   [research]".into(), draw::RESEARCH));
                 }
+                // Terminal: [term] live (i types), [COPY] in vi/copy mode.
                 if self.active_is_term() {
-                    segs.push(("   [term]".into(), draw::TERM));
+                    if self.active_term_vi() {
+                        segs.push((
+                            "   [COPY]  hjkl/w/b move · v select · y yank · i resume".into(),
+                            draw::TERM,
+                        ));
+                    } else {
+                        segs.push(("   [term]  i: type · Shift+Esc: copy-mode".into(), draw::TERM));
+                    }
                 }
                 // Vim pager tabs (`:error`/`:errors`, `:res`): show [VISUAL]/[VISUAL
-                // LINE] while selecting; otherwise a short motion hint keyed to the
-                // tab — the red [error] hint must NOT bleed onto the `:res` monitor.
+                // LINE] while selecting, else a hint keyed to the tab — the red [error]
+                // hint must NOT bleed onto the `:res` monitor.
                 if let Some(t) = self.active.and_then(|i| self.tabs.get(i)) {
                     if let Some(vb) = t.vim.as_ref() {
                         match vb.mode_label() {
@@ -4350,7 +4491,7 @@ fn commands_document() -> String {
         (":y · :yank", "copy the current URL to the clipboard"),
         (":read <url|query>", "engine-free reader (no WebView2): j/k scroll, f hint, v/V select; non-URL → search"),
         (":search [name|template]", "show/set the search engine — a name (ddg/google/wiki…) or a %s URL"),
-        (":te", "open a terminal tab"),
+        (":te", "open a native terminal tab (Shift+Esc → vim copy-mode: navigate/yank, i resumes)"),
         (":te <command>", "run a local command, result in the command bar"),
         (":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
         (":nojs", "toggle JavaScript off for new tabs"),

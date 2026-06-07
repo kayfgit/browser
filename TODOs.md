@@ -1,9 +1,12 @@
-[x] - :shell should see if the given shell actually exists before applying  [program_exists() checks PATH (+ PATHEXT on Windows) or an explicit path before applying; rejects typos with an error]
-[x] - autocomplete based on history, if i have accessed youtube.com recently and write ":open yout" it should show the auto complete, which i can press tab to accept the autocomplete. (also works with commands like ":ver" should show the full ":version", which i can accept by pressing tab or ctrl-rightarrokey and then enter)  [ghost-text suggestion: verb completion (:ver→:version) + :open/:read/:research arg from visited history; Tab or Ctrl+Right accepts; history persisted in session]
-[] - look for a way to make the browser consume the least amount of resources from the pc, even with the heavy engine running
+[~] - look for a way to make the browser consume the least amount of resources from the pc, even with the heavy engine running
 [] - maybe add tmux functionality? could be cool
 [] - maybe add a :engine command to change browser engine? might be overkill
-[x] - make own dedicated terminal to use as little resources as possible  [v1 DONE: :te is now a native alacritty_terminal VT engine rendered by our own softbuffer painter — ZERO WebView2 per terminal (verified: stays at SearchHost baseline). xterm.js/WebView2 dropped. PTY still in browser-pty-host. roadmap: scrollback scrolling, mouse selection, tiling/splits.]
-[~] - add the same vim motions of :error and :resources on :version and :te (on the terminal it should activate while exiting passthrough mode)  [:version DONE (native vim pager); :te now native (alacritty grid) so vim-over-scrollback is feasible — still TODO]
-[x] - same visual issue as before, cursor is slightly offset, scales with how far to the right it is and zoom  [read lines are multi-run; text_clipped floors the pen at each run boundary but the caret used measure() of the whole prefix (floored once) → drift grew with column*zoom. fixed with line_col_x() which replicates the per-run flooring; used for caret cursor, selection, and find highlight]
-[x] - make top bar (where the links sit) draggable with a mouse, just a quality of life.  [left mouse-down in the tab-bar strip calls window.drag_window() (OS move); cursor tracked via CursorMoved]
+[] - fix youtube issues, cant use hint mode to skip adds, cant open settings while on normal mode
+[] - implement adblock, :ads command to toggle ads on/off
+[] - :video command that opens videos on accepts both urls and search queries, typing ":video jacobfuckingjones" would show the recent jacob videos, opening a video would open mpv or something similar to play the video
+[] - fix other languages missing characters on :read and :term
+[] - maybe add commands that changes the page in-real-time, like ":images" would toggle images, ":videos" would toggle videos, ":nojs" already exists but only applies for new tabs (should also be renamed to :js)
+[] - fullscreen should hide command and tab bar when youtube fullscreen is enabled.
+[] - opening the terminal and vim, writing something and saving it, closing the terminal and opening it again makes vim say something about swap file (probably the terminal ending abruptly is causing vim to freak out)
+[] - opening spotify_player.exe and playing a song freezes :resources??????? what the fuck how is that related
+[] - display doesnt follow cursor when it goes beyond the limits of the window on vi mode in the terminal 

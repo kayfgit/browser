@@ -27,17 +27,38 @@ pub const FIND: Rgb = (0x5a, 0x52, 0x14);
 pub const FIND_CUR: Rgb = (0xc8, 0x64, 0x1e);
 
 pub struct Painter {
-    font: Font,
+    /// Primary monospace font + fallbacks, tried in order for each glyph. The
+    /// primary (Consolas) covers normal text; fallbacks (e.g. Segoe UI Symbol)
+    /// cover glyphs it lacks (Braille, symbols, dingbats) so terminals/pages don't
+    /// show `.notdef` tofu boxes for them.
+    fonts: Vec<Font>,
     px: f32,
 }
 
 impl Painter {
-    /// Load a monospace system font (Consolas), falling back to Segoe UI.
+    /// Load the monospace primary (Consolas → Segoe UI → Arial) plus best-effort
+    /// symbol fallbacks for broad glyph coverage.
     pub fn new(px: f32) -> Result<Self> {
-        let bytes = load_system_font()?;
-        let font = Font::from_bytes(bytes, FontSettings::default())
-            .map_err(|e| anyhow!("parsing font: {e}"))?;
-        Ok(Painter { font, px })
+        let mut fonts = vec![Font::from_bytes(load_system_font()?, FontSettings::default())
+            .map_err(|e| anyhow!("parsing font: {e}"))?];
+        // Optional fallbacks — skipped silently if a face isn't installed.
+        for path in [r"C:\Windows\Fonts\seguisym.ttf", r"C:\Windows\Fonts\arial.ttf"] {
+            if let Ok(bytes) = std::fs::read(path) {
+                if let Ok(f) = Font::from_bytes(bytes, FontSettings::default()) {
+                    fonts.push(f);
+                }
+            }
+        }
+        Ok(Painter { fonts, px })
+    }
+
+    /// The first loaded font that has a glyph for `ch` (else the primary, which
+    /// renders its `.notdef`).
+    fn font_for(&self, ch: char) -> &Font {
+        self.fonts
+            .iter()
+            .find(|f| f.lookup_glyph_index(ch) != 0)
+            .unwrap_or(&self.fonts[0])
     }
 
     pub fn line_height(&self) -> usize {
@@ -60,7 +81,7 @@ impl Painter {
     pub fn measure(&self, s: &str) -> usize {
         let mut pen = 0f32;
         for ch in s.chars() {
-            pen += self.font.metrics(ch, self.px).advance_width;
+            pen += self.font_for(ch).metrics(ch, self.px).advance_width;
         }
         pen as usize
     }
@@ -71,7 +92,7 @@ impl Painter {
     /// drifts, because each run boundary floors the pen — the drift grows with the
     /// column and the font size.
     pub fn advance(&self, ch: char) -> f32 {
-        self.font.metrics(ch, self.px).advance_width
+        self.font_for(ch).metrics(ch, self.px).advance_width
     }
 
     /// Draw a string with its baseline at `baseline`, left edge at `x`.
@@ -108,7 +129,7 @@ impl Painter {
     ) -> i32 {
         let mut pen = x as f32;
         for ch in s.chars() {
-            let (m, bitmap) = self.font.rasterize(ch, self.px);
+            let (m, bitmap) = self.font_for(ch).rasterize(ch, self.px);
             for row in 0..m.height {
                 for col in 0..m.width {
                     let cov = bitmap[row * m.width + col];

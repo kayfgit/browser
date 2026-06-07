@@ -141,8 +141,11 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   Rust, the renderer is ours). The PTY + shell run in a separate `browser-pty-host` companion process —
   so a live ConPTY can't deadlock the browser's exit — confined to a kill-on-close **job object** so the
   OS reaps it (and its conhost + shell) when the tab closes, the browser quits, or even crashes. Set the
-  shell with `:shell <program>` (default `nu`). Terminal tabs are tinted orange; `Shift+Esc` returns to
-  the shell, `i`/`:te` re-enter. (Scrollback scrolling and selection are on the roadmap.)
+  shell with `:shell <program>` (default `nu`). Terminal tabs are tinted orange. **`Shift+Esc` enters
+  copy-mode** — the grid (scrollback + screen) freezes into a vim buffer so you can navigate and **yank
+  output with vim motions** (`hjkl`/`w`/`v`/`y`/…, just like `:error`/`:res`); `i` or `Enter` resumes the
+  live shell. Box-drawing and block characters are drawn procedurally so TUI tables/borders and block art
+  render crisply; colors use the Windows "Campbell" palette.
 - **Read mode** — `:read <url>` (or `:read <query>`, which reads the search-results page) extracts the article with the `dom_smoothie` readability pipeline
   and renders it **engine-free**: the cleaned `Document` is painted by the shell's own softbuffer
   text renderer, so a read tab spawns **zero WebView2 processes** (verified: 0 child engine procs vs.
