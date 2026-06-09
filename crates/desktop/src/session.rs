@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 pub struct Session {
     pub zoom: f64,
     pub nojs: bool,
+    /// Whether the ad/tracker blocker is on. Defaults to `true` so sessions written
+    /// before this field existed still load with blocking enabled (the app default).
+    #[serde(default = "default_adblock")]
+    pub adblock: bool,
     pub search_template: String,
     pub term_command: Vec<String>,
     /// Index of the focused tab within `tabs`.
@@ -50,6 +54,12 @@ pub struct SavedTab {
     pub url: String,
 }
 
+/// Serde default for [`Session::adblock`]: blocking is on unless a session
+/// explicitly records it off.
+fn default_adblock() -> bool {
+    true
+}
+
 /// `%APPDATA%\browser\session.toml` on Windows, the XDG data dir elsewhere.
 fn path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "browser").map(|d| d.data_dir().join("session.toml"))
@@ -83,6 +93,7 @@ mod tests {
         let s = Session {
             zoom: 1.2,
             nojs: true,
+            adblock: true,
             search_template: "https://example.com/?q=%s".into(),
             term_command: vec!["nu".into()],
             active: 1,

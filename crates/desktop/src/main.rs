@@ -58,7 +58,7 @@ const TERM_PAD: i32 = 4;
 /// useful canonical spellings; ordered so the first prefix match is the best one.
 const COMMANDS: &[&str] = &[
     "open", "edit", "yank", "read", "research", "reload", "resize", "res", "resources",
-    "error", "errors", "te", "term", "shell", "search", "nojs", "next", "tabnext", "tabprev",
+    "error", "errors", "te", "term", "shell", "search", "nojs", "ads", "adblock", "next", "tabnext", "tabprev",
     "prev", "back", "forward", "fullscreen", "move", "commands", "help", "version", "close",
     "quit",
 ];
@@ -269,6 +269,258 @@ const RESEARCH_JS: &str = r#"
     }).observe(document.documentElement, { childList: true, subtree: true });
   }
   observe();
+})();
+"#;
+
+/// uBlock-style content blocker, injected at document-start into every web tab
+/// while adblock is on. wry exposes no sub-resource request blocker (see
+/// [`RESEARCH_JS`]), so we do it page-side in three layers:
+///   * network — wrap `fetch`/`XHR`/`sendBeacon` so requests to known ad/tracker
+///     hosts resolve empty instead of hitting the network;
+///   * DOM — a MutationObserver removes script/iframe/img/ins nodes that load from
+///     those hosts (and `ins.adsbygoogle`) as the page builds itself;
+///   * cosmetic — a `<style>` hides generic ad containers (EasyList-ish), plus
+///     YouTube's ad slots, and a 400ms tick skips/seeks past YouTube video ads.
+/// All three honour a live `on` flag: the shell flips it via `window.__setAdblock`
+/// on `:ads` (no reload needed), and bakes the initial value as `__adblockDefault`
+/// per tab so new tabs start in the current state.
+const ADBLOCK_JS: &str = r#"
+(function () {
+  if (window.__adblockInit) return;
+  window.__adblockInit = true;
+  var on = (typeof window.__adblockDefault === 'undefined') ? true : !!window.__adblockDefault;
+
+  // Hostnames / URL fragments to drop (substring match, lower-cased). Kept to
+  // well-known ad-exchange, analytics and tracker endpoints to avoid false hits.
+  var HOSTS = [
+    'doubleclick.net','googlesyndication.com','googleadservices.com',
+    'google-analytics.com','googletagmanager.com','googletagservices.com',
+    'adservice.google.','pagead2.googlesyndication','amazon-adsystem.com',
+    'adnxs.com','adsrvr.org','rubiconproject.com','pubmatic.com','openx.net',
+    'criteo.com','criteo.net','taboola.com','outbrain.com','scorecardresearch.com',
+    'quantserve.com','moatads.com','adcolony.com','applovin.com','zedo.com',
+    'bidswitch.net','casalemedia.com','sharethrough.com','smartadserver.com',
+    'teads.tv','3lift.com','yieldmo.com','contextweb.com','gumgum.com',
+    'indexww.com','media.net','mgid.com','revcontent.com','adform.net',
+    'adroll.com','bluekai.com','demdex.net','everesttech.net','rlcdn.com',
+    'agkn.com','crwdcntrl.net','mathtag.com','adsafeprotected.com',
+    'serving-sys.com','flashtalking.com','servedbyadbutler.com',
+    'hotjar.com','mixpanel.com','segment.io','amplitude.com','branch.io',
+    'onesignal.com','clarity.ms','fullstory.com','heap.io','nr-data.net',
+    'bugsnag.com','optimizely.com','chartbeat.com','parsely.com',
+    'permutive.com','cxense.com','facebook.net/en_us/fbevents','analytics.tiktok',
+    'ads.linkedin.com','ads.pinterest.com','ads.yahoo.com',
+    '/pagead/','/adsbygoogle','/gampad/','/securepubads',
+    'youtube.com/api/stats/ads','youtube.com/ptracking','/get_midroll_'
+  ];
+  function blocked(url) {
+    if (!on || !url) return false;
+    try {
+      var u = String(url).toLowerCase();
+      for (var i = 0; i < HOSTS.length; i++) if (u.indexOf(HOSTS[i]) !== -1) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  // --- network: make ad/tracker requests resolve empty instead of loading ------
+  var _fetch = window.fetch;
+  if (_fetch) {
+    window.fetch = function (input) {
+      var url = (input && input.url) ? input.url : input;
+      // 204 must carry a NULL body (an empty string throws in the Response ctor).
+      if (blocked(url)) return Promise.resolve(new Response(null, { status: 204, statusText: 'No Content' }));
+      return _fetch.apply(this, arguments);
+    };
+  }
+  var _open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    this.__adBlocked = blocked(url);
+    return _open.apply(this, arguments);
+  };
+  var _send = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function () {
+    if (this.__adBlocked) { try { this.abort(); } catch (e) {} return; }
+    return _send.apply(this, arguments);
+  };
+  var _beacon = navigator.sendBeacon && navigator.sendBeacon.bind(navigator);
+  if (_beacon) {
+    navigator.sendBeacon = function (url) { return blocked(url) ? true : _beacon.apply(null, arguments); };
+  }
+
+  // --- DOM: strip nodes that pull in ad URLs (and adsbygoogle <ins>) -----------
+  function adNode(n) {
+    if (!on || n.nodeType !== 1) return false;
+    var tag = n.tagName;
+    if (tag === 'SCRIPT' || tag === 'IFRAME' || tag === 'IMG' || tag === 'EMBED' ||
+        tag === 'OBJECT' || tag === 'SOURCE') {
+      var s = n.getAttribute('src') || n.getAttribute('data-src') ||
+              n.getAttribute('data') || '';
+      if (blocked(s)) return true;
+    }
+    if (tag === 'INS' && /adsbygoogle/i.test(n.className)) return true;
+    return false;
+  }
+  function sweep(root) {
+    if (!on) return;
+    try {
+      var r = (root && root.querySelectorAll) ? root : document;
+      var hits = r.querySelectorAll('script,iframe,img,embed,object,ins,source');
+      for (var i = 0; i < hits.length; i++) if (adNode(hits[i])) hits[i].remove();
+    } catch (e) {}
+  }
+  function observe() {
+    if (!document.documentElement) { setTimeout(observe, 0); return; }
+    new MutationObserver(function (muts) {
+      if (!on) return;
+      for (var i = 0; i < muts.length; i++) {
+        var a = muts[i].addedNodes;
+        for (var j = 0; j < a.length; j++) {
+          var n = a[j];
+          if (n.nodeType !== 1) continue;
+          if (adNode(n)) { n.remove(); continue; }
+          sweep(n);
+          hideCosmetic(n);
+        }
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  }
+  observe();
+
+  // --- YouTube VIDEO ads: prune the ad descriptors from the player response ----
+  // uBlock's technique (`json-prune`): YouTube schedules pre-/mid-roll ads from
+  // `adPlacements`/`playerAds`/`adSlots` keys in the player API JSON. We trap the
+  // ways that JSON reaches the page and delete those keys, so the player simply
+  // has no ad to play — no seeking, so no "1s ad then black screen". Only patched
+  // on YouTube to avoid overhead/risk elsewhere.
+  var isYT = location.hostname.indexOf('youtube.com') !== -1 ||
+             location.hostname.indexOf('youtube-nocookie.com') !== -1;
+  var YT_AD_KEYS = ['adPlacements', 'playerAds', 'adSlots', 'adBreakHeartbeatParams',
+                    'adParams', 'importantHeaders'];
+  function prunePlayerAds(data) {
+    if (!on || !data || typeof data !== 'object') return data;
+    try {
+      for (var i = 0; i < YT_AD_KEYS.length; i++) {
+        if (data[YT_AD_KEYS[i]] != null) delete data[YT_AD_KEYS[i]];
+      }
+      if (data.playerResponse) prunePlayerAds(data.playerResponse);
+      if (Array.isArray(data)) for (var j = 0; j < data.length; j++) prunePlayerAds(data[j]);
+    } catch (e) {}
+    return data;
+  }
+  if (isYT) {
+    var _parse = JSON.parse;
+    JSON.parse = function () { return prunePlayerAds(_parse.apply(this, arguments)); };
+    var _rjson = Response.prototype.json;
+    Response.prototype.json = function () {
+      var pr = _rjson.apply(this, arguments);
+      return on ? pr.then(prunePlayerAds) : pr;
+    };
+    // The first full page load embeds the response as an inline `ytInitialPlayerResponse`
+    // global (not via JSON.parse). Our init script runs first, so define a setter that
+    // prunes it the moment YouTube assigns it. Kept configurable so YT can redefine it.
+    try {
+      var _ytIPR;
+      Object.defineProperty(window, 'ytInitialPlayerResponse', {
+        configurable: true,
+        get: function () { return _ytIPR; },
+        set: function (v) { _ytIPR = prunePlayerAds(v); }
+      });
+    } catch (e) {}
+  }
+
+  // --- cosmetic: hide ad containers + YouTube ad slots -------------------------
+  // We hide IMPERATIVELY (inline `display:none`) rather than via an injected
+  // `<style>`: a strict CSP (YouTube's) blocks injected stylesheets, but inline
+  // styles set through `el.style` are exempt — so this works where a stylesheet
+  // silently wouldn't. Hidden nodes are tagged so `:ads` off can restore them.
+  var COSMETIC = [
+    'ins.adsbygoogle', '.adsbygoogle',
+    'iframe[src*="doubleclick"]', 'iframe[src*="googlesyndication"]',
+    'iframe[id^="google_ads_"]', 'iframe[id*="aswift"]',
+    'div[id^="google_ads_"]', 'div[id^="div-gpt-ad"]',
+    '[data-ad-slot]', '[data-ad-client]', '[aria-label="Advertisement"]',
+    '.ad-container', '.ad-banner', '.ad-wrapper', '.ads-container',
+    '.advertisement', '.sponsored-content', '.trc_related_container',
+    // YouTube: the sponsored/promoted feed cards, the masthead banner, in-player
+    // ad slots. `:has()` removes the empty grid cell the ad lived in, not just the
+    // ad node, so the feed doesn't keep a blank gap.
+    'ytd-display-ad-renderer', 'ytd-promoted-sparmus-renderer',
+    'ytd-promoted-video-renderer', 'ytd-ad-slot-renderer',
+    'ytd-in-feed-ad-layout-renderer', 'ytd-banner-promo-renderer',
+    'ytd-statement-banner-renderer', 'ad-slot-renderer',
+    '#masthead-ad', '#player-ads',
+    '.ytp-ad-overlay-container', '.ytp-ad-module', '.video-ads',
+    '.ytp-ad-overlay-slot', '.ytp-suggested-action'
+  ];
+  // `:has()` selectors are kept SEPARATE: an engine that rejected one would throw
+  // for the whole `querySelectorAll`, so a bad one here can't disable the core list
+  // above. These remove the empty feed cell the ad lived in (not just the ad node).
+  var COSMETIC_HAS = [
+    'ytd-rich-item-renderer:has(ytd-ad-slot-renderer)',
+    'ytd-rich-item-renderer:has(ytd-in-feed-ad-layout-renderer)',
+    'ytd-rich-section-renderer:has(ytd-statement-banner-renderer)'
+  ];
+  var COSMETIC_SEL = COSMETIC.join(',');
+  var COSMETIC_HAS_SEL = COSMETIC_HAS.join(',');
+  function hideEl(el) {
+    if (el.getAttribute('data-adblock-hidden')) return;
+    el.setAttribute('data-adblock-hidden', '1');
+    el.style.setProperty('display', 'none', 'important');
+  }
+  function hideBySelector(root, selector) {
+    try {
+      if (root.nodeType === 1 && root.matches && root.matches(selector)) hideEl(root);
+      if (root.querySelectorAll) {
+        var hits = root.querySelectorAll(selector);
+        for (var i = 0; i < hits.length; i++) hideEl(hits[i]);
+      }
+    } catch (e) {}
+  }
+  function hideCosmetic(root) {
+    if (!on || !root) return;
+    hideBySelector(root, COSMETIC_SEL);
+    hideBySelector(root, COSMETIC_HAS_SEL);
+  }
+  function unhideCosmetic() {
+    try {
+      var hits = document.querySelectorAll('[data-adblock-hidden]');
+      for (var i = 0; i < hits.length; i++) {
+        hits[i].removeAttribute('data-adblock-hidden');
+        hits[i].style.removeProperty('display');
+      }
+    } catch (e) {}
+  }
+
+  // --- YouTube: skip the skippable, seek past the unskippable ------------------
+  function youtube() {
+    if (!on || location.hostname.indexOf('youtube.com') === -1) return;
+    try {
+      var skip = document.querySelector(
+        '.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button');
+      if (skip) skip.click();
+      var player = document.querySelector('.html5-video-player');
+      if (player && player.classList.contains('ad-showing')) {
+        var v = document.querySelector('video.html5-main-video');
+        if (v && v.duration && isFinite(v.duration)) { v.muted = true; v.currentTime = v.duration; }
+      }
+      var close = document.querySelector('.ytp-ad-overlay-close-button');
+      if (close) close.click();
+    } catch (e) {}
+  }
+
+  // One periodic pass covers SPA navigations and lazily-inserted ads that slip the
+  // observer; cheap (a couple of querySelectorAll calls).
+  function tick() { if (!on) return; hideCosmetic(document); youtube(); }
+  hideCosmetic(document);
+  document.addEventListener('DOMContentLoaded', function () { sweep(document); hideCosmetic(document); });
+  setInterval(tick, 500);
+
+  // --- live toggle from the shell (`:ads`), no reload needed -------------------
+  window.__setAdblock = function (v) {
+    on = !!v;
+    if (on) { sweep(document); hideCosmetic(document); youtube(); }
+    else { unhideCosmetic(); }
+  };
 })();
 "#;
 
@@ -731,6 +983,9 @@ struct App {
     modifiers: ModifiersState,
     /// When true, new tabs are opened with JavaScript disabled.
     nojs: bool,
+    /// When true, the uBlock-style content blocker ([`ADBLOCK_JS`]) is injected
+    /// into web tabs. Toggled with `:ads`; persisted across sessions.
+    adblock: bool,
     /// Shell command for `:te` (program + args), set via `:config`.
     term_command: Vec<String>,
     /// Search-engine URL template (`%s` = query) for a non-URL `:open`. Defaults
@@ -884,6 +1139,7 @@ fn main() -> Result<()> {
         active: None,
         modifiers: ModifiersState::default(),
         nojs: false,
+        adblock: true,
         term_command: vec!["nu".to_string()],
         search_template: browser_core::DEFAULT_SEARCH_URL.to_string(),
         next_term_id: 0,
@@ -2621,6 +2877,9 @@ impl App {
                     self.open_tab(rest, true);
                 }
             }
+            // Toggle the uBlock-style content blocker. Applies live to every open web
+            // tab (no reload) and is the default for new tabs; persisted in the session.
+            "ads" | "adblock" => self.toggle_adblock(),
             "close" | "tabclose" | "bd" => self.close_active(),
             "quit" | "q" => self.quit = true,
             "reload" | "r" => self.reload_active(),
@@ -2746,12 +3005,21 @@ impl App {
             // Browser process flags — see BROWSER_ARGS. MUST match every other
             // webview (terminal included) or WebView2 creation fails with 0x8007139F.
             .with_additional_browser_args(BROWSER_ARGS)
-            // The shell bridge always loads; `extra_init` (e.g. research-mode DOM
-            // pruning) is appended so it runs in the same document-create pass.
-            .with_initialization_script(if extra_init.is_empty() {
-                format!("{BRIDGE_JS}\n{FIND_JS}\n{CARET_JS}")
-            } else {
-                format!("{BRIDGE_JS}\n{FIND_JS}\n{CARET_JS}\n{extra_init}")
+            // The shell bridge always loads; the adblocker loads too but starts in
+            // the shell's current state (baked as `__adblockDefault`), so `:ads` can
+            // flip it live (`__setAdblock`) without a reload. `extra_init` (e.g.
+            // research-mode DOM pruning) is appended last. All run in the same
+            // document-create pass.
+            .with_initialization_script({
+                let default = self.adblock;
+                let mut init = format!(
+                    "{BRIDGE_JS}\n{FIND_JS}\n{CARET_JS}\nwindow.__adblockDefault={default};\n{ADBLOCK_JS}"
+                );
+                if !extra_init.is_empty() {
+                    init.push('\n');
+                    init.push_str(extra_init);
+                }
+                init
             })
             .with_ipc_handler(move |req| match req.body().as_str() {
                 "leave-passthrough" | "insert-escape" | "insert-blur" => {
@@ -3029,7 +3297,8 @@ impl App {
             .is_some_and(|s| s.pty.app_cursor());
         let ctrl = self.modifiers.control_key();
         let alt = self.modifiers.alt_key();
-        if let Some(bytes) = encode_term_key(&key.logical_key, ctrl, alt, app_cursor) {
+        let shift = self.modifiers.shift_key();
+        if let Some(bytes) = encode_term_key(&key.logical_key, ctrl, alt, shift, app_cursor) {
             if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
             {
                 s.send(0, &bytes);
@@ -3543,6 +3812,7 @@ impl App {
         session::save(&session::Session {
             zoom: self.zoom,
             nojs: self.nojs,
+            adblock: self.adblock,
             search_template: self.search_template.clone(),
             term_command: self.term_command.clone(),
             active,
@@ -3563,6 +3833,7 @@ impl App {
         self.history = s.history;
         self.history.truncate(HISTORY_CAP);
         self.nojs = s.nojs;
+        self.adblock = s.adblock;
         if s.zoom != 1.0 {
             self.set_zoom(s.zoom);
         }
@@ -3620,6 +3891,22 @@ impl App {
             let js = if forward { "history.forward();" } else { "history.back();" };
             let _ = wv.evaluate_script(js);
         }
+    }
+
+    /// Toggle the ad/tracker blocker. Flips the live `on` flag inside every open
+    /// web tab via `__setAdblock` (cosmetic hiding + DOM sweep + YouTube skip update
+    /// immediately; already-loaded requests aren't undone — reload for a clean slate)
+    /// and updates the default baked into newly opened tabs.
+    fn toggle_adblock(&mut self) {
+        self.adblock = !self.adblock;
+        let on = self.adblock;
+        for tab in &self.tabs {
+            if let Some(wv) = &tab.webview {
+                let _ = wv.evaluate_script(&format!("window.__setAdblock&&window.__setAdblock({on})"));
+            }
+        }
+        self.set_status(if on { "adblock ON — ads blocked" } else { "adblock OFF — ads allowed" });
+        self.window.request_redraw();
     }
 
     /// Reload the active tab: re-extract for an engine-free read tab, else reload
@@ -4496,6 +4783,7 @@ fn commands_document() -> String {
         (":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
         (":nojs", "toggle JavaScript off for new tabs"),
         (":nojs <url>", "open a page with JavaScript disabled"),
+        (":ads · :adblock", "toggle the ad/tracker blocker (live, all tabs; on by default)"),
         (":close · :bd", "close the current tab"),
         (":reload · :r", "reload"),
         (":tabnext · :tn · :tabprev · :tp", "switch tabs"),
@@ -4644,7 +4932,7 @@ fn line_col_x(runs: &[read_view::Run], col: usize, base: i32, p: &Painter) -> i3
 /// used to do). Covers printable input, Ctrl-combos → control codes, Enter/Tab/
 /// Backspace/Esc, and the cursor/navigation keys (honoring DECCKM app-cursor mode).
 /// `None` for keys with no terminal meaning. Alt prefixes the sequence with ESC.
-fn encode_term_key(key: &Key, ctrl: bool, alt: bool, app_cursor: bool) -> Option<Vec<u8>> {
+fn encode_term_key(key: &Key, ctrl: bool, alt: bool, shift: bool, app_cursor: bool) -> Option<Vec<u8>> {
     let cursor = |c: u8| -> Vec<u8> {
         let mut v = if app_cursor { vec![0x1b, b'O'] } else { vec![0x1b, b'['] };
         v.push(c);
@@ -4660,7 +4948,15 @@ fn encode_term_key(key: &Key, ctrl: bool, alt: bool, app_cursor: bool) -> Option
         }
         Key::Enter => vec![b'\r'],
         Key::Backspace => vec![0x7f],
-        Key::Tab => vec![b'\t'],
+        // Shift+Tab is the "back-tab" CSI Z — TUIs (Claude Code's mode switch,
+        // form/field navigation) need it to move backward; plain Tab otherwise.
+        Key::Tab => {
+            if shift {
+                b"\x1b[Z".to_vec()
+            } else {
+                vec![b'\t']
+            }
+        }
         Key::Escape => vec![0x1b],
         Key::Space => vec![b' '],
         Key::ArrowUp => cursor(b'A'),

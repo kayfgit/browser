@@ -355,14 +355,26 @@ pub fn render(
     let baseline_off = cell_h * 3 / 4;
     let mut cursor_char = ' ';
 
+    // Both `display_iter` cells AND `cursor.point` use ABSOLUTE buffer coordinates
+    // (lines are negative for scrollback): `display_iter` starts at
+    // `Line(-display_offset - 1)`. To paint them in the visible band we convert each
+    // to a viewport row the way Alacritty's own frontend does (`point_to_viewport`):
+    // `row = absolute_line + display_offset`. Without this, scrolling copy-mode into
+    // scrollback clips the scrolled-in lines (negative rows) and pins the rest at
+    // their absolute rows — the "camera doesn't follow the cursor" bug, where the
+    // bottom goes blank as you scroll up. At display_offset 0 this is a no-op.
+    let display_offset = pty.vt.grid().display_offset() as i32;
+    let cursor_row = cursor.point.line.0 + display_offset;
+    let cursor_col = cursor.point.column.0 as i32;
+
     for item in content.display_iter {
         let cell = item.cell;
         if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
             continue;
         }
-        let row = item.point.line.0;
+        let row = item.point.line.0 + display_offset;
         let col = item.point.column.0 as i32;
-        if item.point == cursor.point {
+        if row == cursor_row && col == cursor_col {
             cursor_char = cell.c;
         }
         let cx = x0 + col * cell_w;
@@ -393,10 +405,11 @@ pub fn render(
         }
     }
 
-    // Block cursor (inverse cell), unless hidden.
+    // Block cursor (inverse cell), unless hidden. Uses the viewport-converted row
+    // so it tracks the display when copy-mode has scrolled into scrollback.
     if !matches!(cursor.shape, CursorShape::Hidden) {
-        let cx = x0 + cursor.point.column.0 as i32 * cell_w;
-        let cy = y0 + cursor.point.line.0 * cell_h;
+        let cx = x0 + cursor_col * cell_w;
+        let cy = y0 + cursor_row * cell_h;
         if cy >= y0 && cy + cell_h <= clip_bottom {
             draw::fill_rect(
                 buf, w, h, cx.max(0) as usize, cy.max(0) as usize,
@@ -453,8 +466,19 @@ mod tests {
             pty.vi_motion(ViMotion::Up);
         }
         assert!(pty.vt.grid().display_offset() > 0, "viewport should have scrolled up");
+        // The cursor's VIEWPORT row (absolute line + display_offset) must stay within
+        // the visible band — this is what `render` uses to place the block, so a value
+        // outside [0, rows) is the "cursor flew off-screen, camera didn't follow" bug.
+        let vp_row = pty.vt.vi_mode_cursor.point.line.0 + pty.vt.grid().display_offset() as i32;
+        assert!(
+            (0..pty.rows as i32).contains(&vp_row),
+            "cursor viewport row {vp_row} should be on-screen (rows={})",
+            pty.rows
+        );
         // gg jumps to the very top.
         pty.vi_top();
         assert!(pty.vt.grid().display_offset() > 0);
+        let vp_row = pty.vt.vi_mode_cursor.point.line.0 + pty.vt.grid().display_offset() as i32;
+        assert!((0..pty.rows as i32).contains(&vp_row), "cursor row {vp_row} on-screen after gg");
     }
 }
