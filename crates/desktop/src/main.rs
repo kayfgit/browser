@@ -61,7 +61,8 @@ const TERM_PAD: i32 = 4;
 /// useful canonical spellings; ordered so the first prefix match is the best one.
 const COMMANDS: &[&str] = &[
     "open", "tabopen", "edit", "yank", "read", "research", "reload", "resize", "res", "resources", "reopen",
-    "error", "errors", "te", "term", "shell", "search", "nojs", "ads", "adblock", "next", "tabnext", "tabprev",
+    "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock",
+    "popups", "pops", "mute", "audio", "css", "next", "tabnext", "tabprev",
     "prev", "back", "forward", "fullscreen", "move", "commands", "help", "version", "close",
     "quit",
 ];
@@ -284,6 +285,7 @@ const RESEARCH_JS: &str = r#"
 ///     those hosts (and `ins.adsbygoogle`) as the page builds itself;
 ///   * cosmetic — a `<style>` hides generic ad containers (EasyList-ish), plus
 ///     YouTube's ad slots, and a 400ms tick skips/seeks past YouTube video ads.
+///
 /// All three honour a live `on` flag: the shell flips it via `window.__setAdblock`
 /// on `:ads` (no reload needed), and bakes the initial value as `__adblockDefault`
 /// per tab so new tabs start in the current state.
@@ -523,6 +525,79 @@ const ADBLOCK_JS: &str = r#"
     on = !!v;
     if (on) { sweep(document); hideCosmetic(document); youtube(); }
     else { unhideCosmetic(); }
+  };
+})();
+"#;
+
+/// Live page-feature toggles, injected into every web tab. Three independent flags,
+/// each seeded from `window.__featureDefaults` (baked per tab from the shell's state)
+/// and flipped live by `window.__setToggle(name, on)` — no reload:
+///   * `popups` — neuter `window.open` so scripted pop-ups can't spawn windows.
+///   * `mute`   — keep every `<video>`/`<audio>` muted (observed + a 1s safety tick).
+///   * `css`    — disable every stylesheet/`<style>`/`<link rel=stylesheet>`.
+///
+/// Mirrors the `:ads` pattern so `:pops`/`:mute`/`:css` apply instantly to all tabs.
+const FEATURES_JS: &str = r#"
+(function () {
+  if (window.__featuresInit) return;
+  window.__featuresInit = true;
+  var d = window.__featureDefaults || {};
+  var blockPopups = !!d.popups, muted = !!d.mute, noCss = !!d.css;
+
+  // popups: scripted window.open returns null while blocking.
+  var _open = window.open ? window.open.bind(window) : null;
+  if (_open) {
+    window.open = function () { return blockPopups ? null : _open.apply(null, arguments); };
+  }
+
+  // audio: force every media element's muted flag to match the toggle.
+  function applyMute(root, val) {
+    try {
+      var r = (root && root.querySelectorAll) ? root : document;
+      var m = r.querySelectorAll('video,audio');
+      for (var i = 0; i < m.length; i++) m[i].muted = val;
+    } catch (e) {}
+  }
+
+  // css: toggle every stylesheet (both the <style>/<link> nodes and the live sheets).
+  function applyCss() {
+    try {
+      var nodes = document.querySelectorAll('style,link[rel="stylesheet"]');
+      for (var i = 0; i < nodes.length; i++) nodes[i].disabled = noCss;
+      var sheets = document.styleSheets;
+      for (var j = 0; j < sheets.length; j++) { try { sheets[j].disabled = noCss; } catch (e) {} }
+    } catch (e) {}
+  }
+
+  function observe() {
+    if (!document.documentElement) { setTimeout(observe, 0); return; }
+    new MutationObserver(function (muts) {
+      for (var i = 0; i < muts.length; i++) {
+        var a = muts[i].addedNodes;
+        for (var j = 0; j < a.length; j++) {
+          var n = a[j];
+          if (n.nodeType !== 1) continue;
+          if (muted) {
+            if (n.tagName === 'VIDEO' || n.tagName === 'AUDIO') n.muted = true;
+            else applyMute(n, true);
+          }
+          if (noCss && (n.tagName === 'STYLE' || n.tagName === 'LINK')) {
+            try { n.disabled = true; } catch (e) {}
+          }
+        }
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  }
+  observe();
+  applyCss();
+  document.addEventListener('DOMContentLoaded', function () { applyCss(); if (muted) applyMute(document, true); });
+  setInterval(function () { if (muted) applyMute(document, true); }, 1000);
+
+  window.__setToggle = function (name, val) {
+    val = !!val;
+    if (name === 'popups') blockPopups = val;
+    else if (name === 'mute') { muted = val; applyMute(document, val); }
+    else if (name === 'css') { noCss = val; applyCss(); }
   };
 })();
 "#;
@@ -989,6 +1064,12 @@ struct App {
     /// When true, the uBlock-style content blocker ([`ADBLOCK_JS`]) is injected
     /// into web tabs. Toggled with `:ads`; persisted across sessions.
     adblock: bool,
+    /// Live page-feature toggles ([`FEATURES_JS`]), applied to every web tab without
+    /// a reload. `block_popups` neuters `window.open`; `mute` keeps all media muted;
+    /// `no_css` disables every stylesheet. Session-only (reset to off each launch).
+    block_popups: bool,
+    mute: bool,
+    no_css: bool,
     /// Shell command for `:te` (program + args), set via `:config`.
     term_command: Vec<String>,
     /// Search-engine URL template (`%s` = query) for a non-URL `:open`. Defaults
@@ -1184,6 +1265,9 @@ fn main() -> Result<()> {
         modifiers: ModifiersState::default(),
         nojs: false,
         adblock: true,
+        block_popups: false,
+        mute: false,
+        no_css: false,
         term_command: vec!["nu".to_string()],
         search_template: browser_core::DEFAULT_SEARCH_URL.to_string(),
         next_term_id: 0,
@@ -1764,6 +1848,9 @@ impl App {
                 KeyCode::KeyV => self.enter_passthrough(),
                 // Reopen the last closed tab (the familiar browser shortcut).
                 KeyCode::KeyT if self.modifiers.shift_key() => self.reopen_closed(),
+                // Half-page scroll (vim Ctrl+D / Ctrl+U).
+                KeyCode::KeyD => self.scroll(self.half_page()),
+                KeyCode::KeyU => self.scroll(-self.half_page()),
                 // Browser-wide zoom (native chrome + web content + terminal).
                 KeyCode::Equal => self.zoom_by(1),
                 KeyCode::Minus => self.zoom_by(-1),
@@ -1772,8 +1859,6 @@ impl App {
             }
             return;
         }
-        let (_, h) = self.inner();
-        let page = (h as i32 - self.bar_h() as i32).max(40);
         match &key.logical_key {
             Key::Character(s) => match *s {
                 ":" => self.enter_command(""),
@@ -1782,8 +1867,8 @@ impl App {
                 "O" => self.enter_command("open -t "),
                 "j" => self.scroll(80),
                 "k" => self.scroll(-80),
-                "d" => self.scroll(page / 2),
-                "u" => self.scroll(-page / 2),
+                // Reopen the last closed tab (vim-style undo; also Ctrl+Shift+T).
+                "u" => self.reopen_closed(),
                 "g" => self.scroll_edge(false),
                 "G" => self.scroll_edge(true),
                 "/" => self.enter_find(),
@@ -1813,8 +1898,6 @@ impl App {
                     }
                 }
                 "x" => self.close_active(),
-                // Reopen the last closed tab (vim-style undo; also Ctrl+Shift+T).
-                "U" => self.reopen_closed(),
                 "r" => self.reload_active(),
                 "H" => self.history(false),
                 "L" => self.history(true),
@@ -2928,23 +3011,41 @@ impl App {
                     ));
                 }
             }
+            // Toggle JavaScript live (reloads the current tab; applies to new tabs).
+            "js" => self.toggle_js(),
+            // `:nojs <url>` still opens a one-off JavaScript-disabled tab.
             "nojs" => {
                 if rest.is_empty() {
-                    self.nojs = !self.nojs;
-                    self.set_status(format!(
-                        "new tabs: JavaScript {}",
-                        if self.nojs { "OFF" } else { "ON" }
-                    ));
+                    self.toggle_js();
                 } else {
                     let (new_tab, rest) = parse_tab_flag(rest);
                     self.open_tab(rest, true, new_tab);
                 }
             }
-            // Reopen the most recently closed tab (also `U` / Ctrl+Shift+T).
+            // Reopen the most recently closed tab (also `u` / Ctrl+Shift+T).
             "reopen" | "undo" => self.reopen_closed(),
             // Toggle the uBlock-style content blocker. Applies live to every open web
             // tab (no reload) and is the default for new tabs; persisted in the session.
             "ads" | "adblock" => self.toggle_adblock(),
+            // Live page-feature toggles (apply instantly to every open web tab).
+            "pops" | "popups" => {
+                self.block_popups = !self.block_popups;
+                self.broadcast_toggle("popups", self.block_popups);
+                self.set_status(if self.block_popups { "popups blocked" } else { "popups allowed" });
+                self.window.request_redraw();
+            }
+            "mute" | "audio" => {
+                self.mute = !self.mute;
+                self.broadcast_toggle("mute", self.mute);
+                self.set_status(if self.mute { "audio muted" } else { "audio on" });
+                self.window.request_redraw();
+            }
+            "css" => {
+                self.no_css = !self.no_css;
+                self.broadcast_toggle("css", self.no_css);
+                self.set_status(if self.no_css { "CSS off" } else { "CSS on" });
+                self.window.request_redraw();
+            }
             "close" | "tabclose" | "bd" => self.close_active(),
             "quit" | "q" => self.quit = true,
             "reload" | "r" => self.reload_active(),
@@ -3144,9 +3245,14 @@ impl App {
             // research-mode DOM pruning) is appended last. All run in the same
             // document-create pass.
             .with_initialization_script({
-                let default = self.adblock;
+                let ab = self.adblock;
+                // Page-feature toggles start in the shell's current state too, so a
+                // tab opened while a toggle is active is already in that state.
+                let (p, m, c) = (self.block_popups, self.mute, self.no_css);
                 let mut init = format!(
-                    "{BRIDGE_JS}\n{FIND_JS}\n{CARET_JS}\nwindow.__adblockDefault={default};\n{ADBLOCK_JS}"
+                    "{BRIDGE_JS}\n{FIND_JS}\n{CARET_JS}\n\
+                     window.__adblockDefault={ab};\n{ADBLOCK_JS}\n\
+                     window.__featureDefaults={{popups:{p},mute:{m},css:{c}}};\n{FEATURES_JS}"
                 );
                 if !extra_init.is_empty() {
                     init.push('\n');
@@ -3983,6 +4089,12 @@ impl App {
         self.window.request_redraw();
     }
 
+    /// Half the visible content height, in px (the Ctrl+D / Ctrl+U scroll step).
+    fn half_page(&self) -> i32 {
+        let (_, h) = self.inner();
+        ((h as i32 - self.bar_h() as i32).max(40)) / 2
+    }
+
     fn scroll(&mut self, dy: i32) {
         // Engine-free read tab: move the native scroll offset, clamped to content.
         let view = self.content_view_h();
@@ -4036,6 +4148,60 @@ impl App {
         }
         self.set_status(if on { "adblock ON — ads blocked" } else { "adblock OFF — ads allowed" });
         self.window.request_redraw();
+    }
+
+    /// Flip a live page-feature toggle ([`FEATURES_JS`]) on every open web tab via
+    /// `__setToggle` (no reload). `name` is `popups` | `mute` | `css`.
+    fn broadcast_toggle(&self, name: &str, on: bool) {
+        for tab in &self.tabs {
+            if let Some(wv) = &tab.webview {
+                let _ = wv.evaluate_script(&format!(
+                    "window.__setToggle&&window.__setToggle('{name}',{on})"
+                ));
+            }
+        }
+    }
+
+    /// Toggle JavaScript globally. Unlike the page-feature toggles, JS can only be
+    /// switched per-webview at build time, so this rebuilds the ACTIVE web tab with
+    /// the new setting (a reload) and applies to newly opened tabs; background tabs
+    /// adopt it when next reloaded.
+    fn toggle_js(&mut self) {
+        self.nojs = !self.nojs;
+        let on = !self.nojs;
+        self.set_status(format!(
+            "JavaScript {} (this tab reloaded; applies to new tabs)",
+            if on { "ON" } else { "OFF" }
+        ));
+        let Some(i) = self.active else { return };
+        let Some(t) = self.tabs.get(i) else { return };
+        if t.webview.is_none() {
+            return; // only web tabs have JS to toggle
+        }
+        let url = t.url.clone();
+        let research = t.research;
+        let extra = if research { RESEARCH_JS } else { "" };
+        match self.build_content_webview(Source::Url(url.clone()), self.nojs, extra) {
+            Ok(webview) => {
+                let nojs = self.nojs;
+                if let Some(session) = self.tabs[i].term.take() {
+                    session.shutdown();
+                }
+                self.tabs[i] = Tab {
+                    webview: Some(webview),
+                    url,
+                    nojs,
+                    read: false,
+                    research,
+                    native: None,
+                    vim: None,
+                    term: None,
+                };
+                self.refresh_visibility();
+                self.window.set_focus();
+            }
+            Err(e) => self.set_error(format!("failed to reload: {e:#}")),
+        }
     }
 
     /// Reload the active tab: re-extract for an engine-free read tab, else reload
@@ -4853,7 +5019,7 @@ fn commands_document() -> String {
         (":", "open the command bar"),
         ("o / O", "open a page in THIS tab / in a new tab (prefills “open ” / “open -t ”)"),
         ("j / k", "scroll down / up"),
-        ("d / u", "scroll half a page down / up"),
+        ("Ctrl+D / Ctrl+U", "scroll half a page down / up"),
         ("g / G", "jump to top / bottom"),
         ("/", "find in page — type to search live; works on web, read & error tabs"),
         ("n / N", "next / previous match (while a search is active); Esc clears"),
@@ -4861,7 +5027,7 @@ fn commands_document() -> String {
         ("f", "hint mode — label every link, type the label to follow"),
         ("v / V", "caret/visual select on read & web tabs — hjkl/w/b move, y yank, Esc exits"),
         ("x", "close the current tab"),
-        ("U / Ctrl+Shift+T", "reopen the last closed tab"),
+        ("u / Ctrl+Shift+T", "reopen the last closed tab"),
         ("r", "reload the page"),
         ("H / L", "history back / forward"),
         ("n / p", "next / previous tab"),
@@ -4913,9 +5079,12 @@ fn commands_document() -> String {
         (":te", "open a native terminal tab (Shift+Esc → vim copy-mode: navigate/yank, i resumes)"),
         (":te <command>", "run a local command, result in the command bar"),
         (":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
-        (":nojs", "toggle JavaScript off for new tabs"),
-        (":nojs <url>", "open a page with JavaScript disabled"),
+        (":js", "toggle JavaScript (reloads this tab; applies to new tabs)"),
+        (":nojs <url>", "open a single page with JavaScript disabled"),
         (":ads · :adblock", "toggle the ad/tracker blocker (live, all tabs; on by default)"),
+        (":pops · :popups", "toggle blocking scripted pop-ups (live, all tabs)"),
+        (":mute · :audio", "toggle muting all page audio/video (live, all tabs)"),
+        (":css", "toggle page styling off/on (live, all tabs)"),
         (":close · :bd", "close the current tab"),
         (":reload · :r", "reload"),
         (":tabnext · :tn · :tabprev · :tp", "switch tabs"),
