@@ -187,6 +187,13 @@ impl PtyTerm {
     pub fn app_cursor(&self) -> bool {
         self.vt.mode().contains(TermMode::APP_CURSOR)
     }
+
+    /// Whether the program enabled bracketed-paste mode (DEC 2004). If so, pasted
+    /// text must be wrapped in `ESC[200~`…`ESC[201~` so the app treats it as one
+    /// literal block (e.g. a shell won't run each pasted line on its own).
+    pub fn bracketed_paste(&self) -> bool {
+        self.vt.mode().contains(TermMode::BRACKETED_PASTE)
+    }
 }
 
 fn to_rgb(c: VtRgb) -> Rgb {

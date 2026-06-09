@@ -64,7 +64,7 @@ const COMMANDS: &[&str] = &[
     "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock",
     "popups", "pops", "mute", "audio", "css", "next", "tabnext", "tabprev",
     "prev", "back", "forward", "fullscreen", "move", "commands", "help", "version", "close",
-    "quit",
+    "write", "wq", "quit",
 ];
 
 /// WebView2 browser-process arguments, applied to EVERY webview we build.
@@ -134,14 +134,24 @@ const BRIDGE_JS: &str = r#"
     // the time the shell calls SetFocus to take it back (avoids a focus race).
     setTimeout(function () { post('grab-focus'); }, 0);
   }
-  // focusin catches a script .focus(); mousedown catches a plain click on the
-  // page body (which takes OS keyboard focus but fires NO focusin, since the body
-  // isn't a focusable element) — that body-click case is the common trap.
-  document.addEventListener('focusin', grabBack, true);
-  document.addEventListener('mousedown', grabBack, true);
+  // Reclaim on `click`, which is the END of the gesture (mousedown→mouseup→click),
+  // and only via setTimeout so the page's own click handlers run first. Reclaiming
+  // on `mousedown` (mid-gesture) used to eat the click — a single click did nothing
+  // and you had to double-click thumbnails / the hover mute & caption buttons. A
+  // bare body click bubbles a `click` to the document too, so this still covers the
+  // "clicked empty page, lost the keyboard" case. A script `.focus()` with no click
+  // is caught instead by the shell's periodic focus-reclaim tick.
+  document.addEventListener('click', grabBack, true);
   // Tell the shell once the page is up so it can reclaim keyboard focus — works
   // for both URL and with_html content, independent of native load events.
   window.addEventListener('load', function () { post('page-ready'); });
+  // Mirror HTML fullscreen (e.g. clicking YouTube's fullscreen button) to the
+  // shell: it fullscreens the window so the page fills the screen and the bars
+  // hide. wry exposes no native fullscreen-element event on Windows, so we detect
+  // it here. (`webkit`-prefixed for older players that fire only that.)
+  function fsPost() { post(document.fullscreenElement ? 'fs-enter' : 'fs-exit'); }
+  document.addEventListener('fullscreenchange', fsPost);
+  document.addEventListener('webkitfullscreenchange', fsPost);
 })();
 "#;
 
@@ -151,6 +161,16 @@ const BRIDGE_JS: &str = r#"
 const HINT_JS: &str = r#"
 (function () {
   if (window.__hintClear) window.__hintClear();
+  // Wake auto-hiding media controls (YouTube's player hides the skip-ad/settings
+  // buttons until the mouse moves over it) so they're present to label & click.
+  try {
+    var pl = document.querySelector('.html5-video-player');
+    if (pl) {
+      var pr = pl.getBoundingClientRect();
+      pl.dispatchEvent(new MouseEvent('mousemove',
+        { bubbles: true, clientX: pr.left + pr.width / 2, clientY: pr.top + pr.height / 2 }));
+    }
+  } catch (e) {}
   var chars = "asdfghjkl";
   var sel = "a[href], button, input:not([type=hidden]):not([disabled]), textarea, " +
             "select, [onclick], [role='button'], [role='link'], [tabindex]:not([tabindex='-1'])";
@@ -205,6 +225,33 @@ const HINT_JS: &str = r#"
     }
     return !!el.isContentEditable;
   }
+  // Dispatch a full pointer+mouse press/release/click at the element's center. A bare
+  // `.click()` is ignored by some custom elements (YouTube's Polymer skip-ad/settings
+  // buttons listen for pointer/mouse events), so we synthesize the whole sequence.
+  function fireClick(el) {
+    var r = el.getBoundingClientRect();
+    var o = { bubbles: true, cancelable: true, view: window,
+              clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0 };
+    ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function (t) {
+      var C = t.indexOf('pointer') === 0 ? (window.PointerEvent || MouseEvent) : MouseEvent;
+      try { el.dispatchEvent(new C(t, o)); } catch (e) {}
+    });
+  }
+  // Activate a hinted target. Real links are followed by NAVIGATING to their href —
+  // reliable across SPA routers (YouTube thumbnails intercept clicks and a synthetic
+  // one often does nothing). Everything else gets the full click sequence.
+  function activate(el) {
+    var a = el.closest ? el.closest('a[href]') : (el.tagName === 'A' ? el : null);
+    if (a && a.href && !/^javascript:/i.test(a.href)) {
+      var here = location.href.split('#')[0];
+      // A same-page hash link: let the click scroll instead of reloading.
+      if (a.href.indexOf('#') !== -1 && a.href.split('#')[0] === here) { fireClick(el); return; }
+      location.href = a.href;
+      return;
+    }
+    try { el.focus(); } catch (e) {}
+    fireClick(el);
+  }
   window.__hintInput = function (s) {
     var m = window.__hintMap; if (!m) return;
     s = (s || '').toLowerCase();
@@ -223,7 +270,7 @@ const HINT_JS: &str = r#"
         window.__hintTarget = el;
         if (window.ipc) window.ipc.postMessage('hint-edit');
       } else {
-        try { el.focus(); el.click(); } catch (e) {}
+        activate(el);
         if (window.ipc) window.ipc.postMessage('hint-exit');
       }
     }
@@ -824,6 +871,9 @@ enum UserEvent {
     CaretYank(String),
     /// Web caret mode exited (Esc with no selection) → return the shell to Normal.
     CaretExit,
+    /// The page entered (`true`) or left (`false`) HTML fullscreen (e.g. YouTube's
+    /// fullscreen button) → match the window's fullscreen so the page fills the screen.
+    PageFullscreen(bool),
     Quit,
 }
 
@@ -1104,6 +1154,10 @@ struct App {
     /// Ctrl+Shift+T pops the most recent and reopens it. Internal pages (the error/
     /// res/version vim tabs, `browser://…`) are never recorded.
     closed_tabs: Vec<session::SavedTab>,
+    /// True when the window's fullscreen was triggered by the page entering HTML
+    /// fullscreen (YouTube's button), so leaving page fullscreen exits it again —
+    /// without disturbing a fullscreen the user set manually with `:f`.
+    fs_from_page: bool,
 }
 
 /// Tag this process with an explicit AppUserModelID so Windows (taskbar + Task
@@ -1281,6 +1335,7 @@ fn main() -> Result<()> {
         last_focus_gain: Instant::now(),
         history: Vec::new(),
         closed_tabs: Vec::new(),
+        fs_from_page: false,
     };
 
     // Optional: open a page immediately, e.g. `browser-desktop youtube.com`,
@@ -1465,6 +1520,7 @@ fn main() -> Result<()> {
                     app.window.request_redraw();
                 }
             }
+            Event::UserEvent(UserEvent::PageFullscreen(on)) => app.set_page_fullscreen(on),
             Event::UserEvent(UserEvent::TermClosed { id }) => app.close_term_tab(id),
             Event::UserEvent(UserEvent::Quit) => {
                 app.teardown();
@@ -1509,14 +1565,30 @@ impl App {
         (base as f64 * self.zoom).round().max(1.0) as u32
     }
 
-    /// Command/status bar height at the current zoom.
-    fn bar_h(&self) -> u32 {
-        self.scaled(BAR_H)
+    /// Whether the window is in borderless fullscreen (`:f` / `:fullscreen`).
+    fn is_fullscreen(&self) -> bool {
+        self.window.fullscreen().is_some()
     }
 
-    /// Tab-bar height: present only while at least one tab is open.
+    /// Whether the native chrome (tab bar + command/status bar) is hidden right now:
+    /// true in fullscreen for an immersive page, EXCEPT while typing a command, so
+    /// pressing `:` (or `/`) brings the bars back to interact, then they hide again.
+    fn chrome_hidden(&self) -> bool {
+        self.is_fullscreen() && !matches!(self.mode, ModeKind::Command | ModeKind::Find)
+    }
+
+    /// Command/status bar height at the current zoom (0 when chrome is hidden).
+    fn bar_h(&self) -> u32 {
+        if self.chrome_hidden() {
+            0
+        } else {
+            self.scaled(BAR_H)
+        }
+    }
+
+    /// Tab-bar height: present only while at least one tab is open and chrome shown.
     fn tab_bar_h(&self) -> u32 {
-        if self.tabs.is_empty() {
+        if self.tabs.is_empty() || self.chrome_hidden() {
             0
         } else {
             self.scaled(TAB_BAR_H)
@@ -1534,6 +1606,18 @@ impl App {
     }
 
     fn on_resize(&mut self, _w: u32, _h: u32) {
+        let rect = self.content_rect();
+        if let Some(wv) = self.active_webview() {
+            let _ = wv.set_bounds(rect);
+        }
+        self.window.request_redraw();
+    }
+
+    /// Re-fit the active web tab to the current chrome layout and repaint. Called on
+    /// transitions that change which bars are visible without resizing the window —
+    /// entering/leaving the command bar while fullscreen — so the page grows to fill
+    /// the freed space (or shrinks to make room for the bar). No-op for non-web tabs.
+    fn relayout_active(&self) {
         let rect = self.content_rect();
         if let Some(wv) = self.active_webview() {
             let _ = wv.set_bounds(rect);
@@ -1784,10 +1868,13 @@ impl App {
                 if matches!(key.logical_key, Key::Escape) && self.modifiers.shift_key() {
                     self.exit_to_normal();
                 } else if self.active_is_term() {
-                    // Native terminal: forward every key to the PTY, except the
-                    // global zoom chords (Ctrl +/-/0), which still resize the UI.
+                    // Native terminal: forward every key to the PTY, except a few
+                    // shell-owned chords — the global zoom keys (Ctrl +/-/0) and
+                    // Ctrl+V, which pastes the clipboard into the PTY (the Windows
+                    // convention) rather than sending a literal ^V.
                     if self.modifiers.control_key() {
                         match key.physical_key {
+                            KeyCode::KeyV => return self.term_paste(),
                             KeyCode::Equal => return self.zoom_by(1),
                             KeyCode::Minus => return self.zoom_by(-1),
                             KeyCode::Digit0 => return self.zoom_reset(),
@@ -2227,6 +2314,8 @@ impl App {
                 self.command_anchor = None;
                 self.mode = ModeKind::Normal;
                 self.run_command(&line);
+                // Back to Normal re-hides the bar over a fullscreen page; refit it.
+                self.relayout_active();
             }
             Key::Escape => self.cancel_command(),
             Key::Backspace => {
@@ -2289,6 +2378,8 @@ impl App {
             self.find_clear();
         }
         self.mode = ModeKind::Normal;
+        // Leaving the bar re-hides it over a fullscreen page; grow the page back.
+        self.relayout_active();
     }
 
     /// The current selection as an ordered byte range, or `None` if empty.
@@ -2407,7 +2498,8 @@ impl App {
         self.command_cursor = 0;
         self.command_anchor = None;
         self.cursor_on = true;
-        self.window.request_redraw();
+        // Reveal the bar over a fullscreen page (it hides again on leaving Find).
+        self.relayout_active();
     }
 
     /// Live-update the search from the current `/` input.
@@ -2443,7 +2535,8 @@ impl App {
                 }
             }
         }
-        self.window.request_redraw();
+        // Leaving Find re-hides the bar over a fullscreen page; refit the page.
+        self.relayout_active();
     }
 
     /// Drop the active search and clear any highlights (page-side and native).
@@ -2582,6 +2675,8 @@ impl App {
         self.command_anchor = None;
         self.cursor_on = true;
         self.clear_status();
+        // In fullscreen the bars were hidden; showing the command bar shrinks the page.
+        self.relayout_active();
     }
 
     /// Command-bar autocomplete: the FULL completed line for the current input, or
@@ -2868,12 +2963,38 @@ impl App {
         }
     }
 
-    fn toggle_fullscreen(&self) {
+    fn toggle_fullscreen(&mut self) {
         use tao::window::Fullscreen;
         if self.window.fullscreen().is_some() {
             self.window.set_fullscreen(None);
         } else {
             self.window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+        }
+        // A manual toggle owns the fullscreen state — clear the page-initiated flag
+        // so a later page fs-exit doesn't fight it.
+        self.fs_from_page = false;
+        // Entering fullscreen hides the bars (Normal mode); leaving restores them.
+        // The window resize usually relayouts, but do it explicitly so the page
+        // refits even if the inner size didn't change.
+        self.relayout_active();
+    }
+
+    /// Sync the window's fullscreen to the page's HTML fullscreen (YouTube's button).
+    /// Entering fullscreens the window (so the page fills the screen and the bars
+    /// hide); leaving exits — but only if WE entered it for the page, so a manual
+    /// `:f` fullscreen isn't undone when an unrelated element leaves fullscreen.
+    fn set_page_fullscreen(&mut self, on: bool) {
+        use tao::window::Fullscreen;
+        if on {
+            if !self.is_fullscreen() {
+                self.window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                self.fs_from_page = true;
+                self.relayout_active();
+            }
+        } else if self.fs_from_page {
+            self.window.set_fullscreen(None);
+            self.fs_from_page = false;
+            self.relayout_active();
         }
     }
 
@@ -3047,7 +3168,17 @@ impl App {
                 self.window.request_redraw();
             }
             "close" | "tabclose" | "bd" => self.close_active(),
-            "quit" | "q" => self.quit = true,
+            // Session is saved explicitly (vim-style): `:w` writes the current tabs +
+            // UI state, `:q` quits without saving, `:wq`/`:x` writes then quits.
+            "write" | "w" => {
+                self.save_session();
+                self.set_status("session written");
+            }
+            "wq" | "x" => {
+                self.save_session();
+                self.quit = true;
+            }
+            "quit" | "q" | "q!" => self.quit = true,
             "reload" | "r" => self.reload_active(),
             "next" | "tabnext" | "tn" => self.switch_tab(1),
             "prev" | "tabprev" | "tp" => self.switch_tab(-1),
@@ -3281,6 +3412,12 @@ impl App {
                 }
                 "caret-exit" => {
                     let _ = ipc_proxy.send_event(UserEvent::CaretExit);
+                }
+                "fs-enter" => {
+                    let _ = ipc_proxy.send_event(UserEvent::PageFullscreen(true));
+                }
+                "fs-exit" => {
+                    let _ = ipc_proxy.send_event(UserEvent::PageFullscreen(false));
                 }
                 body => {
                     // Web caret-mode yanked a selection: `caret-yank:<text>`.
@@ -3543,6 +3680,32 @@ impl App {
                 s.send(0, &bytes);
             }
         }
+    }
+
+    /// Paste the clipboard into the active terminal's PTY (Ctrl+V in a `:te` tab).
+    /// Newlines are normalized to CR (what Enter sends), and the text is wrapped in
+    /// bracketed-paste markers when the program asked for them, so a shell treats a
+    /// multi-line paste as literal input instead of executing each line.
+    fn term_paste(&mut self) {
+        let Some(text) = clipboard_get() else { return };
+        if text.is_empty() {
+            return;
+        }
+        let text = text.replace("\r\n", "\r").replace('\n', "\r");
+        let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
+        else {
+            return;
+        };
+        let mut out = Vec::new();
+        let bracketed = s.pty.bracketed_paste();
+        if bracketed {
+            out.extend_from_slice(b"\x1b[200~");
+        }
+        out.extend_from_slice(text.as_bytes());
+        if bracketed {
+            out.extend_from_slice(b"\x1b[201~");
+        }
+        s.send(0, &out);
     }
 
     /// Whether the active terminal is in copy/vi mode.
@@ -3993,12 +4156,13 @@ impl App {
     /// webview before exiting — so WebView2 processes and ConPTYs close cleanly
     /// rather than leaving a stuck thread that deadlocks process teardown.
     fn teardown(&mut self) {
-        // Idempotent: only the first call saves + tears down (see `torn_down`).
+        // Idempotent: only the first call tears down (see `torn_down`). The session is
+        // NOT auto-saved here — saving is explicit (`:w` / `:wq`), vim-style, so just
+        // closing the window or `:q` leaves the last written session untouched.
         if self.torn_down {
             return;
         }
         self.torn_down = true;
-        self.save_session();
         for tab in &mut self.tabs {
             if let Some(session) = tab.term.take() {
                 session.shutdown();
@@ -4009,6 +4173,7 @@ impl App {
     }
 
     /// Snapshot the open tabs + UI state to disk so the next launch restores them.
+    /// Explicit only — run by `:w` / `:wq` (vim-style), never automatically on exit.
     /// Internal pages (`browser://…`, the `:error(s)` log) are session-specific and
     /// skipped. No-op during headless test runs so they don't clobber a real session.
     fn save_session(&self) {
@@ -4578,23 +4743,30 @@ impl App {
         } else {
             draw_bar(&mut buf);
             // A webview covers the middle; redraw only the top tab bar and the
-            // bottom command bar so we never paint over the live page.
+            // bottom command bar so we never paint over the live page. In fullscreen
+            // both bars are hidden (height 0) and the page covers the whole window —
+            // present nothing native (and skip the bottom rect, which would otherwise
+            // sit at y == height, out of the buffer).
             draw::fill_band(&mut buf, wz, hz, 0, tab_h, draw::BAR_BG);
             draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels);
-            let top = softbuffer::Rect {
-                x: 0,
-                y: 0,
-                width: NonZeroU32::new(w).unwrap(),
-                height: NonZeroU32::new(tab_h.max(1) as u32).unwrap(),
-            };
-            let bottom = softbuffer::Rect {
-                x: 0,
-                y: bar_top as u32,
-                width: NonZeroU32::new(w).unwrap(),
-                height: NonZeroU32::new(bar_h.max(1) as u32).unwrap(),
-            };
-            buf.present_with_damage(&[top, bottom])
-                .map_err(|e| anyhow::anyhow!("present: {e}"))?;
+            let mut damage = Vec::new();
+            if tab_h > 0 {
+                damage.push(softbuffer::Rect {
+                    x: 0,
+                    y: 0,
+                    width: NonZeroU32::new(w).unwrap(),
+                    height: NonZeroU32::new(tab_h as u32).unwrap(),
+                });
+            }
+            if bar_h > 0 {
+                damage.push(softbuffer::Rect {
+                    x: 0,
+                    y: bar_top as u32,
+                    width: NonZeroU32::new(w).unwrap(),
+                    height: NonZeroU32::new(bar_h as u32).unwrap(),
+                });
+            }
+            buf.present_with_damage(&damage).map_err(|e| anyhow::anyhow!("present: {e}"))?;
         }
         Ok(())
     }
@@ -4682,7 +4854,7 @@ impl App {
                 if self.active_is_term() {
                     vec![
                         ("[TERM]".into(), draw::TERM),
-                        ("   typing to the shell · Shift+Esc to leave".into(), draw::DIM),
+                        ("   typing to the shell · Ctrl+V paste · Shift+Esc to leave".into(), draw::DIM),
                     ]
                 } else {
                     let url = self.active_url().unwrap_or("").to_string();
@@ -5076,7 +5248,7 @@ fn commands_document() -> String {
         (":y · :yank", "copy the current URL to the clipboard"),
         (":read <url|query>", "engine-free reader (no WebView2) in this tab; -t = new tab; non-URL → search"),
         (":search [name|template]", "show/set the search engine — a name (ddg/google/wiki…) or a %s URL"),
-        (":te", "open a native terminal tab (Shift+Esc → vim copy-mode: navigate/yank, i resumes)"),
+        (":te", "native terminal (Ctrl+V pastes · Shift+Esc → vim copy-mode: navigate/yank, i resumes)"),
         (":te <command>", "run a local command, result in the command bar"),
         (":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
         (":js", "toggle JavaScript (reloads this tab; applies to new tabs)"),
@@ -5089,14 +5261,16 @@ fn commands_document() -> String {
         (":reload · :r", "reload"),
         (":tabnext · :tn · :tabprev · :tp", "switch tabs"),
         (":back · :forward", "history navigation"),
-        (":f · :fullscreen", "toggle fullscreen"),
+        (":f · :fullscreen", "toggle fullscreen (hides the bars; `:` brings them back). YouTube's fullscreen button does this too"),
         (":resize · :move", "window-control modes (then hjkl, Esc)"),
         (":error · :err", "latest error in a read-only vim tab (v/y to select & copy)"),
         (":errors · :errs", "every error this session (newest first), same vim tab"),
         (":res · :resources", "live memory/CPU/disk across the whole browser tree (freezes while you select)"),
         (":commands · :help", "this page"),
         (":version", "version and build information"),
-        (":quit · :q", "quit the browser"),
+        (":w · :write", "save the current session (open tabs + UI state) to disk"),
+        (":wq · :x", "save the session, then quit"),
+        (":quit · :q", "quit WITHOUT saving (the last :w'd session is kept)"),
     ]);
     // Bangs: build `!key → description` rows from the core table.
     let bang_rows: Vec<(String, &str)> =

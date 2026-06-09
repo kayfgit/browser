@@ -8,15 +8,15 @@ nothing means its untouched
 done todos gets erased shortly after.
 
 issues:
-[*] - youtube issues, cant use hint mode to skip adds, cant open settings while on normal mode
+[x] - youtube issues, cant use hint mode to skip adds, cant open settings while on normal mode
 [] - fix other languages missing characters (like japanese characters) on :read and :term
-[*] - fullscreen on youtube should hide command and tab bar (and only appear again if i press ":")
+[x] - fullscreen on youtube should hide command and tab bar (and only appear again if i press ":")
 [] - opening spotify_player.exe and playing a song freezes :resources
 [] - random not responding after exiting cs2 (might have to do with constant changes to resolution)
-[*] - fix remember last session, doesnt really work as intended, instead of always on replace with :write or :w, should work with quit for :wq
-[*] - cant paste with ctrl-v on terminal (conflicts, should be able to as its passthrough)
+[x] - fix remember last session, doesnt really work as intended, instead of always on replace with :write or :w, should work with quit for :wq
+[x] - cant paste with ctrl-v on terminal (conflicts, should be able to as its passthrough)
 [] - i pressed o and i together and the browser froze in a state of half normal and half insert mode, had to alt+f4
-[*] - cant click on a thumb to open a video on youtube
+[x] - cant click on a thumbnail to open a video on youtube, nothing happens
 [] - sometimes crashes after taking a windows screenshot (prntscreen button)
 
 feat:
@@ -25,10 +25,7 @@ feat:
 [] - mode that only allows quick cloud ai answers and nothing else? useful for quick non important searches
 [] - :commandbar to toggle visibility
 [] - command bar colors for each mode
-[x] - replace ":nojs" with ":js", that toggles javascript in real time instead of only for new tabs (just like :ads)
-[x] - :pops or :popups that work similar to :ads, toggle popups in real time
-[x] - :mute or :audio toggles all audio in the browser
-[x] - :css for again toggling css
+[] - change how right mouse button works
 
 maybes:
 [] - maybe add tmux functionality? could be cool
