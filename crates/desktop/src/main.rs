@@ -51,13 +51,16 @@ const ZOOM_STEP: f64 = 0.1;
 /// Max visited URLs kept for autocomplete (also the cap persisted in the session).
 const HISTORY_CAP: usize = 300;
 
+/// How many recently-closed tabs to remember for `U` / Ctrl+Shift+T (reopen).
+const CLOSED_CAP: usize = 20;
+
 /// Left/right padding (px) inside a native terminal tab's content area.
 const TERM_PAD: i32 = 4;
 
 /// Command verbs offered by command-bar autocomplete (`:ver`→`:version`). Longest-
 /// useful canonical spellings; ordered so the first prefix match is the best one.
 const COMMANDS: &[&str] = &[
-    "open", "edit", "yank", "read", "research", "reload", "resize", "res", "resources",
+    "open", "tabopen", "edit", "yank", "read", "research", "reload", "resize", "res", "resources", "reopen",
     "error", "errors", "te", "term", "shell", "search", "nojs", "ads", "adblock", "next", "tabnext", "tabprev",
     "prev", "back", "forward", "fullscreen", "move", "commands", "help", "version", "close",
     "quit",
@@ -1016,6 +1019,10 @@ struct App {
     /// Visited URLs, most-recent first (deduped, capped). Drives command-bar
     /// autocomplete for `:open <partial>` and is persisted in the session.
     history: Vec<String>,
+    /// Recently-closed restorable tabs (kind + url), newest last. `U` /
+    /// Ctrl+Shift+T pops the most recent and reopens it. Internal pages (the error/
+    /// res/version vim tabs, `browser://…`) are never recorded.
+    closed_tabs: Vec<session::SavedTab>,
 }
 
 /// Tag this process with an explicit AppUserModelID so Windows (taskbar + Task
@@ -1077,6 +1084,43 @@ fn hint_labels(n: usize) -> Vec<String> {
             String::from_utf8(buf).unwrap()
         })
         .collect()
+}
+
+/// Strip a leading `-t` / `--tab` flag from a command argument, returning
+/// `(open_in_new_tab, remaining_target)`. Only matches the flag as a whole token, so
+/// a target like `-test` or a URL is left untouched.
+fn parse_tab_flag(rest: &str) -> (bool, &str) {
+    for flag in ["-t", "--tab"] {
+        if let Some(r) = rest.strip_prefix(flag) {
+            if r.is_empty() || r.starts_with(char::is_whitespace) {
+                return (true, r.trim_start());
+            }
+        }
+    }
+    (false, rest)
+}
+
+/// Build an engine-free native tab rendering `doc` (read mode when `read`). The
+/// layout is left empty/dirty so it's laid out on the next draw at the live width.
+fn native_read_tab(doc: browser_core::Document, url: String, read: bool) -> Tab {
+    Tab {
+        webview: None,
+        url,
+        nojs: false,
+        read,
+        research: false,
+        native: Some(NativeRead {
+            doc,
+            scroll: 0,
+            layout: read_view::Layout { lines: Vec::new(), line_h: 1, height: 0 },
+            layout_w: -1,
+            layout_px: 0.0,
+            dirty: true,
+            caret: None,
+        }),
+        vim: None,
+        term: None,
+    }
 }
 
 fn main() -> Result<()> {
@@ -1152,6 +1196,7 @@ fn main() -> Result<()> {
         cursor_pos: (0.0, 0.0),
         last_focus_gain: Instant::now(),
         history: Vec::new(),
+        closed_tabs: Vec::new(),
     };
 
     // Optional: open a page immediately, e.g. `browser-desktop youtube.com`,
@@ -1165,7 +1210,7 @@ fn main() -> Result<()> {
             if let Some(cmd) = t.strip_prefix(':') {
                 app.run_command(cmd);
             } else {
-                app.open_tab(&target, false);
+                app.open_tab(&target, false, true);
             }
         }
         None => {
@@ -1717,6 +1762,8 @@ impl App {
         if self.modifiers.control_key() {
             match key.physical_key {
                 KeyCode::KeyV => self.enter_passthrough(),
+                // Reopen the last closed tab (the familiar browser shortcut).
+                KeyCode::KeyT if self.modifiers.shift_key() => self.reopen_closed(),
                 // Browser-wide zoom (native chrome + web content + terminal).
                 KeyCode::Equal => self.zoom_by(1),
                 KeyCode::Minus => self.zoom_by(-1),
@@ -1730,7 +1777,9 @@ impl App {
         match &key.logical_key {
             Key::Character(s) => match *s {
                 ":" => self.enter_command(""),
+                // `o` opens in THIS tab; `O` opens in a new tab (prefills `:open -t`).
                 "o" => self.enter_command("open "),
+                "O" => self.enter_command("open -t "),
                 "j" => self.scroll(80),
                 "k" => self.scroll(-80),
                 "d" => self.scroll(page / 2),
@@ -1764,6 +1813,8 @@ impl App {
                     }
                 }
                 "x" => self.close_active(),
+                // Reopen the last closed tab (vim-style undo; also Ctrl+Shift+T).
+                "U" => self.reopen_closed(),
                 "r" => self.reload_active(),
                 "H" => self.history(false),
                 "L" => self.history(true),
@@ -2794,7 +2845,13 @@ impl App {
             None => (line, ""),
         };
         match verb {
-            "open" | "o" | "tabopen" | "t" => self.open_tab(rest, self.nojs),
+            // `:open`/`:o` open in THIS tab (replacing it); a leading `-t` opens a new
+            // tab instead. `:tabopen`/`:t` always open a new tab (that's their meaning).
+            "open" | "o" => {
+                let (new_tab, rest) = parse_tab_flag(rest);
+                self.open_tab(rest, self.nojs, new_tab);
+            }
+            "tabopen" | "t" => self.open_tab(rest, self.nojs, true),
             // Edit the current URL: drop into the command bar pre-filled with
             // `<verb> <current url>` so you can tweak and re-open it — `<verb>` is the
             // mode the tab was opened in (open/research/read/nojs) so e.g. editing a
@@ -2816,10 +2873,12 @@ impl App {
                 None => self.set_status("no url to yank"),
             },
             "read" => {
+                let (new_tab, rest) = parse_tab_flag(rest);
                 if rest.is_empty() {
-                    self.set_status("usage: :read <url>");
+                    self.set_status("usage: :read [-t] <url>");
                 } else {
-                    self.start_read(rest, false);
+                    // `replace` (open in this tab) is the default; `-t` opens a new tab.
+                    self.start_read(rest, !new_tab);
                 }
             }
             // Inspect this session's errors in an engine-free, scrollable tab:
@@ -2828,7 +2887,10 @@ impl App {
             "errors" | "errs" => self.open_error_page(true),
             // Like :open (URL or → search engine) but lighter: JS on, images kept,
             // heavy media/embeds stripped. For "how do I…" / "best way to…" lookups.
-            "research" | "rs" => self.open_research(rest),
+            "research" | "rs" => {
+                let (new_tab, rest) = parse_tab_flag(rest);
+                self.open_research(rest, new_tab);
+            }
             "te" | "term" => {
                 if rest.is_empty() {
                     self.open_terminal();
@@ -2874,9 +2936,12 @@ impl App {
                         if self.nojs { "OFF" } else { "ON" }
                     ));
                 } else {
-                    self.open_tab(rest, true);
+                    let (new_tab, rest) = parse_tab_flag(rest);
+                    self.open_tab(rest, true, new_tab);
                 }
             }
+            // Reopen the most recently closed tab (also `U` / Ctrl+Shift+T).
+            "reopen" | "undo" => self.reopen_closed(),
             // Toggle the uBlock-style content blocker. Applies live to every open web
             // tab (no reload) and is the default for new tabs; persisted in the session.
             "ads" | "adblock" => self.toggle_adblock(),
@@ -2903,8 +2968,9 @@ impl App {
             // scatters under a separate "WebView2 Manager" group.
             "res" | "resources" => self.open_resource_page(),
             "" => {}
-            // A bare bang (`:!yt cats`) opens the whole line as a bang target.
-            other if other.starts_with('!') => self.open_tab(line, self.nojs),
+            // A bare bang (`:!yt cats`) opens the whole line as a bang target (in
+            // this tab, like `:open`).
+            other if other.starts_with('!') => self.open_tab(line, self.nojs, false),
             other => self.set_error(format!("unknown command: {other}")),
         }
         self.current_command = None;
@@ -2927,23 +2993,25 @@ impl App {
         }
     }
 
-    fn open_tab(&mut self, target: &str, disable_js: bool) {
+    /// Open a page from a target (URL or query). `new_tab` opens it as a new tab;
+    /// otherwise it replaces the active tab in place (`:open` default, `o`). With no
+    /// active tab the two are equivalent (a fresh tab is created).
+    fn open_tab(&mut self, target: &str, disable_js: bool, new_tab: bool) {
         let url = self.resolve_target(target);
         self.record_history(&url);
         match self.build_content_webview(Source::Url(url.clone()), disable_js, "") {
             Ok(webview) => {
-                self.tabs.push(Tab {
+                let tab = Tab {
                     webview: Some(webview),
-                    url: url.clone(),
+                    url,
                     nojs: disable_js,
                     read: false,
                     research: false,
                     native: None,
                     vim: None,
                     term: None,
-                });
-                self.active = Some(self.tabs.len() - 1);
-                self.refresh_visibility();
+                };
+                self.place_tab(tab, new_tab);
                 // Keep the keyboard on the shell; the page-load handler re-asserts
                 // this once navigation finishes (which is when focus tends to move).
                 self.window.set_focus();
@@ -2955,27 +3023,92 @@ impl App {
 
     /// Open a "research" tab: like `:open` (URL or → search engine), but JS-on with
     /// the [`RESEARCH_JS`] pruner injected so video/audio/embeds are stripped while
-    /// images and text stay. A lighter browse for "how do I…" lookups.
-    fn open_research(&mut self, target: &str) {
+    /// images and text stay. A lighter browse for "how do I…" lookups. `new_tab` as
+    /// in [`open_tab`].
+    fn open_research(&mut self, target: &str, new_tab: bool) {
         let url = self.resolve_target(target);
         match self.build_content_webview(Source::Url(url.clone()), false, RESEARCH_JS) {
             Ok(webview) => {
-                self.tabs.push(Tab {
+                let tab = Tab {
                     webview: Some(webview),
-                    url: url.clone(),
+                    url,
                     nojs: false,
                     read: false,
                     research: true,
                     native: None,
                     vim: None,
                     term: None,
-                });
-                self.active = Some(self.tabs.len() - 1);
-                self.refresh_visibility();
+                };
+                self.place_tab(tab, new_tab);
                 self.window.set_focus();
                 self.set_status("(research — media stripped)");
             }
             Err(e) => self.set_error(format!("failed to open: {e:#}")),
+        }
+    }
+
+    /// Insert `tab`, either as a NEW tab at the end (`new_tab`, or when nothing is
+    /// active) or REPLACING the active tab in place (`:open`/`o` default). The tab it
+    /// evicts is recorded on the closed-tab stack (so `U` can bring it back) and its
+    /// terminal, if any, is shut down deterministically first.
+    fn place_tab(&mut self, tab: Tab, new_tab: bool) {
+        match self.active {
+            Some(i) if !new_tab && i < self.tabs.len() => {
+                self.record_closed(i);
+                if let Some(session) = self.tabs[i].term.take() {
+                    session.shutdown();
+                }
+                self.tabs[i] = tab;
+                self.active = Some(i);
+            }
+            _ => {
+                self.tabs.push(tab);
+                self.active = Some(self.tabs.len() - 1);
+            }
+        }
+        self.find_reset();
+        self.refresh_visibility();
+        self.window.request_redraw();
+    }
+
+    /// Record tab `i` on the closed-tab stack so `U` / Ctrl+Shift+T can reopen it.
+    /// Mirrors the session's restorable-tab rules: live `browser://…` pages and the
+    /// error/res vim pagers are session-specific and skipped.
+    fn record_closed(&mut self, i: usize) {
+        let Some(t) = self.tabs.get(i) else { return };
+        if t.url.starts_with("browser://") || t.vim.is_some() {
+            return;
+        }
+        let kind = if t.term.is_some() {
+            "term"
+        } else if t.read || t.native.is_some() {
+            "read"
+        } else if t.research {
+            "research"
+        } else if t.nojs {
+            "nojs"
+        } else {
+            "open"
+        };
+        self.closed_tabs.push(session::SavedTab { kind: kind.to_string(), url: t.url.clone() });
+        if self.closed_tabs.len() > CLOSED_CAP {
+            self.closed_tabs.remove(0);
+        }
+    }
+
+    /// Reopen the most recently closed tab (`U` / Ctrl+Shift+T), as a new tab. Read
+    /// tabs are re-fetched and terminals reopened fresh, matching session restore.
+    fn reopen_closed(&mut self) {
+        let Some(c) = self.closed_tabs.pop() else {
+            self.set_status("no closed tab to reopen");
+            return;
+        };
+        match c.kind.as_str() {
+            "term" => self.open_terminal(),
+            "read" => self.start_read(&c.url, false),
+            "research" => self.open_research(&c.url, true),
+            "nojs" => self.open_tab(&c.url, true, true),
+            _ => self.open_tab(&c.url, false, true),
         }
     }
 
@@ -3412,22 +3545,32 @@ impl App {
         self.window.request_redraw();
     }
 
-    /// Render an extracted Document in an engine-free read tab (no WebView2). With
-    /// `replace`, swap the active read tab's document in place (link-follow/reload);
-    /// otherwise open a new read tab.
+    /// Render an extracted Document in an engine-free read tab (no WebView2).
+    /// `replace` means "open in the current tab": if the active tab is ALREADY a read
+    /// tab its document is swapped in place (link-follow/reload, keeping the tab); if
+    /// it's some other tab type, that tab is replaced with a fresh read tab. Without
+    /// `replace` (`:read -t`), a new read tab is opened.
     fn show_read_document(&mut self, doc: browser_core::Document, replace: bool) {
         let url = doc.url.clone();
         if replace {
-            if let Some(nr) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| {
-                t.url = url.clone();
-                t.native.as_mut()
-            }) {
-                nr.doc = doc;
-                nr.scroll = 0;
-                nr.dirty = true;
-                nr.caret = None; // the text changed; drop any caret/selection
+            if let Some(i) = self.active {
+                // Fast path: active is already a read tab → swap its doc, keep the tab.
+                if self.tabs.get(i).is_some_and(|t| t.native.is_some()) {
+                    let nr = self.tabs[i].native.as_mut().unwrap();
+                    nr.doc = doc;
+                    nr.scroll = 0;
+                    nr.dirty = true;
+                    nr.caret = None; // the text changed; drop any caret/selection
+                    self.tabs[i].url = url;
+                    self.clear_status();
+                    self.window.request_redraw();
+                    return;
+                }
+                // Active is a web/terminal tab → replace it in place with a read tab.
+                let tab = native_read_tab(doc, url, true);
+                self.place_tab(tab, false);
+                self.window.set_focus();
                 self.clear_status();
-                self.window.request_redraw();
                 return;
             }
         }
@@ -3438,24 +3581,7 @@ impl App {
     /// by read mode (`read = true`, tinted green + `f` hint) and the `:error(s)`
     /// pages (`read = false`). Activates and focuses the new tab.
     fn push_native_tab(&mut self, doc: browser_core::Document, url: String, read: bool) {
-        self.tabs.push(Tab {
-            webview: None,
-            url,
-            nojs: false,
-            read,
-            research: false,
-            native: Some(NativeRead {
-                doc,
-                scroll: 0,
-                layout: read_view::Layout { lines: Vec::new(), line_h: 1, height: 0 },
-                layout_w: -1,
-                layout_px: 0.0,
-                dirty: true,
-                caret: None,
-            }),
-            vim: None,
-            term: None,
-        });
+        self.tabs.push(native_read_tab(doc, url, read));
         self.active = Some(self.tabs.len() - 1);
         self.refresh_visibility();
         self.window.set_focus();
@@ -3665,8 +3791,10 @@ impl App {
             self.set_status("no tab to close");
             return;
         };
-        // Shut a terminal down deterministically (kill shell, close PTY, join reader)
-        // before dropping the tab; dropping the WebView frees the renderer.
+        // Remember it so `U` / Ctrl+Shift+T can reopen it (internal pages are skipped
+        // by record_closed). Shut a terminal down deterministically (kill shell, close
+        // PTY, join reader) before dropping the tab; dropping the WebView frees the renderer.
+        self.record_closed(i);
         if let Some(session) = self.tabs[i].term.take() {
             session.shutdown();
         }
@@ -3838,12 +3966,13 @@ impl App {
             self.set_zoom(s.zoom);
         }
         for tab in &s.tabs {
+            // Each restored tab is a NEW tab (push), so they don't replace each other.
             match tab.kind.as_str() {
                 "term" => self.open_terminal(),
                 "read" => self.start_read(&tab.url, false),
-                "research" => self.open_research(&tab.url),
-                "nojs" => self.open_tab(&tab.url, true),
-                _ => self.open_tab(&tab.url, false),
+                "research" => self.open_research(&tab.url, true),
+                "nojs" => self.open_tab(&tab.url, true, true),
+                _ => self.open_tab(&tab.url, false, true),
             }
         }
         if !self.tabs.is_empty() {
@@ -4722,7 +4851,7 @@ fn now_hms() -> String {
 fn commands_document() -> String {
     let normal = help_table(&[
         (":", "open the command bar"),
-        ("o", "open a page (prefills “open ”)"),
+        ("o / O", "open a page in THIS tab / in a new tab (prefills “open ” / “open -t ”)"),
         ("j / k", "scroll down / up"),
         ("d / u", "scroll half a page down / up"),
         ("g / G", "jump to top / bottom"),
@@ -4732,6 +4861,7 @@ fn commands_document() -> String {
         ("f", "hint mode — label every link, type the label to follow"),
         ("v / V", "caret/visual select on read & web tabs — hjkl/w/b move, y yank, Esc exits"),
         ("x", "close the current tab"),
+        ("U / Ctrl+Shift+T", "reopen the last closed tab"),
         ("r", "reload the page"),
         ("H / L", "history back / forward"),
         ("n / p", "next / previous tab"),
@@ -4772,11 +4902,13 @@ fn commands_document() -> String {
         ("yiw · yi( · ya\"", "yank inner/around a text object (word, (), {}, [], <>, quotes)"),
     ]);
     let cmds = help_table(&[
-        (":open <url|query> · :o · :t", "open a page (non-URL → search engine)"),
-        (":research <url|query> · :rs", "lighter browse: JS on, images kept, media/embeds stripped"),
+        (":open <url|query> · :o", "open in THIS tab (non-URL → search engine); add -t for a new tab"),
+        (":tabopen · :t", "open in a new tab (same as :open -t)"),
+        (":reopen · :undo", "reopen the last closed tab (also U / Ctrl+Shift+T)"),
+        (":research <url|query> · :rs", "lighter browse: JS on, images kept, media/embeds stripped (-t = new tab)"),
         (":edit · :e", "edit the current URL (re-opens in the tab's own mode)"),
         (":y · :yank", "copy the current URL to the clipboard"),
-        (":read <url|query>", "engine-free reader (no WebView2): j/k scroll, f hint, v/V select; non-URL → search"),
+        (":read <url|query>", "engine-free reader (no WebView2) in this tab; -t = new tab; non-URL → search"),
         (":search [name|template]", "show/set the search engine — a name (ddg/google/wiki…) or a %s URL"),
         (":te", "open a native terminal tab (Shift+Esc → vim copy-mode: navigate/yank, i resumes)"),
         (":te <command>", "run a local command, result in the command bar"),
@@ -5062,9 +5194,22 @@ fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize, _scale: f32) {
 mod tests {
     use super::vim::{Key, TextBuffer};
     use super::{
-        deproxy_translate, error_lines, is_translate_proxy, next_word_boundary, prev_word_boundary,
-        ErrorEntry,
+        deproxy_translate, error_lines, is_translate_proxy, next_word_boundary, parse_tab_flag,
+        prev_word_boundary, ErrorEntry,
     };
+
+    #[test]
+    fn tab_flag_only_matches_whole_token() {
+        // `-t` / `--tab` as a leading token → new tab, flag stripped.
+        assert_eq!(parse_tab_flag("-t youtube.com"), (true, "youtube.com"));
+        assert_eq!(parse_tab_flag("--tab youtube.com"), (true, "youtube.com"));
+        assert_eq!(parse_tab_flag("-t"), (true, ""));
+        // No flag → opens in the current tab, target untouched.
+        assert_eq!(parse_tab_flag("youtube.com"), (false, "youtube.com"));
+        // A target that merely starts with `-t` is NOT the flag.
+        assert_eq!(parse_tab_flag("-test query"), (false, "-test query"));
+        assert_eq!(parse_tab_flag("rust -t async"), (false, "rust -t async"));
+    }
 
     #[test]
     fn ctrl_w_deletes_one_url_segment_at_a_time() {
