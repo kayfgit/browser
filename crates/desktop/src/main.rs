@@ -22,7 +22,9 @@ use std::thread::JoinHandle;
 use anyhow::{Context as _, Result};
 use std::time::{Duration, Instant};
 
-use tao::event::{ElementState, Event, KeyEvent, MouseButton, StartCause, WindowEvent};
+use tao::event::{
+    ElementState, Event, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent,
+};
 use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::keyboard::{Key, KeyCode, ModifiersState};
 use tao::window::{Window, WindowBuilder};
@@ -200,7 +202,8 @@ const HINT_JS: &str = r#"
   for (var i = 0; i < els.length; i++) {
     var r = els[i].getBoundingClientRect();
     var b = document.createElement('span');
-    b.textContent = labels[i];
+    // New-tab mode (`F`) shows labels uppercase as a cue; matching stays lowercase.
+    b.textContent = window.__hintUpper ? labels[i].toUpperCase() : labels[i];
     b.style.cssText = 'position:fixed;left:' + Math.max(0, r.left) + 'px;top:' + Math.max(0, r.top) +
       'px;z-index:2147483647;background:#ffd400;color:#000;font:bold 11px monospace;padding:0 3px;' +
       'border:1px solid #000;border-radius:3px;line-height:14px;pointer-events:none;';
@@ -252,23 +255,33 @@ const HINT_JS: &str = r#"
     try { el.focus(); } catch (e) {}
     fireClick(el);
   }
-  window.__hintInput = function (s) {
+  window.__hintInput = function (s, nt) {
     var m = window.__hintMap; if (!m) return;
+    window.__hintUpper = !!nt;
     s = (s || '').toLowerCase();
     var exact = null;
     for (var k in m) {
+      // Keep the badge text in sync with the mode (UPPERCASE once new-tab is set),
+      // so a plain-`f` hint that flips to new-tab mid-typing repaints its labels.
+      m[k].badge.textContent = nt ? k.toUpperCase() : k;
       if (k.indexOf(s) === 0) { m[k].badge.style.display = ''; if (k === s) exact = m[k]; }
       else { m[k].badge.style.display = 'none'; }
     }
     if (exact) {
       var el = exact.el;
       var edit = editable(el);
+      // For new-tab mode, resolve the link href (if any) before clearing badges.
+      var a = !edit && el.closest ? el.closest('a[href]') : (el.tagName === 'A' ? el : null);
+      var href = (a && a.href && !/^javascript:/i.test(a.href)) ? a.href : null;
       window.__hintClear();
       if (edit) {
         // Defer focusing until the shell has handed the webview OS focus, so the
         // field (not the document body) ends up focused; then enter passthrough.
         window.__hintTarget = el;
         if (window.ipc) window.ipc.postMessage('hint-edit');
+      } else if (nt && href) {
+        // New-tab mode on a real link: let the shell open it as a new tab.
+        if (window.ipc) window.ipc.postMessage('hint-open:' + href);
       } else {
         activate(el);
         if (window.ipc) window.ipc.postMessage('hint-exit');
@@ -852,6 +865,8 @@ enum UserEvent {
     ExitHint,
     /// A hint selected an editable element: focus it and enter passthrough.
     HintEdit,
+    /// A hint was activated in new-tab mode (`F`): open this URL in a new tab.
+    HintOpen(String),
     /// A `:read` extraction finished: render this Document in an engine-free read
     /// tab. `replace` swaps the active read tab's doc in place (link-follow/reload)
     /// instead of opening a new tab.
@@ -1091,6 +1106,10 @@ struct App {
     command_anchor: Option<usize>,
     /// Accumulated label characters while in Hint mode.
     hint_input: String,
+    /// Whether the current hint will open its target in a NEW tab (entered with
+    /// `F`, or set mid-typing when a label char is typed uppercase). Badges render
+    /// uppercase as the visual cue. Links only; non-link targets click normally.
+    hint_new_tab: bool,
     /// Placed hint labels for an engine-free read tab (web tabs hint via JS).
     native_hints: Vec<NativeHint>,
     status: String,
@@ -1308,6 +1327,7 @@ fn main() -> Result<()> {
         command_cursor: 0,
         command_anchor: None,
         hint_input: String::new(),
+        hint_new_tab: false,
         native_hints: Vec::new(),
         status: String::new(),
         status_is_error: false,
@@ -1400,20 +1420,42 @@ fn main() -> Result<()> {
                 WindowEvent::Resized(size) => {
                     app.on_resize(size.width, size.height);
                 }
-                WindowEvent::ModifiersChanged(state) => app.modifiers = state,
+                WindowEvent::ModifiersChanged(state) => {
+                    app.modifiers = state;
+                    app.on_modifiers_changed();
+                }
                 WindowEvent::Focused(true) => app.last_focus_gain = Instant::now(),
                 WindowEvent::CursorMoved { position, .. } => {
                     app.cursor_pos = (position.x, position.y);
                 }
-                // Drag the borderless window by its top tab bar (QoL — like a title
-                // bar). Only the tab-bar strip; the webview owns clicks below it.
+                // Clicks on the top tab bar: hit a tab label to switch to it, or
+                // drag the borderless window by the empty strip (QoL — like a title
+                // bar). The webview owns clicks below the bar.
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                     ..
                 } => {
                     if !app.tabs.is_empty() && app.cursor_pos.1 < app.tab_bar_h() as f64 {
-                        let _ = app.window.drag_window();
+                        if let Some(i) = app.tab_at_pixel(app.cursor_pos.0) {
+                            app.jump_to(i);
+                            app.window.request_redraw();
+                        } else {
+                            let _ = app.window.drag_window();
+                        }
+                    }
+                }
+                // Mouse wheel: scroll the native-drawn content under the cursor (the
+                // terminal's scrollback, or a `:read` document). Web tabs receive the
+                // wheel directly via their child window, so they never reach here.
+                WindowEvent::MouseWheel { delta, .. } => {
+                    let dy = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => y as f64,
+                        MouseScrollDelta::PixelDelta(pos) => pos.y / 40.0,
+                        _ => 0.0,
+                    };
+                    if dy != 0.0 {
+                        app.on_wheel(dy);
                     }
                 }
                 WindowEvent::KeyboardInput { event: key, .. } => {
@@ -1467,6 +1509,7 @@ fn main() -> Result<()> {
             }
             Event::UserEvent(UserEvent::ExitHint) => {
                 app.hint_input.clear();
+                app.hint_new_tab = false;
                 app.mode = ModeKind::Normal;
                 app.window.set_focus();
                 app.window.request_redraw();
@@ -1482,6 +1525,15 @@ fn main() -> Result<()> {
                     );
                 }
                 app.window.request_redraw();
+            }
+            Event::UserEvent(UserEvent::HintOpen(url)) => {
+                // The page already cleared its badges; just reset shell hint state
+                // and open the link in a fresh tab.
+                app.hint_input.clear();
+                app.hint_new_tab = false;
+                app.mode = ModeKind::Normal;
+                app.window.set_focus();
+                app.open_tab(&url, app.nojs, true);
             }
             Event::UserEvent(UserEvent::ReadReady { doc, replace }) => {
                 app.show_read_document(*doc, replace);
@@ -1966,7 +2018,9 @@ impl App {
                         self.enter_insert();
                     }
                 }
-                "f" => self.enter_hint(),
+                "f" => self.enter_hint(false),
+                // Shift+F: hints open the picked link in a NEW tab (like `:open -t`).
+                "F" => self.enter_hint(true),
                 // Caret/visual selection — highlight & yank text with vim motions.
                 // Read tabs use the native caret; web tabs (open/research) use the
                 // injected page caret. Terminal tabs are excluded.
@@ -2808,11 +2862,14 @@ impl App {
 
     // --- hint mode ------------------------------------------------------------
 
-    fn enter_hint(&mut self) {
+    /// `new_tab`: enter with `F` to follow the picked link in a NEW tab (badges
+    /// render uppercase). `f` (false) follows in the current tab.
+    fn enter_hint(&mut self, new_tab: bool) {
         let Some(idx) = self.active else {
             self.set_status("no page — open one first");
             return;
         };
+        self.hint_new_tab = new_tab;
         // Engine-free read tab: hints are computed and drawn natively.
         if self.tabs[idx].native.is_some() {
             self.hint_input.clear();
@@ -2832,6 +2889,7 @@ impl App {
         self.hint_input.clear();
         self.mode = ModeKind::Hint;
         if let Some(wv) = &self.tabs[idx].webview {
+            let _ = wv.evaluate_script(&format!("window.__hintUpper={new_tab};"));
             let _ = wv.evaluate_script(HINT_JS);
         }
     }
@@ -2870,6 +2928,11 @@ impl App {
             Key::Character(s) => {
                 let c = *s;
                 if !c.is_empty() && c.chars().all(|ch| ch.is_ascii_alphabetic()) {
+                    // Typing a label uppercase switches this pick to new-tab mode,
+                    // even if hint mode was entered with plain `f`.
+                    if c.chars().any(|ch| ch.is_ascii_uppercase()) {
+                        self.hint_new_tab = true;
+                    }
                     self.hint_input.push_str(&c.to_lowercase());
                     if native {
                         self.hint_match_native();
@@ -2882,12 +2945,31 @@ impl App {
         }
     }
 
+    /// Live feedback while picking a hint: holding Shift flips every badge to
+    /// UPPERCASE (and arms new-tab mode); releasing it returns to lowercase. The
+    /// actual open then follows whatever Shift state is held when a label completes.
+    fn on_modifiers_changed(&mut self) {
+        if self.mode != ModeKind::Hint {
+            return;
+        }
+        let shift = self.modifiers.shift_key();
+        if shift == self.hint_new_tab {
+            return;
+        }
+        self.hint_new_tab = shift;
+        if self.native_hints.is_empty() {
+            self.hint_send(); // repaint the page's badges in the new case
+        } else {
+            self.window.request_redraw();
+        }
+    }
+
     /// Forward the current label string to the page to filter/activate hints.
     fn hint_send(&self) {
         if let Some(wv) = self.active_webview() {
             let _ = wv.evaluate_script(&format!(
-                "window.__hintInput&&window.__hintInput({:?})",
-                self.hint_input
+                "window.__hintInput&&window.__hintInput({:?},{})",
+                self.hint_input, self.hint_new_tab
             ));
         }
     }
@@ -2897,8 +2979,10 @@ impl App {
     fn hint_match_native(&mut self) {
         if let Some(h) = self.native_hints.iter().find(|h| h.label == self.hint_input) {
             let url = h.url.clone();
+            let new_tab = self.hint_new_tab;
             self.exit_hint();
-            self.start_read(&url, true);
+            // New-tab mode opens a fresh read tab; otherwise follow in place.
+            self.start_read(&url, !new_tab);
             return;
         }
         if !self.native_hints.iter().any(|h| h.label.starts_with(&self.hint_input)) {
@@ -2913,6 +2997,7 @@ impl App {
         }
         self.native_hints.clear();
         self.hint_input.clear();
+        self.hint_new_tab = false;
         self.mode = ModeKind::Normal;
         self.window.request_redraw();
     }
@@ -3423,6 +3508,9 @@ impl App {
                     // Web caret-mode yanked a selection: `caret-yank:<text>`.
                     if let Some(text) = body.strip_prefix("caret-yank:") {
                         let _ = ipc_proxy.send_event(UserEvent::CaretYank(text.to_string()));
+                    // A hint in new-tab mode resolved to a link: `hint-open:<href>`.
+                    } else if let Some(href) = body.strip_prefix("hint-open:") {
+                        let _ = ipc_proxy.send_event(UserEvent::HintOpen(href.to_string()));
                     }
                 }
             })
@@ -4126,6 +4214,91 @@ impl App {
         }
     }
 
+    /// Map an x pixel coordinate on the tab bar to a tab index, for click-to-switch.
+    /// Mirrors `draw_tab_bar`'s layout (start at x=8, each label `+6` gap), including
+    /// its right-edge truncation, so the clickable regions match what's drawn.
+    fn tab_at_pixel(&self, px: f64) -> Option<usize> {
+        let p = &self.painter;
+        let labels = self.tab_labels();
+        let limit = self.inner().0 as usize;
+        let px = px.max(0.0) as usize;
+        let mut x = 8usize;
+        for (i, (label, active, _)) in labels.iter().enumerate() {
+            let text = if *active {
+                format!("[{}:{}]", i + 1, label)
+            } else {
+                format!(" {}:{} ", i + 1, label)
+            };
+            let end = x + p.measure(&text) + 6;
+            if px >= x && px < end {
+                return Some(i);
+            }
+            x = end;
+            if x > limit.saturating_sub(40) {
+                break;
+            }
+        }
+        None
+    }
+
+    /// Mouse-wheel scroll. `dy_lines` > 0 means the wheel rolled up (toward older
+    /// terminal output / the top of a page). Routes to the terminal's scrollback or
+    /// the native read-tab scroll offset; web tabs handle the wheel themselves.
+    fn on_wheel(&mut self, dy_lines: f64) {
+        if self.active_is_term() {
+            // If the program enabled mouse reporting (vim `mouse=a`, less, tmux…),
+            // hand it the wheel so IT scrolls; otherwise page our own scrollback.
+            if self.term_mouse_wheel(dy_lines) {
+                return;
+            }
+            let lines = (dy_lines * 3.0).round() as i32;
+            if lines != 0 {
+                if let Some(s) =
+                    self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
+                {
+                    s.pty.scroll_display(lines);
+                    self.window.request_redraw();
+                }
+            }
+            return;
+        }
+        let dy = (-dy_lines * 80.0).round() as i32;
+        if dy != 0 {
+            self.scroll(dy);
+        }
+    }
+
+    /// Forward a wheel notch to a terminal program that turned on mouse reporting,
+    /// as a mouse wheel-button event at the cell under the cursor. Returns `false`
+    /// (so the caller scrolls our scrollback instead) when no program wants mice.
+    fn term_mouse_wheel(&mut self, dy_lines: f64) -> bool {
+        let (cw, ch) = self.term_cell();
+        let top = self.tab_bar_h() as i32;
+        let (px, py) = (self.cursor_pos.0 as i32, self.cursor_pos.1 as i32);
+        let Some(s) =
+            self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
+        else {
+            return false;
+        };
+        if !s.pty.mouse_mode() {
+            return false;
+        }
+        let (cols, rows) = (s.pty.cols as i32, s.pty.rows as i32);
+        let col = (((px - TERM_PAD) / cw) + 1).clamp(1, cols.max(1));
+        let row = (((py - top) / ch) + 1).clamp(1, rows.max(1));
+        // xterm wheel buttons: 64 = up, 65 = down.
+        let button = if dy_lines > 0.0 { 64 } else { 65 };
+        let sgr = s.pty.sgr_mouse();
+        let notches = (dy_lines.abs().round() as i32).max(1);
+        let mut out = Vec::new();
+        for _ in 0..notches {
+            out.extend_from_slice(&encode_mouse_wheel(sgr, button, col, row));
+        }
+        s.send(0, &out);
+        self.window.request_redraw();
+        true
+    }
+
     /// Move the active tab one position left (-1) or right (+1).
     fn move_tab(&mut self, delta: i32) {
         let Some(i) = self.active else { return };
@@ -4632,11 +4805,17 @@ impl App {
                     if !hint.label.starts_with(&self.hint_input) {
                         continue;
                     }
-                    let lw = p.measure(&hint.label);
+                    // New-tab mode (`F`) shows labels uppercase as the cue.
+                    let label = if self.hint_new_tab {
+                        hint.label.to_uppercase()
+                    } else {
+                        hint.label.clone()
+                    };
+                    let lw = p.measure(&label);
                     let bx = hint.x.max(0) as usize;
                     let by = (hint.y - (lh as i32) * 3 / 4).max(0) as usize;
                     draw::fill_rect(&mut buf, wz, hz, bx, by, bx + lw + 4, by + lh, (0xff, 0xd4, 0x00));
-                    p.text(&mut buf, wz, hz, bx + 2, hint.y.max(0) as usize, &hint.label, (0x10, 0x10, 0x10));
+                    p.text(&mut buf, wz, hz, bx + 2, hint.y.max(0) as usize, &label, (0x10, 0x10, 0x10));
                 }
             }
             // Tab bar + command bar painted on top of the content.
@@ -4791,7 +4970,16 @@ impl App {
                 } else {
                     draw::DIM
                 };
-                (short_label(&t.url), active, color)
+                // Terminals label themselves by the running program's OSC title
+                // (vim → the open file, Claude Code → "Claude Code"); fall back to
+                // the shell name until something sets a title.
+                let label = t
+                    .term
+                    .as_ref()
+                    .and_then(|s| s.pty.title())
+                    .map(|title| term_label(&title))
+                    .unwrap_or_else(|| short_label(&t.url));
+                (label, active, color)
             })
             .collect()
     }
@@ -4833,9 +5021,16 @@ impl App {
                 ("  hjkl move window · Esc done".into(), draw::DIM),
             ],
             ModeKind::Hint => vec![
-                ("[HINT]".into(), draw::ACCENT),
+                (if self.hint_new_tab { "[HINT ↗]" } else { "[HINT]" }.into(), draw::ACCENT),
                 (format!(" {}", self.hint_input), draw::BAR_FG),
-                ("   type a label · Esc cancel".into(), draw::DIM),
+                (
+                    if self.hint_new_tab {
+                        "   label opens a new tab · Esc cancel".into()
+                    } else {
+                        "   type a label (UPPERCASE = new tab) · Esc cancel".into()
+                    },
+                    draw::DIM,
+                ),
             ],
             ModeKind::Caret => vec![
                 ("[CARET]".into(), draw::ACCENT),
@@ -5196,7 +5391,7 @@ fn commands_document() -> String {
         ("/", "find in page — type to search live; works on web, read & error tabs"),
         ("n / N", "next / previous match (while a search is active); Esc clears"),
         ("i", "insert mode (passthrough on a terminal tab)"),
-        ("f", "hint mode — label every link, type the label to follow"),
+        ("f / F", "hint mode — label every link, type the label to follow (F: open in a new tab)"),
         ("v / V", "caret/visual select on read & web tabs — hjkl/w/b move, y yank, Esc exits"),
         ("x", "close the current tab"),
         ("u / Ctrl+Shift+T", "reopen the last closed tab"),
@@ -5226,7 +5421,7 @@ fn commands_document() -> String {
     let modes = help_table(&[
         ("Insert", "type into a field; Esc or click-away leaves, Ctrl+V → passthrough"),
         ("Passthrough", "every key goes to the page; Shift+Esc leaves"),
-        ("Hint", "type a label to follow it; Esc cancels"),
+        ("Hint", "type a label to follow it (type it UPPERCASE to open in a new tab); Esc cancels"),
         ("Resize / Move", "hjkl to size / reposition the window; Esc finishes"),
     ]);
     let vimpager = help_table(&[
@@ -5404,6 +5599,22 @@ fn line_col_x(runs: &[read_view::Run], col: usize, base: i32, p: &Painter) -> i3
 }
 
 /// Encode a key event into the bytes a PTY expects (the inverse of what xterm.js
+/// Encode a single mouse-button event for a terminal in mouse-reporting mode.
+/// `button` is the xterm button code (64/65 = wheel up/down), `col`/`row` are
+/// 1-based cell coordinates. Uses the SGR (1006) form when the program asked for
+/// it, else the legacy X10 byte form. Wheel events are press-only (no release).
+fn encode_mouse_wheel(sgr: bool, button: u8, col: i32, row: i32) -> Vec<u8> {
+    if sgr {
+        format!("\x1b[<{button};{col};{row}M").into_bytes()
+    } else {
+        // X10: each field is its value + 32, clamped to one byte.
+        let cb = 32u8.saturating_add(button);
+        let cx = (32 + col).clamp(32, 255) as u8;
+        let cy = (32 + row).clamp(32, 255) as u8;
+        vec![0x1b, b'[', b'M', cb, cx, cy]
+    }
+}
+
 /// used to do). Covers printable input, Ctrl-combos → control codes, Enter/Tab/
 /// Backspace/Esc, and the cursor/navigation keys (honoring DECCKM app-cursor mode).
 /// `None` for keys with no terminal meaning. Alt prefixes the sequence with ESC.
@@ -5488,7 +5699,27 @@ fn short_label(url: &str) -> String {
         .unwrap_or(url);
     let host = s.split('/').next().unwrap_or(s);
     let host = host.strip_prefix("www.").unwrap_or(host);
-    let mut label = host.to_string();
+    truncate_label(host)
+}
+
+/// Turn a terminal's raw OSC title into a tidy tab label. Strips the editor suffix
+/// vim/nvim append (`<file> (<dir>) - VIM`) and reduces a bare path to its final
+/// component, so a shell sitting in `C:\projects\browser` reads as `browser` and an
+/// open file reads as just its name; anything else (e.g. `Claude Code`) is kept.
+fn term_label(title: &str) -> String {
+    let t = title.trim();
+    // vim/nvim: "<file> (<dir>) - VIM"/"- NVIM" → keep the part before " - ".
+    let t = t.split(" - ").next().unwrap_or(t).trim();
+    // Drop the trailing "(<dir>)" annotation vim appends after the filename.
+    let t = t.split(" (").next().unwrap_or(t).trim();
+    // A bare path → its last segment; otherwise leave the text alone.
+    let last = t.rsplit(['\\', '/']).next().filter(|s| !s.is_empty()).unwrap_or(t);
+    truncate_label(if last.is_empty() { t } else { last })
+}
+
+/// Cap a tab label at 22 characters, appending an ellipsis when it overflows.
+fn truncate_label(s: &str) -> String {
+    let mut label = s.to_string();
     if label.chars().count() > 22 {
         label = label.chars().take(21).collect::<String>();
         label.push('…');

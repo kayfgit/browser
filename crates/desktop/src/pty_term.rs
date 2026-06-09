@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event, EventListener};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
@@ -55,12 +55,23 @@ pub const BG: Rgb = (0x1a, 0x1a, 0x1a);
 #[derive(Clone)]
 pub struct TermListener {
     out: Arc<Mutex<Vec<u8>>>,
+    /// The terminal's current OSC title (set by the running program: e.g. vim sets
+    /// it to the open file, Claude Code to "Claude Code"). `None` once reset/unset.
+    title: Arc<Mutex<Option<String>>>,
 }
 
 impl EventListener for TermListener {
     fn send_event(&self, event: Event) {
-        if let Event::PtyWrite(text) = event {
-            self.out.lock().unwrap().extend_from_slice(text.as_bytes());
+        match event {
+            Event::PtyWrite(text) => {
+                self.out.lock().unwrap().extend_from_slice(text.as_bytes());
+            }
+            Event::Title(t) => {
+                let t = t.trim();
+                *self.title.lock().unwrap() = (!t.is_empty()).then(|| t.to_string());
+            }
+            Event::ResetTitle => *self.title.lock().unwrap() = None,
+            _ => {}
         }
     }
 }
@@ -73,17 +84,24 @@ pub struct PtyTerm {
     pub cols: usize,
     pub rows: usize,
     out: Arc<Mutex<Vec<u8>>>,
+    title: Arc<Mutex<Option<String>>>,
 }
 
 impl PtyTerm {
     pub fn new(cols: usize, rows: usize) -> Self {
         let (cols, rows) = (cols.max(1), rows.max(1));
         let out = Arc::new(Mutex::new(Vec::new()));
-        let listener = TermListener { out: out.clone() };
+        let title = Arc::new(Mutex::new(None));
+        let listener = TermListener { out: out.clone(), title: title.clone() };
         // Keep scrollback so copy-mode (Shift+Esc) can page back through history.
         let config = Config { scrolling_history: 5000, ..Config::default() };
         let vt = Term::new(config, &TermSize::new(cols, rows), listener);
-        PtyTerm { vt, parser: Processor::new(), cols, rows, out }
+        PtyTerm { vt, parser: Processor::new(), cols, rows, out, title }
+    }
+
+    /// The terminal's current OSC title, if the running program set one.
+    pub fn title(&self) -> Option<String> {
+        self.title.lock().unwrap().clone()
     }
 
     // --- copy / vi mode (Alacritty's own) -------------------------------------
@@ -141,6 +159,13 @@ impl PtyTerm {
         self.vi_goto_line(cur.line.0 + lines, cur.column);
     }
 
+    /// Scroll the viewport through scrollback by `lines` (positive = up, toward
+    /// older output) without entering vi mode — for mouse-wheel scrolling a live
+    /// shell. New PTY output snaps the view back to the bottom, as terminals do.
+    pub fn scroll_display(&mut self, lines: i32) {
+        self.vt.grid_mut().scroll_display(Scroll::Delta(lines));
+    }
+
     /// Start a selection at the vi cursor (`lines` = linewise `V` vs charwise `v`).
     pub fn start_selection(&mut self, lines: bool) {
         let ty = if lines { SelectionType::Lines } else { SelectionType::Simple };
@@ -191,6 +216,19 @@ impl PtyTerm {
     /// Whether the program enabled bracketed-paste mode (DEC 2004). If so, pasted
     /// text must be wrapped in `ESC[200~`…`ESC[201~` so the app treats it as one
     /// literal block (e.g. a shell won't run each pasted line on its own).
+    /// Whether the running program enabled any mouse reporting (e.g. vim `mouse=a`,
+    /// less, tmux). When set, wheel/clicks should be forwarded to it as mouse events
+    /// instead of driving our own scrollback.
+    pub fn mouse_mode(&self) -> bool {
+        self.vt.mode().intersects(TermMode::MOUSE_MODE)
+    }
+
+    /// Whether mouse reports should use the SGR (1006) encoding rather than the
+    /// legacy X10 byte form.
+    pub fn sgr_mouse(&self) -> bool {
+        self.vt.mode().contains(TermMode::SGR_MOUSE)
+    }
+
     pub fn bracketed_paste(&self) -> bool {
         self.vt.mode().contains(TermMode::BRACKETED_PASTE)
     }
