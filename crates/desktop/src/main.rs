@@ -85,8 +85,8 @@ const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreen
 /// Injected into every page. Reads a synchronous `window.__mode` flag (kept in
 /// sync by the shell) and, per mode, intercepts exactly the keys the shell owns.
 /// In `insert` it takes Escape (leave) and Ctrl+V (to passthrough) and lets the
-/// rest type; in `passthrough` it takes only Shift+Escape and lets every other key
-/// reach the page. In insert it also reports when focus leaves the editable element,
+/// rest type; in `passthrough` it takes only the leave chord (Ctrl+S or Shift+Esc)
+/// and lets every other key reach the page. In insert it also reports when focus leaves the editable element,
 /// so the shell can drop back to normal when you click away.
 const BRIDGE_JS: &str = r#"
 (function () {
@@ -112,7 +112,10 @@ const BRIDGE_JS: &str = r#"
       if (e.key === 'Escape' && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); post('insert-escape'); }
       else if (e.ctrlKey && (e.key === 'v' || e.key === 'V')) { e.preventDefault(); e.stopPropagation(); post('to-passthrough'); }
     } else if (m === 'passthrough') {
-      if (e.key === 'Escape' && e.shiftKey) { e.preventDefault(); e.stopPropagation(); post('leave-passthrough'); }
+      // Ctrl+S (easy reach) or Shift+Esc (legacy) leaves passthrough.
+      if ((e.ctrlKey && (e.key === 's' || e.key === 'S')) || (e.key === 'Escape' && e.shiftKey)) {
+        e.preventDefault(); e.stopPropagation(); post('leave-passthrough');
+      }
     }
   }, true);
   document.addEventListener('focusout', function () {
@@ -154,6 +157,45 @@ const BRIDGE_JS: &str = r#"
   function fsPost() { post(document.fullscreenElement ? 'fs-enter' : 'fs-exit'); }
   document.addEventListener('fullscreenchange', fsPost);
   document.addEventListener('webkitfullscreenchange', fsPost);
+  // Right-click menu: WebView2's default menu is full of options that don't work
+  // here (and flickered shut). Replace it with our own one-item menu — "Open in
+  // new tab" — shown only over a real link; the shell opens it via `hint-open`.
+  var __ctxMenu = null;
+  function ctxClose() { if (__ctxMenu) { __ctxMenu.remove(); __ctxMenu = null; } }
+  document.addEventListener('contextmenu', function (e) {
+    e.preventDefault(); // always kill the broken native menu
+    ctxClose();
+    var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    var href = (a && a.href && !/^javascript:/i.test(a.href)) ? a.href : null;
+    if (!href) return; // nothing actionable under the cursor
+    var menu = document.createElement('div');
+    menu.style.cssText = 'position:fixed;z-index:2147483647;left:' + e.clientX + 'px;top:' +
+      e.clientY + 'px;background:#222;color:#eee;font:13px sans-serif;border:1px solid #444;' +
+      'border-radius:4px;padding:4px 0;box-shadow:0 2px 8px rgba(0,0,0,.5);min-width:150px;';
+    var item = document.createElement('div');
+    item.textContent = 'Open in new tab';
+    item.style.cssText = 'padding:6px 14px;white-space:nowrap;cursor:pointer;';
+    item.addEventListener('mouseenter', function () { item.style.background = '#0a84ff'; });
+    item.addEventListener('mouseleave', function () { item.style.background = ''; });
+    item.addEventListener('click', function (ev) {
+      ev.stopPropagation(); ctxClose(); post('hint-open:' + href);
+    });
+    menu.appendChild(item);
+    // Clamp to the viewport so a menu near the edges stays fully on-screen.
+    document.documentElement.appendChild(menu);
+    var r = menu.getBoundingClientRect();
+    if (r.right > innerWidth) menu.style.left = Math.max(0, innerWidth - r.width) + 'px';
+    if (r.bottom > innerHeight) menu.style.top = Math.max(0, innerHeight - r.height) + 'px';
+    __ctxMenu = menu;
+  }, true);
+  // Dismiss the menu on an outside click (but not a click INSIDE it — that path
+  // runs the item's own handler), on scroll, or Escape. (No window-blur close: the
+  // shell's focus-reclaim blurs the webview routinely, which would shut it early.)
+  document.addEventListener('click', function (e) {
+    if (__ctxMenu && !__ctxMenu.contains(e.target)) ctxClose();
+  }, true);
+  document.addEventListener('scroll', ctxClose, true);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') ctxClose(); }, true);
 })();
 "#;
 
@@ -901,7 +943,7 @@ enum ModeKind {
     /// field. Enter: `i` or a hint on an editable element.
     Insert,
     /// Every keystroke goes to the page, no exceptions; persists across clicks and
-    /// navigation. Enter: Ctrl+V. Leave: Shift+Esc only.
+    /// navigation. Enter: Ctrl+V. Leave: Ctrl+S (or Shift+Esc).
     Passthrough,
     /// hjkl resize the window; Esc exits. Entered with `:resize`.
     Resize,
@@ -1917,7 +1959,11 @@ impl App {
                 }
             }
             ModeKind::Passthrough => {
-                if matches!(key.logical_key, Key::Escape) && self.modifiers.shift_key() {
+                // Leave passthrough with Ctrl+S (easy reach) or Shift+Esc (legacy).
+                let leave = (self.modifiers.control_key()
+                    && key.physical_key == KeyCode::KeyS)
+                    || (matches!(key.logical_key, Key::Escape) && self.modifiers.shift_key());
+                if leave {
                     self.exit_to_normal();
                 } else if self.active_is_term() {
                     // Native terminal: forward every key to the PTY, except a few
@@ -2811,7 +2857,7 @@ impl App {
             }
             self.mode = ModeKind::Passthrough;
             self.window.set_focus();
-            self.set_status("terminal — Shift+Esc returns to the shell");
+            self.set_status("terminal — Ctrl+S returns to the shell");
             self.window.request_redraw();
             return;
         }
@@ -3617,7 +3663,7 @@ impl App {
     /// `browser-pty-host` companion (so they can't deadlock our exit); its raw
     /// output is parsed by an in-process `alacritty_terminal` engine and painted by
     /// our own renderer. Enters Passthrough (shell keeps keyboard focus and forwards
-    /// every key to the PTY; Shift+Esc returns to Normal).
+    /// every key to the PTY; Ctrl+S returns to Normal).
     fn open_terminal(&mut self) {
         let shell = if self.term_command.is_empty() {
             vec!["cmd".to_string()]
@@ -3707,7 +3753,7 @@ impl App {
         self.refresh_visibility();
         self.mode = ModeKind::Passthrough; // terminal input mode; shell keeps focus
         self.window.set_focus();
-        self.set_status("terminal — Shift+Esc returns to the shell");
+        self.set_status("terminal — Ctrl+S returns to the shell");
         self.window.request_redraw();
     }
 
@@ -5049,14 +5095,14 @@ impl App {
                 if self.active_is_term() {
                     vec![
                         ("[TERM]".into(), draw::TERM),
-                        ("   typing to the shell · Ctrl+V paste · Shift+Esc to leave".into(), draw::DIM),
+                        ("   typing to the shell · Ctrl+V paste · Ctrl+S to leave".into(), draw::DIM),
                     ]
                 } else {
                     let url = self.active_url().unwrap_or("").to_string();
                     vec![
                         ("[PASS]".into(), draw::ACCENT),
                         (url, draw::BAR_FG),
-                        ("   (Shift+Esc to exit)".into(), draw::DIM),
+                        ("   (Ctrl+S to exit)".into(), draw::DIM),
                     ]
                 }
             }
@@ -5095,7 +5141,7 @@ impl App {
                             draw::TERM,
                         ));
                     } else {
-                        segs.push(("   [term]  i: type · Shift+Esc: copy-mode".into(), draw::TERM));
+                        segs.push(("   [term]  i: type · Ctrl+S: copy-mode".into(), draw::TERM));
                     }
                 }
                 // Vim pager tabs (`:error`/`:errors`, `:res`): show [VISUAL]/[VISUAL
@@ -5420,7 +5466,7 @@ fn commands_document() -> String {
     ]);
     let modes = help_table(&[
         ("Insert", "type into a field; Esc or click-away leaves, Ctrl+V → passthrough"),
-        ("Passthrough", "every key goes to the page; Shift+Esc leaves"),
+        ("Passthrough", "every key goes to the page; Ctrl+S (or Shift+Esc) leaves"),
         ("Hint", "type a label to follow it (type it UPPERCASE to open in a new tab); Esc cancels"),
         ("Resize / Move", "hjkl to size / reposition the window; Esc finishes"),
     ]);
@@ -5443,7 +5489,7 @@ fn commands_document() -> String {
         (":y · :yank", "copy the current URL to the clipboard"),
         (":read <url|query>", "engine-free reader (no WebView2) in this tab; -t = new tab; non-URL → search"),
         (":search [name|template]", "show/set the search engine — a name (ddg/google/wiki…) or a %s URL"),
-        (":te", "native terminal (Ctrl+V pastes · Shift+Esc → vim copy-mode: navigate/yank, i resumes)"),
+        (":te", "native terminal (Ctrl+V pastes · Ctrl+S → vim copy-mode: navigate/yank, i resumes)"),
         (":te <command>", "run a local command, result in the command bar"),
         (":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
         (":js", "toggle JavaScript (reloads this tab; applies to new tabs)"),

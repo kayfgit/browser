@@ -13,7 +13,6 @@ issues:
 [] - random not responding after exiting cs2 (might have to do with constant changes to resolution)
 [] - i pressed o and i together and the browser froze in a state of half normal and half insert mode, had to alt+f4
 [] - sometimes crashes after taking a windows screenshot (prntscreen button)
-[*] - pressing the right click button opens the menu but closes instantly
 
 feat:
 [~] - look for a way to make the browser consume the least amount of resources from the pc, even with the heavy engine running
@@ -21,8 +20,6 @@ feat:
 [] - mode that only allows quick cloud ai answers and nothing else? useful for quick non important searches
 [] - :commandbar to toggle visibility
 [] - command bar colors for each mode
-[*] - change right click button menu, it has a bunch of options but none of them work, make it only have "open on new tab" for now 
-[*] - change shift+esc to something easier to press, like ctrl+s
 
 maybes:
 [*] - maybe add tmux functionality? could be cool
