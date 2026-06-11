@@ -49,3 +49,16 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+# Abort on panic: smaller binary (no unwind tables) and no UB risk from panics
+# crossing the wry/WebView2 FFI callbacks. Nothing in the workspace catches
+# unwinds, and `cargo test` ignores this setting, so tests are unaffected.
+panic = "abort"
+
+# Debug builds must stay usable: fontdue rasterization and alacritty's grid are
+# hopeless at opt-level 0. Optimize the workspace a little and (once-compiled)
+# dependencies harder.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2

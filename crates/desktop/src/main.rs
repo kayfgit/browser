@@ -1262,6 +1262,16 @@ struct App {
     /// True after Ctrl+W in Normal mode: the next h/j/k/l moves pane focus and
     /// s/v splits (vim-window style). Cleared by the following key.
     pending_window_key: bool,
+    /// Cached by `refresh_visibility()`: the focused pane shows a webview, which can
+    /// trap keyboard focus on click — arms the fast (300 ms) focus backstop.
+    active_pane_is_webview: bool,
+    /// Cached by `refresh_visibility()`: a webview is visible in some *non-focused*
+    /// pane. It can still steal focus on a stray click, but that's rare — a slow
+    /// (1 s) backstop tier is enough, so a focused native pane stays near-idle.
+    background_webview_visible: bool,
+    /// Scrollback lines kept per terminal (memory scales with it; see
+    /// [`pty_term::DEFAULT_SCROLLBACK`]).
+    term_scrollback: usize,
 }
 
 /// A rectangle in physical pixels within the content band, for pane tiling.
@@ -1511,7 +1521,12 @@ fn native_read_tab(doc: browser_core::Document, url: String, read: bool) -> Tab 
         native: Some(NativeRead {
             doc,
             scroll: 0,
-            layout: read_view::Layout { lines: Vec::new(), line_h: 1, height: 0 },
+            layout: read_view::Layout {
+                lines: Vec::new(),
+                line_h: 1,
+                height: 0,
+                text: Vec::new(),
+            },
             layout_w: -1,
             layout_px: 0.0,
             dirty: true,
@@ -1603,6 +1618,9 @@ fn main() -> Result<()> {
         fs_from_page: false,
         split: None,
         pending_window_key: false,
+        active_pane_is_webview: false,
+        background_webview_visible: false,
+        term_scrollback: pty_term::DEFAULT_SCROLLBACK,
     };
 
     // Optional: open a page immediately, e.g. `browser-desktop youtube.com`,
@@ -1861,14 +1879,16 @@ fn main() -> Result<()> {
             if matches!(app.mode, ModeKind::Command | ModeKind::Find) {
                 // Blink the command-bar cursor.
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(530));
-            } else if app.mode == ModeKind::Normal
-                && (app.active_has_webview() || app.any_visible_webview())
-            {
-                // Poll to keep keyboard focus on the shell while a web tab is up (the
-                // click-focus backstop). Also runs when a web pane is merely visible
-                // beside a focused terminal/read pane, so it can't trap the keyboard.
-                // Idle otherwise — no wakeups on welcome/read tabs.
+            } else if app.mode == ModeKind::Normal && app.active_pane_is_webview {
+                // Poll to keep keyboard focus on the shell while the FOCUSED pane is a
+                // web tab (the click-focus backstop).
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(300));
+            } else if app.mode == ModeKind::Normal && app.background_webview_visible {
+                // A web pane is merely visible beside a focused terminal/read pane: it
+                // can still trap the keyboard on a stray click, but that's rare — tick
+                // slowly so working in the native pane stays near-idle. Fully idle
+                // otherwise — zero wakeups on welcome/read/term-only layouts.
+                *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(1000));
             } else if app.mode == ModeKind::Normal && app.active_is_res() {
                 // Auto-refresh the live resource monitor about once a second.
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(1000));
@@ -2103,7 +2123,7 @@ impl App {
             // Re-wrapping changed the visual lines: refresh the caret's grid in place,
             // keeping its cursor/selection (clamped) so caret mode survives resize/zoom.
             if let Some(caret) = nr.caret.as_mut() {
-                caret.set_lines(nr.layout.text_lines());
+                caret.set_lines(nr.layout.text_lines().to_vec());
             }
             let max = (nr.layout.height - view).max(0);
             nr.scroll = nr.scroll.clamp(0, max);
@@ -2214,23 +2234,6 @@ impl App {
     #[cfg(not(windows))]
     fn cursor_client_pos(&self) -> Option<(i32, i32)> {
         Some((self.cursor_pos.0 as i32, self.cursor_pos.1 as i32))
-    }
-
-    /// Whether the active tab is a webview (web/research/nojs/terminal) — i.e. one
-    /// that can trap keyboard focus on click. Engine-free read/error tabs and the
-    /// empty welcome screen can't, so they don't need the focus backstop.
-    fn active_has_webview(&self) -> bool {
-        self.active.and_then(|i| self.tabs.get(i)).is_some_and(|t| t.webview.is_some())
-    }
-
-    /// Whether ANY currently-visible pane is a webview — i.e. one that can trap
-    /// keyboard focus on click. Used to keep the focus backstop running while a web
-    /// pane is shown beside a focused terminal/read pane (which alone wouldn't arm it).
-    fn any_visible_webview(&self) -> bool {
-        self.pane_layout()
-            .0
-            .iter()
-            .any(|(t, _)| self.tabs.get(*t).is_some_and(|tab| tab.webview.is_some()))
     }
 
     /// Re-assert the current zoom on the active web tab (e.g. after a navigation,
@@ -2597,7 +2600,7 @@ impl App {
         // scroll to match, and snap the read scroll to that line boundary.
         let top_line = (nr.scroll / lh).max(0) as usize;
         let mid_line = (top_line + rows / 2).min(n.saturating_sub(1));
-        let mut tb = vim::TextBuffer::new(lines);
+        let mut tb = vim::TextBuffer::new(lines.to_vec());
         tb.top = top_line;
         tb.place_cursor(mid_line, 0, rows, cols);
         tb.key(if linewise { vim::Key::Char('V') } else { vim::Key::Char('v') }, rows, cols);
@@ -2622,7 +2625,7 @@ impl App {
             return;
         }
         let lh = nr.layout.line_h.max(1);
-        let mut tb = vim::TextBuffer::new(lines);
+        let mut tb = vim::TextBuffer::new(lines.to_vec());
         tb.top = (nr.scroll / lh).max(0) as usize;
         tb.place_cursor(line, col, rows, cols);
         nr.scroll = tb.top as i32 * lh;
@@ -3075,9 +3078,11 @@ impl App {
         if q.is_empty() {
             return;
         }
-        // Native tab: collect this tab's lines and match against them.
-        if let Some(lines) = self.find_native_lines() {
-            self.find.matches = find_in_lines(&lines, q);
+        // Native tab: match against this tab's lines (the borrow ends before the
+        // match list is stored).
+        let matches = self.find_native_lines().map(|lines| find_in_lines(&lines, q));
+        if let Some(matches) = matches {
+            self.find.matches = matches;
             if reveal && !self.find.matches.is_empty() {
                 self.find_reveal_current();
             }
@@ -3116,21 +3121,19 @@ impl App {
     }
 
     /// The active tab's searchable lines (read = laid-out lines, vim = buffer lines).
-    fn find_native_lines(&mut self) -> Option<Vec<String>> {
+    fn find_native_lines(&mut self) -> Option<std::borrow::Cow<'_, [String]>> {
         let i = self.active?;
         if self.tabs.get(i).is_some_and(|t| t.native.is_some()) {
             self.refresh_read_layout();
             let nr = self.tabs[i].native.as_ref()?;
-            return Some(
-                nr.layout
-                    .lines
-                    .iter()
-                    .map(|l| l.runs.iter().map(|r| r.text.as_str()).collect::<String>())
-                    .collect(),
-            );
+            // Borrowed straight from the layout's cached text: typing in `/` no
+            // longer rebuilds every line string of the document per keystroke.
+            return Some(std::borrow::Cow::Borrowed(nr.layout.text_lines()));
         }
         let vb = self.tabs.get(i)?.vim.as_ref()?;
-        Some(vb.lines.iter().map(|l| l.iter().collect::<String>()).collect())
+        Some(std::borrow::Cow::Owned(
+            vb.lines.iter().map(|l| l.iter().collect::<String>()).collect(),
+        ))
     }
 
     /// Scroll a read tab (or move a vim tab's cursor) so the current match shows.
@@ -4162,7 +4165,7 @@ impl App {
                     stdin,
                     job,
                     reader: Some(reader_handle),
-                    pty: pty_term::PtyTerm::new(cols, rows),
+                    pty: pty_term::PtyTerm::new(cols, rows, self.term_scrollback),
                 }),
             },
             true,
@@ -4872,6 +4875,15 @@ impl App {
                 }
             }
         }
+        // Cache the focus-backstop facts for the event-loop timer tail. Every layout
+        // mutation (open/close/switch/split/move/resize/restore) funnels through here,
+        // so the idle path can read two bools instead of walking the pane tree.
+        self.active_pane_is_webview = active
+            .and_then(|i| self.tabs.get(i))
+            .is_some_and(|t| t.webview.is_some());
+        self.background_webview_visible = panes.iter().any(|(t, _)| {
+            Some(*t) != active && self.tabs.get(*t).is_some_and(|tab| tab.webview.is_some())
+        });
         self.window.request_redraw();
     }
 

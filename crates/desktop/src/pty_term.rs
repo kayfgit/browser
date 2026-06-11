@@ -87,14 +87,18 @@ pub struct PtyTerm {
     title: Arc<Mutex<Option<String>>>,
 }
 
+/// Default scrollback kept per terminal, in lines. Each kept line costs grid
+/// memory for the terminal's lifetime, so heavy multi-terminal users can lower it.
+pub const DEFAULT_SCROLLBACK: usize = 5000;
+
 impl PtyTerm {
-    pub fn new(cols: usize, rows: usize) -> Self {
+    pub fn new(cols: usize, rows: usize, scrollback: usize) -> Self {
         let (cols, rows) = (cols.max(1), rows.max(1));
         let out = Arc::new(Mutex::new(Vec::new()));
         let title = Arc::new(Mutex::new(None));
         let listener = TermListener { out: out.clone(), title: title.clone() };
         // Keep scrollback so copy-mode (Shift+Esc) can page back through history.
-        let config = Config { scrolling_history: 5000, ..Config::default() };
+        let config = Config { scrolling_history: scrollback, ..Config::default() };
         let vt = Term::new(config, &TermSize::new(cols, rows), listener);
         PtyTerm { vt, parser: Processor::new(), cols, rows, out, title }
     }
@@ -475,7 +479,7 @@ mod tests {
 
     #[test]
     fn vi_copy_mode_selects_and_yanks() {
-        let mut pty = PtyTerm::new(20, 5);
+        let mut pty = PtyTerm::new(20, 5, DEFAULT_SCROLLBACK);
         pty.feed(b"hello world\r\n"); // row 0 = "hello world", cursor drops to row 1
         assert!(!pty.is_vi());
         pty.toggle_vi();
@@ -498,7 +502,7 @@ mod tests {
 
     #[test]
     fn vi_cursor_scrolls_viewport_into_scrollback() {
-        let mut pty = PtyTerm::new(20, 5);
+        let mut pty = PtyTerm::new(20, 5, DEFAULT_SCROLLBACK);
         // Print more lines than fit, so there's scrollback.
         for i in 0..20 {
             pty.feed(format!("line{i}\r\n").as_bytes());

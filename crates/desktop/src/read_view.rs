@@ -44,17 +44,16 @@ pub struct Layout {
     pub lines: Vec<VLine>,
     pub line_h: i32,
     pub height: i32,
+    /// The plain text of each visual line (run texts concatenated, indent excluded),
+    /// built once per layout — the grid find and the read-mode caret operate on.
+    /// Indices line up 1:1 with `lines`, so a caret row maps straight to a `VLine`.
+    pub text: Vec<String>,
 }
 
 impl Layout {
-    /// The plain text of each visual line (run texts concatenated, indent excluded)
-    /// — the grid the read-mode caret/visual selection operates on. Indices line up
-    /// 1:1 with `lines`, so a caret row maps straight to a `VLine`.
-    pub fn text_lines(&self) -> Vec<String> {
-        self.lines
-            .iter()
-            .map(|vl| vl.runs.iter().map(|r| r.text.as_str()).collect::<String>())
-            .collect()
+    /// The cached plain text of each visual line (see [`Layout::text`]).
+    pub fn text_lines(&self) -> &[String] {
+        &self.text
     }
 }
 
@@ -127,7 +126,11 @@ pub fn layout(doc: &Document, width: i32, p: &Painter) -> Layout {
     }
 
     let height = lines.len() as i32 * line_h;
-    Layout { lines, line_h, height }
+    let text = lines
+        .iter()
+        .map(|vl| vl.runs.iter().map(|r| r.text.as_str()).collect::<String>())
+        .collect();
+    Layout { lines, line_h, height, text }
 }
 
 /// First on-screen occurrence of each link, as `(link_id, x_px, baseline_y_px)`,
