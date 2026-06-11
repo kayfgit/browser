@@ -338,6 +338,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "browser-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "raw-window-handle",
+]
+
+[[package]]
 name = "browser-pty-host"
 version = "0.1.0"
 dependencies = [

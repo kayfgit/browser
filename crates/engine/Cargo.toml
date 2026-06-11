@@ -1,0 +1,11 @@
+[package]
+name = "browser-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The engine contract: what a page renderer must provide to be hosted by the browser shell."
+
+[dependencies]
+anyhow = { workspace = true }
+raw-window-handle = { workspace = true }

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/core",
+    "crates/engine",
     "crates/tui",
     "crates/backend-text",
     "crates/backend-search",
@@ -19,6 +20,7 @@ authors = ["kayf"]
 [workspace.dependencies]
 # internal crates
 browser-core = { path = "crates/core" }
+browser-engine = { path = "crates/engine" }
 browser-tui = { path = "crates/tui" }
 browser-backend-text = { path = "crates/backend-text" }
 browser-backend-search = { path = "crates/backend-search" }
@@ -43,6 +45,7 @@ tao = "0.35"
 wry = "0.55"
 softbuffer = "0.4"
 fontdue = "0.9"
+raw-window-handle = "0.6"
 
 [profile.release]
 opt-level = 3
