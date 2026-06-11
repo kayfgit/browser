@@ -13,6 +13,10 @@ issues:
 [] - random not responding after exiting cs2 (might have to do with constant changes to resolution)
 [] - i pressed o and i together and the browser froze in a state of half normal and half insert mode, had to alt+f4
 [] - sometimes crashes after taking a windows screenshot (prntscreen button)
+[] - fix fullscreen, the commandbar and stuff gets cut off on the bottom. 
+[] - H/L to go back/forth in history doesnt work on :read 
+[] - current history only goes back once, needs to have the full history
+[] - adblock should also prevent and block forced redirect and auto-redirect
 
 feat:
 [~] - look for a way to make the browser consume the least amount of resources from the pc, even with the heavy engine running
@@ -20,8 +24,8 @@ feat:
 [] - mode that only allows quick cloud ai answers and nothing else? useful for quick non important searches
 [] - :commandbar to toggle visibility
 [] - command bar colors for each mode
+[] - currently the tab and command bars get hidden when entering fullscreen, add a command toggle for it
 
 maybes:
-[*] - maybe add tmux functionality? could be cool
 [] - maybe add a :engine command to change browser engine? might be overkill and dont know if its possible
 [] - maybe add commands that changes the page in-real-time, like ":images" would toggle images, ":videos" would toggle videos, :text would toggle visible text, etc

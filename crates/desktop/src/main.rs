@@ -66,7 +66,7 @@ const COMMANDS: &[&str] = &[
     "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock",
     "popups", "pops", "mute", "audio", "css", "next", "tabnext", "tabprev",
     "prev", "back", "forward", "fullscreen", "move", "commands", "help", "version", "close",
-    "write", "wq", "quit",
+    "vsplit", "split", "write", "wq", "quit",
 ];
 
 /// WebView2 browser-process arguments, applied to EVERY webview we build.
@@ -147,6 +147,10 @@ const BRIDGE_JS: &str = r#"
   // "clicked empty page, lost the keyboard" case. A script `.focus()` with no click
   // is caught instead by the shell's periodic focus-reclaim tick.
   document.addEventListener('click', grabBack, true);
+  // A real pointer press anywhere in this page tells the shell to focus THIS pane
+  // (when split). Fired on pointerdown — before any link navigation — so clicking a
+  // non-focused web pane switches focus to it instead of stranding the keyboard.
+  document.addEventListener('pointerdown', function () { post('pane-click'); }, true);
   // Tell the shell once the page is up so it can reclaim keyboard focus — works
   // for both URL and with_html content, independent of native load events.
   window.addEventListener('load', function () { post('page-ready'); });
@@ -909,6 +913,8 @@ enum UserEvent {
     HintEdit,
     /// A hint was activated in new-tab mode (`F`): open this URL in a new tab.
     HintOpen(String),
+    /// A web pane was clicked (pointerdown): focus the pane under the cursor.
+    PaneClick,
     /// A `:read` extraction finished: render this Document in an engine-free read
     /// tab. `replace` swaps the active read tab's doc in place (link-follow/reload)
     /// instead of opening a new tab.
@@ -1009,6 +1015,35 @@ struct Tab {
     /// Present if this tab is a native terminal (alacritty_terminal VT engine + PTY).
     term: Option<TermSession>,
 }
+
+impl Tab {
+    /// A blank tab: no engine, no content. Used to fill a freshly `:split` pane —
+    /// it paints an empty "open something" prompt and is replaced in place by the
+    /// first `:open`/`:te`/`:read`/… run while it's focused.
+    fn blank() -> Tab {
+        Tab {
+            webview: None,
+            url: BLANK_URL.to_string(),
+            nojs: false,
+            read: false,
+            research: false,
+            native: None,
+            vim: None,
+            term: None,
+        }
+    }
+
+    /// Whether this is a blank (empty) pane placeholder.
+    fn is_blank(&self) -> bool {
+        self.webview.is_none()
+            && self.native.is_none()
+            && self.vim.is_none()
+            && self.term.is_none()
+    }
+}
+
+/// Sentinel URL for a blank pane (see [`Tab::blank`]).
+const BLANK_URL: &str = "browser://blank";
 
 /// State for an engine-free read tab: the extracted document, the vertical scroll
 /// offset, and a cache of the laid-out lines (recomputed when the width/zoom
@@ -1219,6 +1254,174 @@ struct App {
     /// fullscreen (YouTube's button), so leaving page fullscreen exits it again —
     /// without disturbing a fullscreen the user set manually with `:f`.
     fs_from_page: bool,
+    /// tmux-style pane layout tiling the content area. `None` = a single pane (the
+    /// active tab fills the content band, exactly as without splits). `Some(tree)`
+    /// once the user `:split`s: leaves reference distinct tab indices, the focused
+    /// leaf is the active tab, and Ctrl+W h/j/k/l moves focus between panes.
+    split: Option<PaneNode>,
+    /// True after Ctrl+W in Normal mode: the next h/j/k/l moves pane focus and
+    /// s/v splits (vim-window style). Cleared by the following key.
+    pending_window_key: bool,
+}
+
+/// A rectangle in physical pixels within the content band, for pane tiling.
+#[derive(Clone, Copy)]
+struct PaneRect {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
+/// Which way a split divides its region.
+#[derive(Clone, Copy, PartialEq)]
+enum SplitDir {
+    /// Children side by side, left | right (a vertical divider) — `:vsplit`.
+    Row,
+    /// Children stacked, top / bottom (a horizontal divider) — `:split`.
+    Col,
+}
+
+/// A node in the pane layout tree. A `Leaf` shows one tab (by index into `tabs`);
+/// a `Split` divides its region 50/50 between two children.
+enum PaneNode {
+    Leaf(usize),
+    Split { dir: SplitDir, a: Box<PaneNode>, b: Box<PaneNode> },
+}
+
+/// Width/height in px of the line drawn between two panes.
+const DIVIDER: i32 = 1;
+/// Thickness in px of the accent border around the focused pane.
+const FOCUS_BORDER: i32 = 2;
+
+impl PaneNode {
+    /// The tab index of the first (top-left-most) leaf — used to pick a new focus
+    /// after the focused pane is closed.
+    fn first_leaf(&self) -> usize {
+        match self {
+            PaneNode::Leaf(t) => *t,
+            PaneNode::Split { a, .. } => a.first_leaf(),
+        }
+    }
+
+    /// Collect every leaf's tab index.
+    fn leaves(&self, out: &mut Vec<usize>) {
+        match self {
+            PaneNode::Leaf(t) => out.push(*t),
+            PaneNode::Split { a, b, .. } => {
+                a.leaves(out);
+                b.leaves(out);
+            }
+        }
+    }
+
+    /// After a tab at index `removed` is deleted from `tabs`, decrement every leaf
+    /// index above it so leaves keep pointing at the right tabs.
+    fn shift_after_remove(&mut self, removed: usize) {
+        match self {
+            PaneNode::Leaf(t) => {
+                if *t > removed {
+                    *t -= 1;
+                }
+            }
+            PaneNode::Split { a, b, .. } => {
+                a.shift_after_remove(removed);
+                b.shift_after_remove(removed);
+            }
+        }
+    }
+
+    /// Point the leaf currently showing `from` at `to` instead (used to load a
+    /// different tab into the focused pane).
+    fn retarget(&mut self, from: usize, to: usize) {
+        match self {
+            PaneNode::Leaf(t) => {
+                if *t == from {
+                    *t = to;
+                }
+            }
+            PaneNode::Split { a, b, .. } => {
+                a.retarget(from, to);
+                b.retarget(from, to);
+            }
+        }
+    }
+
+    /// Swap which tabs two leaves show (when bringing a tab that's already in another
+    /// pane into the focused pane, the two panes trade contents).
+    fn swap_leaves(&mut self, x: usize, y: usize) {
+        match self {
+            PaneNode::Leaf(t) => {
+                if *t == x {
+                    *t = y;
+                } else if *t == y {
+                    *t = x;
+                }
+            }
+            PaneNode::Split { a, b, .. } => {
+                a.swap_leaves(x, y);
+                b.swap_leaves(x, y);
+            }
+        }
+    }
+
+    /// Replace the leaf showing `target` with a `dir` split of `target` and `new`.
+    fn insert_split(self, target: usize, dir: SplitDir, new: usize) -> PaneNode {
+        match self {
+            PaneNode::Leaf(t) if t == target => PaneNode::Split {
+                dir,
+                a: Box::new(PaneNode::Leaf(t)),
+                b: Box::new(PaneNode::Leaf(new)),
+            },
+            PaneNode::Leaf(t) => PaneNode::Leaf(t),
+            PaneNode::Split { dir: d, a, b } => PaneNode::Split {
+                dir: d,
+                a: Box::new(a.insert_split(target, dir, new)),
+                b: Box::new(b.insert_split(target, dir, new)),
+            },
+        }
+    }
+
+    /// Remove the leaf showing `tab`, collapsing its parent split into the sibling.
+    /// `None` if this whole subtree was just that leaf.
+    fn prune(self, tab: usize) -> Option<PaneNode> {
+        match self {
+            PaneNode::Leaf(t) => (t != tab).then_some(PaneNode::Leaf(t)),
+            PaneNode::Split { dir, a, b } => match (a.prune(tab), b.prune(tab)) {
+                (Some(a), Some(b)) => Some(PaneNode::Split {
+                    dir,
+                    a: Box::new(a),
+                    b: Box::new(b),
+                }),
+                (Some(n), None) | (None, Some(n)) => Some(n),
+                (None, None) => None,
+            },
+        }
+    }
+
+    /// Tile `r` across this tree, pushing each leaf's `(tab, rect)` into `panes` and
+    /// each split's divider rect into `divs`.
+    fn layout(&self, r: PaneRect, panes: &mut Vec<(usize, PaneRect)>, divs: &mut Vec<PaneRect>) {
+        match self {
+            PaneNode::Leaf(t) => panes.push((*t, r)),
+            PaneNode::Split { dir, a, b } => match dir {
+                SplitDir::Row => {
+                    let half = ((r.w - DIVIDER) / 2).max(1);
+                    a.layout(PaneRect { w: half, ..r }, panes, divs);
+                    divs.push(PaneRect { x: r.x + half, w: DIVIDER, ..r });
+                    let bx = r.x + half + DIVIDER;
+                    b.layout(PaneRect { x: bx, w: (r.x + r.w - bx).max(1), ..r }, panes, divs);
+                }
+                SplitDir::Col => {
+                    let half = ((r.h - DIVIDER) / 2).max(1);
+                    a.layout(PaneRect { h: half, ..r }, panes, divs);
+                    divs.push(PaneRect { y: r.y + half, h: DIVIDER, ..r });
+                    let by = r.y + half + DIVIDER;
+                    b.layout(PaneRect { y: by, h: (r.y + r.h - by).max(1), ..r }, panes, divs);
+                }
+            },
+        }
+    }
 }
 
 /// Tag this process with an explicit AppUserModelID so Windows (taskbar + Task
@@ -1398,6 +1601,8 @@ fn main() -> Result<()> {
         history: Vec::new(),
         closed_tabs: Vec::new(),
         fs_from_page: false,
+        split: None,
+        pending_window_key: false,
     };
 
     // Optional: open a page immediately, e.g. `browser-desktop youtube.com`,
@@ -1485,6 +1690,16 @@ fn main() -> Result<()> {
                         } else {
                             let _ = app.window.drag_window();
                         }
+                    } else if app.split.is_some() {
+                        // Click a (native) pane below the tab bar to focus it. Web
+                        // panes consume the click in their own HWND, so this only
+                        // fires for terminal/read/vim/blank panes — Ctrl+W covers the
+                        // rest.
+                        if let Some((tab, _)) =
+                            app.pane_at_pixel(app.cursor_pos.0, app.cursor_pos.1)
+                        {
+                            app.set_active_pane(tab);
+                        }
                     }
                 }
                 // Mouse wheel: scroll the native-drawn content under the cursor (the
@@ -1547,6 +1762,18 @@ fn main() -> Result<()> {
                 // Insert/Passthrough the page legitimately holds focus.
                 if app.mode == ModeKind::Normal {
                     app.reclaim_shell_focus();
+                }
+            }
+            Event::UserEvent(UserEvent::PaneClick) => {
+                // Clicking inside a web pane focuses it (web panes consume the click in
+                // their HWND, so this is the only way they reach us). Use the OS cursor
+                // position, since CursorMoved isn't delivered over a child webview.
+                if app.split.is_some() {
+                    if let Some((x, y)) = app.cursor_client_pos() {
+                        if let Some((tab, _)) = app.pane_at_pixel(x as f64, y as f64) {
+                            app.set_active_pane(tab);
+                        }
+                    }
                 }
             }
             Event::UserEvent(UserEvent::ExitHint) => {
@@ -1634,9 +1861,13 @@ fn main() -> Result<()> {
             if matches!(app.mode, ModeKind::Command | ModeKind::Find) {
                 // Blink the command-bar cursor.
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(530));
-            } else if app.mode == ModeKind::Normal && app.active_has_webview() {
+            } else if app.mode == ModeKind::Normal
+                && (app.active_has_webview() || app.any_visible_webview())
+            {
                 // Poll to keep keyboard focus on the shell while a web tab is up (the
-                // click-focus backstop). Idle otherwise — no wakeups on welcome/read tabs.
+                // click-focus backstop). Also runs when a web pane is merely visible
+                // beside a focused terminal/read pane, so it can't trap the keyboard.
+                // Idle otherwise — no wakeups on welcome/read tabs.
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(300));
             } else if app.mode == ModeKind::Normal && app.active_is_res() {
                 // Auto-refresh the live resource monitor about once a second.
@@ -1699,30 +1930,142 @@ impl App {
         }
     }
 
+    /// The whole content band (between the tab bar and command bar) as a [`PaneRect`].
+    fn content_band(&self) -> PaneRect {
+        let (w, h) = self.inner();
+        let top = self.tab_bar_h() as i32;
+        let bot = h as i32 - self.bar_h() as i32;
+        PaneRect { x: 0, y: top, w: w as i32, h: (bot - top).max(1) }
+    }
+
+    /// The current pane tiling: each `(tab, rect)` to paint/position, plus the
+    /// divider rects between them. With no split it's just the active tab filling
+    /// the whole content band.
+    fn pane_layout(&self) -> (Vec<(usize, PaneRect)>, Vec<PaneRect>) {
+        let band = self.content_band();
+        let mut panes = Vec::new();
+        let mut divs = Vec::new();
+        match &self.split {
+            Some(tree) => tree.layout(band, &mut panes, &mut divs),
+            None => {
+                if let Some(a) = self.active {
+                    panes.push((a, band));
+                }
+            }
+        }
+        (panes, divs)
+    }
+
+    /// The rect of the focused (active) pane — the whole band when not split.
+    fn focused_pane_rect(&self) -> PaneRect {
+        let (panes, _) = self.pane_layout();
+        panes
+            .iter()
+            .find(|(t, _)| Some(*t) == self.active)
+            .map(|(_, r)| *r)
+            .unwrap_or_else(|| self.content_band())
+    }
+
+    /// Make `tab` the focused pane (the active tab), repositioning webviews and
+    /// returning the shell to Normal so its keys work in the newly focused pane.
+    fn set_active_pane(&mut self, tab: usize) {
+        if Some(tab) == self.active || tab >= self.tabs.len() {
+            return;
+        }
+        self.active = Some(tab);
+        self.mode = ModeKind::Normal;
+        self.find_reset();
+        self.refresh_visibility();
+        self.window.set_focus();
+        self.window.request_redraw();
+    }
+
+    /// Move pane focus in a direction (`h`/`j`/`k`/`l`): the spatially-nearest pane
+    /// whose center lies that way from the focused pane's center, preferring panes
+    /// aligned on the cross axis. No-op when not split or nothing lies that way.
+    fn move_pane_focus(&mut self, dir: char) {
+        let (panes, _) = self.pane_layout();
+        let Some((_, fr)) = panes.iter().find(|(t, _)| Some(*t) == self.active) else {
+            return;
+        };
+        let (fcx, fcy) = (fr.x + fr.w / 2, fr.y + fr.h / 2);
+        let mut best: Option<usize> = None;
+        let mut best_score = i32::MAX;
+        for (t, r) in &panes {
+            if Some(*t) == self.active {
+                continue;
+            }
+            let (cx, cy) = (r.x + r.w / 2, r.y + r.h / 2);
+            let ahead = match dir {
+                'h' => cx < fcx,
+                'l' => cx > fcx,
+                'k' => cy < fcy,
+                'j' => cy > fcy,
+                _ => false,
+            };
+            if !ahead {
+                continue;
+            }
+            // Distance along the move axis, plus a penalty for cross-axis offset so a
+            // pane directly in line is preferred over a diagonal one.
+            let (primary, cross) = match dir {
+                'h' | 'l' => ((fcx - cx).abs(), (fcy - cy).abs()),
+                _ => ((fcy - cy).abs(), (fcx - cx).abs()),
+            };
+            let score = primary + cross * 2;
+            if score < best_score {
+                best_score = score;
+                best = Some(*t);
+            }
+        }
+        if let Some(t) = best {
+            self.set_active_pane(t);
+        }
+    }
+
+    /// Split the focused pane, opening a new blank pane beside it (`:vsplit` = Row,
+    /// side by side; `:split` = Col, stacked) and focusing the new pane.
+    fn split_pane(&mut self, dir: SplitDir) {
+        let Some(a) = self.active else {
+            self.set_status("no pane to split — open something first");
+            return;
+        };
+        let new_idx = self.tabs.len();
+        self.tabs.push(Tab::blank());
+        self.split = Some(match self.split.take() {
+            None => PaneNode::Split {
+                dir,
+                a: Box::new(PaneNode::Leaf(a)),
+                b: Box::new(PaneNode::Leaf(new_idx)),
+            },
+            Some(tree) => tree.insert_split(a, dir, new_idx),
+        });
+        self.active = Some(new_idx);
+        self.mode = ModeKind::Normal;
+        self.find_reset();
+        self.refresh_visibility();
+        self.window.set_focus();
+        self.window.request_redraw();
+    }
+
     fn on_resize(&mut self, _w: u32, _h: u32) {
-        let rect = self.content_rect();
-        if let Some(wv) = self.active_webview() {
-            let _ = wv.set_bounds(rect);
-        }
+        self.refresh_visibility();
         self.window.request_redraw();
     }
 
-    /// Re-fit the active web tab to the current chrome layout and repaint. Called on
-    /// transitions that change which bars are visible without resizing the window —
-    /// entering/leaving the command bar while fullscreen — so the page grows to fill
-    /// the freed space (or shrinks to make room for the bar). No-op for non-web tabs.
-    fn relayout_active(&self) {
-        let rect = self.content_rect();
-        if let Some(wv) = self.active_webview() {
-            let _ = wv.set_bounds(rect);
-        }
-        self.window.request_redraw();
+    /// Re-fit every visible web pane to the current chrome layout and repaint. Called
+    /// on transitions that change which bars are visible without resizing the window —
+    /// entering/leaving the command bar while fullscreen — so pages grow to fill the
+    /// freed space (or shrink to make room for the bar).
+    fn relayout_active(&mut self) {
+        self.refresh_visibility();
     }
 
-    /// Top/bottom y of the content band (between the tab bar and command bar), px.
+    /// Top/bottom y of the FOCUSED pane (the whole content band when not split) —
+    /// drives the active tab's scroll clamp, hint placement, and terminal rows.
     fn content_y_bounds(&self) -> (i32, i32) {
-        let (_, h) = self.inner();
-        (self.tab_bar_h() as i32, h as i32 - self.bar_h() as i32)
+        let r = self.focused_pane_rect();
+        (r.y, r.y + r.h)
     }
 
     /// Visible height of the content band, in px (>= 1).
@@ -1735,32 +2078,36 @@ impl App {
     /// document itself changed; then clamp the scroll to the new content height.
     /// Cheap no-op when the cache is still valid (called every frame).
     fn refresh_read_layout(&mut self) {
-        let Some(i) = self.active else { return };
-        if self.tabs[i].native.is_none() {
-            return;
-        }
-        let (w, _) = self.inner();
-        let cw = w as i32;
         let px = self.painter.px();
-        let view = self.content_view_h();
-        // Split borrow: `painter` and this tab's `native` are disjoint fields.
-        let painter = &self.painter;
-        let nr = self.tabs[i].native.as_mut().unwrap();
-        if !nr.dirty && nr.layout_w == cw && (nr.layout_px - px).abs() < f32::EPSILON {
-            return;
+        // Lay out every visible read pane to ITS pane width (so a split read tab
+        // wraps to its column); with no split this is just the active read tab.
+        let (panes, _) = self.pane_layout();
+        for (tab, rect) in panes {
+            let is_read = matches!(self.tabs.get(tab), Some(t) if t.native.is_some());
+            if !is_read {
+                continue;
+            }
+            let cw = rect.w;
+            let view = rect.h;
+            // Split borrow: `painter` and this tab's `native` are disjoint fields.
+            let painter = &self.painter;
+            let nr = self.tabs[tab].native.as_mut().unwrap();
+            if !nr.dirty && nr.layout_w == cw && (nr.layout_px - px).abs() < f32::EPSILON {
+                continue;
+            }
+            // Leave an 8px margin on each side (matches the draw offset).
+            nr.layout = read_view::layout(&nr.doc, cw - 16, painter);
+            nr.layout_w = cw;
+            nr.layout_px = px;
+            nr.dirty = false;
+            // Re-wrapping changed the visual lines: refresh the caret's grid in place,
+            // keeping its cursor/selection (clamped) so caret mode survives resize/zoom.
+            if let Some(caret) = nr.caret.as_mut() {
+                caret.set_lines(nr.layout.text_lines());
+            }
+            let max = (nr.layout.height - view).max(0);
+            nr.scroll = nr.scroll.clamp(0, max);
         }
-        // Leave an 8px margin on each side (matches the draw offset).
-        nr.layout = read_view::layout(&nr.doc, cw - 16, painter);
-        nr.layout_w = cw;
-        nr.layout_px = px;
-        nr.dirty = false;
-        // Re-wrapping changed the visual lines: refresh the caret's grid in place,
-        // keeping its cursor/selection (clamped) so caret mode survives resize/zoom.
-        if let Some(caret) = nr.caret.as_mut() {
-            caret.set_lines(nr.layout.text_lines());
-        }
-        let max = (nr.layout.height - view).max(0);
-        nr.scroll = nr.scroll.clamp(0, max);
     }
 
     // --- zoom -----------------------------------------------------------------
@@ -1848,11 +2195,42 @@ impl App {
     #[cfg(not(windows))]
     fn reclaim_focus_tick(&self) {}
 
+    /// The OS cursor position in window client (physical) pixels — needed for
+    /// pane-click routing, since CursorMoved isn't delivered while the pointer is
+    /// over a child webview, leaving `cursor_pos` stale there.
+    #[cfg(windows)]
+    fn cursor_client_pos(&self) -> Option<(i32, i32)> {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        let mut pt = POINT::default();
+        unsafe { GetCursorPos(&mut pt).ok()? };
+        // `inner_position` is the client area's top-left in screen (physical) pixels,
+        // so subtracting it turns the screen cursor into client coordinates — matching
+        // the pane rects — without needing the Win32 GDI feature for ScreenToClient.
+        let origin = self.window.inner_position().ok()?;
+        Some((pt.x - origin.x, pt.y - origin.y))
+    }
+
+    #[cfg(not(windows))]
+    fn cursor_client_pos(&self) -> Option<(i32, i32)> {
+        Some((self.cursor_pos.0 as i32, self.cursor_pos.1 as i32))
+    }
+
     /// Whether the active tab is a webview (web/research/nojs/terminal) — i.e. one
     /// that can trap keyboard focus on click. Engine-free read/error tabs and the
     /// empty welcome screen can't, so they don't need the focus backstop.
     fn active_has_webview(&self) -> bool {
         self.active.and_then(|i| self.tabs.get(i)).is_some_and(|t| t.webview.is_some())
+    }
+
+    /// Whether ANY currently-visible pane is a webview — i.e. one that can trap
+    /// keyboard focus on click. Used to keep the focus backstop running while a web
+    /// pane is shown beside a focused terminal/read pane (which alone wouldn't arm it).
+    fn any_visible_webview(&self) -> bool {
+        self.pane_layout()
+            .0
+            .iter()
+            .any(|(t, _)| self.tabs.get(*t).is_some_and(|tab| tab.webview.is_some()))
     }
 
     /// Re-assert the current zoom on the active web tab (e.g. after a navigation,
@@ -1990,6 +2368,23 @@ impl App {
     }
 
     fn key_normal(&mut self, key: &KeyEvent) {
+        // Ctrl+W window prefix: the next key picks a pane action (vim-window style).
+        // h/j/k/l move focus, s/v split (stacked / side-by-side), c/q close the pane.
+        // Matched on the physical key so it works whether or not Ctrl is still held.
+        if self.pending_window_key {
+            self.pending_window_key = false;
+            match key.physical_key {
+                KeyCode::KeyH => self.move_pane_focus('h'),
+                KeyCode::KeyJ => self.move_pane_focus('j'),
+                KeyCode::KeyK => self.move_pane_focus('k'),
+                KeyCode::KeyL => self.move_pane_focus('l'),
+                KeyCode::KeyS => self.split_pane(SplitDir::Col),
+                KeyCode::KeyV => self.split_pane(SplitDir::Row),
+                KeyCode::KeyC | KeyCode::KeyQ => self.close_active(),
+                _ => {}
+            }
+            return;
+        }
         // Once a `/` search is live, `n`/`N` step through matches and Esc clears it
         // (qutebrowser-style) — in every tab type, so this takes precedence over both
         // the vim pager and the normal tab/scroll bindings.
@@ -2031,6 +2426,8 @@ impl App {
         if self.modifiers.control_key() {
             match key.physical_key {
                 KeyCode::KeyV => self.enter_passthrough(),
+                // Ctrl+W: arm the window/pane prefix (next key picks the action).
+                KeyCode::KeyW => self.pending_window_key = true,
                 // Reopen the last closed tab (the familiar browser shortcut).
                 KeyCode::KeyT if self.modifiers.shift_key() => self.reopen_closed(),
                 // Half-page scroll (vim Ctrl+D / Ctrl+U).
@@ -2944,7 +3341,9 @@ impl App {
     fn build_native_hints(&mut self) {
         self.native_hints.clear();
         let Some(i) = self.active else { return };
-        let (top, bottom) = self.content_y_bounds();
+        // Place hints within the focused pane's rect (offset by its left edge).
+        let pane = self.focused_pane_rect();
+        let (top, bottom) = (pane.y, pane.y + pane.h);
         let painter = &self.painter;
         let Some(nr) = self.tabs[i].native.as_ref() else { return };
         let links = read_view::visible_links(&nr.layout, nr.scroll, top, bottom, painter);
@@ -2952,8 +3351,8 @@ impl App {
         let mut hints = Vec::with_capacity(links.len());
         for ((id, x, y), label) in links.into_iter().zip(labels) {
             if let Some(url) = nr.doc.link_url(id) {
-                // +8 to match the content's left draw margin.
-                hints.push(NativeHint { label, url: url.to_string(), x: x + 8, y });
+                // +8 to match the content's left draw margin; +pane.x for the column.
+                hints.push(NativeHint { label, url: url.to_string(), x: pane.x + x + 8, y });
             }
         }
         self.native_hints = hints;
@@ -3299,6 +3698,10 @@ impl App {
                 self.window.request_redraw();
             }
             "close" | "tabclose" | "bd" => self.close_active(),
+            // tmux-style panes: split the focused pane (side-by-side / stacked) into a
+            // new blank pane. Navigate between them with Ctrl+W h/j/k/l.
+            "vsplit" | "vs" | "vsp" => self.split_pane(SplitDir::Row),
+            "split" | "sp" | "hsplit" => self.split_pane(SplitDir::Col),
             // Session is saved explicitly (vim-style): `:w` writes the current tabs +
             // UI state, `:q` quits without saving, `:wq`/`:x` writes then quits.
             "write" | "w" => {
@@ -3414,9 +3817,13 @@ impl App {
     /// active) or REPLACING the active tab in place (`:open`/`o` default). The tab it
     /// evicts is recorded on the closed-tab stack (so `U` can bring it back) and its
     /// terminal, if any, is shut down deterministically first.
+    ///
+    /// Under a split, new content ALWAYS lands in the focused pane (in place), since
+    /// a background tab would have no pane to show it — `new_tab` is ignored there.
     fn place_tab(&mut self, tab: Tab, new_tab: bool) {
+        let replace = (!new_tab || self.split.is_some()) && self.active.is_some();
         match self.active {
-            Some(i) if !new_tab && i < self.tabs.len() => {
+            Some(i) if replace && i < self.tabs.len() => {
                 self.record_closed(i);
                 if let Some(session) = self.tabs[i].term.take() {
                     session.shutdown();
@@ -3535,6 +3942,9 @@ impl App {
                 "grab-focus" => {
                     let _ = ipc_proxy.send_event(UserEvent::GrabFocus);
                 }
+                "pane-click" => {
+                    let _ = ipc_proxy.send_event(UserEvent::PaneClick);
+                }
                 "hint-exit" => {
                     let _ = ipc_proxy.send_event(UserEvent::ExitHint);
                 }
@@ -3650,12 +4060,16 @@ impl App {
         (self.painter.measure("M").max(1) as i32, self.painter.line_height().max(1) as i32)
     }
 
-    /// The terminal grid size (cols, rows) that fits the current content band.
+    /// The terminal grid size (cols, rows) that fits the focused pane.
     fn term_grid_size(&self) -> (usize, usize) {
+        self.term_grid_for_rect(self.focused_pane_rect())
+    }
+
+    /// The terminal grid size (cols, rows) that fits a given pane rect.
+    fn term_grid_for_rect(&self, r: PaneRect) -> (usize, usize) {
         let (cw, ch) = self.term_cell();
-        let (w, _) = self.inner();
-        let cols = (((w as i32 - 2 * TERM_PAD) / cw).max(1)) as usize;
-        let rows = ((self.content_view_h() / ch).max(1)) as usize;
+        let cols = (((r.w - 2 * TERM_PAD) / cw).max(1)) as usize;
+        let rows = ((r.h / ch).max(1)) as usize;
         (cols, rows)
     }
 
@@ -3732,25 +4146,27 @@ impl App {
             }
         });
 
-        self.tabs.push(Tab {
-            webview: None,
-            url: format!("term: {}", shell[0]),
-            nojs: false,
-            read: false,
-            research: false,
-            native: None,
-            vim: None,
-            term: Some(TermSession {
-                id,
-                child,
-                stdin,
-                job,
-                reader: Some(reader_handle),
-                pty: pty_term::PtyTerm::new(cols, rows),
-            }),
-        });
-        self.active = Some(self.tabs.len() - 1);
-        self.refresh_visibility();
+        // New tab normally; under a split it fills the focused pane (place_tab).
+        self.place_tab(
+            Tab {
+                webview: None,
+                url: format!("term: {}", shell[0]),
+                nojs: false,
+                read: false,
+                research: false,
+                native: None,
+                vim: None,
+                term: Some(TermSession {
+                    id,
+                    child,
+                    stdin,
+                    job,
+                    reader: Some(reader_handle),
+                    pty: pty_term::PtyTerm::new(cols, rows),
+                }),
+            },
+            true,
+        );
         self.mode = ModeKind::Passthrough; // terminal input mode; shell keeps focus
         self.window.set_focus();
         self.set_status("terminal — Ctrl+S returns to the shell");
@@ -3777,17 +4193,21 @@ impl App {
 
     /// Match the active terminal's grid to the current window/zoom, resizing the PTY
     /// if the cell count changed.
+    /// Match every visible terminal pane's grid to its pane rect, resizing the PTY
+    /// when the cell count changed. With no split this is just the active terminal.
     fn sync_active_term_size(&mut self) {
-        let (cols, rows) = self.term_grid_size();
-        let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
-        else {
-            return;
-        };
-        if s.pty.resize(cols, rows) {
-            let mut p = [0u8; 4];
-            p[0..2].copy_from_slice(&(cols as u16).to_le_bytes());
-            p[2..4].copy_from_slice(&(rows as u16).to_le_bytes());
-            s.send(1, &p);
+        let (panes, _) = self.pane_layout();
+        for (tab, rect) in panes {
+            let (cols, rows) = self.term_grid_for_rect(rect);
+            let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term.as_mut()) else {
+                continue;
+            };
+            if s.pty.resize(cols, rows) {
+                let mut p = [0u8; 4];
+                p[0..2].copy_from_slice(&(cols as u16).to_le_bytes());
+                p[2..4].copy_from_slice(&(rows as u16).to_le_bytes());
+                s.send(1, &p);
+            }
         }
     }
 
@@ -3984,12 +4404,10 @@ impl App {
     /// by read mode (`read = true`, tinted green + `f` hint) and the `:error(s)`
     /// pages (`read = false`). Activates and focuses the new tab.
     fn push_native_tab(&mut self, doc: browser_core::Document, url: String, read: bool) {
-        self.tabs.push(native_read_tab(doc, url, read));
-        self.active = Some(self.tabs.len() - 1);
-        self.refresh_visibility();
+        // place_tab is split-aware: a new tab normally, or the focused pane in place.
+        self.place_tab(native_read_tab(doc, url, read), true);
         self.window.set_focus();
         self.clear_status();
-        self.window.request_redraw();
     }
 
     /// Open the `:error` / `:errors` page: render the session error log in an
@@ -4003,21 +4421,21 @@ impl App {
             return;
         }
         let lines = error_lines(&self.errors, all);
-        self.tabs.push(Tab {
-            webview: None,
-            url: "browser://error".into(),
-            nojs: false,
-            read: false,
-            research: false,
-            native: None,
-            vim: Some(vim::TextBuffer::new(lines)),
-            term: None,
-        });
-        self.active = Some(self.tabs.len() - 1);
-        self.refresh_visibility();
+        self.place_tab(
+            Tab {
+                webview: None,
+                url: "browser://error".into(),
+                nojs: false,
+                read: false,
+                research: false,
+                native: None,
+                vim: Some(vim::TextBuffer::new(lines)),
+                term: None,
+            },
+            true,
+        );
         self.window.set_focus();
         self.clear_status();
-        self.window.request_redraw();
     }
 
     /// `:res` — the browser's whole-tree resource usage (browser.exe + WebView2
@@ -4036,21 +4454,21 @@ impl App {
             self.set_status("resource info unavailable");
             return;
         }
-        self.tabs.push(Tab {
-            webview: None,
-            url: "browser://res".into(),
-            nojs: false,
-            read: false,
-            research: false,
-            native: None,
-            vim: Some(vim::TextBuffer::new(lines)),
-            term: None,
-        });
-        self.active = Some(self.tabs.len() - 1);
-        self.refresh_visibility();
+        self.place_tab(
+            Tab {
+                webview: None,
+                url: "browser://res".into(),
+                nojs: false,
+                read: false,
+                research: false,
+                native: None,
+                vim: Some(vim::TextBuffer::new(lines)),
+                term: None,
+            },
+            true,
+        );
         self.window.set_focus();
         self.clear_status();
-        self.window.request_redraw();
     }
 
     /// Whether the active tab is the `:res` resource monitor.
@@ -4149,39 +4567,40 @@ impl App {
     /// `:version` — build/runtime details in an engine-free vim pager (no WebView2),
     /// so the text is navigable and yankable with the same motions as `:error`/`:res`.
     fn open_version_page(&mut self) {
-        self.tabs.push(Tab {
-            webview: None,
-            url: "browser://version".into(),
-            nojs: false,
-            read: false,
-            research: false,
-            native: None,
-            vim: Some(vim::TextBuffer::new(version_lines())),
-            term: None,
-        });
-        self.active = Some(self.tabs.len() - 1);
-        self.refresh_visibility();
+        self.place_tab(
+            Tab {
+                webview: None,
+                url: "browser://version".into(),
+                nojs: false,
+                read: false,
+                research: false,
+                native: None,
+                vim: Some(vim::TextBuffer::new(version_lines())),
+                term: None,
+            },
+            true,
+        );
         self.window.set_focus();
         self.clear_status();
-        self.window.request_redraw();
     }
 
     /// Open an internal HTML page (e.g. `:commands`) in a new tab.
     fn open_local_page(&mut self, label: &str, html: String) {
         match self.build_content_webview(Source::Html(html), false, "") {
             Ok(webview) => {
-                self.tabs.push(Tab {
-                    webview: Some(webview),
-                    url: format!("browser://{label}"),
-                    nojs: false,
-                    read: false,
-                    research: false,
-                    native: None,
-                    vim: None,
-                    term: None,
-                });
-                self.active = Some(self.tabs.len() - 1);
-                self.refresh_visibility();
+                self.place_tab(
+                    Tab {
+                        webview: Some(webview),
+                        url: format!("browser://{label}"),
+                        nojs: false,
+                        read: false,
+                        research: false,
+                        native: None,
+                        vim: None,
+                        term: None,
+                    },
+                    true,
+                );
                 self.window.set_focus();
                 self.clear_status();
             }
@@ -4201,15 +4620,41 @@ impl App {
         if let Some(session) = self.tabs[i].term.take() {
             session.shutdown();
         }
-        let _ = self.tabs.remove(i);
-        self.active = if self.tabs.is_empty() {
-            None
-        } else {
-            Some(i.min(self.tabs.len() - 1))
-        };
+        // Drop the tab and fix the pane tree (prune its leaf, collapse to single-pane
+        // when one remains); focus the surviving pane.
+        self.active = self.drop_tab(i);
         self.find_reset();
+        self.mode = ModeKind::Normal;
         self.refresh_visibility();
         self.window.set_focus();
+    }
+
+    /// Remove tab `i` from `tabs` and repair the pane tree: prune its leaf if it was
+    /// in a pane, shift higher leaf indices down, and collapse to a single pane (no
+    /// split) when only one leaf remains. Returns the tab index that should take
+    /// focus if the *focused* pane was the one closed (else the caller keeps its own
+    /// active tab, adjusted for the shift). `None` when no tabs remain.
+    fn drop_tab(&mut self, i: usize) -> Option<usize> {
+        self.tabs.remove(i);
+        let collapsed_focus = if let Some(tree) = self.split.take() {
+            match tree.prune(i) {
+                Some(mut t) => {
+                    t.shift_after_remove(i);
+                    let mut leaves = Vec::new();
+                    t.leaves(&mut leaves);
+                    let focus = t.first_leaf();
+                    self.split = (leaves.len() > 1).then_some(t);
+                    Some(focus)
+                }
+                None => None, // the pruned leaf was the whole tree
+            }
+        } else {
+            None
+        };
+        if self.tabs.is_empty() {
+            return None;
+        }
+        Some(collapsed_focus.unwrap_or_else(|| i.min(self.tabs.len() - 1)))
     }
 
     /// Close the tab whose terminal has the given id (its shell exited). Behaves
@@ -4223,12 +4668,12 @@ impl App {
         if let Some(session) = self.tabs[i].term.take() {
             session.shutdown();
         }
-        self.tabs.remove(i);
-        self.active = if self.tabs.is_empty() {
-            None
+        let focus_after = self.drop_tab(i);
+        self.active = if was_active {
+            focus_after
         } else {
-            let a = self.active.unwrap_or(0);
-            Some(if a > i { a - 1 } else { a.min(self.tabs.len() - 1) })
+            // Keep the same focused tab, just adjusted for the index shift.
+            self.active.map(|a| if a > i { a - 1 } else { a })
         };
         if was_active {
             self.mode = ModeKind::Normal;
@@ -4244,20 +4689,38 @@ impl App {
         let n = self.tabs.len() as i32;
         let cur = self.active.unwrap_or(0) as i32;
         let next = (cur + delta).rem_euclid(n) as usize;
-        self.active = Some(next);
-        self.find_reset();
-        self.refresh_visibility();
-        self.window.set_focus();
+        self.show_tab(next);
     }
 
     /// Jump directly to a zero-based tab index (bound to keys 1..9).
     fn jump_to(&mut self, index: usize) {
         if index < self.tabs.len() {
-            self.active = Some(index);
-            self.find_reset();
-            self.refresh_visibility();
-            self.window.set_focus();
+            self.show_tab(index);
         }
+    }
+
+    /// Show tab `target` as the active one. With no split it simply becomes active;
+    /// while split it's loaded into the FOCUSED pane (swapping panes if it's already
+    /// shown in another), so the layout never points at a tab outside the tiling.
+    fn show_tab(&mut self, target: usize) {
+        if self.split.is_some() {
+            let Some(cur) = self.active else { return };
+            if cur != target {
+                if let Some(tree) = self.split.as_mut() {
+                    let mut leaves = Vec::new();
+                    tree.leaves(&mut leaves);
+                    if leaves.contains(&target) {
+                        tree.swap_leaves(cur, target);
+                    } else {
+                        tree.retarget(cur, target);
+                    }
+                }
+            }
+        }
+        self.active = Some(target);
+        self.find_reset();
+        self.refresh_visibility();
+        self.window.set_focus();
     }
 
     /// Map an x pixel coordinate on the tab bar to a tab index, for click-to-switch.
@@ -4290,48 +4753,64 @@ impl App {
     /// Mouse-wheel scroll. `dy_lines` > 0 means the wheel rolled up (toward older
     /// terminal output / the top of a page). Routes to the terminal's scrollback or
     /// the native read-tab scroll offset; web tabs handle the wheel themselves.
+    /// The tab + rect of the pane under a pixel (for wheel/click routing). With no
+    /// split this is the active tab filling the band.
+    fn pane_at_pixel(&self, x: f64, y: f64) -> Option<(usize, PaneRect)> {
+        let (px, py) = (x as i32, y as i32);
+        self.pane_layout()
+            .0
+            .into_iter()
+            .find(|(_, r)| px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h)
+    }
+
     fn on_wheel(&mut self, dy_lines: f64) {
-        if self.active_is_term() {
+        // Scroll the pane UNDER the cursor (web panes get the wheel via their own
+        // HWND, so they never reach here — only native panes and the bars do).
+        let Some((tab, rect)) = self.pane_at_pixel(self.cursor_pos.0, self.cursor_pos.1) else {
+            return;
+        };
+        if self.tabs.get(tab).is_some_and(|t| t.term.is_some()) {
             // If the program enabled mouse reporting (vim `mouse=a`, less, tmux…),
             // hand it the wheel so IT scrolls; otherwise page our own scrollback.
-            if self.term_mouse_wheel(dy_lines) {
+            if self.term_mouse_wheel(tab, rect, dy_lines) {
                 return;
             }
             let lines = (dy_lines * 3.0).round() as i32;
             if lines != 0 {
-                if let Some(s) =
-                    self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
-                {
+                if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term.as_mut()) {
                     s.pty.scroll_display(lines);
                     self.window.request_redraw();
                 }
             }
             return;
         }
+        // Native read pane: scroll its own offset, clamped to its pane height.
         let dy = (-dy_lines * 80.0).round() as i32;
         if dy != 0 {
-            self.scroll(dy);
+            if let Some(nr) = self.tabs.get_mut(tab).and_then(|t| t.native.as_mut()) {
+                let max = (nr.layout.height - rect.h).max(0);
+                nr.scroll = (nr.scroll + dy).clamp(0, max);
+                self.window.request_redraw();
+            }
         }
     }
 
     /// Forward a wheel notch to a terminal program that turned on mouse reporting,
-    /// as a mouse wheel-button event at the cell under the cursor. Returns `false`
-    /// (so the caller scrolls our scrollback instead) when no program wants mice.
-    fn term_mouse_wheel(&mut self, dy_lines: f64) -> bool {
+    /// as a mouse wheel-button event at the cell under the cursor (relative to the
+    /// pane's rect). Returns `false` (so the caller scrolls our scrollback instead)
+    /// when no program wants mice.
+    fn term_mouse_wheel(&mut self, tab: usize, rect: PaneRect, dy_lines: f64) -> bool {
         let (cw, ch) = self.term_cell();
-        let top = self.tab_bar_h() as i32;
         let (px, py) = (self.cursor_pos.0 as i32, self.cursor_pos.1 as i32);
-        let Some(s) =
-            self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
-        else {
+        let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term.as_mut()) else {
             return false;
         };
         if !s.pty.mouse_mode() {
             return false;
         }
         let (cols, rows) = (s.pty.cols as i32, s.pty.rows as i32);
-        let col = (((px - TERM_PAD) / cw) + 1).clamp(1, cols.max(1));
-        let row = (((py - top) / ch) + 1).clamp(1, rows.max(1));
+        let col = (((px - rect.x - TERM_PAD) / cw) + 1).clamp(1, cols.max(1));
+        let row = (((py - rect.y) / ch) + 1).clamp(1, rows.max(1));
         // xterm wheel buttons: 64 = up, 65 = down.
         let button = if dy_lines > 0.0 { 64 } else { 65 };
         let sgr = s.pty.sgr_mouse();
@@ -4354,18 +4833,43 @@ impl App {
         }
         let j = j as usize;
         self.tabs.swap(i, j);
+        // Keep each pane showing the same content after the index swap.
+        if let Some(tree) = self.split.as_mut() {
+            tree.swap_leaves(i, j);
+        }
         self.active = Some(j);
         self.refresh_visibility();
     }
 
     fn refresh_visibility(&mut self) {
-        let rect = self.content_rect();
+        // A web tab is visible iff it occupies a pane; position it at that pane's
+        // rect. With no split this is just the active tab filling the band.
+        let (panes, _) = self.pane_layout();
+        let active = self.active;
+        let split = self.split.is_some();
         for (i, tab) in self.tabs.iter().enumerate() {
             let Some(wv) = &tab.webview else { continue };
-            let visible = Some(i) == self.active;
-            let _ = wv.set_visible(visible);
-            if visible {
-                let _ = wv.set_bounds(rect);
+            match panes.iter().find(|(t, _)| *t == i) {
+                Some((_, r)) => {
+                    let mut rect = *r;
+                    // Inset the FOCUSED web pane by the border width so the accent
+                    // border we paint on our surface shows around it (the webview HWND
+                    // otherwise covers it). Native panes draw their border on top.
+                    if split && Some(i) == active {
+                        let b = FOCUS_BORDER;
+                        rect = PaneRect {
+                            x: rect.x + b,
+                            y: rect.y + b,
+                            w: (rect.w - 2 * b).max(1),
+                            h: (rect.h - 2 * b).max(1),
+                        };
+                    }
+                    let _ = wv.set_visible(true);
+                    let _ = wv.set_bounds(wry_rect(rect));
+                }
+                None => {
+                    let _ = wv.set_visible(false);
+                }
             }
         }
         self.window.request_redraw();
@@ -4609,7 +5113,211 @@ impl App {
     }
 
     // --- rendering ------------------------------------------------------------
+}
 
+/// Paint one pane's native content into `rect`: an engine-free read document,
+/// the vim error/res pager, a terminal grid, or the blank-pane prompt. Web panes
+/// paint nothing here (their webview HWND covers the rect). `focused` gates the
+/// overlays that only apply to the active pane: find highlights, the read caret,
+/// and hint badges. Everything is clipped to `rect` so it never bleeds into a
+/// neighbouring pane. A free fn (not a method) so it can borrow individual App
+/// fields while the render buffer separately borrows `self.surface`.
+#[allow(clippy::too_many_arguments)]
+fn paint_pane(
+    t: &Tab,
+    p: &Painter,
+    find: &FindState,
+    mode: ModeKind,
+    native_hints: &[NativeHint],
+    hint_input: &str,
+    hint_new_tab: bool,
+    focused: bool,
+    rect: PaneRect,
+    buf: &mut [u32],
+    wz: usize,
+    hz: usize,
+) {
+        const MARGIN: i32 = 8;
+        let left = rect.x + MARGIN;
+        let top = rect.y;
+        let bottom = rect.y + rect.h;
+        let right = rect.x + rect.w;
+        let find_on = focused && (find.active || mode == ModeKind::Find);
+        // Fill confined to the pane (clamped on all sides).
+        let fill = |buf: &mut [u32], x0: i32, y0: i32, x1: i32, y1: i32, c: draw::Rgb| {
+            let (x0, y0) = (x0.max(rect.x), y0.max(top));
+            let (x1, y1) = (x1.min(right), y1.min(bottom));
+            if x1 > x0 && y1 > y0 {
+                draw::fill_rect(buf, wz, hz, x0 as usize, y0 as usize, x1 as usize, y1 as usize, c);
+            }
+        };
+
+        if let Some(nr) = &t.native {
+            let line_h = nr.layout.line_h;
+            for (li, line) in nr.layout.lines.iter().enumerate() {
+                let y_top = top - nr.scroll + li as i32 * line_h;
+                if y_top + line_h < top || y_top > bottom {
+                    continue;
+                }
+                if line.rule {
+                    let ry = y_top + line_h / 2;
+                    fill(buf, left, ry, right - MARGIN, ry + 1, draw::DIM);
+                    continue;
+                }
+                let baseline = y_top + line_h * 3 / 4;
+                if find_on {
+                    let chars: Vec<char> = line.runs.iter().flat_map(|r| r.text.chars()).collect();
+                    let base = left + line.indent;
+                    for (mi, m) in find.matches.iter().enumerate() {
+                        if m.line != li {
+                            continue;
+                        }
+                        let s = m.start.min(chars.len());
+                        let e = m.end.min(chars.len());
+                        let x0 = line_col_x(&line.runs, s, base, p);
+                        let x1 = line_col_x(&line.runs, e, base, p);
+                        let col = if mi == find.current { draw::FIND_CUR } else { draw::FIND };
+                        fill(buf, x0, y_top, x1, y_top + line_h, col);
+                    }
+                }
+                if focused {
+                    if let Some((s0, s1)) = nr.caret.as_ref().and_then(|c| c.selection_on_row(li)) {
+                        let base = left + line.indent;
+                        let x0 = line_col_x(&line.runs, s0, base, p);
+                        let x1 = line_col_x(&line.runs, s1, base, p);
+                        fill(buf, x0, y_top, x1, y_top + line_h, draw::SEL);
+                    }
+                }
+                let mut x = left + line.indent;
+                for run in &line.runs {
+                    x = p.text_rect(
+                        buf, wz, hz, x, baseline as usize, &run.text, run.color, left, right, top,
+                        bottom,
+                    );
+                }
+                if focused {
+                    if let Some(caret) = &nr.caret {
+                        if li == caret.cy {
+                            let chars: Vec<char> =
+                                line.runs.iter().flat_map(|r| r.text.chars()).collect();
+                            let cx0 = line_col_x(&line.runs, caret.cx, left + line.indent, p);
+                            let cwid = p.measure("M").max(1) as i32;
+                            fill(buf, cx0, y_top, cx0 + cwid, y_top + line_h, draw::ACCENT);
+                            if let Some(ch) = chars.get(caret.cx) {
+                                p.text_rect(
+                                    buf, wz, hz, cx0.max(left), baseline as usize, &ch.to_string(),
+                                    draw::BG, left, right, top, bottom,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            if focused && mode == ModeKind::Hint {
+                let lh = p.line_height();
+                for hint in native_hints {
+                    if !hint.label.starts_with(hint_input) {
+                        continue;
+                    }
+                    let label = if hint_new_tab {
+                        hint.label.to_uppercase()
+                    } else {
+                        hint.label.clone()
+                    };
+                    let lw = p.measure(&label);
+                    let bx = hint.x.max(0);
+                    let by = hint.y - (lh as i32) * 3 / 4;
+                    fill(buf, bx, by, bx + lw as i32 + 4, by + lh as i32, (0xff, 0xd4, 0x00));
+                    p.text_rect(
+                        buf, wz, hz, bx + 2, hint.y.max(0) as usize, &label, (0x10, 0x10, 0x10),
+                        left, right, top, bottom,
+                    );
+                }
+            }
+            return;
+        }
+
+        if let Some(vb) = &t.vim {
+            let line_h = p.line_height() as i32;
+            let cw = p.measure("M").max(1) as i32;
+            let leftcol = vb.left;
+            let col_x = |line: &[char], col: usize| -> i32 {
+                if col <= leftcol {
+                    return left;
+                }
+                let end = col.min(line.len());
+                let slice: String = line[leftcol..end].iter().collect();
+                let mut x = left + p.measure(&slice) as i32;
+                if col > line.len() {
+                    x += (col - line.len()) as i32 * cw;
+                }
+                x
+            };
+            for r in vb.top..vb.lines.len() {
+                let y_top = top + (r - vb.top) as i32 * line_h;
+                if y_top >= bottom {
+                    break;
+                }
+                let line = &vb.lines[r];
+                if let Some((s0, s1)) = vb.selection_on_row(r) {
+                    fill(buf, col_x(line, s0), y_top, col_x(line, s1), y_top + line_h, draw::SEL);
+                }
+                if find_on {
+                    for (mi, m) in find.matches.iter().enumerate() {
+                        if m.line != r {
+                            continue;
+                        }
+                        let col = if mi == find.current { draw::FIND_CUR } else { draw::FIND };
+                        fill(buf, col_x(line, m.start), y_top, col_x(line, m.end), y_top + line_h, col);
+                    }
+                }
+                let baseline = (y_top + line_h * 3 / 4) as usize;
+                if vb.left < line.len() {
+                    let text: String = line[vb.left..].iter().collect();
+                    p.text_rect(buf, wz, hz, left, baseline, &text, draw::FG, left, right, top, bottom);
+                }
+                if focused && r == vb.cy {
+                    let cx0 = col_x(line, vb.cx);
+                    let cx1 = col_x(line, vb.cx + 1).max(cx0 + cw);
+                    fill(buf, cx0, y_top, cx1, y_top + line_h, draw::FG);
+                    if let Some(ch) = line.get(vb.cx) {
+                        p.text_rect(
+                            buf, wz, hz, cx0.max(left), baseline, &ch.to_string(), draw::BG, left,
+                            right, top, bottom,
+                        );
+                    }
+                }
+            }
+            return;
+        }
+
+        if let Some(s) = &t.term {
+            let (cw, ch) = (p.measure("M").max(1) as i32, p.line_height() as i32);
+            fill(buf, rect.x, top, right, bottom, pty_term::BG);
+            pty_term::render(&s.pty, p, buf, wz, hz, rect.x + TERM_PAD, top, cw, ch, bottom);
+            return;
+        }
+
+        // Blank pane: a quiet prompt centred in the rect.
+        let msg = "empty pane — :open a page · :te terminal";
+        let mw = p.measure(msg) as i32;
+        let tx = rect.x + ((rect.w - mw) / 2).max(MARGIN);
+        let ty = top + rect.h / 2;
+        p.text_rect(buf, wz, hz, tx, ty as usize, msg, draw::DIM, left, right, top, bottom);
+    }
+
+/// Draw a 2px accent outline around the focused pane (only shown while split, as
+/// the cue for which pane the keyboard acts on).
+fn draw_pane_border(r: PaneRect, buf: &mut [u32], wz: usize, hz: usize) {
+    let (x0, y0, x1, y1) = (r.x.max(0), r.y.max(0), r.x + r.w, r.y + r.h);
+    let t = FOCUS_BORDER;
+    draw::fill_rect(buf, wz, hz, x0 as usize, y0 as usize, x1 as usize, (y0 + t) as usize, draw::ACCENT);
+    draw::fill_rect(buf, wz, hz, x0 as usize, (y1 - t).max(y0) as usize, x1 as usize, y1 as usize, draw::ACCENT);
+    draw::fill_rect(buf, wz, hz, x0 as usize, y0 as usize, (x0 + t) as usize, y1 as usize, draw::ACCENT);
+    draw::fill_rect(buf, wz, hz, (x1 - t).max(x0) as usize, y0 as usize, x1 as usize, y1 as usize, draw::ACCENT);
+}
+
+impl App {
     fn draw(&mut self) -> Result<()> {
         // Keep the engine-free read layout current (cheap no-op unless something
         // that affects layout changed) before we read it for painting.
@@ -4621,18 +5329,14 @@ impl App {
         // still borrow &self.
         let tab_labels = self.tab_labels();
         let welcome = self.active.is_none();
-        let native_active = self
-            .active
-            .and_then(|i| self.tabs.get(i))
-            .is_some_and(|t| t.native.is_some());
-        let vim_active = self
-            .active
-            .and_then(|i| self.tabs.get(i))
-            .is_some_and(|t| t.vim.is_some());
-        let term_active = self
-            .active
-            .and_then(|i| self.tabs.get(i))
-            .is_some_and(|t| t.term.is_some());
+        // The pane tiling: each (tab, rect) to paint + the divider rects. With no
+        // split this is just the active tab filling the whole content band.
+        let (panes, dividers) = self.pane_layout();
+        // We must repaint native content (and any divider/border) ourselves; only the
+        // pure single-web-tab case can take the cheap bars-only damage present.
+        let any_native = panes
+            .iter()
+            .any(|(t, _)| self.tabs.get(*t).is_some_and(|t| t.webview.is_none()));
         let bar_h = self.bar_h() as usize;
         let tab_h = self.tab_bar_h() as usize;
         // Minimized / degenerate size: skip the frame. The tab + command bars are a
@@ -4752,226 +5456,41 @@ impl App {
             draw_welcome(p, &mut buf, wz, hz, self.zoom as f32);
             draw_bar(&mut buf);
             buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
-        } else if native_active {
-            // Engine-free read tab: paint the document ourselves. Content is drawn
-            // first; the opaque tab bar and command bar are painted on top, so lines
-            // scrolled past either edge are simply covered (no per-line y-clipping).
+        } else if any_native || self.split.is_some() {
+            // At least one pane is native, or we're split: repaint the content band
+            // ourselves. Native panes are drawn into their rects; web panes are left
+            // to their webview HWNDs (which sit on top of our surface). Then the
+            // dividers, the focused-pane border (only while split), the bars, and a
+            // full present.
             draw::fill_band(&mut buf, wz, hz, 0, bar_top, draw::BG);
-            let content_top = tab_h as i32;
-            if let Some(nr) =
-                self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.native.as_ref())
-            {
-                let line_h = nr.layout.line_h;
-                for (li, line) in nr.layout.lines.iter().enumerate() {
-                    let y_top = content_top - nr.scroll + li as i32 * line_h;
-                    if y_top + line_h < content_top || y_top > bar_top as i32 {
-                        continue;
-                    }
-                    if line.rule {
-                        let ry = y_top + line_h / 2;
-                        if ry >= 0 {
-                            draw::fill_rect(
-                                &mut buf, wz, hz, MARGIN as usize, ry as usize,
-                                wz.saturating_sub(MARGIN as usize), ry as usize + 1, draw::DIM,
-                            );
-                        }
-                        continue;
-                    }
-                    let baseline = y_top + line_h * 3 / 4;
-                    if baseline < 0 {
-                        continue;
-                    }
-                    // Find-in-page highlights behind this line's matches — shown both
-                    // once confirmed (find.active) AND live while typing the `/` query.
-                    if self.find.active || self.mode == ModeKind::Find {
-                        let chars: Vec<char> =
-                            line.runs.iter().flat_map(|r| r.text.chars()).collect();
-                        let base = MARGIN + line.indent;
-                        for (mi, m) in self.find.matches.iter().enumerate() {
-                            if m.line != li {
-                                continue;
-                            }
-                            let s = m.start.min(chars.len());
-                            let e = m.end.min(chars.len());
-                            let x0 = line_col_x(&line.runs, s, base, p);
-                            let x1 = line_col_x(&line.runs, e, base, p);
-                            let col =
-                                if mi == self.find.current { draw::FIND_CUR } else { draw::FIND };
-                            draw::fill_rect(
-                                &mut buf, wz, hz, x0.max(0) as usize, y_top.max(0) as usize,
-                                x1.max(0) as usize, (y_top + line_h).max(0) as usize, col,
-                            );
-                        }
-                    }
-                    // Read-mode caret: visual-selection highlight (behind the text).
-                    if let Some(caret) = &nr.caret {
-                        if let Some((s0, s1)) = caret.selection_on_row(li) {
-                            let base = MARGIN + line.indent;
-                            let x0 = line_col_x(&line.runs, s0, base, p).max(MARGIN);
-                            let x1 = line_col_x(&line.runs, s1, base, p).max(MARGIN);
-                            if x1 > x0 {
-                                draw::fill_rect(
-                                    &mut buf, wz, hz, x0 as usize, y_top.max(0) as usize,
-                                    x1 as usize, (y_top + line_h).max(0) as usize, draw::SEL,
-                                );
-                            }
-                        }
-                    }
-                    let mut x = MARGIN + line.indent;
-                    for run in &line.runs {
-                        x = p.text_clipped(
-                            &mut buf, wz, hz, x, baseline as usize, &run.text, run.color, MARGIN,
-                        );
-                    }
-                    // Read-mode caret: block cursor (inverse cell) on the cursor row.
-                    if let Some(caret) = &nr.caret {
-                        if li == caret.cy {
-                            let chars: Vec<char> =
-                                line.runs.iter().flat_map(|r| r.text.chars()).collect();
-                            let cx0 = line_col_x(&line.runs, caret.cx, MARGIN + line.indent, p);
-                            let cwid = p.measure("M").max(1) as i32;
-                            draw::fill_rect(
-                                &mut buf, wz, hz, cx0.max(MARGIN) as usize, y_top.max(0) as usize,
-                                (cx0 + cwid) as usize, (y_top + line_h).max(0) as usize, draw::ACCENT,
-                            );
-                            if let Some(ch) = chars.get(caret.cx) {
-                                p.text(
-                                    &mut buf, wz, hz, cx0.max(MARGIN) as usize, baseline as usize,
-                                    &ch.to_string(), draw::BG,
-                                );
-                            }
-                        }
-                    }
+            for (t, r) in &panes {
+                if self.tabs.get(*t).is_some_and(|tb| tb.webview.is_none()) {
+                    paint_pane(
+                        &self.tabs[*t], p, &self.find, self.mode, &self.native_hints,
+                        &self.hint_input, self.hint_new_tab, Some(*t) == self.active, *r,
+                        &mut buf, wz, hz,
+                    );
                 }
             }
-            // Hint labels over the visible links (filtered by what's been typed).
-            if self.mode == ModeKind::Hint {
-                let lh = p.line_height();
-                for hint in &self.native_hints {
-                    if !hint.label.starts_with(&self.hint_input) {
-                        continue;
-                    }
-                    // New-tab mode (`F`) shows labels uppercase as the cue.
-                    let label = if self.hint_new_tab {
-                        hint.label.to_uppercase()
-                    } else {
-                        hint.label.clone()
-                    };
-                    let lw = p.measure(&label);
-                    let bx = hint.x.max(0) as usize;
-                    let by = (hint.y - (lh as i32) * 3 / 4).max(0) as usize;
-                    draw::fill_rect(&mut buf, wz, hz, bx, by, bx + lw + 4, by + lh, (0xff, 0xd4, 0x00));
-                    p.text(&mut buf, wz, hz, bx + 2, hint.y.max(0) as usize, &label, (0x10, 0x10, 0x10));
-                }
-            }
-            // Tab bar + command bar painted on top of the content.
-            draw::fill_band(&mut buf, wz, hz, 0, tab_h, draw::BAR_BG);
-            draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels);
-            draw_bar(&mut buf);
-            buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
-        } else if vim_active {
-            // Engine-free `:error`/`:errors` vim pager: a monospace text grid with a
-            // block cursor and (in visual mode) a selection highlight. Content first,
-            // then the opaque bars on top.
-            draw::fill_band(&mut buf, wz, hz, 0, bar_top, draw::BG);
-            let content_top = tab_h as i32;
-            let line_h = p.line_height() as i32;
-            let cw = p.measure("M").max(1) as i32;
-            if let Some(vb) =
-                self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.vim.as_ref())
-            {
-                // Pixel x of (absolute) column `col`, measured from the actual glyph
-                // advances of the visible slice — so the cursor/selection line up with
-                // the text exactly, at any zoom (a fixed cell width drifts on long
-                // lines). Columns past end-of-line use the nominal cell width.
-                let left = vb.left;
-                let col_x = |line: &[char], col: usize| -> i32 {
-                    if col <= left {
-                        return MARGIN;
-                    }
-                    let end = col.min(line.len());
-                    let slice: String = line[left..end].iter().collect();
-                    let mut x = MARGIN + p.measure(&slice) as i32;
-                    if col > line.len() {
-                        x += (col - line.len()) as i32 * cw;
-                    }
-                    x
-                };
-                for r in vb.top..vb.lines.len() {
-                    let y_top = content_top + (r - vb.top) as i32 * line_h;
-                    if y_top >= bar_top as i32 {
-                        break;
-                    }
-                    let line = &vb.lines[r];
-                    let (yt, yb) = (y_top.max(0) as usize, (y_top + line_h).max(0) as usize);
-                    // Selection highlight band for this row (visual mode).
-                    if let Some((s0, s1)) = vb.selection_on_row(r) {
-                        let x0 = col_x(line, s0).max(MARGIN) as usize;
-                        let x1 = col_x(line, s1).max(MARGIN) as usize;
-                        if x1 > x0 {
-                            draw::fill_rect(&mut buf, wz, hz, x0, yt, x1, yb, draw::SEL);
-                        }
-                    }
-                    // Find-in-page highlights for this row (confirmed or live-typing).
-                    if self.find.active || self.mode == ModeKind::Find {
-                        for (mi, m) in self.find.matches.iter().enumerate() {
-                            if m.line != r {
-                                continue;
-                            }
-                            let x0 = col_x(line, m.start).max(MARGIN) as usize;
-                            let x1 = col_x(line, m.end).max(MARGIN) as usize;
-                            if x1 > x0 {
-                                let col =
-                                    if mi == self.find.current { draw::FIND_CUR } else { draw::FIND };
-                                draw::fill_rect(&mut buf, wz, hz, x0, yt, x1, yb, col);
-                            }
-                        }
-                    }
-                    // The visible slice of the line, scrolled left by `vb.left` cols.
-                    let baseline = (y_top + line_h * 3 / 4) as usize;
-                    if vb.left < line.len() {
-                        let text: String = line[vb.left..].iter().collect();
-                        p.text_clipped(&mut buf, wz, hz, MARGIN, baseline, &text, draw::FG, MARGIN);
-                    }
-                    // Block cursor (inverse cell) on the cursor row.
-                    if r == vb.cy {
-                        let cx0 = col_x(line, vb.cx);
-                        let cx1 = col_x(line, vb.cx + 1).max(cx0 + cw);
-                        draw::fill_rect(&mut buf, wz, hz, cx0 as usize, yt, cx1 as usize, yb, draw::FG);
-                        if let Some(ch) = line.get(vb.cx) {
-                            p.text(&mut buf, wz, hz, cx0 as usize, baseline, &ch.to_string(), draw::BG);
-                        }
-                    }
-                }
-            }
-            draw::fill_band(&mut buf, wz, hz, 0, tab_h, draw::BAR_BG);
-            draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels);
-            draw_bar(&mut buf);
-            buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
-        } else if term_active {
-            // Native terminal: paint the VT grid ourselves (no WebView2). Fill the
-            // content band with the terminal background, draw the cells, then the
-            // opaque bars on top.
-            draw::fill_band(&mut buf, wz, hz, 0, bar_top, pty_term::BG);
-            let content_top = tab_h as i32;
-            let (cw, ch) = (p.measure("M").max(1) as i32, p.line_height() as i32);
-            if let Some(s) = self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.term.as_ref())
-            {
-                pty_term::render(
-                    &s.pty, p, &mut buf, wz, hz, TERM_PAD, content_top, cw, ch, bar_top as i32,
+            for d in &dividers {
+                draw::fill_rect(
+                    &mut buf, wz, hz, d.x.max(0) as usize, d.y.max(0) as usize,
+                    (d.x + d.w) as usize, (d.y + d.h) as usize, draw::DIM,
                 );
+            }
+            if self.split.is_some() {
+                if let Some((_, r)) = panes.iter().find(|(t, _)| Some(*t) == self.active) {
+                    draw_pane_border(*r, &mut buf, wz, hz);
+                }
             }
             draw::fill_band(&mut buf, wz, hz, 0, tab_h, draw::BAR_BG);
             draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels);
             draw_bar(&mut buf);
             buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
         } else {
+            // Single web tab: a webview covers the whole content band, so we only
+            // repaint the bars and present just those rects — never over the page.
             draw_bar(&mut buf);
-            // A webview covers the middle; redraw only the top tab bar and the
-            // bottom command bar so we never paint over the live page. In fullscreen
-            // both bars are hidden (height 0) and the page covers the whole window —
-            // present nothing native (and skip the bottom rect, which would otherwise
-            // sit at y == height, out of the buffer).
             draw::fill_band(&mut buf, wz, hz, 0, tab_h, draw::BAR_BG);
             draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels);
             let mut damage = Vec::new();
@@ -5018,13 +5537,17 @@ impl App {
                 };
                 // Terminals label themselves by the running program's OSC title
                 // (vim → the open file, Claude Code → "Claude Code"); fall back to
-                // the shell name until something sets a title.
-                let label = t
-                    .term
-                    .as_ref()
-                    .and_then(|s| s.pty.title())
-                    .map(|title| term_label(&title))
-                    .unwrap_or_else(|| short_label(&t.url));
+                // the shell name until something sets a title. A blank split pane
+                // reads as "new".
+                let label = if t.is_blank() {
+                    "new".to_string()
+                } else {
+                    t.term
+                        .as_ref()
+                        .and_then(|s| s.pty.title())
+                        .map(|title| term_label(&title))
+                        .unwrap_or_else(|| short_label(&t.url))
+                };
                 (label, active, color)
             })
             .collect()
@@ -5446,6 +5969,9 @@ fn commands_document() -> String {
         ("n / p", "next / previous tab"),
         ("1 – 9", "jump straight to tab N"),
         ("< / >", "move the current tab left / right"),
+        ("Ctrl+W then h/j/k/l", "move focus between split panes"),
+        ("Ctrl+W then s / v", "split the pane stacked / side-by-side (also :split / :vsplit)"),
+        ("Ctrl+W then c", "close the focused pane"),
         ("Ctrl+V", "passthrough mode (every key to the page)"),
         ("Ctrl +/-/0", "zoom the whole UI in / out / reset"),
     ]);
@@ -5499,6 +6025,7 @@ fn commands_document() -> String {
         (":mute · :audio", "toggle muting all page audio/video (live, all tabs)"),
         (":css", "toggle page styling off/on (live, all tabs)"),
         (":close · :bd", "close the current tab"),
+        (":vsplit · :split", "split into tmux-style panes (Ctrl+W h/j/k/l to move between them)"),
         (":reload · :r", "reload"),
         (":tabnext · :tn · :tabprev · :tp", "switch tabs"),
         (":back · :forward", "history navigation"),
@@ -5738,6 +6265,14 @@ fn history_display(url: &str) -> String {
 }
 
 /// A short tab label: the host without scheme/`www.`, truncated.
+/// Convert an internal [`PaneRect`] to the wry `Rect` used for webview bounds.
+fn wry_rect(r: PaneRect) -> Rect {
+    Rect {
+        position: PhysicalPosition::new(r.x, r.y).into(),
+        size: PhysicalSize::new(r.w.max(1) as u32, r.h.max(1) as u32).into(),
+    }
+}
+
 fn short_label(url: &str) -> String {
     let s = url
         .strip_prefix("https://")
@@ -5815,8 +6350,72 @@ mod tests {
     use super::vim::{Key, TextBuffer};
     use super::{
         deproxy_translate, error_lines, is_translate_proxy, next_word_boundary, parse_tab_flag,
-        prev_word_boundary, ErrorEntry,
+        prev_word_boundary, ErrorEntry, PaneNode, PaneRect, SplitDir,
     };
+
+    /// Build `Split(dir, Leaf(a), Leaf(b))`.
+    fn split(dir: SplitDir, a: usize, b: usize) -> PaneNode {
+        PaneNode::Split { dir, a: Box::new(PaneNode::Leaf(a)), b: Box::new(PaneNode::Leaf(b)) }
+    }
+
+    fn leaves(n: &PaneNode) -> Vec<usize> {
+        let mut v = Vec::new();
+        n.leaves(&mut v);
+        v
+    }
+
+    #[test]
+    fn insert_split_replaces_the_target_leaf() {
+        // Single leaf 0 → vsplit → two leaves [0, 1].
+        let t = PaneNode::Leaf(0).insert_split(0, SplitDir::Row, 1);
+        assert_eq!(leaves(&t), vec![0, 1]);
+        // Splitting leaf 1 again adds leaf 2 beside it: [0, 1, 2].
+        let t = t.insert_split(1, SplitDir::Col, 2);
+        assert_eq!(leaves(&t), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn prune_collapses_the_split_into_the_sibling() {
+        let t = split(SplitDir::Row, 0, 1);
+        // Removing leaf 1 leaves a lone Leaf(0).
+        let pruned = t.prune(1).unwrap();
+        assert!(matches!(pruned, PaneNode::Leaf(0)));
+        // Removing the only leaf yields nothing.
+        assert!(PaneNode::Leaf(0).prune(0).is_none());
+    }
+
+    #[test]
+    fn shift_after_remove_decrements_higher_leaves() {
+        let mut t = split(SplitDir::Row, 0, 2);
+        t.shift_after_remove(1); // tab 1 was deleted: 2 → 1, 0 unchanged.
+        assert_eq!(leaves(&t), vec![0, 1]);
+    }
+
+    #[test]
+    fn swap_and_retarget_change_leaf_tabs() {
+        let mut t = split(SplitDir::Row, 0, 1);
+        t.swap_leaves(0, 1);
+        assert_eq!(leaves(&t), vec![1, 0]);
+        t.retarget(0, 5); // the leaf showing 0 now shows 5.
+        assert_eq!(leaves(&t), vec![1, 5]);
+    }
+
+    #[test]
+    fn layout_tiles_without_overlap_and_inside_the_band() {
+        // A row split of a 100×40 band: two side-by-side panes plus a 1px divider.
+        let band = PaneRect { x: 0, y: 0, w: 100, h: 40 };
+        let mut panes = Vec::new();
+        let mut divs = Vec::new();
+        split(SplitDir::Row, 0, 1).layout(band, &mut panes, &mut divs);
+        assert_eq!(panes.len(), 2);
+        assert_eq!(divs.len(), 1);
+        // Left pane starts at the band's left; right pane ends at the band's right.
+        assert_eq!(panes[0].1.x, 0);
+        let right = &panes[1].1;
+        assert_eq!(right.x + right.w, 100);
+        // The two panes don't overlap (left ends at or before right begins).
+        assert!(panes[0].1.x + panes[0].1.w <= right.x);
+    }
 
     #[test]
     fn tab_flag_only_matches_whole_token() {

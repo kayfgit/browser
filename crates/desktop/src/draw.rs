@@ -127,6 +127,30 @@ impl Painter {
         color: Rgb,
         clip_x0: i32,
     ) -> i32 {
+        self.text_rect(buf, w, h, x, baseline, s, color, clip_x0, w as i32, 0, h as i32)
+    }
+
+    /// Like [`Painter::text_clipped`] but confined to a sub-rect: pixels outside
+    /// `[clip_x0, clip_x1)` × `[clip_y0, clip_y1)` are dropped, so text painted into a
+    /// tmux pane stays inside it with clean edges instead of bleeding into a neighbour.
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_rect(
+        &self,
+        buf: &mut [u32],
+        w: usize,
+        h: usize,
+        x: i32,
+        baseline: usize,
+        s: &str,
+        color: Rgb,
+        clip_x0: i32,
+        clip_x1: i32,
+        clip_y0: i32,
+        clip_y1: i32,
+    ) -> i32 {
+        let right = clip_x1.min(w as i32);
+        let bottom = clip_y1.min(h as i32);
+        let top = clip_y0.max(0);
         let mut pen = x as f32;
         for ch in s.chars() {
             let (m, bitmap) = self.font_for(ch).rasterize(ch, self.px);
@@ -138,7 +162,7 @@ impl Painter {
                     }
                     let gx = pen as i32 + m.xmin + col as i32;
                     let gy = baseline as i32 - m.ymin - m.height as i32 + row as i32;
-                    if gx < clip_x0 || gy < 0 || gx >= w as i32 || gy >= h as i32 {
+                    if gx < clip_x0 || gx >= right || gy < top || gy >= bottom {
                         continue;
                     }
                     // Defensive: callers pass chrome metrics (tab/command-bar height)
