@@ -1197,7 +1197,7 @@ fn main() -> Result<()> {
             }
             Event::UserEvent(UserEvent::Navigate(url)) => {
                 if let Some(i) = app.active {
-                    if let Some(wv) = app.tabs.get(i).and_then(|t| t.webview.as_ref()) {
+                    if let Some(wv) = app.tabs.get(i).and_then(|t| t.webview()) {
                         let _ = wv.load_url(&url);
                     }
                     // Reflect the de-proxied address in the status bar right away

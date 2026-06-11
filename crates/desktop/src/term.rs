@@ -12,6 +12,7 @@ use tao::keyboard::{Key, KeyCode};
 
 use crate::panes::PaneRect;
 use crate::pty_term;
+use crate::tabs::TabContent;
 use crate::{clipboard_get, clipboard_set, App, ModeKind, Tab, UserEvent, TERM_PAD};
 
 /// A terminal tab's link to its companion `browser-pty-host` process. The ConPTY
@@ -115,7 +116,7 @@ impl App {
     pub(crate) fn active_is_term(&self) -> bool {
         self.active
             .and_then(|i| self.tabs.get(i))
-            .map(|t| t.term.is_some())
+            .map(|t| t.term().is_some())
             .unwrap_or(false)
     }
 
@@ -213,14 +214,11 @@ impl App {
         // New tab normally; under a split it fills the focused pane (place_tab).
         self.place_tab(
             Tab {
-                webview: None,
                 url: format!("term: {}", shell[0]),
                 nojs: false,
                 read: false,
                 research: false,
-                native: None,
-                vim: None,
-                term: Some(TermSession {
+                content: TabContent::Term(TermSession {
                     id,
                     child,
                     stdin,
@@ -238,7 +236,7 @@ impl App {
     }
 
     pub(crate) fn term_session_mut(&mut self, id: u64) -> Option<&mut TermSession> {
-        self.tabs.iter_mut().find_map(|t| t.term.as_mut().filter(|s| s.id == id))
+        self.tabs.iter_mut().find_map(|t| t.term_mut().filter(|s| s.id == id))
     }
 
     /// Feed raw PTY output bytes to a terminal's VT engine and repaint it. Any reply
@@ -263,7 +261,7 @@ impl App {
         let (panes, _) = self.pane_layout();
         for (tab, rect) in panes {
             let (cols, rows) = self.term_grid_for_rect(rect);
-            let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term.as_mut()) else {
+            let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) else {
                 continue;
             };
             if s.pty.resize(cols, rows) {
@@ -287,13 +285,13 @@ impl App {
         let app_cursor = self
             .active
             .and_then(|i| self.tabs.get(i))
-            .and_then(|t| t.term.as_ref())
+            .and_then(|t| t.term())
             .is_some_and(|s| s.pty.app_cursor());
         let ctrl = self.modifiers.control_key();
         let alt = self.modifiers.alt_key();
         let shift = self.modifiers.shift_key();
         if let Some(bytes) = encode_term_key(&key.logical_key, ctrl, alt, shift, app_cursor) {
-            if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
+            if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut())
             {
                 s.send(0, &bytes);
             }
@@ -310,7 +308,7 @@ impl App {
             return;
         }
         let text = text.replace("\r\n", "\r").replace('\n', "\r");
-        let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
+        let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut())
         else {
             return;
         };
@@ -330,7 +328,7 @@ impl App {
     pub(crate) fn active_term_vi(&self) -> bool {
         self.active
             .and_then(|i| self.tabs.get(i))
-            .and_then(|t| t.term.as_ref())
+            .and_then(|t| t.term())
             .is_some_and(|s| s.pty.is_vi())
     }
 
@@ -343,7 +341,7 @@ impl App {
         let mut exit = false;
         let mut consumed = true;
         {
-            let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
+            let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut())
             else {
                 return false;
             };
@@ -435,12 +433,12 @@ impl App {
     /// Close the tab whose terminal has the given id (its shell exited). Behaves
     /// like `x`, but only disturbs focus/mode if that tab was the active one.
     pub(crate) fn close_term_tab(&mut self, id: u64) {
-        let Some(i) = self.tabs.iter().position(|t| t.term.as_ref().map(|s| s.id) == Some(id))
+        let Some(i) = self.tabs.iter().position(|t| t.term().map(|s| s.id) == Some(id))
         else {
             return;
         };
         let was_active = self.active == Some(i);
-        if let Some(session) = self.tabs[i].term.take() {
+        if let Some(session) = self.tabs[i].take_term() {
             session.shutdown();
         }
         let focus_after = self.drop_tab(i);
@@ -464,7 +462,7 @@ impl App {
     pub(crate) fn term_mouse_wheel(&mut self, tab: usize, rect: PaneRect, dy_lines: f64) -> bool {
         let (cw, ch) = self.term_cell();
         let (px, py) = (self.cursor_pos.0 as i32, self.cursor_pos.1 as i32);
-        let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term.as_mut()) else {
+        let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) else {
             return false;
         };
         if !s.pty.mouse_mode() {

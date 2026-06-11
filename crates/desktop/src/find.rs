@@ -160,14 +160,14 @@ impl App {
     /// The active tab's searchable lines (read = laid-out lines, vim = buffer lines).
     pub(crate) fn find_native_lines(&mut self) -> Option<std::borrow::Cow<'_, [String]>> {
         let i = self.active?;
-        if self.tabs.get(i).is_some_and(|t| t.native.is_some()) {
+        if self.tabs.get(i).is_some_and(|t| t.native().is_some()) {
             self.refresh_read_layout();
-            let nr = self.tabs[i].native.as_ref()?;
+            let nr = self.tabs[i].native()?;
             // Borrowed straight from the layout's cached text: typing in `/` no
             // longer rebuilds every line string of the document per keystroke.
             return Some(std::borrow::Cow::Borrowed(nr.layout.text_lines()));
         }
-        let vb = self.tabs.get(i)?.vim.as_ref()?;
+        let vb = self.tabs.get(i)?.vim()?;
         Some(std::borrow::Cow::Owned(
             vb.lines.iter().map(|l| l.iter().collect::<String>()).collect(),
         ))
@@ -180,7 +180,7 @@ impl App {
         };
         let view = self.content_view_h();
         let Some(i) = self.active else { return };
-        if let Some(nr) = self.tabs.get_mut(i).and_then(|t| t.native.as_mut()) {
+        if let Some(nr) = self.tabs.get_mut(i).and_then(|t| t.native_mut()) {
             let line_h = nr.layout.line_h.max(1);
             let max = (nr.layout.height - view).max(0);
             nr.scroll = (line as i32 * line_h - view / 2).clamp(0, max);
@@ -191,7 +191,7 @@ impl App {
         let line_h = self.painter.line_height().max(1);
         let cols = (w as usize).saturating_sub(16) / cw;
         let rows = (view as usize) / line_h;
-        if let Some(vb) = self.tabs.get_mut(i).and_then(|t| t.vim.as_mut()) {
+        if let Some(vb) = self.tabs.get_mut(i).and_then(|t| t.vim_mut()) {
             vb.place_cursor(line, start, rows, cols);
         }
     }

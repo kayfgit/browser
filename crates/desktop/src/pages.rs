@@ -3,6 +3,7 @@
 
 use std::time::Instant;
 
+use crate::tabs::TabContent;
 use crate::{procmon, vim, App, Source, Tab};
 
 /// One recorded failure: when it happened, the command that triggered it (if
@@ -29,14 +30,11 @@ impl App {
         let lines = error_lines(&self.errors, all);
         self.place_tab(
             Tab {
-                webview: None,
                 url: "browser://error".into(),
                 nojs: false,
                 read: false,
                 research: false,
-                native: None,
-                vim: Some(vim::TextBuffer::new(lines)),
-                term: None,
+                content: TabContent::Pager(vim::TextBuffer::new(lines)),
             },
             true,
         );
@@ -62,14 +60,11 @@ impl App {
         }
         self.place_tab(
             Tab {
-                webview: None,
                 url: "browser://res".into(),
                 nojs: false,
                 read: false,
                 research: false,
-                native: None,
-                vim: Some(vim::TextBuffer::new(lines)),
-                term: None,
+                content: TabContent::Pager(vim::TextBuffer::new(lines)),
             },
             true,
         );
@@ -95,13 +90,13 @@ impl App {
         let selecting = self
             .active
             .and_then(|i| self.tabs.get(i))
-            .and_then(|t| t.vim.as_ref())
+            .and_then(|t| t.vim())
             .is_some_and(|b| b.has_selection());
         if selecting {
             return;
         }
         let lines = self.sample_res_lines();
-        if let Some(buf) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.vim.as_mut())
+        if let Some(buf) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.vim_mut())
         {
             buf.set_lines(lines);
         }
@@ -175,14 +170,11 @@ impl App {
     pub(crate) fn open_version_page(&mut self) {
         self.place_tab(
             Tab {
-                webview: None,
                 url: "browser://version".into(),
                 nojs: false,
                 read: false,
                 research: false,
-                native: None,
-                vim: Some(vim::TextBuffer::new(version_lines())),
-                term: None,
+                content: TabContent::Pager(vim::TextBuffer::new(version_lines())),
             },
             true,
         );
@@ -196,14 +188,11 @@ impl App {
             Ok(webview) => {
                 self.place_tab(
                     Tab {
-                        webview: Some(webview),
+                        content: TabContent::Web(webview),
                         url: format!("browser://{label}"),
                         nojs: false,
                         read: false,
                         research: false,
-                        native: None,
-                        vim: None,
-                        term: None,
                     },
                     true,
                 );

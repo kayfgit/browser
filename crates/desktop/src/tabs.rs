@@ -20,10 +20,23 @@ pub(crate) enum Source {
     Html(String),
 }
 
+/// What a tab shows. Exactly one of these — the invariants the old
+/// quadruple-Option encoding kept by comment are now kept by construction.
+pub(crate) enum TabContent {
+    /// A WebView2 page (windowed child HWND over the content band).
+    Web(WebView),
+    /// An engine-free read-mode document, painted by the shell.
+    Read(NativeRead),
+    /// A read-only vim-style pager (`:error(s)`, `:res`, `:version`).
+    Pager(vim::TextBuffer),
+    /// A native terminal (alacritty grid + pty-host process).
+    Term(TermSession),
+    /// An empty split-pane placeholder ("open something" prompt).
+    Blank,
+}
+
 pub(crate) struct Tab {
-    /// The engine. `None` for an engine-free read tab (rendered natively from a
-    /// `Document` — no WebView2 process at all); `Some` for every other tab.
-    pub(crate) webview: Option<WebView>,
+    pub(crate) content: TabContent,
     pub(crate) url: String,
     /// Whether this tab was opened with JavaScript disabled (hint mode needs JS).
     pub(crate) nojs: bool,
@@ -32,14 +45,6 @@ pub(crate) struct Tab {
     /// Whether this is a "research" tab: a normal page (JS on, images kept) with
     /// heavy media/embeds stripped on the fly for a lighter browse.
     pub(crate) research: bool,
-    /// Present for an engine-free read tab: the extracted Document + its native
-    /// layout/scroll state. Mutually exclusive with `webview`.
-    pub(crate) native: Option<NativeRead>,
-    /// Present for an engine-free `:error`/`:errors` tab: a read-only vim-style text
-    /// buffer over the session error log. Mutually exclusive with `webview`.
-    pub(crate) vim: Option<vim::TextBuffer>,
-    /// Present if this tab is a native terminal (alacritty_terminal VT engine + PTY).
-    pub(crate) term: Option<TermSession>,
 }
 
 impl Tab {
@@ -48,23 +53,77 @@ impl Tab {
     /// first `:open`/`:te`/`:read`/… run while it's focused.
     pub(crate) fn blank() -> Tab {
         Tab {
-            webview: None,
+            content: TabContent::Blank,
             url: BLANK_URL.to_string(),
             nojs: false,
             read: false,
             research: false,
-            native: None,
-            vim: None,
-            term: None,
         }
     }
 
     /// Whether this is a blank (empty) pane placeholder.
     pub(crate) fn is_blank(&self) -> bool {
-        self.webview.is_none()
-            && self.native.is_none()
-            && self.vim.is_none()
-            && self.term.is_none()
+        matches!(self.content, TabContent::Blank)
+    }
+
+    pub(crate) fn webview(&self) -> Option<&WebView> {
+        match &self.content {
+            TabContent::Web(w) => Some(w),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn native(&self) -> Option<&NativeRead> {
+        match &self.content {
+            TabContent::Read(nr) => Some(nr),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn native_mut(&mut self) -> Option<&mut NativeRead> {
+        match &mut self.content {
+            TabContent::Read(nr) => Some(nr),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn vim(&self) -> Option<&vim::TextBuffer> {
+        match &self.content {
+            TabContent::Pager(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn vim_mut(&mut self) -> Option<&mut vim::TextBuffer> {
+        match &mut self.content {
+            TabContent::Pager(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn term(&self) -> Option<&TermSession> {
+        match &self.content {
+            TabContent::Term(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn term_mut(&mut self) -> Option<&mut TermSession> {
+        match &mut self.content {
+            TabContent::Term(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Detach the terminal session (for shutdown), leaving a blank tab behind.
+    pub(crate) fn take_term(&mut self) -> Option<TermSession> {
+        if !matches!(self.content, TabContent::Term(_)) {
+            return None;
+        }
+        match std::mem::replace(&mut self.content, TabContent::Blank) {
+            TabContent::Term(s) => Some(s),
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -108,12 +167,11 @@ pub(crate) fn parse_tab_flag(rest: &str) -> (bool, &str) {
 /// layout is left empty/dirty so it's laid out on the next draw at the live width.
 pub(crate) fn native_read_tab(doc: browser_core::Document, url: String, read: bool) -> Tab {
     Tab {
-        webview: None,
         url,
         nojs: false,
         read,
         research: false,
-        native: Some(NativeRead {
+        content: TabContent::Read(NativeRead {
             doc,
             scroll: 0,
             layout: read_view::Layout {
@@ -127,8 +185,6 @@ pub(crate) fn native_read_tab(doc: browser_core::Document, url: String, read: bo
             dirty: true,
             caret: None,
         }),
-        vim: None,
-        term: None,
     }
 }
 
@@ -142,14 +198,11 @@ impl App {
         match self.build_content_webview(Source::Url(url.clone()), disable_js, "") {
             Ok(webview) => {
                 let tab = Tab {
-                    webview: Some(webview),
+                    content: TabContent::Web(webview),
                     url,
                     nojs: disable_js,
                     read: false,
                     research: false,
-                    native: None,
-                    vim: None,
-                    term: None,
                 };
                 self.place_tab(tab, new_tab);
                 // Keep the keyboard on the shell; the page-load handler re-asserts
@@ -170,14 +223,11 @@ impl App {
         match self.build_content_webview(Source::Url(url.clone()), false, RESEARCH_JS) {
             Ok(webview) => {
                 let tab = Tab {
-                    webview: Some(webview),
+                    content: TabContent::Web(webview),
                     url,
                     nojs: false,
                     read: false,
                     research: true,
-                    native: None,
-                    vim: None,
-                    term: None,
                 };
                 self.place_tab(tab, new_tab);
                 self.window.set_focus();
@@ -199,7 +249,7 @@ impl App {
         match self.active {
             Some(i) if replace && i < self.tabs.len() => {
                 self.record_closed(i);
-                if let Some(session) = self.tabs[i].term.take() {
+                if let Some(session) = self.tabs[i].take_term() {
                     session.shutdown();
                 }
                 self.tabs[i] = tab;
@@ -220,12 +270,12 @@ impl App {
     /// error/res vim pagers are session-specific and skipped.
     pub(crate) fn record_closed(&mut self, i: usize) {
         let Some(t) = self.tabs.get(i) else { return };
-        if t.url.starts_with("browser://") || t.vim.is_some() {
+        if t.url.starts_with("browser://") || t.vim().is_some() {
             return;
         }
-        let kind = if t.term.is_some() {
+        let kind = if t.term().is_some() {
             "term"
-        } else if t.read || t.native.is_some() {
+        } else if t.read || t.native().is_some() {
             "read"
         } else if t.research {
             "research"
@@ -419,8 +469,8 @@ impl App {
         if replace {
             if let Some(i) = self.active {
                 // Fast path: active is already a read tab → swap its doc, keep the tab.
-                if self.tabs.get(i).is_some_and(|t| t.native.is_some()) {
-                    let nr = self.tabs[i].native.as_mut().unwrap();
+                if self.tabs.get(i).is_some_and(|t| t.native().is_some()) {
+                    let nr = self.tabs[i].native_mut().unwrap();
                     nr.doc = doc;
                     nr.scroll = 0;
                     nr.dirty = true;
@@ -460,7 +510,7 @@ impl App {
         // by record_closed). Shut a terminal down deterministically (kill shell, close
         // PTY, join reader) before dropping the tab; dropping the WebView frees the renderer.
         self.record_closed(i);
-        if let Some(session) = self.tabs[i].term.take() {
+        if let Some(session) = self.tabs[i].take_term() {
             session.shutdown();
         }
         // Drop the tab and fix the pane tree (prune its leaf, collapse to single-pane
@@ -592,7 +642,7 @@ impl App {
         let active = self.active;
         let split = self.split.is_some();
         for (i, tab) in self.tabs.iter().enumerate() {
-            let Some(wv) = &tab.webview else { continue };
+            let Some(wv) = tab.webview() else { continue };
             match panes.iter().find(|(t, _)| *t == i) {
                 Some((_, r)) => {
                     let mut rect = *r;
@@ -621,9 +671,9 @@ impl App {
         // so the idle path can read two bools instead of walking the pane tree.
         self.active_pane_is_webview = active
             .and_then(|i| self.tabs.get(i))
-            .is_some_and(|t| t.webview.is_some());
+            .is_some_and(|t| t.webview().is_some());
         self.background_webview_visible = panes.iter().any(|(t, _)| {
-            Some(*t) != active && self.tabs.get(*t).is_some_and(|tab| tab.webview.is_some())
+            Some(*t) != active && self.tabs.get(*t).is_some_and(|tab| tab.webview().is_some())
         });
         self.window.request_redraw();
     }
@@ -681,7 +731,7 @@ impl App {
         self.adblock = !self.adblock;
         let on = self.adblock;
         for tab in &self.tabs {
-            if let Some(wv) = &tab.webview {
+            if let Some(wv) = tab.webview() {
                 let _ = wv.evaluate_script(&format!("window.__setAdblock&&window.__setAdblock({on})"));
             }
         }
@@ -693,7 +743,7 @@ impl App {
     /// `__setToggle` (no reload). `name` is `popups` | `mute` | `css`.
     pub(crate) fn broadcast_toggle(&self, name: &str, on: bool) {
         for tab in &self.tabs {
-            if let Some(wv) = &tab.webview {
+            if let Some(wv) = tab.webview() {
                 let _ = wv.evaluate_script(&format!(
                     "window.__setToggle&&window.__setToggle('{name}',{on})"
                 ));
@@ -714,7 +764,7 @@ impl App {
         ));
         let Some(i) = self.active else { return };
         let Some(t) = self.tabs.get(i) else { return };
-        if t.webview.is_none() {
+        if t.webview().is_none() {
             return; // only web tabs have JS to toggle
         }
         let url = t.url.clone();
@@ -723,18 +773,15 @@ impl App {
         match self.build_content_webview(Source::Url(url.clone()), self.nojs, extra) {
             Ok(webview) => {
                 let nojs = self.nojs;
-                if let Some(session) = self.tabs[i].term.take() {
+                if let Some(session) = self.tabs[i].take_term() {
                     session.shutdown();
                 }
                 self.tabs[i] = Tab {
-                    webview: Some(webview),
+                    content: TabContent::Web(webview),
                     url,
                     nojs,
                     read: false,
                     research,
-                    native: None,
-                    vim: None,
-                    term: None,
                 };
                 self.refresh_visibility();
                 self.window.set_focus();
@@ -749,7 +796,7 @@ impl App {
         if let Some(url) = self
             .active
             .and_then(|i| self.tabs.get(i))
-            .and_then(|t| t.native.as_ref())
+            .and_then(|t| t.native())
             .map(|nr| nr.doc.url.clone())
         {
             // Internal native pages (e.g. `:error`) have nothing to re-extract.

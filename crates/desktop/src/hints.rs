@@ -50,7 +50,7 @@ impl App {
         };
         self.hint_new_tab = new_tab;
         // Engine-free read tab: hints are computed and drawn natively.
-        if self.tabs[idx].native.is_some() {
+        if self.tabs[idx].native().is_some() {
             self.hint_input.clear();
             self.mode = ModeKind::Hint;
             self.build_native_hints();
@@ -67,7 +67,7 @@ impl App {
         }
         self.hint_input.clear();
         self.mode = ModeKind::Hint;
-        if let Some(wv) = &self.tabs[idx].webview {
+        if let Some(wv) = self.tabs[idx].webview() {
             let _ = wv.evaluate_script(&format!("window.__hintUpper={new_tab};"));
             let _ = wv.evaluate_script(HINT_JS);
         }
@@ -81,7 +81,7 @@ impl App {
         let pane = self.focused_pane_rect();
         let (top, bottom) = (pane.y, pane.y + pane.h);
         let painter = &self.painter;
-        let Some(nr) = self.tabs[i].native.as_ref() else { return };
+        let Some(nr) = self.tabs[i].native() else { return };
         let links = read_view::visible_links(&nr.layout, nr.scroll, top, bottom, painter);
         let labels = hint_labels(links.len());
         let mut hints = Vec::with_capacity(links.len());

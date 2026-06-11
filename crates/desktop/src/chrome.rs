@@ -48,7 +48,7 @@ pub(crate) fn paint_pane(
             }
         };
 
-        if let Some(nr) = &t.native {
+        if let Some(nr) = t.native() {
             let line_h = nr.layout.line_h;
             for (li, line) in nr.layout.lines.iter().enumerate() {
                 let y_top = top - nr.scroll + li as i32 * line_h;
@@ -133,7 +133,7 @@ pub(crate) fn paint_pane(
             return;
         }
 
-        if let Some(vb) = &t.vim {
+        if let Some(vb) = t.vim() {
             let line_h = p.line_height() as i32;
             let cw = p.measure("M").max(1) as i32;
             let leftcol = vb.left;
@@ -187,7 +187,7 @@ pub(crate) fn paint_pane(
             return;
         }
 
-        if let Some(s) = &t.term {
+        if let Some(s) = t.term() {
             let (cw, ch) = (p.measure("M").max(1) as i32, p.line_height() as i32);
             fill(buf, rect.x, top, right, bottom, pty_term::BG);
             pty_term::render(&s.pty, p, buf, wz, hz, rect.x + TERM_PAD, top, cw, ch, bottom);
@@ -232,7 +232,7 @@ impl App {
         // pure single-web-tab case can take the cheap bars-only damage present.
         let any_native = panes
             .iter()
-            .any(|(t, _)| self.tabs.get(*t).is_some_and(|t| t.webview.is_none()));
+            .any(|(t, _)| self.tabs.get(*t).is_some_and(|t| t.webview().is_none()));
         let bar_h = self.bar_h() as usize;
         let tab_h = self.tab_bar_h() as usize;
         // Minimized / degenerate size: skip the frame. The tab + command bars are a
@@ -360,7 +360,7 @@ impl App {
             // full present.
             draw::fill_band(&mut buf, wz, hz, 0, bar_top, draw::BG);
             for (t, r) in &panes {
-                if self.tabs.get(*t).is_some_and(|tb| tb.webview.is_none()) {
+                if self.tabs.get(*t).is_some_and(|tb| tb.webview().is_none()) {
                     paint_pane(
                         &self.tabs[*t], p, &self.find, self.mode, &self.native_hints,
                         &self.hint_input, self.hint_new_tab, Some(*t) == self.active, *r,
@@ -418,9 +418,9 @@ impl App {
             .enumerate()
             .map(|(i, t)| {
                 let active = Some(i) == self.active;
-                let color = if t.term.is_some() {
+                let color = if t.term().is_some() {
                     draw::TERM
-                } else if t.vim.is_some() {
+                } else if t.vim().is_some() {
                     draw::ERR
                 } else if t.read {
                     draw::READ
@@ -438,8 +438,7 @@ impl App {
                 let label = if t.is_blank() {
                     "new".to_string()
                 } else {
-                    t.term
-                        .as_ref()
+                    t.term()
                         .and_then(|s| s.pty.title())
                         .map(|title| term_label(&title))
                         .unwrap_or_else(|| short_label(&t.url))
@@ -541,7 +540,7 @@ impl App {
                     if let Some(caret) = self
                         .active
                         .and_then(|i| self.tabs.get(i))
-                        .and_then(|t| t.native.as_ref())
+                        .and_then(|t| t.native())
                         .and_then(|n| n.caret.as_ref())
                     {
                         let m = caret.mode_label().unwrap_or("CARET");
@@ -567,7 +566,7 @@ impl App {
                 // LINE] while selecting, else a hint keyed to the tab — the red [error]
                 // hint must NOT bleed onto the `:res` monitor.
                 if let Some(t) = self.active.and_then(|i| self.tabs.get(i)) {
-                    if let Some(vb) = t.vim.as_ref() {
+                    if let Some(vb) = t.vim() {
                         match vb.mode_label() {
                             Some(m) => segs.push((format!("   [{m}]"), draw::ACCENT)),
                             None if t.url == "browser://error" => segs.push((

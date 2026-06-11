@@ -311,7 +311,7 @@ impl App {
         // wraps to its column); with no split this is just the active read tab.
         let (panes, _) = self.pane_layout();
         for (tab, rect) in panes {
-            let is_read = matches!(self.tabs.get(tab), Some(t) if t.native.is_some());
+            let is_read = matches!(self.tabs.get(tab), Some(t) if t.native().is_some());
             if !is_read {
                 continue;
             }
@@ -319,7 +319,7 @@ impl App {
             let view = rect.h;
             // Split borrow: `painter` and this tab's `native` are disjoint fields.
             let painter = &self.painter;
-            let nr = self.tabs[tab].native.as_mut().unwrap();
+            let nr = self.tabs[tab].native_mut().unwrap();
             if !nr.dirty && nr.layout_w == cw && (nr.layout_px - px).abs() < f32::EPSILON {
                 continue;
             }
@@ -358,7 +358,7 @@ impl App {
         self.zoom = z;
         self.painter.set_px(BASE_PX * z as f32);
         for tab in &self.tabs {
-            if let Some(wv) = &tab.webview {
+            if let Some(wv) = tab.webview() {
                 let _ = wv.zoom(z);
             }
         }
@@ -448,8 +448,8 @@ impl App {
     /// which can reset the WebView2 zoom factor). No-op for terminal tabs.
     pub(crate) fn apply_active_zoom(&self) {
         if let Some(tab) = self.active.and_then(|i| self.tabs.get(i)) {
-            if tab.term.is_none() {
-                if let Some(wv) = &tab.webview {
+            if tab.term().is_none() {
+                if let Some(wv) = tab.webview() {
                     let _ = wv.zoom(self.zoom);
                 }
             }
@@ -459,17 +459,17 @@ impl App {
     // --- tab access -----------------------------------------------------------
 
     pub(crate) fn active_webview(&self) -> Option<&WebView> {
-        self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.webview.as_ref())
+        self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.webview())
     }
 
     /// Mutable access to the active engine-free read tab's state, if any.
     pub(crate) fn active_native_mut(&mut self) -> Option<&mut NativeRead> {
-        self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.native.as_mut())
+        self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.native_mut())
     }
 
     /// Whether the active tab is an engine-free `:error`/`:errors` vim tab.
     pub(crate) fn active_is_vim(&self) -> bool {
-        self.active.and_then(|i| self.tabs.get(i)).is_some_and(|t| t.vim.is_some())
+        self.active.and_then(|i| self.tabs.get(i)).is_some_and(|t| t.vim().is_some())
     }
 
     pub(crate) fn active_url(&self) -> Option<&str> {
@@ -480,11 +480,11 @@ impl App {
     /// navigation), falling back to the stored URL. `None` for terminal tabs.
     pub(crate) fn current_url(&self) -> Option<String> {
         let tab = self.tabs.get(self.active?)?;
-        if tab.term.is_some() {
+        if tab.term().is_some() {
             return None;
         }
         // Engine-free read tab: the stored url is the canonical document URL.
-        let Some(wv) = &tab.webview else {
+        let Some(wv) = tab.webview() else {
             return Some(tab.url.clone());
         };
         if let Ok(u) = wv.url() {
@@ -501,10 +501,10 @@ impl App {
     pub(crate) fn refresh_active_url(&mut self) {
         let mut visited = None;
         if let Some(tab) = self.active.and_then(|i| self.tabs.get_mut(i)) {
-            if tab.term.is_some() {
+            if tab.term().is_some() {
                 return;
             }
-            let Some(wv) = &tab.webview else { return };
+            let Some(wv) = tab.webview() else { return };
             if let Ok(u) = wv.url() {
                 if u.starts_with("http") {
                     tab.url = u.clone();
@@ -628,7 +628,7 @@ impl App {
         let Some((tab, rect)) = self.pane_at_pixel(self.cursor_pos.0, self.cursor_pos.1) else {
             return;
         };
-        if self.tabs.get(tab).is_some_and(|t| t.term.is_some()) {
+        if self.tabs.get(tab).is_some_and(|t| t.term().is_some()) {
             // If the program enabled mouse reporting (vim `mouse=a`, less, tmux…),
             // hand it the wheel so IT scrolls; otherwise page our own scrollback.
             if self.term_mouse_wheel(tab, rect, dy_lines) {
@@ -636,7 +636,7 @@ impl App {
             }
             let lines = (dy_lines * 3.0).round() as i32;
             if lines != 0 {
-                if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term.as_mut()) {
+                if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
                     s.pty.scroll_display(lines);
                     self.window.request_redraw();
                 }
@@ -646,7 +646,7 @@ impl App {
         // Native read pane: scroll its own offset, clamped to its pane height.
         let dy = (-dy_lines * 80.0).round() as i32;
         if dy != 0 {
-            if let Some(nr) = self.tabs.get_mut(tab).and_then(|t| t.native.as_mut()) {
+            if let Some(nr) = self.tabs.get_mut(tab).and_then(|t| t.native_mut()) {
                 let max = (nr.layout.height - rect.h).max(0);
                 nr.scroll = (nr.scroll + dy).clamp(0, max);
                 self.window.request_redraw();
@@ -666,7 +666,7 @@ impl App {
         }
         self.torn_down = true;
         for tab in &mut self.tabs {
-            if let Some(session) = tab.term.take() {
+            if let Some(session) = tab.take_term() {
                 session.shutdown();
             }
         }
@@ -685,12 +685,12 @@ impl App {
         let mut tabs = Vec::new();
         let mut active = 0;
         for (i, tab) in self.tabs.iter().enumerate() {
-            if tab.url.starts_with("browser://") || tab.vim.is_some() {
+            if tab.url.starts_with("browser://") || tab.vim().is_some() {
                 continue;
             }
-            let kind = if tab.term.is_some() {
+            let kind = if tab.term().is_some() {
                 "term"
-            } else if tab.read || tab.native.is_some() {
+            } else if tab.read || tab.native().is_some() {
                 "read"
             } else if tab.research {
                 "research"

@@ -235,7 +235,7 @@ impl App {
         let line_h = self.painter.line_height().max(1);
         let cols = ((w as usize).saturating_sub(2 * 8)) / cw;
         let rows = (self.content_view_h() as usize) / line_h;
-        let Some(buf) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.vim.as_mut())
+        let Some(buf) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.vim_mut())
         else {
             return false;
         };
@@ -253,14 +253,14 @@ impl App {
 
     /// Whether the active tab is an engine-free read tab (native render).
     pub(crate) fn active_is_read_native(&self) -> bool {
-        self.active.and_then(|i| self.tabs.get(i)).is_some_and(|t| t.native.is_some())
+        self.active.and_then(|i| self.tabs.get(i)).is_some_and(|t| t.native().is_some())
     }
 
     /// Whether read-mode caret/visual selection is currently active.
     pub(crate) fn read_caret_active(&self) -> bool {
         self.active
             .and_then(|i| self.tabs.get(i))
-            .and_then(|t| t.native.as_ref())
+            .and_then(|t| t.native())
             .is_some_and(|n| n.caret.is_some())
     }
 
@@ -756,7 +756,7 @@ impl App {
         // keeps keyboard focus (there's no webview) and forwards keys to the PTY.
         if self.active_is_term() {
             // Leave copy/vi mode (if active) so the live grid takes input again.
-            if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
+            if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut())
             {
                 if s.pty.is_vi() {
                     s.pty.toggle_vi();
@@ -792,7 +792,7 @@ impl App {
         // into Alacritty's own vi mode — a vi cursor over the LIVE colored grid, with
         // grid selection + `selection_to_string` to yank. `i`/`Enter` resumes.
         if self.active_is_term() {
-            if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term.as_mut())
+            if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut())
             {
                 if !s.pty.is_vi() {
                     s.pty.toggle_vi();
