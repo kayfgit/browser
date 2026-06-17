@@ -1,0 +1,26 @@
+! Curated supplement to the bundled EasyList/EasyPrivacy/Peter-Lowe lists.
+! Forced-redirect / popunder / scam domains that aren't (yet) upstream go here.
+! One per line, Adblock Plus syntax: ||domain^  (matches the domain and subdomains).
+! Comment lines start with "!". Re-run a build after editing.
+
+! --- specific forced-redirect domains seen in the wild ---------------------------
+||proceedflow.com^
+||searchapp.space^
+
+! --- well-known popunder / malvertising ad networks (streaming-site redirects) ---
+||popads.net^
+||popcash.net^
+||propellerads.com^
+||propu.sh^
+||hilltopads.net^
+||hilltopads.com^
+||adsterra.com^
+||ad-maven.com^
+||admaven.com^
+||onclickads.net^
+||onclkds.com^
+||clickadu.com^
+||popunder.net^
+||galaksion.com^
+||adskeeper.com^
+||stripchat-cdn.com^

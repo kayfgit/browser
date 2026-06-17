@@ -8,7 +8,7 @@ use crate::{clipboard_set, commands_document, parse_tab_flag, program_exists, Ap
 /// useful canonical spellings; ordered so the first prefix match is the best one.
 pub(crate) const COMMANDS: &[&str] = &[
     "open", "tabopen", "edit", "yank", "read", "research", "reload", "resize", "res", "resources", "reopen",
-    "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock",
+    "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock", "downloads",
     "popups", "pops", "mute", "audio", "css", "next", "tabnext", "tabprev",
     "prev", "back", "forward", "fullscreen", "move", "commands", "help", "version", "close",
     "vsplit", "split", "write", "wq", "quit",
@@ -122,14 +122,14 @@ impl App {
             "reopen" | "undo" => self.reopen_closed(),
             // Toggle the uBlock-style content blocker. Applies live to every open web
             // tab (no reload) and is the default for new tabs; persisted in the session.
-            "ads" | "adblock" => self.toggle_adblock(),
+            // `:ads` is now the single blocker switch: ads, trackers, forced/auto
+            // redirects, popunders, and drive-by executable downloads. `:pops`/`:popups`
+            // are kept as aliases so old habits don't error.
+            "ads" | "adblock" | "pops" | "popups" => self.toggle_adblock(),
+            // Allow/deny executable-installer downloads (off by default — blocks
+            // drive-by `.exe`/`.msi` installs).
+            "downloads" | "dl" => self.toggle_downloads(),
             // Live page-feature toggles (apply instantly to every open web tab).
-            "pops" | "popups" => {
-                self.block_popups = !self.block_popups;
-                self.broadcast_toggle("popups", self.block_popups);
-                self.set_status(if self.block_popups { "popups blocked" } else { "popups allowed" });
-                self.window.request_redraw();
-            }
             "mute" | "audio" => {
                 self.mute = !self.mute;
                 self.broadcast_toggle("mute", self.mute);

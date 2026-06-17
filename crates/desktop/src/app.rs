@@ -3,6 +3,8 @@
 //! status/error reporting, wheel routing, teardown, and session save/restore.
 
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use tao::event_loop::EventLoopProxy;
@@ -48,6 +50,19 @@ pub(crate) enum UserEvent {
     /// Redirect the active tab to this URL (e.g. de-proxying a `translate.goog`
     /// navigation back to the original site).
     Navigate(String),
+    /// The blocker stopped a forced/auto redirect (a scripted cross-origin jump
+    /// with no user gesture, an ad-host navigation, or a `<meta refresh>` jump) →
+    /// note it in the status bar. Carries the target URL that was suppressed.
+    RedirectBlocked(String),
+    /// The blocker denied a scripted new window / pop-up (a popunder to a scam tab,
+    /// `window.open`, or `target=_blank` while adblock is on) → note it in the status
+    /// bar. Carries the target URL (or `about:blank` for a shell popunder).
+    PopupBlocked(String),
+    /// The download guard blocked an executable/installer download → warn in the status
+    /// bar. Carries the file name. Toggle `:downloads` to permit such files.
+    DownloadBlocked(String),
+    /// The network blocklist engine finished compiling and is now live.
+    BlocklistReady,
     /// A `:te` command finished: combined output and exit code.
     TermDone { cmd: String, output: String, code: Option<i32> },
     /// Raw output bytes from a terminal's PTY → feed to its native VT engine.
@@ -134,10 +149,40 @@ pub(crate) struct App {
     /// When true, the uBlock-style content blocker ([`ADBLOCK_JS`]) is injected
     /// into web tabs. Toggled with `:ads`; persisted across sessions.
     pub(crate) adblock: bool,
+    /// A live mirror of [`adblock`](Self::adblock) shared (cloned `Arc`) into every
+    /// web tab's navigation handler, so the native top-level redirect guard
+    /// (ad-host navigations) honours `:ads` without rebuilding the webviews. Kept in
+    /// lock-step via [`set_adblock`](Self::set_adblock).
+    pub(crate) adblock_on: Arc<AtomicBool>,
+    /// Whether the OS window currently holds focus, shared (cloned `Arc`) into every
+    /// web tab's navigation handler. A blurred browser has no business navigating
+    /// itself to another site, so a cross-origin top navigation that starts while this
+    /// is false is the "redirect the moment you alt-tab away" hijack — and is blocked.
+    pub(crate) window_focused: Arc<AtomicBool>,
+    /// Whether to allow downloads of executable/installer file types. Off by default:
+    /// a drive-by `.exe`/`.msi` (the "you almost clicked install" trap) is blocked with
+    /// a warning. Toggled with `:downloads`. Shared into every tab's download handler.
+    pub(crate) allow_risky_downloads: Arc<AtomicBool>,
+    /// When a page last signalled it's being "left" — the cursor exiting the window, a
+    /// blur, or the tab being hidden. Scummy players fire their forced redirect on
+    /// exactly those events (NOT on a click), so a cross-origin top-navigation that
+    /// lands within a beat of this is the "you moved the mouse away → scam" hijack. The
+    /// page reports it over IPC; the navigation handler reads it. Shared (cloned `Arc`).
+    pub(crate) leave_intent: Arc<Mutex<Option<Instant>>>,
+    /// Shell-initiated navigation intent for the native redirect guard
+    /// ([`navguard`](crate::navguard)). The shell stamps it just before a programmatic
+    /// jump WebView2 reports as not-user-initiated — `H`/`L` history, the translate
+    /// de-proxy `load_url` — so the guard doesn't mistake those for a forced redirect.
+    /// Shared (cloned `Arc`) into every web tab's `NavigationStarting` handler.
+    pub(crate) nav_intent: crate::navguard::NavIntent,
+    /// The uBlock-style network blocklist engine ([`blocklist`](crate::blocklist)),
+    /// shared (cloned `Arc`) into every tab's navigation handler. It blocks navigations
+    /// to known ad/redirect/malware domains BY NAME — the race-free primary guard, the
+    /// way Brave/uBlock do it. `None` until it finishes compiling just after launch.
+    pub(crate) blocker: crate::blocklist::SharedBlocker,
     /// Live page-feature toggles ([`FEATURES_JS`]), applied to every web tab without
-    /// a reload. `block_popups` neuters `window.open`; `mute` keeps all media muted;
-    /// `no_css` disables every stylesheet. Session-only (reset to off each launch).
-    pub(crate) block_popups: bool,
+    /// a reload. `mute` keeps all media muted; `no_css` disables every stylesheet.
+    /// Session-only (reset to off each launch). (Pop-up blocking moved under `:ads`.)
     pub(crate) mute: bool,
     pub(crate) no_css: bool,
     /// Shell command for `:te` (program + args), set via `:config`.
@@ -579,6 +624,13 @@ impl App {
 
     // --- commands -------------------------------------------------------------
 
+    /// Set the adblock flag, keeping the shared atomic (read by every tab's
+    /// navigation handler) in lock-step with the canonical bool.
+    pub(crate) fn set_adblock(&mut self, on: bool) {
+        self.adblock = on;
+        self.adblock_on.store(on, Ordering::Relaxed);
+    }
+
     /// Set an informational status message (rendered dim). Clears the error flag.
     pub(crate) fn set_status(&mut self, msg: impl Into<String>) {
         self.status = msg.into();
@@ -734,7 +786,7 @@ impl App {
         self.history = s.history;
         self.history.truncate(HISTORY_CAP);
         self.nojs = s.nojs;
-        self.adblock = s.adblock;
+        self.set_adblock(s.adblock);
         if s.zoom != 1.0 {
             self.set_zoom(s.zoom);
         }

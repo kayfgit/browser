@@ -5,14 +5,19 @@
 
 use anyhow::Result;
 use wry::dpi::{PhysicalPosition, PhysicalSize};
-use wry::{PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewBuilderExtWindows};
+use wry::{
+    NewWindowResponse, PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewBuilderExtWindows,
+};
 
 use crate::panes::{PaneRect, FOCUS_BORDER};
 use crate::term::TermSession;
 use crate::{
-    read_view, session, vim, App, ModeKind, UserEvent, ADBLOCK_JS, BRIDGE_JS, BROWSER_ARGS,
-    CARET_JS, CLOSED_CAP, FEATURES_JS, FIND_JS, RESEARCH_JS,
+    ad_hosts_js, read_view, session, vim, App, ModeKind, UserEvent, ADBLOCK_JS, AD_HOSTS,
+    BRIDGE_JS, BROWSER_ARGS, CARET_JS, CLOSED_CAP, FEATURES_JS, FIND_JS, IPC_PRELUDE, RESEARCH_JS,
 };
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+use tao::platform::windows::WindowExtWindows;
 
 /// Where a content webview gets its page from.
 pub(crate) enum Source {
@@ -317,6 +322,32 @@ impl App {
         let ipc_proxy = self.proxy.clone();
         let load_proxy = self.proxy.clone();
         let nav_proxy = self.proxy.clone();
+        // Shared with the App so `:ads` toggles the native redirect guard live.
+        let adblock_on = self.adblock_on.clone();
+        let popup_adblock = self.adblock_on.clone();
+        let popup_proxy = self.proxy.clone();
+        // Live window-focus check (HWND + the queued flag as backstop) + this tab's
+        // current top origin: together they detect the "redirect the instant you alt-tab
+        // away" hijack (a cross-origin top navigation that starts while we're blurred).
+        let focus_flag = self.window_focused.clone();
+        let our_hwnd = self.window.hwnd();
+        let cur_origin = Arc::new(Mutex::new(String::new()));
+        let nav_origin = cur_origin.clone();
+        // Page-reported "the cursor/focus is leaving" timestamp: the IPC handler stamps
+        // it, the navigation handler reads it (set directly here, not via the event
+        // loop, so it lands before the redirect's navigation does).
+        let leave_set = self.leave_intent.clone();
+        let leave_read = self.leave_intent.clone();
+        // Page-reported "a TRUSTED gesture landed on a real cross-site link/submit" — the
+        // one signal that a cross-site top navigation is genuinely wanted. Stamped here,
+        // directly (no event-loop hop), so it lands before the navigation it authorises
+        // reaches the native guard. Shared (cloned `Arc`) with that guard.
+        let intent_set = self.nav_intent.clone();
+        // The uBlock-style domain blocklist engine — the race-free primary redirect guard.
+        let blocker = self.blocker.clone();
+        // Download guard: block executable/installer types unless the user opted in.
+        let dl_allow = self.allow_risky_downloads.clone();
+        let dl_proxy = self.proxy.clone();
         let mut builder = WebViewBuilder::new();
         builder = match source {
             Source::Url(u) => builder.with_url(u),
@@ -332,20 +363,37 @@ impl App {
             // Browser process flags — see BROWSER_ARGS. MUST match every other
             // webview (terminal included) or WebView2 creation fails with 0x8007139F.
             .with_additional_browser_args(BROWSER_ARGS)
-            // The shell bridge always loads; the adblocker loads too but starts in
-            // the shell's current state (baked as `__adblockDefault`), so `:ads` can
-            // flip it live (`__setAdblock`) without a reload. `extra_init` (e.g.
-            // research-mode DOM pruning) is appended last. All run in the same
-            // document-create pass.
+            // The blocker is injected into EVERY frame (for_main_only = false), not
+            // just the top document: scummy sites drive popunders and forced redirects
+            // from cross-origin player/ad iframes, which the old main-frame-only
+            // injection left completely unguarded. It starts in the shell's current
+            // state (baked as `__adblockDefault`), so `:ads` flips it live in the top
+            // frame via `__setAdblock` (sub-frames adopt the new state on reload). The
+            // host blocklist is baked once from Rust's AD_HOSTS so the page blocker and
+            // the native redirect guard share one source of truth. `window.ipc` is
+            // absent in sub-frames, so the blocker's status reports are main-frame-only
+            // (guarded), but the blocking itself is universal.
+            .with_initialization_script_for_main_only(
+                {
+                    let ab = self.adblock;
+                    let hosts = ad_hosts_js();
+                    format!(
+                        "{IPC_PRELUDE}\nwindow.__adHosts={hosts};\n\
+                         window.__adblockDefault={ab};\n{ADBLOCK_JS}"
+                    )
+                },
+                false,
+            )
+            // The shell bridge (keybindings, focus reclaim, hint mode) and the page-
+            // feature toggles stay MAIN-FRAME-ONLY — focus/IPC plumbing must not run
+            // per iframe. They start in the shell's current state too, so a tab opened
+            // while a toggle is active is already in that state. `extra_init` (e.g.
+            // research-mode DOM pruning) is appended last.
             .with_initialization_script({
-                let ab = self.adblock;
-                // Page-feature toggles start in the shell's current state too, so a
-                // tab opened while a toggle is active is already in that state.
-                let (p, m, c) = (self.block_popups, self.mute, self.no_css);
+                let (m, c) = (self.mute, self.no_css);
                 let mut init = format!(
-                    "{BRIDGE_JS}\n{FIND_JS}\n{CARET_JS}\n\
-                     window.__adblockDefault={ab};\n{ADBLOCK_JS}\n\
-                     window.__featureDefaults={{popups:{p},mute:{m},css:{c}}};\n{FEATURES_JS}"
+                    "{IPC_PRELUDE}\n{BRIDGE_JS}\n{FIND_JS}\n{CARET_JS}\n\
+                     window.__featureDefaults={{mute:{m},css:{c}}};\n{FEATURES_JS}"
                 );
                 if !extra_init.is_empty() {
                     init.push('\n');
@@ -354,6 +402,22 @@ impl App {
                 init
             })
             .with_ipc_handler(move |req| match req.body().as_str() {
+                // The cursor/focus is leaving the page — stamp the moment directly (no
+                // event-loop hop) so the navigation handler sees it before a redirect
+                // fired by the same `mouseleave`/`blur` reaches it.
+                "nav-leave" => {
+                    if let Ok(mut g) = leave_set.lock() {
+                        *g = Some(std::time::Instant::now());
+                    }
+                }
+                // A trusted click/keypress on a real cross-site link or submit control:
+                // authorise the cross-site top navigation it's about to trigger. Stamped
+                // directly so it beats that navigation to the native guard.
+                "nav-intent" => {
+                    if let Ok(mut g) = intent_set.lock() {
+                        *g = Some(std::time::Instant::now());
+                    }
+                }
                 "leave-passthrough" | "insert-escape" | "insert-blur" => {
                     let _ = ipc_proxy.send_event(UserEvent::ExitToNormal);
                 }
@@ -391,6 +455,13 @@ impl App {
                     // A hint in new-tab mode resolved to a link: `hint-open:<href>`.
                     } else if let Some(href) = body.strip_prefix("hint-open:") {
                         let _ = ipc_proxy.send_event(UserEvent::HintOpen(href.to_string()));
+                    // The page blocker suppressed a forced/auto redirect: surface the
+                    // target in the status bar. `redirect-blocked:<url>`.
+                    } else if let Some(url) = body.strip_prefix("redirect-blocked:") {
+                        let _ = ipc_proxy.send_event(UserEvent::RedirectBlocked(url.to_string()));
+                    // The page blocker neutered a scripted pop-up. `popup-blocked:<url>`.
+                    } else if let Some(url) = body.strip_prefix("popup-blocked:") {
+                        let _ = ipc_proxy.send_event(UserEvent::PopupBlocked(url.to_string()));
                     }
                 }
             })
@@ -411,14 +482,99 @@ impl App {
                         return false;
                     }
                 }
+                // Forced/auto redirect guard: cancel any top-level navigation to a known
+                // ad/redirect/malware DOMAIN, however it was triggered (scripted redirect,
+                // `<meta refresh>`, or a server 3xx). The EasyList-style engine is the
+                // primary, race-free check — it blocks by name like uBlock; `url_is_ad_host`
+                // is the tiny always-on fallback for the beat before the engine compiles.
+                // Honours `:ads` live.
+                if adblock_on.load(Ordering::Relaxed) {
+                    let src = nav_origin.lock().unwrap().clone();
+                    if crate::blocklist::blocks_navigation(&blocker, &url, &src)
+                        || url_is_ad_host(&url)
+                    {
+                        let _ = nav_proxy.send_event(UserEvent::RedirectBlocked(url));
+                        return false;
+                    }
+                }
+                // Alt-tab redirect trap: animepahe-style sites wait until you leave the
+                // window (alt-tab / click another app), then have the cross-origin
+                // player iframe jump the TOP frame to a scam. That cross-origin
+                // `top.location` write bypasses the page-side `location` traps (it's an
+                // exotic cross-origin Location object), so it can only be caught here. A
+                // foreground browser never navigates ITSELF to a different origin while
+                // blurred, so if the window isn't focused and this is a cross-origin
+                // jump away from the current page, it's the hijack — cancel it.
+                let target = origin_of(&url);
+                // Two "the user didn't ask for this" signals:
+                //   * away  — window isn't foreground (alt-tab / clicked another app),
+                //             read live so it isn't racing the queued focus event;
+                //   * leaving — the page just reported the cursor exiting the window / a
+                //             blur / the tab hiding, which is what these players fire
+                //             their redirect on (it happens while still foreground, so
+                //             `away` alone misses it).
+                let away = !window_is_foreground(our_hwnd) || !focus_flag.load(Ordering::Relaxed);
+                let leaving = leave_read
+                    .lock()
+                    .ok()
+                    .and_then(|g| *g)
+                    .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(900));
+                if adblock_on.load(Ordering::Relaxed) && (away || leaving) && !target.is_empty() {
+                    let prev = nav_origin.lock().unwrap().clone();
+                    if !prev.is_empty() && target != prev {
+                        let _ = nav_proxy.send_event(UserEvent::RedirectBlocked(url));
+                        return false;
+                    }
+                }
+                // Allowed navigation → remember where we now are, so the next blurred
+                // cross-origin test compares against the right origin.
+                if !target.is_empty() {
+                    *nav_origin.lock().unwrap() = target;
+                }
                 true
+            })
+            // Popunder / forced-popup guard. Scummy sites spawn scam tabs via
+            // `window.open` (often an `about:blank` shell they then navigate) or
+            // `target=_blank` on ANY click — this native handler fires for every frame
+            // and every variant, which the page-side neuter alone can't guarantee. In
+            // this browser new tabs are opened via hints (`F`) over our own IPC, NOT
+            // `window.open`, so while adblock is on we deny scripted new windows
+            // outright and note the blocked target. `:ads` off restores normal popups.
+            .with_new_window_req_handler(move |url, _features| {
+                if popup_adblock.load(Ordering::Relaxed) {
+                    let _ = popup_proxy.send_event(UserEvent::PopupBlocked(url));
+                    NewWindowResponse::Deny
+                } else {
+                    NewWindowResponse::Allow
+                }
+            })
+            // Drive-by install guard. A scam page (or a redirect we missed) can kick off
+            // a download of an `.exe`/`.msi`/etc. that a careless click would run. Block
+            // executable/installer types by default and warn loudly; everything else
+            // (zip, pdf, images, media …) downloads normally. `:downloads` opts in.
+            .with_download_started_handler(move |url, path| {
+                if dl_allow.load(Ordering::Relaxed) || !is_risky_download(&url, path) {
+                    return true;
+                }
+                let name = download_name(&url, path);
+                let _ = dl_proxy.send_event(UserEvent::DownloadBlocked(name));
+                false
             });
         if disable_js {
             builder = builder.with_javascript_disabled();
         }
-        builder
-            .build_as_child(&*self.window)
-            .map_err(|e| anyhow::anyhow!("{e}"))
+        let webview =
+            builder.build_as_child(&*self.window).map_err(|e| anyhow::anyhow!("{e}"))?;
+        // The native redirect guard: cancels forced (non-user-initiated) cross-site top
+        // navigations via WebView2's own `IsUserInitiated` — the structural fix the
+        // URL-only wry handler above can't be. Best-effort; the wry guards still stand.
+        crate::navguard::install(
+            &webview,
+            self.adblock_on.clone(),
+            self.nav_intent.clone(),
+            self.proxy.clone(),
+        );
+        Ok(webview)
     }
 
     /// Kick off a background readability extraction into the Document model; the
@@ -717,6 +873,10 @@ impl App {
     }
 
     pub(crate) fn history(&mut self, forward: bool) {
+        // Stamp shell-navigation intent: a scripted history jump reads as not-user-
+        // initiated to the native guard, so without this a back/forward across sites
+        // would be cancelled as a "forced redirect".
+        crate::navguard::mark(&self.nav_intent);
         if let Some(wv) = self.active_webview() {
             let js = if forward { "history.forward();" } else { "history.back();" };
             let _ = wv.evaluate_script(js);
@@ -728,14 +888,27 @@ impl App {
     /// immediately; already-loaded requests aren't undone — reload for a clean slate)
     /// and updates the default baked into newly opened tabs.
     pub(crate) fn toggle_adblock(&mut self) {
-        self.adblock = !self.adblock;
-        let on = self.adblock;
+        let on = !self.adblock;
+        self.set_adblock(on); // keeps the native guard's shared flag in lock-step
         for tab in &self.tabs {
             if let Some(wv) = tab.webview() {
                 let _ = wv.evaluate_script(&format!("window.__setAdblock&&window.__setAdblock({on})"));
             }
         }
         self.set_status(if on { "adblock ON — ads blocked" } else { "adblock OFF — ads allowed" });
+        self.window.request_redraw();
+    }
+
+    /// Toggle whether executable/installer downloads (`.exe`, `.msi`, …) are allowed.
+    /// Off by default so a drive-by install is blocked; flip it on to grab a real one.
+    pub(crate) fn toggle_downloads(&mut self) {
+        let on = !self.allow_risky_downloads.load(Ordering::Relaxed);
+        self.allow_risky_downloads.store(on, Ordering::Relaxed);
+        self.set_status(if on {
+            "downloads ON — executable/installer files allowed"
+        } else {
+            "downloads OFF — executable/installer files blocked"
+        });
         self.window.request_redraw();
     }
 
@@ -831,6 +1004,86 @@ pub(crate) fn js_string(s: &str) -> String {
     out
 }
 
+/// Whether `url`'s HOST matches a known ad/tracker host in [`AD_HOSTS`] — the native
+/// half of the forced-redirect guard. Only host-style entries are considered (those
+/// without a `/`); the path-fragment entries (e.g. `/pagead/`) describe sub-resource
+/// URLs the page-side blocker handles, not top-level destinations, so matching them
+/// against a host would never fire anyway. Substring match (mirrors the page-side
+/// `blocked()`), so `adservice.google.` catches `adservice.google.com`.
+pub(crate) fn url_is_ad_host(url: &str) -> bool {
+    let Some(host) = url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+    else {
+        return false;
+    };
+    AD_HOSTS
+        .iter()
+        .any(|h| !h.contains('/') && host.contains(h))
+}
+
+/// The ascii origin (`scheme://host[:port]`) of an http(s) `url`, or `""` when it can't
+/// be parsed, has no host, or isn't http(s). Non-web schemes (`about:`/`data:`/`file:`)
+/// deliberately yield `""` so they never read as a "different origin" in the blurred-
+/// redirect check — we only block jumps between real sites.
+fn origin_of(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(u) if u.host().is_some() && matches!(u.scheme(), "http" | "https") => {
+            u.origin().ascii_serialization()
+        }
+        _ => String::new(),
+    }
+}
+
+/// Whether our top-level window currently holds OS foreground focus. Read LIVE (via
+/// `GetForegroundWindow`) rather than from a queued `WindowEvent::Focused`, so the
+/// blurred-redirect guard doesn't race the navigation callback: when a player iframe
+/// fires `top.location = scam` the instant you alt-tab, the OS focus change is already
+/// visible here even if our event loop hasn't drained the focus event yet.
+fn window_is_foreground(hwnd: isize) -> bool {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    unsafe { GetForegroundWindow() == HWND(hwnd as *mut core::ffi::c_void) }
+}
+
+/// Executable/installer extensions a drive-by download must not run unprompted.
+const RISKY_DOWNLOAD_EXTS: &[&str] = &[
+    "exe", "msi", "msix", "msp", "scr", "bat", "cmd", "com", "cpl", "pif", "jar", "apk",
+    "app", "dmg", "pkg", "deb", "rpm", "vbs", "vbe", "jse", "wsf", "wsh", "ps1", "psm1",
+    "reg", "hta", "lnk", "gadget", "inf", "scf", "appx", "appxbundle",
+];
+
+/// The lower-cased file extension of a download, from the suggested save `path` first
+/// (most reliable) then the URL's last path segment.
+fn download_ext(url: &str, path: &std::path::Path) -> Option<String> {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .or_else(|| {
+            let seg = url::Url::parse(url).ok()?.path_segments()?.next_back()?.to_string();
+            seg.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase())
+        })
+}
+
+/// Whether a download targets an executable/installer file type (see
+/// [`RISKY_DOWNLOAD_EXTS`]).
+fn is_risky_download(url: &str, path: &std::path::Path) -> bool {
+    download_ext(url, path).is_some_and(|e| RISKY_DOWNLOAD_EXTS.contains(&e.as_str()))
+}
+
+/// A short human label for a blocked download: the save-path file name, else the URL's
+/// last path segment, else the raw URL.
+fn download_name(url: &str, path: &std::path::Path) -> String {
+    if let Some(n) = path.file_name().and_then(|n| n.to_str()) {
+        if !n.is_empty() {
+            return n.to_string();
+        }
+    }
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.path_segments()?.next_back().map(str::to_string))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| url.to_string())
+}
+
 /// Whether `url` points at Google Translate's page-proxy (`*.translate.goog`).
 pub(crate) fn is_translate_proxy(url: &str) -> bool {
     url::Url::parse(url)
@@ -892,7 +1145,11 @@ pub(crate) fn wry_rect(r: PaneRect) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::{deproxy_translate, is_translate_proxy, parse_tab_flag};
+    use super::{
+        deproxy_translate, download_name, is_risky_download, is_translate_proxy, origin_of,
+        parse_tab_flag, url_is_ad_host,
+    };
+    use std::path::Path;
 
     #[test]
     fn tab_flag_only_matches_whole_token() {
@@ -936,5 +1193,57 @@ mod tests {
     fn non_translate_urls_are_left_alone() {
         assert!(!is_translate_proxy("https://example.com/translate"));
         assert_eq!(deproxy_translate("https://example.com/"), None);
+    }
+
+    #[test]
+    fn ad_host_redirect_guard_matches_hosts_not_paths() {
+        // Host-style entries match the URL host (substring, so subdomains count).
+        assert!(url_is_ad_host("https://googleads.g.doubleclick.net/pagead/x"));
+        assert!(url_is_ad_host("http://ads.pubmatic.com/AdServer"));
+        // The `adservice.google.` trailing-dot entry catches the real TLD'd host.
+        assert!(url_is_ad_host("https://adservice.google.com/"));
+        // Ordinary destinations are never blocked.
+        assert!(!url_is_ad_host("https://example.com/article"));
+        assert!(!url_is_ad_host("https://news.ycombinator.com/"));
+        // Path-fragment entries (e.g. `/pagead/`) must NOT block a benign host that
+        // merely has such a path — those are for the page-side sub-resource blocker.
+        assert!(!url_is_ad_host("https://example.com/pagead/info"));
+        // Garbage / non-http inputs don't panic and don't match.
+        assert!(!url_is_ad_host("not a url"));
+    }
+
+    #[test]
+    fn origin_of_isolates_web_origins() {
+        assert_eq!(origin_of("https://animepahe.pw/play/x"), "https://animepahe.pw");
+        // Port and scheme are part of the origin; path/query are not.
+        assert_eq!(origin_of("http://localhost:8731/a?b=1"), "http://localhost:8731");
+        // A cross-origin scam URL has a different origin than the page above.
+        assert_ne!(origin_of("https://scam.example/win"), origin_of("https://animepahe.pw/"));
+        // Non-web schemes and junk yield "" so they never count as "a different origin".
+        assert_eq!(origin_of("about:blank"), "");
+        assert_eq!(origin_of("file:///C:/x.html"), "");
+        assert_eq!(origin_of("data:text/html,hi"), "");
+        assert_eq!(origin_of("nonsense"), "");
+    }
+
+    #[test]
+    fn download_guard_flags_executables_only() {
+        // Executable / installer types are risky (from the save path)…
+        assert!(is_risky_download("https://x.test/get", Path::new("setup.exe")));
+        assert!(is_risky_download("https://x.test/a", Path::new("pkg.msi")));
+        assert!(is_risky_download("https://x.test/a", Path::new("s.BAT"))); // case-insensitive
+        // …or inferred from the URL when the save path has no extension.
+        assert!(is_risky_download("https://x.test/download/installer.exe", Path::new("installer")));
+        // Ordinary downloads are allowed through.
+        assert!(!is_risky_download("https://x.test/a", Path::new("movie.mp4")));
+        assert!(!is_risky_download("https://x.test/doc.pdf", Path::new("doc.pdf")));
+        assert!(!is_risky_download("https://x.test/archive.zip", Path::new("archive.zip")));
+    }
+
+    #[test]
+    fn download_name_prefers_file_name() {
+        assert_eq!(download_name("https://x.test/d", Path::new("C:/Users/me/setup.exe")), "setup.exe");
+        // Falls back to the URL's last segment when the path has no file name.
+        assert_eq!(download_name("https://x.test/path/evil.exe", Path::new("")), "evil.exe");
     }
 }

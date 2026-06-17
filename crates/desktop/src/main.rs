@@ -24,12 +24,14 @@ use tao::keyboard::ModifiersState;
 use tao::window::WindowBuilder;
 
 mod app;
+mod blocklist;
 mod chrome;
 mod commands;
 mod draw;
 mod find;
 mod hints;
 mod keys;
+mod navguard;
 mod pages;
 mod panes;
 mod procmon;
@@ -80,6 +82,19 @@ const TERM_PAD: i32 = 4;
 const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,\
      Translate,msAutoTranslate --autoplay-policy=no-user-gesture-required";
 
+/// Defines `window.__post`, the ONE safe path for page→shell IPC, prepended to every
+/// injected bundle so it exists before anything posts. wry builds an `http::Uri` from
+/// the *sender frame's* URL and `unwrap()`s it (`webview2/mod.rs`); a post from a frame
+/// whose URL isn't a valid http(s) URI — a `file://` page, or an `about:blank` / `data:`
+/// / `blob:` ad iframe — panics inside the FFI callback and ABORTS the whole process.
+/// So `__post` only forwards when the frame is http(s); elsewhere it silently drops the
+/// message (those pages lose IPC niceties like focus-reclaim, but they no longer crash).
+const IPC_PRELUDE: &str = r#"
+window.__post = window.__post || function (m) {
+  try { if (window.ipc && /^https?:$/.test(location.protocol)) window.ipc.postMessage(m); } catch (e) {}
+};
+"#;
+
 /// Injected into every page. Reads a synchronous `window.__mode` flag (kept in
 /// sync by the shell) and, per mode, intercepts exactly the keys the shell owns.
 /// In `insert` it takes Escape (leave) and Ctrl+V (to passthrough) and lets the
@@ -91,7 +106,7 @@ const BRIDGE_JS: &str = r#"
   if (window.__shellBridge) return;
   window.__shellBridge = true;
   if (typeof window.__mode === 'undefined') window.__mode = 'normal';
-  function post(m) { if (window.ipc) window.ipc.postMessage(m); }
+  function post(m) { window.__post(m); }
   function editable(el) {
     if (!el) return false;
     var tag = el.tagName;
@@ -322,13 +337,13 @@ const HINT_JS: &str = r#"
         // Defer focusing until the shell has handed the webview OS focus, so the
         // field (not the document body) ends up focused; then enter passthrough.
         window.__hintTarget = el;
-        if (window.ipc) window.ipc.postMessage('hint-edit');
+        window.__post('hint-edit');
       } else if (nt && href) {
         // New-tab mode on a real link: let the shell open it as a new tab.
-        if (window.ipc) window.ipc.postMessage('hint-open:' + href);
+        window.__post('hint-open:' + href);
       } else {
         activate(el);
-        if (window.ipc) window.ipc.postMessage('hint-exit');
+        window.__post('hint-exit');
       }
     }
   };
@@ -380,48 +395,77 @@ const RESEARCH_JS: &str = r#"
 })();
 "#;
 
+/// Hostnames / URL fragments the blocker drops (substring match, lower-cased).
+/// Kept to well-known ad-exchange, analytics and tracker endpoints to avoid false
+/// hits. This is the single source of truth: it's baked into the page blocker as
+/// `window.__adHosts` (see [`ad_hosts_js`]) AND consulted by the native navigation
+/// guard ([`url_is_ad_host`]) so a forced redirect to any of these hosts is stopped
+/// regardless of how it was triggered (script, `<meta refresh>`, or a server 3xx).
+/// Entries containing `/` are path fragments (sub-resource paths) and are ignored
+/// by the host-only native guard.
+pub(crate) const AD_HOSTS: &[&str] = &[
+    "doubleclick.net", "googlesyndication.com", "googleadservices.com",
+    "google-analytics.com", "googletagmanager.com", "googletagservices.com",
+    "adservice.google.", "pagead2.googlesyndication", "amazon-adsystem.com",
+    "adnxs.com", "adsrvr.org", "rubiconproject.com", "pubmatic.com", "openx.net",
+    "criteo.com", "criteo.net", "taboola.com", "outbrain.com", "scorecardresearch.com",
+    "quantserve.com", "moatads.com", "adcolony.com", "applovin.com", "zedo.com",
+    "bidswitch.net", "casalemedia.com", "sharethrough.com", "smartadserver.com",
+    "teads.tv", "3lift.com", "yieldmo.com", "contextweb.com", "gumgum.com",
+    "indexww.com", "media.net", "mgid.com", "revcontent.com", "adform.net",
+    "adroll.com", "bluekai.com", "demdex.net", "everesttech.net", "rlcdn.com",
+    "agkn.com", "crwdcntrl.net", "mathtag.com", "adsafeprotected.com",
+    "serving-sys.com", "flashtalking.com", "servedbyadbutler.com",
+    "hotjar.com", "mixpanel.com", "segment.io", "amplitude.com", "branch.io",
+    "onesignal.com", "clarity.ms", "fullstory.com", "heap.io", "nr-data.net",
+    "bugsnag.com", "optimizely.com", "chartbeat.com", "parsely.com",
+    "permutive.com", "cxense.com", "facebook.net/en_us/fbevents", "analytics.tiktok",
+    "ads.linkedin.com", "ads.pinterest.com", "ads.yahoo.com",
+    "/pagead/", "/adsbygoogle", "/gampad/", "/securepubads",
+    "youtube.com/api/stats/ads", "youtube.com/ptracking", "/get_midroll_",
+];
+
+/// Render [`AD_HOSTS`] as a JS array literal for `window.__adHosts`. The entries are
+/// static and contain no `"`/`\`, so a plain quote-join is safe.
+fn ad_hosts_js() -> String {
+    let mut s = String::from("[");
+    for (i, h) in AD_HOSTS.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push('"');
+        s.push_str(h);
+        s.push('"');
+    }
+    s.push(']');
+    s
+}
+
 /// uBlock-style content blocker, injected at document-start into every web tab
 /// while adblock is on. wry exposes no sub-resource request blocker (see
-/// [`RESEARCH_JS`]), so we do it page-side in three layers:
+/// [`RESEARCH_JS`]), so we do it page-side in four layers:
 ///   * network — wrap `fetch`/`XHR`/`sendBeacon` so requests to known ad/tracker
 ///     hosts resolve empty instead of hitting the network;
 ///   * DOM — a MutationObserver removes script/iframe/img/ins nodes that load from
 ///     those hosts (and `ins.adsbygoogle`) as the page builds itself;
 ///   * cosmetic — a `<style>` hides generic ad containers (EasyList-ish), plus
-///     YouTube's ad slots, and a 400ms tick skips/seeks past YouTube video ads.
+///     YouTube's ad slots, and a 400ms tick skips/seeks past YouTube video ads;
+///   * redirects — trap scripted navigation (`location` href/assign/replace) and
+///     `<meta refresh>` to stop forced/auto redirects (see the guard near the end).
 ///
-/// All three honour a live `on` flag: the shell flips it via `window.__setAdblock`
+/// All layers honour a live `on` flag: the shell flips it via `window.__setAdblock`
 /// on `:ads` (no reload needed), and bakes the initial value as `__adblockDefault`
-/// per tab so new tabs start in the current state.
+/// per tab so new tabs start in the current state. The host list arrives as
+/// `window.__adHosts` (baked from Rust's [`AD_HOSTS`], the single source of truth).
 const ADBLOCK_JS: &str = r#"
 (function () {
   if (window.__adblockInit) return;
   window.__adblockInit = true;
   var on = (typeof window.__adblockDefault === 'undefined') ? true : !!window.__adblockDefault;
 
-  // Hostnames / URL fragments to drop (substring match, lower-cased). Kept to
-  // well-known ad-exchange, analytics and tracker endpoints to avoid false hits.
-  var HOSTS = [
-    'doubleclick.net','googlesyndication.com','googleadservices.com',
-    'google-analytics.com','googletagmanager.com','googletagservices.com',
-    'adservice.google.','pagead2.googlesyndication','amazon-adsystem.com',
-    'adnxs.com','adsrvr.org','rubiconproject.com','pubmatic.com','openx.net',
-    'criteo.com','criteo.net','taboola.com','outbrain.com','scorecardresearch.com',
-    'quantserve.com','moatads.com','adcolony.com','applovin.com','zedo.com',
-    'bidswitch.net','casalemedia.com','sharethrough.com','smartadserver.com',
-    'teads.tv','3lift.com','yieldmo.com','contextweb.com','gumgum.com',
-    'indexww.com','media.net','mgid.com','revcontent.com','adform.net',
-    'adroll.com','bluekai.com','demdex.net','everesttech.net','rlcdn.com',
-    'agkn.com','crwdcntrl.net','mathtag.com','adsafeprotected.com',
-    'serving-sys.com','flashtalking.com','servedbyadbutler.com',
-    'hotjar.com','mixpanel.com','segment.io','amplitude.com','branch.io',
-    'onesignal.com','clarity.ms','fullstory.com','heap.io','nr-data.net',
-    'bugsnag.com','optimizely.com','chartbeat.com','parsely.com',
-    'permutive.com','cxense.com','facebook.net/en_us/fbevents','analytics.tiktok',
-    'ads.linkedin.com','ads.pinterest.com','ads.yahoo.com',
-    '/pagead/','/adsbygoogle','/gampad/','/securepubads',
-    'youtube.com/api/stats/ads','youtube.com/ptracking','/get_midroll_'
-  ];
+  // Hostnames / URL fragments to drop (substring match, lower-cased). Baked from
+  // Rust's AD_HOSTS (single source of truth, also used by the native redirect guard).
+  var HOSTS = (window.__adHosts && window.__adHosts.length) ? window.__adHosts : [];
   function blocked(url) {
     if (!on || !url) return false;
     try {
@@ -489,6 +533,7 @@ const ADBLOCK_JS: &str = r#"
           if (adNode(n)) { n.remove(); continue; }
           sweep(n);
           hideCosmetic(n);
+          defuseMetaRefresh(n);
         }
       }
     }).observe(document.documentElement, { childList: true, subtree: true });
@@ -617,42 +662,215 @@ const ADBLOCK_JS: &str = r#"
     } catch (e) {}
   }
 
+  // --- forced / auto redirect guard -------------------------------------------
+  // Stop a page yanking you somewhere you didn't ask to go. While blocking is on a
+  // CROSS-ORIGIN scripted navigation is cancelled when it's to a known ad/tracker host,
+  // OR an embedded frame (a video player / ad) is driving it, OR it isn't happening
+  // synchronously inside a real click/keypress (silent or timer-deferred jumps — the
+  // auto/forced-redirect patterns). Same-origin navigation and a genuine "click → other
+  // site" button keep working. Real <a> clicks navigate natively (they don't reach
+  // these setters), so they're never touched. `window.location = x` and
+  // `location.href = x` both funnel through the Location `href` setter
+  // (PutForwards=href); trapping href + assign + replace covers them all. <meta
+  // refresh> auto-jumps are defused separately below.
+  // "Is a real click/keypress being handled RIGHT NOW?" — true only synchronously
+  // inside a user-input event dispatch. A redirect fired straight from your click
+  // handler (a legit "Go" button) sees this true; one a script schedules for later via
+  // a timer — the scam "click anywhere, get bounced ~500ms later" trick — sees it
+  // false, so we catch the delayed jump that a looser "was there a click in the last
+  // few seconds" check would wave through. Cleared on the next macrotask, i.e. once the
+  // current event has finished dispatching.
+  var inUserEvent = false;
+  ['pointerdown', 'mousedown', 'click', 'keydown', 'touchstart'].forEach(function (t) {
+    try {
+      document.addEventListener(t, function () {
+        inUserEvent = true;
+        setTimeout(function () { inUserEvent = false; }, 0);
+      }, true);
+    } catch (e) {}
+  });
+  function crossOrigin(url) {
+    try { return new URL(url, document.baseURI).origin !== location.origin; }
+    catch (e) { return false; } // unparseable / relative → treat as same-origin (allow)
+  }
+  function redirectBlocked(url) {
+    if (!on || !url) return false;
+    if (blocked(url)) return true;
+    if (!crossOrigin(url)) return false; // same-origin nav (SPAs, real in-site links) is fine
+    // A cross-origin jump while an embedded frame holds focus is almost always that
+    // frame (a sketchy video player / ad) hijacking the page on your click — block it
+    // regardless of the gesture, since that's exactly the "click play → scam" pattern.
+    try { var ae = document.activeElement; if (ae && ae.tagName === 'IFRAME') return true; } catch (e) {}
+    // Otherwise block unless the jump is happening synchronously inside a genuine
+    // click/keypress (a real "go to this site" action). Silent or timer-deferred
+    // cross-origin jumps — the auto/forced-redirect patterns — are stopped.
+    return !inUserEvent;
+  }
+  // Status reports go ONLY from the top frame. The blocker runs in every frame, but
+  // wry builds an `http::Uri` from the *sender frame's* URL and unwraps it; a report
+  // from an `about:blank` / `data:` / `blob:` ad iframe would feed it an invalid URI
+  // and abort the whole process. Sub-frames still block — they just stay quiet.
+  var isTop = false;
+  try { isTop = (window.top === window); } catch (e) {}
+  function reportRedirect(url) { if (isTop) window.__post('redirect-blocked:' + url); }
+  function reportPopup(url) { if (isTop) window.__post('popup-blocked:' + url); }
+  // "The cursor is leaving the window" / the tab is being hidden — the event these
+  // players hang their forced redirect on (it fires while we're STILL foreground, so
+  // the shell's focus check alone misses it). Reported from EVERY frame, because the
+  // redirect usually fires from the cross-origin player iframe and its own mouseleave
+  // is the earliest signal; the shell then cancels a cross-origin top-jump that lands
+  // within a beat. Throttled so a flurry of boundary crossings isn't a flood of IPC.
+  var lastLeave = 0;
+  function reportLeave() {
+    if (!on) return;
+    var now = Date.now();
+    if (now - lastLeave < 200) return;
+    lastLeave = now;
+    window.__post('nav-leave');
+  }
+  try {
+    var de = document.documentElement;
+    if (de) de.addEventListener('mouseleave', reportLeave, true);
+    window.addEventListener('pagehide', reportLeave, true);
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) reportLeave();
+    }, true);
+  } catch (e) {}
+  // Cross-site navigation intent. The native guard cancels every cross-site TOP
+  // navigation unless the shell just saw legitimate intent — because at the engine
+  // level a forced redirect is indistinguishable from a real link click (these scripts
+  // hijack your click via a synthetic <a> or a transparent overlay, so WebView2 reports
+  // the jump as foreground AND user-initiated). The ONE trustworthy tell is here in the
+  // DOM: a navigation is wanted only when a TRUSTED (real, isTrusted) gesture lands on
+  // an actual cross-site link or form-submit control. Report exactly that; a synthetic
+  // click (isTrusted=false) or a non-link overlay <div> never matches, so its redirect
+  // gets no report and is cancelled. Top frame only — the frame the guard governs.
+  function navTargetCrossSite(t) {
+    try {
+      var a = (t && t.closest) ? t.closest('a[href]') : null;
+      if (a && a.href && !/^javascript:/i.test(a.href) && crossOrigin(a.href)) return true;
+      var sb = (t && t.closest) ? t.closest('button,input[type=submit],input[type=image]') : null;
+      if (sb) {
+        var f = sb.form || ((sb.closest) ? sb.closest('form') : null);
+        if (f && f.action && crossOrigin(f.action)) return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+  function reportIntent(t) { if (on && isTop && navTargetCrossSite(t)) window.__post('nav-intent'); }
+  if (isTop) {
+    // pointerdown (not click) so the report is posted BEFORE the navigation fires.
+    document.addEventListener('pointerdown', function (e) {
+      if (e.isTrusted) reportIntent(e.target);
+    }, true);
+    document.addEventListener('keydown', function (e) {
+      if (e.isTrusted && (e.key === 'Enter' || e.key === ' ')) {
+        reportIntent(e.target);
+        reportIntent(document.activeElement);
+      }
+    }, true);
+  }
+  // window.open popunders are THE dominant "click anywhere → scam tab" vector on
+  // scummy streaming sites. Neuter scripted opens to ad hosts / cross-origin while
+  // blocking is on. The shell's native new-window handler is the primary guard (it
+  // also catches frames and about:blank shells); this is the in-page backstop. Runs
+  // in every frame, so the ad iframe's own window.open is stopped at the source.
+  var _winOpen = window.open ? window.open.bind(window) : null;
+  if (_winOpen) {
+    window.open = function (u) {
+      if (on && (!u || blocked(u) || crossOrigin(u))) { reportPopup(u || 'about:blank'); return null; }
+      return _winOpen.apply(null, arguments);
+    };
+  }
+  // Each trap is best-effort: if the engine refuses the redefinition we skip it (the
+  // shell's native handler still guards ad-host navigations as a backstop).
+  (function () {
+    var P = window.Location && Location.prototype;
+    if (!P) return;
+    try {
+      var href = Object.getOwnPropertyDescriptor(P, 'href');
+      if (href && href.set) {
+        Object.defineProperty(P, 'href', {
+          configurable: true, enumerable: href.enumerable, get: href.get,
+          set: function (v) {
+            if (redirectBlocked(v)) { reportRedirect(v); return; }
+            return href.set.call(this, v);
+          }
+        });
+      }
+    } catch (e) {}
+    ['assign', 'replace'].forEach(function (m) {
+      try {
+        var orig = P[m];
+        if (typeof orig !== 'function') return;
+        P[m] = function (v) {
+          if (redirectBlocked(v)) { reportRedirect(v); return; }
+          return orig.apply(this, arguments);
+        };
+      } catch (e) {}
+    });
+  })();
+  // <meta http-equiv="refresh"> auto-redirects: neutralise a CROSS-ORIGIN one (an ad
+  // "redirecting…" interstitial) by stripping the tag and aborting any load it kicked
+  // off. Same-origin refreshes (polling reloads) are left alone; ad-host targets are
+  // also caught by the native handler.
+  function defuseMetaRefresh(root) {
+    if (!on || !root) return;
+    try {
+      var sel = 'meta[http-equiv="refresh" i]';
+      var metas = [];
+      if (root.matches && root.matches(sel)) metas.push(root);
+      if (root.querySelectorAll) {
+        var found = root.querySelectorAll(sel);
+        for (var k = 0; k < found.length; k++) metas.push(found[k]);
+      }
+      for (var i = 0; i < metas.length; i++) {
+        var content = metas[i].getAttribute('content') || '';
+        var m = /url\s*=\s*([^;]+)\s*$/i.exec(content);
+        if (!m) continue;
+        var target = m[1].trim().replace(/^['"]|['"]$/g, '');
+        if (target && (blocked(target) || crossOrigin(target))) {
+          metas[i].remove();
+          try { window.stop(); } catch (e) {}
+          reportRedirect(target);
+        }
+      }
+    } catch (e) {}
+  }
+
   // One periodic pass covers SPA navigations and lazily-inserted ads that slip the
   // observer; cheap (a couple of querySelectorAll calls).
-  function tick() { if (!on) return; hideCosmetic(document); youtube(); }
+  function tick() { if (!on) return; hideCosmetic(document); youtube(); defuseMetaRefresh(document); }
   hideCosmetic(document);
-  document.addEventListener('DOMContentLoaded', function () { sweep(document); hideCosmetic(document); });
+  defuseMetaRefresh(document);
+  document.addEventListener('DOMContentLoaded', function () { sweep(document); hideCosmetic(document); defuseMetaRefresh(document); });
   setInterval(tick, 500);
 
   // --- live toggle from the shell (`:ads`), no reload needed -------------------
   window.__setAdblock = function (v) {
     on = !!v;
-    if (on) { sweep(document); hideCosmetic(document); youtube(); }
+    if (on) { sweep(document); hideCosmetic(document); youtube(); defuseMetaRefresh(document); }
     else { unhideCosmetic(); }
   };
 })();
 "#;
 
-/// Live page-feature toggles, injected into every web tab. Three independent flags,
+/// Live page-feature toggles, injected into every web tab. Two independent flags,
 /// each seeded from `window.__featureDefaults` (baked per tab from the shell's state)
 /// and flipped live by `window.__setToggle(name, on)` — no reload:
-///   * `popups` — neuter `window.open` so scripted pop-ups can't spawn windows.
 ///   * `mute`   — keep every `<video>`/`<audio>` muted (observed + a 1s safety tick).
 ///   * `css`    — disable every stylesheet/`<style>`/`<link rel=stylesheet>`.
 ///
-/// Mirrors the `:ads` pattern so `:pops`/`:mute`/`:css` apply instantly to all tabs.
+/// (Pop-up/popunder blocking now lives entirely under `:ads` — the native new-window
+/// handler plus the all-frames `window.open` neuter in [`ADBLOCK_JS`].)
+///
+/// Mirrors the `:ads` pattern so `:mute`/`:css` apply instantly to all tabs.
 const FEATURES_JS: &str = r#"
 (function () {
   if (window.__featuresInit) return;
   window.__featuresInit = true;
   var d = window.__featureDefaults || {};
-  var blockPopups = !!d.popups, muted = !!d.mute, noCss = !!d.css;
-
-  // popups: scripted window.open returns null while blocking.
-  var _open = window.open ? window.open.bind(window) : null;
-  if (_open) {
-    window.open = function () { return blockPopups ? null : _open.apply(null, arguments); };
-  }
+  var muted = !!d.mute, noCss = !!d.css;
 
   // audio: force every media element's muted flag to match the toggle.
   function applyMute(root, val) {
@@ -699,8 +917,7 @@ const FEATURES_JS: &str = r#"
 
   window.__setToggle = function (name, val) {
     val = !!val;
-    if (name === 'popups') blockPopups = val;
-    else if (name === 'mute') { muted = val; applyMute(document, val); }
+    if (name === 'mute') { muted = val; applyMute(document, val); }
     else if (name === 'css') { noCss = val; applyCss(); }
   };
 })();
@@ -794,11 +1011,11 @@ const CARET_JS: &str = r#"
   window.__caretEsc = function () {
     if (!on) return;
     if (visual && !sel().isCollapsed) { sel().collapseToEnd(); visual = false; updateBar(); }
-    else { window.__caretExit(); if (window.ipc) window.ipc.postMessage('caret-exit'); }
+    else { window.__caretExit(); window.__post('caret-exit'); }
   };
   window.__caretYank = function () {
     var t = sel().toString();
-    if (window.ipc) window.ipc.postMessage('caret-yank:' + t);
+    window.__post('caret-yank:' + t);
     sel().collapseToEnd(); visual = false; updateBar();
   };
   window.__caretKey = function (k) {
@@ -965,7 +1182,12 @@ fn main() -> Result<()> {
         modifiers: ModifiersState::default(),
         nojs: false,
         adblock: true,
-        block_popups: false,
+        adblock_on: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        window_focused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        allow_risky_downloads: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        leave_intent: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        nav_intent: std::sync::Arc::new(std::sync::Mutex::new(None)),
+        blocker: blocklist::new_shared(),
         mute: false,
         no_css: false,
         term_command: vec!["nu".to_string()],
@@ -988,6 +1210,10 @@ fn main() -> Result<()> {
         background_webview_visible: false,
         term_scrollback: pty_term::DEFAULT_SCROLLBACK,
     };
+
+    // Compile the ad/redirect blocklist engine off-thread; it goes live a beat after
+    // launch (BlocklistReady), and navigations use the timing heuristic until then.
+    blocklist::spawn_build(app.blocker.clone(), app.proxy.clone());
 
     // Optional: open a page immediately, e.g. `browser-desktop youtube.com`,
     // or run a command, e.g. `browser-desktop ":nojs youtube.com"`. An explicit
@@ -1055,7 +1281,15 @@ fn main() -> Result<()> {
                     app.modifiers = state;
                     app.on_modifiers_changed();
                 }
-                WindowEvent::Focused(true) => app.last_focus_gain = Instant::now(),
+                WindowEvent::Focused(focused) => {
+                    if focused {
+                        app.last_focus_gain = Instant::now();
+                    }
+                    // Drives the navigation guard's "blurred window shouldn't be
+                    // navigating itself elsewhere" check (the alt-tab redirect trap).
+                    app.window_focused
+                        .store(focused, std::sync::atomic::Ordering::Relaxed);
+                }
                 WindowEvent::CursorMoved { position, .. } => {
                     app.cursor_pos = (position.x, position.y);
                 }
@@ -1130,10 +1364,17 @@ fn main() -> Result<()> {
                     // ends them (the injected caret is gone on the new document).
                     ModeKind::Insert | ModeKind::Caret => {
                         app.mode = ModeKind::Normal;
-                        app.window.set_focus();
+                        app.reclaim_shell_focus();
                         app.window.request_redraw();
                     }
-                    _ => app.window.set_focus(),
+                    // Reclaim KEYBOARD focus from the webview child, but never steal the
+                    // FOREGROUND: this fires on every page-load/`page-ready`, and a busy
+                    // site (ads, video, redirects) that finishes loading after you've
+                    // alt-tabbed away must not pop the window back to the front.
+                    // `SetFocus` no-ops when we aren't the foreground app, so leaving is
+                    // respected; the periodic `reclaim_focus_tick` restores keyboard
+                    // focus when you actually return.
+                    _ => app.reclaim_shell_focus(),
                 }
                 // A fresh navigation can reset the page's zoom factor — re-apply.
                 app.apply_active_zoom();
@@ -1197,6 +1438,9 @@ fn main() -> Result<()> {
             }
             Event::UserEvent(UserEvent::Navigate(url)) => {
                 if let Some(i) = app.active {
+                    // Shell-driven `load_url` reads as not-user-initiated; stamp intent so
+                    // the native guard lets this de-proxy redirect through.
+                    navguard::mark(&app.nav_intent);
                     if let Some(wv) = app.tabs.get(i).and_then(|t| t.webview()) {
                         let _ = wv.load_url(&url);
                     }
@@ -1207,6 +1451,29 @@ fn main() -> Result<()> {
                     }
                     app.window.request_redraw();
                 }
+            }
+            Event::UserEvent(UserEvent::RedirectBlocked(url)) => {
+                // Show the destination we refused, truncated so a long tracking URL
+                // doesn't blow out the status bar.
+                let short: String = url.chars().take(80).collect();
+                app.set_status(format!("blocked redirect → {short}"));
+                app.window.request_redraw();
+            }
+            Event::UserEvent(UserEvent::PopupBlocked(url)) => {
+                let short: String = url.chars().take(80).collect();
+                app.set_status(format!("blocked pop-up → {short}  (:ads off to allow)"));
+                app.window.request_redraw();
+            }
+            Event::UserEvent(UserEvent::BlocklistReady) => {
+                // Quiet by default (don't clobber a useful status); the engine simply
+                // starts catching navigations from here on.
+            }
+            Event::UserEvent(UserEvent::DownloadBlocked(name)) => {
+                let short: String = name.chars().take(60).collect();
+                app.set_error(format!(
+                    "blocked download of {short} — executable/installer. :downloads to allow"
+                ));
+                app.window.request_redraw();
             }
             Event::UserEvent(UserEvent::TermDone { cmd, output, code }) => {
                 app.show_term_result(&cmd, &output, code);

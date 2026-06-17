@@ -148,6 +148,10 @@ impl App {
     /// Forward the current label string to the page to filter/activate hints.
     pub(crate) fn hint_send(&self) {
         if let Some(wv) = self.active_webview() {
+            // Following a hint may navigate this tab cross-site via a synthetic click the
+            // native guard would otherwise read as a forced redirect — stamp intent so it
+            // passes. (Harmless when the hint resolves to a button/in-page action.)
+            crate::navguard::mark(&self.nav_intent);
             let _ = wv.evaluate_script(&format!(
                 "window.__hintInput&&window.__hintInput({:?},{})",
                 self.hint_input, self.hint_new_tab
