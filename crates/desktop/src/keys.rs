@@ -21,7 +21,10 @@ impl App {
             // bridge handles the shell keys; these arms are fallbacks for when the
             // shell still holds focus (e.g. right after entering the mode).
             ModeKind::Insert => {
-                if matches!(key.logical_key, Key::Escape) && !self.modifiers.shift_key() {
+                if self.active_is_ai() {
+                    // AI tabs type straight into their native field (no webview).
+                    self.key_ai(key);
+                } else if matches!(key.logical_key, Key::Escape) && !self.modifiers.shift_key() {
                     self.exit_to_normal();
                 } else if self.modifiers.control_key() && key.physical_key == KeyCode::KeyV {
                     self.enter_passthrough();
@@ -113,6 +116,12 @@ impl App {
         if self.read_caret_active() && self.key_read_caret(key) {
             return;
         }
+        // AI tab: it's a read-only vim buffer in Normal mode (motions/visual/yank,
+        // Ctrl+D/U), exactly like the `:error`/`:res` pager. Keys it doesn't claim
+        // (`i`/`:`/x/n/p/digits…) fall through to the normal browser bindings.
+        if self.active_is_ai() && self.key_ai_nav(key) {
+            return;
+        }
         // Chords (with Ctrl) take precedence over plain keys.
         if self.modifiers.control_key() {
             match key.physical_key {
@@ -148,6 +157,8 @@ impl App {
                 "i" => {
                     if self.active_is_term() {
                         self.enter_passthrough();
+                    } else if self.active_is_ai() {
+                        self.enter_ai_insert();
                     } else {
                         self.enter_insert();
                     }
@@ -174,8 +185,22 @@ impl App {
                 }
                 "x" => self.close_active(),
                 "r" => self.reload_active(),
-                "H" => self.history(false),
-                "L" => self.history(true),
+                // On an AI tab, H/L step through saved chats; elsewhere they're
+                // page history (back/forward).
+                "H" => {
+                    if self.active_is_ai() {
+                        self.ai_history(false);
+                    } else {
+                        self.history(false);
+                    }
+                }
+                "L" => {
+                    if self.active_is_ai() {
+                        self.ai_history(true);
+                    } else {
+                        self.history(true);
+                    }
+                }
                 "n" => self.switch_tab(1),
                 "p" => self.switch_tab(-1),
                 "<" => self.move_tab(-1),
@@ -707,9 +732,20 @@ impl App {
                 .iter()
                 .find(|c| c.len() > cmd.len() && c.starts_with(cmd.as_str()))
                 .map(|c| (*c).to_string()),
-            // Argument completion from history (open-like verbs only).
+            // Argument completion.
             Some((verb, rest)) => {
                 let rest = rest.trim();
+                // `:model` completes/cycles the model list (Tab advances — see
+                // `accept_suggestion`); show the first matching id as the ghost.
+                if verb == "model" {
+                    let m = if rest.is_empty() {
+                        Some(crate::ai::MODELS[0])
+                    } else {
+                        crate::ai::MODELS.iter().find(|m| m.starts_with(rest)).copied()
+                    };
+                    return m.map(|m| format!("model {m}"));
+                }
+                // Otherwise, history completion for open-like verbs only.
                 if rest.is_empty()
                     || !matches!(
                         verb,
@@ -731,6 +767,26 @@ impl App {
     /// Accept the current autocomplete suggestion into the command line (caret to
     /// end). Returns whether there was one to accept.
     pub(crate) fn accept_suggestion(&mut self) -> bool {
+        // `:model` Tab-cycles through the model list, shell-completion style: each
+        // press advances to the next id (wrapping), so you can flick through the
+        // options and Enter the one you want.
+        let model_arg = match self.command.as_str() {
+            "model" => Some(""),
+            s => s.strip_prefix("model ").map(str::trim),
+        };
+        if let Some(arg) = model_arg {
+            let models = crate::ai::MODELS;
+            let next = if let Some(i) = models.iter().position(|m| *m == arg) {
+                (i + 1) % models.len()
+            } else {
+                models.iter().position(|m| m.starts_with(arg)).unwrap_or(0)
+            };
+            self.command = format!("model {}", models[next]);
+            self.command_cursor = self.command.len();
+            self.command_anchor = None;
+            self.cursor_on = true;
+            return true;
+        }
         let Some(sug) = self.command_suggestion() else { return false };
         self.command = sug;
         self.command_cursor = self.command.len();

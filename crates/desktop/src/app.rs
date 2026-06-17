@@ -76,6 +76,9 @@ pub(crate) enum UserEvent {
     /// The page entered (`true`) or left (`false`) HTML fullscreen (e.g. YouTube's
     /// fullscreen button) → match the window's fullscreen so the page fills the screen.
     PageFullscreen(bool),
+    /// A `:ai` tab's background Groq request finished: the reply text (or an error
+    /// string), routed back to the tab with this id.
+    AiReply { id: u64, result: Result<String, String> },
     Quit,
 }
 
@@ -182,6 +185,16 @@ pub(crate) struct App {
     pub(crate) search_template: String,
     /// Monotonic id for routing PTY output to the right terminal tab.
     pub(crate) next_term_id: u64,
+    /// Groq API key for the `:ai` tab, loaded once at startup and persisted after
+    /// the user pastes it. `None` until entered (the AI tab shows a key field).
+    pub(crate) groq_key: Option<String>,
+    /// Monotonic id for routing async Groq replies to the right `:ai` tab.
+    pub(crate) next_ai_id: u64,
+    /// Model id used by the `:ai` tab (Groq), set with `:model` and persisted.
+    pub(crate) ai_model: String,
+    /// Past `:ai` conversations (newest last), persisted to disk. `H`/`L` on an AI
+    /// tab step through these; new AI tabs start as a fresh draft.
+    pub(crate) ai_chats: Vec<Vec<crate::ai::AiMessage>>,
     /// Global UI zoom factor (1.0 = 100%). Scales native chrome, web content,
     /// and terminal font together.
     pub(crate) zoom: f64,
@@ -685,14 +698,28 @@ impl App {
             }
             return;
         }
-        // Native read pane: scroll its own offset, clamped to its pane height.
-        let dy = (-dy_lines * 80.0).round() as i32;
-        if dy != 0 {
-            if let Some(nr) = self.tabs.get_mut(tab).and_then(|t| t.native_mut()) {
+        // Native read pane: scroll its own pixel offset, clamped to its pane height.
+        if let Some(nr) = self.tabs.get_mut(tab).and_then(|t| t.native_mut()) {
+            let dy = (-dy_lines * 80.0).round() as i32;
+            if dy != 0 {
                 let max = (nr.layout.height - rect.h).max(0);
                 nr.scroll = (nr.scroll + dy).clamp(0, max);
                 self.window.request_redraw();
             }
+            return;
+        }
+        // AI pane: move the vim buffer's top by whole lines (and drop "follow" unless
+        // we land back at the very bottom).
+        let line_h = self.painter.line_height().max(1);
+        if let Some(ai) = self.tabs.get_mut(tab).and_then(|t| t.ai_mut()) {
+            let rows = (rect.h as usize / line_h).max(1);
+            let n = ai.buf.lines.len();
+            let max_top = n.saturating_sub(rows) as isize;
+            let lines = (-dy_lines * 3.0).round() as isize;
+            let top = (ai.buf.top as isize + lines).clamp(0, max_top.max(0)) as usize;
+            ai.buf.top = top;
+            ai.follow = top as isize >= max_top;
+            self.window.request_redraw();
         }
     }
 

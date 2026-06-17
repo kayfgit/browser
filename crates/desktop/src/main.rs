@@ -23,6 +23,7 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::keyboard::ModifiersState;
 use tao::window::WindowBuilder;
 
+mod ai;
 mod app;
 mod blocklist;
 mod chrome;
@@ -1075,6 +1076,10 @@ fn main() -> Result<()> {
         term_command: vec!["nu".to_string()],
         search_template: browser_core::DEFAULT_SEARCH_URL.to_string(),
         next_term_id: 0,
+        groq_key: ai::load_key(),
+        next_ai_id: 0,
+        ai_model: ai::load_model().unwrap_or_else(|| ai::DEFAULT_MODEL.to_string()),
+        ai_chats: ai::load_chats(),
         zoom: 1.0,
         cursor_on: true,
         quit: false,
@@ -1370,6 +1375,7 @@ fn main() -> Result<()> {
                     app.window.request_redraw();
                 }
             }
+            Event::UserEvent(UserEvent::AiReply { id, result }) => app.ai_reply(id, result),
             Event::UserEvent(UserEvent::PageFullscreen(on)) => app.set_page_fullscreen(on),
             Event::UserEvent(UserEvent::TermClosed { id }) => app.close_term_tab(id),
             Event::UserEvent(UserEvent::Quit) => {

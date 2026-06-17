@@ -351,6 +351,8 @@ pub(crate) fn commands_document() -> String {
         (":y · :yank", "copy the current URL to the clipboard"),
         (":read <url|query>", "engine-free reader (no WebView2) in this tab; -t = new tab; non-URL → search"),
         (":search [name|template]", "show/set the search engine — a name (ddg/google/wiki…) or a %s URL"),
+        (":ai [question]", "AI tab (Groq): i to ask; Normal mode is a vim buffer (v/y select, / find); H/L step through past chats (persisted)"),
+        (":model [id]", "show/set the :ai model; in the command bar, Tab cycles the model list; persisted"),
         (":te", "native terminal (Ctrl+V pastes · Ctrl+S → vim copy-mode: navigate/yank, i resumes)"),
         (":te <command>", "run a local command, result in the command bar"),
         (":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),

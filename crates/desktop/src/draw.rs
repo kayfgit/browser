@@ -18,6 +18,8 @@ pub const ACCENT: Rgb = (0x6c, 0xb6, 0xff);
 pub const READ: Rgb = (0x7c, 0xd9, 0x92);
 pub const TERM: Rgb = (0xe6, 0xa5, 0x5e);
 pub const RESEARCH: Rgb = (0x5e, 0xc8, 0xd9);
+/// The `:ai` tab accent (lilac).
+pub const AI: Rgb = (0xc6, 0x9c, 0xf6);
 /// Error/failure messages in the status bar.
 pub const ERR: Rgb = (0xe0, 0x6c, 0x6c);
 /// Command-bar text-selection highlight.

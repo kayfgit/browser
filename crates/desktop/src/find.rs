@@ -167,6 +167,12 @@ impl App {
             // longer rebuilds every line string of the document per keystroke.
             return Some(std::borrow::Cow::Borrowed(nr.layout.text_lines()));
         }
+        // AI tabs are vim buffers too (their conversation), so they search the same way.
+        if let Some(ai) = self.tabs.get(i).and_then(|t| t.ai()) {
+            return Some(std::borrow::Cow::Owned(
+                ai.buf.lines.iter().map(|l| l.iter().collect::<String>()).collect(),
+            ));
+        }
         let vb = self.tabs.get(i)?.vim()?;
         Some(std::borrow::Cow::Owned(
             vb.lines.iter().map(|l| l.iter().collect::<String>()).collect(),
@@ -193,6 +199,9 @@ impl App {
         let rows = (view as usize) / line_h;
         if let Some(vb) = self.tabs.get_mut(i).and_then(|t| t.vim_mut()) {
             vb.place_cursor(line, start, rows, cols);
+        } else if let Some(ai) = self.tabs.get_mut(i).and_then(|t| t.ai_mut()) {
+            ai.buf.place_cursor(line, start, rows, cols);
+            ai.follow = false; // stay on the match, don't snap back to the bottom
         }
     }
 

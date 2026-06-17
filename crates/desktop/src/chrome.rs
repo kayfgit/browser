@@ -194,6 +194,71 @@ pub(crate) fn paint_pane(
             return;
         }
 
+        if let Some(ai) = t.ai() {
+            // The AI tab IS a vim buffer (rebuilt each frame by refresh_ai_layout),
+            // so it renders like the pager below but with per-line colour and an
+            // Insert-mode caret at the end of the input (last) line.
+            let vb = &ai.buf;
+            let line_h = p.line_height() as i32;
+            let cw = p.measure("M").max(1) as i32;
+            let leftcol = vb.left;
+            let col_x = |line: &[char], col: usize| -> i32 {
+                if col <= leftcol {
+                    return left;
+                }
+                let end = col.min(line.len());
+                let slice: String = line[leftcol..end].iter().collect();
+                let mut x = left + p.measure(&slice) as i32;
+                if col > line.len() {
+                    x += (col - line.len()) as i32 * cw;
+                }
+                x
+            };
+            let insert = mode == ModeKind::Insert;
+            for r in vb.top..vb.lines.len() {
+                let y_top = top + (r - vb.top) as i32 * line_h;
+                if y_top >= bottom {
+                    break;
+                }
+                let line = &vb.lines[r];
+                let color = ai.colors.get(r).copied().unwrap_or(draw::FG);
+                if let Some((s0, s1)) = vb.selection_on_row(r) {
+                    fill(buf, col_x(line, s0), y_top, col_x(line, s1), y_top + line_h, draw::SEL);
+                }
+                if find_on {
+                    for (mi, m) in find.matches.iter().enumerate() {
+                        if m.line != r {
+                            continue;
+                        }
+                        let c = if mi == find.current { draw::FIND_CUR } else { draw::FIND };
+                        fill(buf, col_x(line, m.start), y_top, col_x(line, m.end), y_top + line_h, c);
+                    }
+                }
+                let baseline = (y_top + line_h * 3 / 4) as usize;
+                if vb.left < line.len() {
+                    let text: String = line[vb.left..].iter().collect();
+                    p.text_rect(buf, wz, hz, left, baseline, &text, color, left, right, top, bottom);
+                }
+                // Insert: a caret at the end of the input line; Normal: the vim block
+                // cursor on the current row (when this pane is focused).
+                if focused && insert && r + 1 == vb.lines.len() {
+                    let cx0 = col_x(line, line.len());
+                    fill(buf, cx0, y_top, cx0 + cw, y_top + line_h, draw::ACCENT);
+                } else if focused && !insert && r == vb.cy {
+                    let cx0 = col_x(line, vb.cx);
+                    let cx1 = col_x(line, vb.cx + 1).max(cx0 + cw);
+                    fill(buf, cx0, y_top, cx1, y_top + line_h, draw::FG);
+                    if let Some(ch) = line.get(vb.cx) {
+                        p.text_rect(
+                            buf, wz, hz, cx0.max(left), baseline, &ch.to_string(), draw::BG, left,
+                            right, top, bottom,
+                        );
+                    }
+                }
+            }
+            return;
+        }
+
         // Blank pane: a quiet prompt centred in the rect.
         let msg = "empty pane — :open a page · :te terminal";
         let mw = p.measure(msg) as i32;
@@ -218,6 +283,8 @@ impl App {
         // Keep the engine-free read layout current (cheap no-op unless something
         // that affects layout changed) before we read it for painting.
         self.refresh_read_layout();
+        // Cache each AI pane's content height for scroll clamping (and bottom-stick).
+        self.refresh_ai_layout();
         // Keep the active terminal's grid matched to the window/zoom.
         self.sync_active_term_size();
         let (w, h) = self.inner();
@@ -420,6 +487,8 @@ impl App {
                 let active = Some(i) == self.active;
                 let color = if t.term().is_some() {
                     draw::TERM
+                } else if t.ai().is_some() {
+                    draw::AI
                 } else if t.vim().is_some() {
                     draw::ERR
                 } else if t.read {
@@ -437,6 +506,8 @@ impl App {
                 // reads as "new".
                 let label = if t.is_blank() {
                     "new".to_string()
+                } else if t.ai().is_some() {
+                    "ai".to_string()
                 } else {
                     t.term()
                         .and_then(|s| s.pty.title())
@@ -501,6 +572,15 @@ impl App {
                 ("  hjkl/w/b/0/$/gg/G move · v select · y yank · Esc exit".into(), draw::DIM),
             ],
             ModeKind::Insert => {
+                // AI tabs type into their own native field; show an AI-specific hint.
+                if self.active_is_ai() {
+                    let hint = if self.groq_key.is_none() {
+                        "   paste your Groq key · Enter saves · Esc normal"
+                    } else {
+                        "   ask anything · Enter sends · Ctrl+U clear · Esc normal"
+                    };
+                    return vec![("[AI]".into(), draw::AI), (hint.into(), draw::DIM)];
+                }
                 let url = self.active_url().unwrap_or("").to_string();
                 vec![
                     ("[INSERT]".into(), draw::ACCENT),
@@ -550,6 +630,20 @@ impl App {
                 }
                 if self.active_is_research() {
                     segs.push(("   [research]".into(), draw::RESEARCH));
+                }
+                if self.active_is_ai() {
+                    let label = self
+                        .active
+                        .and_then(|i| self.tabs.get(i))
+                        .and_then(|t| t.ai())
+                        .and_then(|a| a.buf.mode_label());
+                    match label {
+                        Some(m) => {
+                            segs.push((format!("   [{m}]"), draw::AI));
+                            segs.push(("  motions select · y yank · Esc".into(), draw::DIM));
+                        }
+                        None => segs.push(("   [ai]  i: ask · H/L: chats · v/y select".into(), draw::AI)),
+                    }
                 }
                 // Terminal: [term] live (i types), [COPY] in vi/copy mode.
                 if self.active_is_term() {

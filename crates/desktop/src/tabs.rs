@@ -35,6 +35,8 @@ pub(crate) enum TabContent {
     Pager(vim::TextBuffer),
     /// A native terminal (alacritty grid + pty-host process).
     Term(TermSession),
+    /// A native `:ai` tab: a Groq-backed quick-question surface, painted by the shell.
+    Ai(crate::ai::AiState),
     /// An empty split-pane placeholder ("open something" prompt).
     Blank,
 }
@@ -108,6 +110,20 @@ impl Tab {
     pub(crate) fn term(&self) -> Option<&TermSession> {
         match &self.content {
             TabContent::Term(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn ai(&self) -> Option<&crate::ai::AiState> {
+        match &self.content {
+            TabContent::Ai(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn ai_mut(&mut self) -> Option<&mut crate::ai::AiState> {
+        match &mut self.content {
+            TabContent::Ai(a) => Some(a),
             _ => None,
         }
     }

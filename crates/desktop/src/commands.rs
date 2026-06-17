@@ -7,9 +7,9 @@ use crate::{clipboard_set, commands_document, parse_tab_flag, program_exists, Ap
 /// Command verbs offered by command-bar autocomplete (`:ver`→`:version`). Longest-
 /// useful canonical spellings; ordered so the first prefix match is the best one.
 pub(crate) const COMMANDS: &[&str] = &[
-    "open", "tabopen", "edit", "yank", "read", "research", "reload", "resize", "res", "resources", "reopen",
+    "open", "tabopen", "edit", "yank", "read", "research", "reload", "resize", "res", "resources", "reopen", "ai",
     "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock", "downloads",
-    "popups", "pops", "mute", "audio", "css", "next", "tabnext", "tabprev",
+    "popups", "pops", "mute", "audio", "css", "model", "next", "tabnext", "tabprev",
     "prev", "back", "forward", "fullscreen", "move", "commands", "help", "version", "close",
     "vsplit", "split", "write", "wq", "quit",
 ];
@@ -75,6 +75,22 @@ impl App {
                     self.open_terminal();
                 } else {
                     self.run_term(rest);
+                }
+            }
+            // `:ai` opens a native, engine-free AI tab (Groq). `:ai <q>` opens it
+            // with the question (and answer) ready; bare `:ai` drops into the field
+            // for a quick paste-key-then-ask flow.
+            "ai" => self.open_ai_tab(rest),
+            // Show or set the Groq model the `:ai` tab uses (persisted).
+            "model" => {
+                if rest.is_empty() {
+                    self.set_status(format!(
+                        "model = {}  (try: {} — or any Groq id via :model <id>)",
+                        self.ai_model,
+                        crate::ai::MODELS.join(", ")
+                    ));
+                } else {
+                    self.set_ai_model(rest);
                 }
             }
             "shell" => {
