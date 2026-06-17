@@ -32,6 +32,7 @@ mod draw;
 mod find;
 mod hints;
 mod keys;
+mod khook;
 mod navguard;
 mod pages;
 mod panes;
@@ -153,14 +154,26 @@ const BRIDGE_JS: &str = r#"
     // the time the shell calls SetFocus to take it back (avoids a focus race).
     setTimeout(function () { post('grab-focus'); }, 0);
   }
-  // Reclaim on `click`, which is the END of the gesture (mousedown→mouseup→click),
-  // and only via setTimeout so the page's own click handlers run first. Reclaiming
-  // on `mousedown` (mid-gesture) used to eat the click — a single click did nothing
-  // and you had to double-click thumbnails / the hover mute & caption buttons. A
-  // bare body click bubbles a `click` to the document too, so this still covers the
-  // "clicked empty page, lost the keyboard" case. A script `.focus()` with no click
-  // is caught instead by the shell's periodic focus-reclaim tick.
-  document.addEventListener('click', grabBack, true);
+  // Decide what a Normal-mode click should do with keyboard focus, on `click` (the
+  // END of the gesture, so the page's own handlers run first):
+  //   * a text field  → 'page-edit', the shell enters Insert so you can type;
+  //   * a control/menu/link → 'page-hold', let the PAGE keep focus so its popover
+  //     stays open (the old blanket grab-back blurred YouTube menus shut on click);
+  //   * empty page area → grabBack(), reclaim the shell keyboard as before.
+  // Esc (caught by the keyboard hook) snaps the shell back from a hold/edit. A script
+  // `.focus()` with no click is still caught by the shell's periodic reclaim tick.
+  function onClick(e) {
+    if (window.__mode && window.__mode !== 'normal') return;
+    var t = e.target;
+    var field = (t && t.closest) ? t.closest('input,textarea,[contenteditable]') : null;
+    if (field && editable(field)) { post('page-edit'); return; }
+    var ctrl = (t && t.closest) ? t.closest(
+      "a[href],button,select,summary,label,[role='button'],[role='link']," +
+      "[role='menuitem'],[role='tab'],[onclick],[tabindex]:not([tabindex='-1'])") : null;
+    if (ctrl) { post('page-hold'); return; }
+    grabBack();
+  }
+  document.addEventListener('click', onClick, true);
   // A real pointer press anywhere in this page tells the shell to focus THIS pane
   // (when split). Fired on pointerdown — before any link navigation — so clicking a
   // non-focused web pane switches focus to it instead of stranding the keyboard.
@@ -1087,6 +1100,10 @@ fn main() -> Result<()> {
         res_prev: std::collections::HashMap::new(),
         res_at: Instant::now(),
         cursor_pos: (0.0, 0.0),
+        bar_hover: false,
+        bar_dragging: false,
+        bar_cmd_scroll: 0,
+        page_focus_yielded: false,
         last_focus_gain: Instant::now(),
         history: Vec::new(),
         closed_tabs: Vec::new(),
@@ -1134,6 +1151,16 @@ fn main() -> Result<()> {
         }
     }
 
+    // Install the low-level keyboard hook so the shell can always reclaim control
+    // (leave passthrough/insert, or snap back from a click that yielded focus to the
+    // page) regardless of which HWND/iframe holds keyboard focus. Must run on the
+    // event-loop thread (here) so the hook proc fires from its message pump.
+    #[cfg(windows)]
+    {
+        use tao::platform::windows::WindowExtWindows;
+        khook::install(app.window.hwnd() as isize, app.proxy.clone());
+    }
+
     window.request_redraw();
 
     event_loop.run(move |event, _target, control_flow| {
@@ -1175,16 +1202,54 @@ fn main() -> Result<()> {
                 }
                 WindowEvent::CursorMoved { position, .. } => {
                     app.cursor_pos = (position.x, position.y);
+                    // Left-drag inside the command line extends the selection.
+                    app.bar_drag(position.x);
+                    // Hovering the command bar reveals the full (vs. shortened) URL.
+                    let (_, h) = app.inner();
+                    let over_bar =
+                        app.bar_h() > 0 && position.y >= (h as f64 - app.bar_h() as f64);
+                    if over_bar != app.bar_hover {
+                        app.bar_hover = over_bar;
+                        if app.mode == ModeKind::Normal {
+                            app.window.request_redraw();
+                        }
+                    }
+                }
+                // The cursor left the parent client area — including moving up onto the
+                // child webview, which swallows CursorMoved. Drop the bar hover so the
+                // URL collapses back to its short form instead of getting stuck full.
+                WindowEvent::CursorLeft { .. } => {
+                    // A release over the child webview can be missed by the parent, so
+                    // also end any in-progress drag-select here.
+                    app.bar_dragging = false;
+                    if app.bar_hover {
+                        app.bar_hover = false;
+                        if app.mode == ModeKind::Normal {
+                            app.window.request_redraw();
+                        }
+                    }
                 }
                 // Clicks on the top tab bar: hit a tab label to switch to it, or
                 // drag the borderless window by the empty strip (QoL — like a title
                 // bar). The webview owns clicks below the bar.
                 WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                    ..
+                } => {
+                    app.bar_dragging = false;
+                }
+                WindowEvent::MouseInput {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                     ..
                 } => {
-                    if !app.tabs.is_empty() && app.cursor_pos.1 < app.tab_bar_h() as f64 {
+                    let (_, h) = app.inner();
+                    let bar_top = h as f64 - app.bar_h() as f64;
+                    if app.bar_h() > 0 && app.cursor_pos.1 >= bar_top {
+                        // Click the command/status bar: edit the URL or place the caret.
+                        app.bar_click(app.cursor_pos.0);
+                    } else if !app.tabs.is_empty() && app.cursor_pos.1 < app.tab_bar_h() as f64 {
                         if let Some(i) = app.tab_at_pixel(app.cursor_pos.0) {
                             app.jump_to(i);
                             app.window.request_redraw();
@@ -1259,6 +1324,9 @@ fn main() -> Result<()> {
                     // focus when you actually return.
                     _ => app.reclaim_shell_focus(),
                 }
+                // A navigation (e.g. clicking a link that yielded focus) lands on a
+                // fresh page with the shell back in control — end any page-focus yield.
+                app.page_focus_yielded = false;
                 // A fresh navigation can reset the page's zoom factor — re-apply.
                 app.apply_active_zoom();
                 // Track the post-navigation URL in the status bar.
@@ -1267,11 +1335,29 @@ fn main() -> Result<()> {
             }
             Event::UserEvent(UserEvent::GrabFocus) => {
                 // Only in Normal mode: the shell owns the keyboard there. In
-                // Insert/Passthrough the page legitimately holds focus.
+                // Insert/Passthrough the page legitimately holds focus. A bare-area
+                // click ends any prior page-focus yield.
                 if app.mode == ModeKind::Normal {
+                    app.page_focus_yielded = false;
                     app.reclaim_shell_focus();
                 }
             }
+            // A click on a page control left focus in the page so its menu stays open.
+            Event::UserEvent(UserEvent::PageHold) => {
+                if app.mode == ModeKind::Normal && app.active_webview().is_some() {
+                    app.page_focus_yielded = true;
+                    app.window.request_redraw();
+                }
+            }
+            // A click landed in a text field: enter Insert so typing goes to the page.
+            Event::UserEvent(UserEvent::PageEdit) => {
+                if app.mode == ModeKind::Normal {
+                    app.page_focus_yielded = false;
+                    app.enter_insert();
+                    app.window.request_redraw();
+                }
+            }
+            Event::UserEvent(UserEvent::ReclaimNormal) => app.reclaim_from_page(),
             Event::UserEvent(UserEvent::PaneClick) => {
                 // Clicking inside a web pane focuses it (web panes consume the click in
                 // their HWND, so this is the only way they reach us). Use the OS cursor
@@ -1390,6 +1476,9 @@ fn main() -> Result<()> {
             }
             _ => {}
         }
+        // Keep the keyboard hook's view of the mode current, so it intercepts the
+        // right chords (leave passthrough/insert, Esc out of a page-focus yield).
+        khook::set_mode(app.hook_mode_code());
         // While typing a command, keep waking to blink the cursor (unless we're
         // already exiting). Outside Command mode we stay on plain Wait.
         if !matches!(*control_flow, ControlFlow::Exit | ControlFlow::ExitWithCode(_)) {

@@ -342,6 +342,8 @@ impl App {
                 };
                 (x_of(a).max(MARGIN).max(0) as usize, x_of(b).max(0) as usize)
             });
+            // Remember the scroll so a mouse click in the bar maps to a caret offset.
+            self.bar_cmd_scroll = scroll;
             (Vec::new(), Some((line, scroll)), caret, sel)
         } else {
             (self.bar_segments(), None, None, None)
@@ -609,11 +611,24 @@ impl App {
                     Some(url) => {
                         let n = self.tabs.len();
                         let i = self.active.map(|i| i + 1).unwrap_or(0);
-                        format!("{i}/{n}  {url}")
+                        // Idle: show the host only. Hovering reveals the full LIVE url
+                        // — SPA navigations (e.g. a YouTube watch page) aren't reflected
+                        // in the stored tab url, so read it from the webview.
+                        let shown = if self.bar_hover {
+                            self.current_url().unwrap_or_else(|| url.to_string())
+                        } else {
+                            bar_short_url(url)
+                        };
+                        format!("{i}/{n}  {shown}")
                     }
                     None => ":open <url>  (or press o)".to_string(),
                 };
                 let mut segs = vec![("[N]".into(), draw::ACCENT), (label, draw::BAR_FG)];
+                // The page kept the keyboard after a click on a control; make that
+                // visible so it doesn't read as a freeze, and show the way back.
+                if self.page_focus_yielded {
+                    segs.push(("   [page]  keys → page · Esc: shell".into(), draw::AI));
+                }
                 if self.active_is_read() {
                     segs.push(("   [read]".into(), draw::READ));
                     // Read-mode caret: show [VISUAL]/[VISUAL LINE] (or [CARET]) + hint.
@@ -722,6 +737,22 @@ pub(crate) fn history_display(url: &str) -> String {
     let s = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")).unwrap_or(url);
     let s = s.strip_prefix("www.").unwrap_or(s);
     s.trim_end_matches('/').to_string()
+}
+
+/// Compact the URL for the idle Normal-mode command bar: just the host (scheme and
+/// `www.` stripped), with a trailing `/…` when a path or query was dropped — a cue
+/// that there's more. The full URL shows again on hover or once the command bar is
+/// open. Non-web URLs (`browser://…`, native tabs) are left untouched.
+pub(crate) fn bar_short_url(url: &str) -> String {
+    let Some(s) = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")) else {
+        return url.to_string();
+    };
+    let s = s.strip_prefix("www.").unwrap_or(s);
+    match s.split_once('/') {
+        Some((host, rest)) if !rest.trim_end_matches('/').is_empty() => format!("{host}/…"),
+        Some((host, _)) => host.to_string(),
+        None => s.to_string(),
+    }
 }
 
 /// A short tab label: the host without scheme/`www.`, truncated.

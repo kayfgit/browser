@@ -79,6 +79,14 @@ pub(crate) enum UserEvent {
     /// A `:ai` tab's background Groq request finished: the reply text (or an error
     /// string), routed back to the tab with this id.
     AiReply { id: u64, result: Result<String, String> },
+    /// The keyboard hook saw Esc while the page held focus in Normal mode (a click
+    /// yielded the keyboard to a page control): pull keyboard focus back to the shell.
+    ReclaimNormal,
+    /// A Normal-mode click hit a page control (button/menu/link): let the page keep
+    /// keyboard focus so its popover stays open (don't bounce focus back).
+    PageHold,
+    /// A Normal-mode click hit a text field: enter Insert so keys type into the page.
+    PageEdit,
     Quit,
 }
 
@@ -212,6 +220,20 @@ pub(crate) struct App {
     pub(crate) res_at: Instant,
     /// Last known cursor position (physical px), tracked for tab-bar drag.
     pub(crate) cursor_pos: (f64, f64),
+    /// True while the pointer hovers the command/status bar. In Normal mode the bar
+    /// shows the URL shortened to its host; hovering reveals the full address.
+    pub(crate) bar_hover: bool,
+    /// True while a left-drag is selecting text in the command/find line (mouse
+    /// highlight). Set on a press inside the bar, cleared on release.
+    pub(crate) bar_dragging: bool,
+    /// Horizontal scroll (px) applied to the command line on the last frame, so a
+    /// mouse click in the bar can map a pixel x back to a caret byte offset.
+    pub(crate) bar_cmd_scroll: i32,
+    /// Normal mode, but a click on a page control (button/menu/link) left keyboard
+    /// focus in the page so its popover stays open instead of being blurred shut.
+    /// While set, the shell stops reclaiming focus and the keyboard hook watches for
+    /// Esc to snap control back. Cleared the moment the shell next holds the keyboard.
+    pub(crate) page_focus_yielded: bool,
     /// When the window last gained focus — used to swallow the stray `Tab` that
     /// Alt+Tab delivers to a focused terminal.
     pub(crate) last_focus_gain: Instant,
@@ -454,6 +476,11 @@ impl App {
         use windows::Win32::Foundation::HWND;
         use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
         use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+        // A click on a page control deliberately left focus in the page so its menu
+        // stays open; don't fight that. The keyboard hook restores the shell on Esc.
+        if self.page_focus_yielded {
+            return;
+        }
         let hwnd = HWND(self.window.hwnd() as *mut core::ffi::c_void);
         unsafe {
             // Don't fight for focus while the user has switched to another app.
@@ -470,6 +497,33 @@ impl App {
 
     #[cfg(not(windows))]
     pub(crate) fn reclaim_focus_tick(&self) {}
+
+    /// The mode code the keyboard hook should run under (see [`crate::khook`]). Only
+    /// the web Insert/Passthrough states and a click-yielded Normal need interception;
+    /// everything where the shell already owns the keyboard maps to `OTHER` (inert).
+    pub(crate) fn hook_mode_code(&self) -> u8 {
+        use crate::khook::*;
+        match self.mode {
+            // AI Insert types into a native field (no webview); the shell has focus.
+            ModeKind::Insert if !self.active_is_ai() => MODE_INSERT,
+            // Terminal passthrough keeps shell focus (no webview); tao handles Ctrl+S.
+            ModeKind::Passthrough if !self.active_is_term() => MODE_PASSTHROUGH,
+            ModeKind::Normal if self.page_focus_yielded && self.active_webview().is_some() => {
+                MODE_NORMAL_YIELDED
+            }
+            _ => MODE_OTHER,
+        }
+    }
+
+    /// Esc was pressed while a page control held the keyboard (yielded Normal): pull
+    /// focus back to the shell (which also blurs the page, closing its menu) and clear
+    /// the yield so every Normal-mode key works again.
+    pub(crate) fn reclaim_from_page(&mut self) {
+        self.page_focus_yielded = false;
+        self.set_page_mode("normal");
+        self.reclaim_shell_focus();
+        self.window.request_redraw();
+    }
 
     /// The OS cursor position in window client (physical) pixels — needed for
     /// pane-click routing, since CursorMoved isn't delivered while the pointer is

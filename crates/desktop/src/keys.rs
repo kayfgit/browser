@@ -11,6 +11,9 @@ use crate::{clipboard_get, clipboard_set, vim, App, ModeKind, COMMANDS};
 
 impl App {
     pub(crate) fn handle_key(&mut self, key: &KeyEvent) {
+        // Receiving a key here means the shell holds the keyboard, so any prior
+        // page-focus yield is over (the hook only forwards Esc as ReclaimNormal).
+        self.page_focus_yielded = false;
         match self.mode {
             ModeKind::Command | ModeKind::Find => self.key_command(key),
             ModeKind::Resize => self.key_resize(key),
@@ -602,6 +605,73 @@ impl App {
         (a != c).then(|| (a.min(c), a.max(c)))
     }
 
+    /// Map a physical x pixel in the command bar to the nearest caret byte offset
+    /// in `self.command`, replicating the draw layout: the line is `<pre><command>`
+    /// drawn at `MARGIN - bar_cmd_scroll`, so boundary `k` sits at that origin plus
+    /// the measured width of the prefix up to `k`. Picks the boundary whose midpoint
+    /// the click falls before (so clicking a glyph's left/right half lands sensibly).
+    pub(crate) fn bar_caret_at_x(&self, x: f64) -> usize {
+        const MARGIN: i32 = 8;
+        let pre = if self.mode == ModeKind::Find { '/' } else { ':' };
+        let x_of = |k: usize| -> f64 {
+            (MARGIN - self.bar_cmd_scroll) as f64
+                + self.painter.measure(&format!("{pre}{}", &self.command[..k])) as f64
+        };
+        let mut best = 0;
+        let mut prev = x_of(0);
+        for (i, ch) in self.command.char_indices() {
+            let k = i + ch.len_utf8();
+            let cur = x_of(k);
+            if x < (prev + cur) / 2.0 {
+                return i;
+            }
+            best = k;
+            prev = cur;
+        }
+        best
+    }
+
+    /// A left-press inside the command/status bar. In Command/Find mode it parks the
+    /// caret at the click (and arms a drag-select); in Normal mode it opens the URL
+    /// for editing — a mouse `:edit`, so the address can be selected, copied, or
+    /// changed — falling back to a bare `:` prompt when there's no web URL.
+    pub(crate) fn bar_click(&mut self, x: f64) {
+        match self.mode {
+            ModeKind::Command | ModeKind::Find => {
+                self.command_cursor = self.bar_caret_at_x(x);
+                self.command_anchor = None;
+                self.bar_dragging = true;
+                self.cursor_on = true;
+            }
+            ModeKind::Normal => {
+                match self.active_url() {
+                    Some(u) if u.starts_with("http") => {
+                        let line = format!("{} {u}", self.active_reopen_verb());
+                        self.enter_command(&line);
+                    }
+                    _ => self.enter_command(""),
+                }
+            }
+            _ => return,
+        }
+        // The click left keyboard focus on the web child (the click-focus trap); pull
+        // it back to the shell so Escape and typing reach the command line.
+        self.reclaim_shell_focus();
+        self.window.request_redraw();
+    }
+
+    /// Extend the command-line selection to the click x while left-dragging in the
+    /// bar (mouse highlight). No-op unless a bar drag is in progress.
+    pub(crate) fn bar_drag(&mut self, x: f64) {
+        if !self.bar_dragging || !matches!(self.mode, ModeKind::Command | ModeKind::Find) {
+            return;
+        }
+        let off = self.bar_caret_at_x(x);
+        self.move_caret(off, true);
+        self.cursor_on = true;
+        self.window.request_redraw();
+    }
+
     /// Move the caret to `pos`. `extend` keeps/starts a selection (Shift held);
     /// otherwise the selection is dropped. A zero-width selection is normalized away.
     pub(crate) fn move_caret(&mut self, pos: usize, extend: bool) {
@@ -860,12 +930,17 @@ impl App {
             self.window.request_redraw();
             return;
         }
+        self.page_focus_yielded = false;
         self.set_page_mode("normal");
         if let Some(wv) = self.active_webview() {
             let _ = wv.focus_parent();
         }
         self.mode = ModeKind::Normal;
         self.window.set_focus();
+        // Directly SetFocus the parent HWND too: `set_focus` no-ops when we're already
+        // the foreground app, which is exactly the "leave passthrough" case — keyboard
+        // focus is on the webview child (or an iframe), not the shell window.
+        self.reclaim_shell_focus();
         self.window.request_redraw();
     }
 

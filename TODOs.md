@@ -17,6 +17,8 @@ issues:
 [*] - H/L to go back/forth in history doesnt work on :read 
 [*] - current history only goes back once, needs to have the full history (for example if i go into google, search youtube and click on youtube.com and then hit H to go back multiple times, it only goes back to the youtube search and not google)
 [] - when splitting it creates a new tab, it should work like tmux in which the tabs are contained in one tab
+[*] - cant press youtube buttons when on normal mode, when i double click it quickly opens and closes
+[*] - sometimes when changing modes through normal to passthrough to term and vice versa it freezes and i cant leave the passthrough mode, only fix is to alt+tab to regain control
 
 feat:
 [~] - look for a way to make the browser consume the least amount of resources from the pc, even with the heavy engine running
@@ -26,8 +28,8 @@ feat:
 [] - currently the tab and command bars get hidden when entering fullscreen, add a command toggle for it
 [*] - :history command to see all past history and manipulate it (go back or delete everything)
 [*] - show the url on the right side of the command bar when hovering a link
-[*] - shorten the current url in command bar, only show full if the mouse hovers it or the command bar is opened
-[*] - allow mouse support on the command bar, highlighting copying etc.
+[x] - shorten the current url in command bar, only show full if the mouse hovers it or the command bar is opened
+[x] - allow mouse support on the command bar, highlighting copying etc.
 [*] - ctrl+: enters command bar in vim mode, allows vim motions.
 
 maybes:

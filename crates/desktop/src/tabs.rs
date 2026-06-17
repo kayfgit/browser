@@ -429,6 +429,12 @@ impl App {
                 "grab-focus" => {
                     let _ = ipc_proxy.send_event(UserEvent::GrabFocus);
                 }
+                "page-hold" => {
+                    let _ = ipc_proxy.send_event(UserEvent::PageHold);
+                }
+                "page-edit" => {
+                    let _ = ipc_proxy.send_event(UserEvent::PageEdit);
+                }
                 "pane-click" => {
                     let _ = ipc_proxy.send_event(UserEvent::PaneClick);
                 }
