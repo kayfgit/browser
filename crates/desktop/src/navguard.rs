@@ -45,8 +45,7 @@ use crate::UserEvent;
 ///     `nav-intent` IPC message — the signal a synthetic-click/overlay hijack can't fake);
 ///   * the shell, before a programmatic jump WebView2 also reports as not-user-initiated
 ///     — `H`/`L` history, the `translate.goog` de-proxy `load_url`, following a hint.
-/// Shared (cloned `Arc`) into every webview's guard, like
-/// [`leave_intent`](crate::App::leave_intent).
+/// Shared (cloned `Arc`) into every webview's [`install`]ed guard.
 pub(crate) type NavIntent = Arc<Mutex<Option<Instant>>>;
 
 /// How long a navigation-intent stamp stays valid. Generous enough to cover a real

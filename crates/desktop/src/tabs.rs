@@ -17,7 +17,6 @@ use crate::{
 };
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use tao::platform::windows::WindowExtWindows;
 
 /// Where a content webview gets its page from.
 pub(crate) enum Source {
@@ -326,18 +325,10 @@ impl App {
         let adblock_on = self.adblock_on.clone();
         let popup_adblock = self.adblock_on.clone();
         let popup_proxy = self.proxy.clone();
-        // Live window-focus check (HWND + the queued flag as backstop) + this tab's
-        // current top origin: together they detect the "redirect the instant you alt-tab
-        // away" hijack (a cross-origin top navigation that starts while we're blurred).
-        let focus_flag = self.window_focused.clone();
-        let our_hwnd = self.window.hwnd();
+        // This tab's current top origin, so the blocklist's `$third-party` rules resolve
+        // against the right source on each navigation.
         let cur_origin = Arc::new(Mutex::new(String::new()));
         let nav_origin = cur_origin.clone();
-        // Page-reported "the cursor/focus is leaving" timestamp: the IPC handler stamps
-        // it, the navigation handler reads it (set directly here, not via the event
-        // loop, so it lands before the redirect's navigation does).
-        let leave_set = self.leave_intent.clone();
-        let leave_read = self.leave_intent.clone();
         // Page-reported "a TRUSTED gesture landed on a real cross-site link/submit" — the
         // one signal that a cross-site top navigation is genuinely wanted. Stamped here,
         // directly (no event-loop hop), so it lands before the navigation it authorises
@@ -402,14 +393,6 @@ impl App {
                 init
             })
             .with_ipc_handler(move |req| match req.body().as_str() {
-                // The cursor/focus is leaving the page — stamp the moment directly (no
-                // event-loop hop) so the navigation handler sees it before a redirect
-                // fired by the same `mouseleave`/`blur` reaches it.
-                "nav-leave" => {
-                    if let Ok(mut g) = leave_set.lock() {
-                        *g = Some(std::time::Instant::now());
-                    }
-                }
                 // A trusted click/keypress on a real cross-site link or submit control:
                 // authorise the cross-site top navigation it's about to trigger. Stamped
                 // directly so it beats that navigation to the native guard.
@@ -455,10 +438,6 @@ impl App {
                     // A hint in new-tab mode resolved to a link: `hint-open:<href>`.
                     } else if let Some(href) = body.strip_prefix("hint-open:") {
                         let _ = ipc_proxy.send_event(UserEvent::HintOpen(href.to_string()));
-                    // The page blocker suppressed a forced/auto redirect: surface the
-                    // target in the status bar. `redirect-blocked:<url>`.
-                    } else if let Some(url) = body.strip_prefix("redirect-blocked:") {
-                        let _ = ipc_proxy.send_event(UserEvent::RedirectBlocked(url.to_string()));
                     // The page blocker neutered a scripted pop-up. `popup-blocked:<url>`.
                     } else if let Some(url) = body.strip_prefix("popup-blocked:") {
                         let _ = ipc_proxy.send_event(UserEvent::PopupBlocked(url.to_string()));
@@ -482,11 +461,12 @@ impl App {
                         return false;
                     }
                 }
-                // Forced/auto redirect guard: cancel any top-level navigation to a known
-                // ad/redirect/malware DOMAIN, however it was triggered (scripted redirect,
-                // `<meta refresh>`, or a server 3xx). The EasyList-style engine is the
-                // primary, race-free check — it blocks by name like uBlock; `url_is_ad_host`
+                // Cancel any top-level navigation to a known ad/redirect/malware DOMAIN,
+                // however it was triggered (scripted redirect, `<meta refresh>`, server
+                // 3xx). The EasyList-style engine blocks by name like uBlock; `url_is_ad_host`
                 // is the tiny always-on fallback for the beat before the engine compiles.
+                // Forced redirects to UNLISTED domains (the cross-site hijack vector) are
+                // caught separately by the native intent-gate guard (see `navguard`).
                 // Honours `:ads` live.
                 if adblock_on.load(Ordering::Relaxed) {
                     let src = nav_origin.lock().unwrap().clone();
@@ -497,39 +477,11 @@ impl App {
                         return false;
                     }
                 }
-                // Alt-tab redirect trap: animepahe-style sites wait until you leave the
-                // window (alt-tab / click another app), then have the cross-origin
-                // player iframe jump the TOP frame to a scam. That cross-origin
-                // `top.location` write bypasses the page-side `location` traps (it's an
-                // exotic cross-origin Location object), so it can only be caught here. A
-                // foreground browser never navigates ITSELF to a different origin while
-                // blurred, so if the window isn't focused and this is a cross-origin
-                // jump away from the current page, it's the hijack — cancel it.
-                let target = origin_of(&url);
-                // Two "the user didn't ask for this" signals:
-                //   * away  — window isn't foreground (alt-tab / clicked another app),
-                //             read live so it isn't racing the queued focus event;
-                //   * leaving — the page just reported the cursor exiting the window / a
-                //             blur / the tab hiding, which is what these players fire
-                //             their redirect on (it happens while still foreground, so
-                //             `away` alone misses it).
-                let away = !window_is_foreground(our_hwnd) || !focus_flag.load(Ordering::Relaxed);
-                let leaving = leave_read
-                    .lock()
-                    .ok()
-                    .and_then(|g| *g)
-                    .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(900));
-                if adblock_on.load(Ordering::Relaxed) && (away || leaving) && !target.is_empty() {
-                    let prev = nav_origin.lock().unwrap().clone();
-                    if !prev.is_empty() && target != prev {
-                        let _ = nav_proxy.send_event(UserEvent::RedirectBlocked(url));
-                        return false;
-                    }
-                }
-                // Allowed navigation → remember where we now are, so the next blurred
-                // cross-origin test compares against the right origin.
-                if !target.is_empty() {
-                    *nav_origin.lock().unwrap() = target;
+                // Remember the current top origin so the blocklist's `$third-party` rules
+                // resolve against the right source on the next navigation.
+                let origin = origin_of(&url);
+                if !origin.is_empty() {
+                    *nav_origin.lock().unwrap() = origin;
                 }
                 true
             })
@@ -1031,17 +983,6 @@ fn origin_of(url: &str) -> String {
         }
         _ => String::new(),
     }
-}
-
-/// Whether our top-level window currently holds OS foreground focus. Read LIVE (via
-/// `GetForegroundWindow`) rather than from a queued `WindowEvent::Focused`, so the
-/// blurred-redirect guard doesn't race the navigation callback: when a player iframe
-/// fires `top.location = scam` the instant you alt-tab, the OS focus change is already
-/// visible here even if our event loop hasn't drained the focus event yet.
-fn window_is_foreground(hwnd: isize) -> bool {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-    unsafe { GetForegroundWindow() == HWND(hwnd as *mut core::ffi::c_void) }
 }
 
 /// Executable/installer extensions a drive-by download must not run unprompted.

@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use tao::event_loop::EventLoopProxy;
@@ -154,26 +154,16 @@ pub(crate) struct App {
     /// (ad-host navigations) honours `:ads` without rebuilding the webviews. Kept in
     /// lock-step via [`set_adblock`](Self::set_adblock).
     pub(crate) adblock_on: Arc<AtomicBool>,
-    /// Whether the OS window currently holds focus, shared (cloned `Arc`) into every
-    /// web tab's navigation handler. A blurred browser has no business navigating
-    /// itself to another site, so a cross-origin top navigation that starts while this
-    /// is false is the "redirect the moment you alt-tab away" hijack — and is blocked.
-    pub(crate) window_focused: Arc<AtomicBool>,
     /// Whether to allow downloads of executable/installer file types. Off by default:
     /// a drive-by `.exe`/`.msi` (the "you almost clicked install" trap) is blocked with
     /// a warning. Toggled with `:downloads`. Shared into every tab's download handler.
     pub(crate) allow_risky_downloads: Arc<AtomicBool>,
-    /// When a page last signalled it's being "left" — the cursor exiting the window, a
-    /// blur, or the tab being hidden. Scummy players fire their forced redirect on
-    /// exactly those events (NOT on a click), so a cross-origin top-navigation that
-    /// lands within a beat of this is the "you moved the mouse away → scam" hijack. The
-    /// page reports it over IPC; the navigation handler reads it. Shared (cloned `Arc`).
-    pub(crate) leave_intent: Arc<Mutex<Option<Instant>>>,
-    /// Shell-initiated navigation intent for the native redirect guard
-    /// ([`navguard`](crate::navguard)). The shell stamps it just before a programmatic
-    /// jump WebView2 reports as not-user-initiated — `H`/`L` history, the translate
-    /// de-proxy `load_url` — so the guard doesn't mistake those for a forced redirect.
-    /// Shared (cloned `Arc`) into every web tab's `NavigationStarting` handler.
+    /// Cross-site navigation intent for the native redirect guard
+    /// ([`navguard`](crate::navguard)): stamped when something legitimate wants to leave
+    /// the current site — the page reports a TRUSTED gesture on a real cross-site
+    /// link/submit, or the shell drives `H`/`L` history, the translate de-proxy, or a
+    /// hint follow. The guard cancels any cross-site top navigation that carries no fresh
+    /// stamp (a forced redirect). Shared (cloned `Arc`) into every web tab.
     pub(crate) nav_intent: crate::navguard::NavIntent,
     /// The uBlock-style network blocklist engine ([`blocklist`](crate::blocklist)),
     /// shared (cloned `Arc`) into every tab's navigation handler. It blocks navigations

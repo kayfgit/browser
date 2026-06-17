@@ -533,7 +533,6 @@ const ADBLOCK_JS: &str = r#"
           if (adNode(n)) { n.remove(); continue; }
           sweep(n);
           hideCosmetic(n);
-          defuseMetaRefresh(n);
         }
       }
     }).observe(document.documentElement, { childList: true, subtree: true });
@@ -663,79 +662,21 @@ const ADBLOCK_JS: &str = r#"
   }
 
   // --- forced / auto redirect guard -------------------------------------------
-  // Stop a page yanking you somewhere you didn't ask to go. While blocking is on a
-  // CROSS-ORIGIN scripted navigation is cancelled when it's to a known ad/tracker host,
-  // OR an embedded frame (a video player / ad) is driving it, OR it isn't happening
-  // synchronously inside a real click/keypress (silent or timer-deferred jumps — the
-  // auto/forced-redirect patterns). Same-origin navigation and a genuine "click → other
-  // site" button keep working. Real <a> clicks navigate natively (they don't reach
-  // these setters), so they're never touched. `window.location = x` and
-  // `location.href = x` both funnel through the Location `href` setter
-  // (PutForwards=href); trapping href + assign + replace covers them all. <meta
-  // refresh> auto-jumps are defused separately below.
-  // "Is a real click/keypress being handled RIGHT NOW?" — true only synchronously
-  // inside a user-input event dispatch. A redirect fired straight from your click
-  // handler (a legit "Go" button) sees this true; one a script schedules for later via
-  // a timer — the scam "click anywhere, get bounced ~500ms later" trick — sees it
-  // false, so we catch the delayed jump that a looser "was there a click in the last
-  // few seconds" check would wave through. Cleared on the next macrotask, i.e. once the
-  // current event has finished dispatching.
-  var inUserEvent = false;
-  ['pointerdown', 'mousedown', 'click', 'keydown', 'touchstart'].forEach(function (t) {
-    try {
-      document.addEventListener(t, function () {
-        inUserEvent = true;
-        setTimeout(function () { inUserEvent = false; }, 0);
-      }, true);
-    } catch (e) {}
-  });
+  // Forced cross-site redirects (the "click the video → bounced to a scam" hijack) are
+  // cancelled natively by the shell's intent-gate guard, which denies any cross-site TOP
+  // navigation that no trusted gesture asked for — see `navguard`. The page side's only
+  // job now is to REPORT that trusted intent (below) so genuine link clicks are allowed,
+  // and to neuter popunder `window.open`s. `crossOrigin` backs both.
   function crossOrigin(url) {
     try { return new URL(url, document.baseURI).origin !== location.origin; }
     catch (e) { return false; } // unparseable / relative → treat as same-origin (allow)
   }
-  function redirectBlocked(url) {
-    if (!on || !url) return false;
-    if (blocked(url)) return true;
-    if (!crossOrigin(url)) return false; // same-origin nav (SPAs, real in-site links) is fine
-    // A cross-origin jump while an embedded frame holds focus is almost always that
-    // frame (a sketchy video player / ad) hijacking the page on your click — block it
-    // regardless of the gesture, since that's exactly the "click play → scam" pattern.
-    try { var ae = document.activeElement; if (ae && ae.tagName === 'IFRAME') return true; } catch (e) {}
-    // Otherwise block unless the jump is happening synchronously inside a genuine
-    // click/keypress (a real "go to this site" action). Silent or timer-deferred
-    // cross-origin jumps — the auto/forced-redirect patterns — are stopped.
-    return !inUserEvent;
-  }
-  // Status reports go ONLY from the top frame. The blocker runs in every frame, but
-  // wry builds an `http::Uri` from the *sender frame's* URL and unwraps it; a report
-  // from an `about:blank` / `data:` / `blob:` ad iframe would feed it an invalid URI
-  // and abort the whole process. Sub-frames still block — they just stay quiet.
+  // Popup reports go ONLY from the top frame: wry builds an `http::Uri` from the sender
+  // frame's URL and unwraps it, so a report from an `about:blank`/`data:` ad iframe would
+  // feed it an invalid URI and abort the process. Sub-frames still neuter — they stay quiet.
   var isTop = false;
   try { isTop = (window.top === window); } catch (e) {}
-  function reportRedirect(url) { if (isTop) window.__post('redirect-blocked:' + url); }
   function reportPopup(url) { if (isTop) window.__post('popup-blocked:' + url); }
-  // "The cursor is leaving the window" / the tab is being hidden — the event these
-  // players hang their forced redirect on (it fires while we're STILL foreground, so
-  // the shell's focus check alone misses it). Reported from EVERY frame, because the
-  // redirect usually fires from the cross-origin player iframe and its own mouseleave
-  // is the earliest signal; the shell then cancels a cross-origin top-jump that lands
-  // within a beat. Throttled so a flurry of boundary crossings isn't a flood of IPC.
-  var lastLeave = 0;
-  function reportLeave() {
-    if (!on) return;
-    var now = Date.now();
-    if (now - lastLeave < 200) return;
-    lastLeave = now;
-    window.__post('nav-leave');
-  }
-  try {
-    var de = document.documentElement;
-    if (de) de.addEventListener('mouseleave', reportLeave, true);
-    window.addEventListener('pagehide', reportLeave, true);
-    document.addEventListener('visibilitychange', function () {
-      if (document.hidden) reportLeave();
-    }, true);
-  } catch (e) {}
   // Cross-site navigation intent. The native guard cancels every cross-site TOP
   // navigation unless the shell just saw legitimate intent — because at the engine
   // level a forced redirect is indistinguishable from a real link click (these scripts
@@ -782,74 +723,17 @@ const ADBLOCK_JS: &str = r#"
       return _winOpen.apply(null, arguments);
     };
   }
-  // Each trap is best-effort: if the engine refuses the redefinition we skip it (the
-  // shell's native handler still guards ad-host navigations as a backstop).
-  (function () {
-    var P = window.Location && Location.prototype;
-    if (!P) return;
-    try {
-      var href = Object.getOwnPropertyDescriptor(P, 'href');
-      if (href && href.set) {
-        Object.defineProperty(P, 'href', {
-          configurable: true, enumerable: href.enumerable, get: href.get,
-          set: function (v) {
-            if (redirectBlocked(v)) { reportRedirect(v); return; }
-            return href.set.call(this, v);
-          }
-        });
-      }
-    } catch (e) {}
-    ['assign', 'replace'].forEach(function (m) {
-      try {
-        var orig = P[m];
-        if (typeof orig !== 'function') return;
-        P[m] = function (v) {
-          if (redirectBlocked(v)) { reportRedirect(v); return; }
-          return orig.apply(this, arguments);
-        };
-      } catch (e) {}
-    });
-  })();
-  // <meta http-equiv="refresh"> auto-redirects: neutralise a CROSS-ORIGIN one (an ad
-  // "redirecting…" interstitial) by stripping the tag and aborting any load it kicked
-  // off. Same-origin refreshes (polling reloads) are left alone; ad-host targets are
-  // also caught by the native handler.
-  function defuseMetaRefresh(root) {
-    if (!on || !root) return;
-    try {
-      var sel = 'meta[http-equiv="refresh" i]';
-      var metas = [];
-      if (root.matches && root.matches(sel)) metas.push(root);
-      if (root.querySelectorAll) {
-        var found = root.querySelectorAll(sel);
-        for (var k = 0; k < found.length; k++) metas.push(found[k]);
-      }
-      for (var i = 0; i < metas.length; i++) {
-        var content = metas[i].getAttribute('content') || '';
-        var m = /url\s*=\s*([^;]+)\s*$/i.exec(content);
-        if (!m) continue;
-        var target = m[1].trim().replace(/^['"]|['"]$/g, '');
-        if (target && (blocked(target) || crossOrigin(target))) {
-          metas[i].remove();
-          try { window.stop(); } catch (e) {}
-          reportRedirect(target);
-        }
-      }
-    } catch (e) {}
-  }
-
   // One periodic pass covers SPA navigations and lazily-inserted ads that slip the
   // observer; cheap (a couple of querySelectorAll calls).
-  function tick() { if (!on) return; hideCosmetic(document); youtube(); defuseMetaRefresh(document); }
+  function tick() { if (!on) return; hideCosmetic(document); youtube(); }
   hideCosmetic(document);
-  defuseMetaRefresh(document);
-  document.addEventListener('DOMContentLoaded', function () { sweep(document); hideCosmetic(document); defuseMetaRefresh(document); });
+  document.addEventListener('DOMContentLoaded', function () { sweep(document); hideCosmetic(document); });
   setInterval(tick, 500);
 
   // --- live toggle from the shell (`:ads`), no reload needed -------------------
   window.__setAdblock = function (v) {
     on = !!v;
-    if (on) { sweep(document); hideCosmetic(document); youtube(); defuseMetaRefresh(document); }
+    if (on) { sweep(document); hideCosmetic(document); youtube(); }
     else { unhideCosmetic(); }
   };
 })();
@@ -1183,9 +1067,7 @@ fn main() -> Result<()> {
         nojs: false,
         adblock: true,
         adblock_on: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        window_focused: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         allow_risky_downloads: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        leave_intent: std::sync::Arc::new(std::sync::Mutex::new(None)),
         nav_intent: std::sync::Arc::new(std::sync::Mutex::new(None)),
         blocker: blocklist::new_shared(),
         mute: false,
@@ -1285,10 +1167,6 @@ fn main() -> Result<()> {
                     if focused {
                         app.last_focus_gain = Instant::now();
                     }
-                    // Drives the navigation guard's "blurred window shouldn't be
-                    // navigating itself elsewhere" check (the alt-tab redirect trap).
-                    app.window_focused
-                        .store(focused, std::sync::atomic::Ordering::Relaxed);
                 }
                 WindowEvent::CursorMoved { position, .. } => {
                     app.cursor_pos = (position.x, position.y);
