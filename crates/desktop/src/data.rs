@@ -60,14 +60,18 @@ impl DataKind {
     }
 }
 
-/// Clear `kind` from the WebView2 profile via `webview`'s engine handle. Returns
-/// `Err` only when the COM plumbing is unreachable (no engine yet, or a WebView2
-/// runtime too old for the profile API); the erase itself runs asynchronously and
-/// reports completion through [`UserEvent::DataCleared`] carrying `label`.
+/// Clear `kind` from the WebView2 profile via `webview`'s engine handle, optionally
+/// limited to a `[start, end]` time window (Unix-epoch seconds; `None` = all time).
+/// Returns `Err` only when the COM plumbing is unreachable (no engine yet, or a
+/// WebView2 runtime too old for the profile API); the erase itself runs
+/// asynchronously and reports completion through [`UserEvent::DataCleared`] carrying
+/// `label`.
 pub(crate) fn clear(
     webview: &WebView,
     kind: DataKind,
+    range: Option<(f64, f64)>,
     label: String,
+    ai_id: Option<u64>,
     proxy: EventLoopProxy<UserEvent>,
 ) -> Result<(), String> {
     unsafe {
@@ -79,10 +83,15 @@ pub(crate) fn clear(
         let profile2: ICoreWebView2Profile2 =
             profile.cast().map_err(|e: windows_core::Error| e.to_string())?;
         let handler = ClearBrowsingDataCompletedHandler::create(Box::new(move |_hr| {
-            let _ = proxy.send_event(UserEvent::DataCleared(label));
+            let _ = proxy.send_event(UserEvent::DataCleared { label, ai_id });
             Ok(())
         }));
-        profile2.ClearBrowsingData(kind.flags(), &handler).map_err(|e| e.to_string())?;
+        match range {
+            Some((start, end)) => profile2
+                .ClearBrowsingDataInTimeRange(kind.flags(), start, end, &handler)
+                .map_err(|e| e.to_string())?,
+            None => profile2.ClearBrowsingData(kind.flags(), &handler).map_err(|e| e.to_string())?,
+        }
     }
     Ok(())
 }

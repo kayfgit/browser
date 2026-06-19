@@ -37,7 +37,11 @@ pub(crate) const MODELS: &[&str] = &[
 const SYSTEM_PROMPT: &str =
     "You are a fast, concise assistant inside a terminal browser. Answer directly \
      and briefly, with no preamble or sign-off. For conversions or calculations, \
-     give the result first.";
+     give the result first. You can also operate the browser through the provided \
+     tools — use them when the user asks you to clear or delete browsing data \
+     (history, cookies, cache), honouring any time period they mention (e.g. \"the \
+     last 24 hours\" → period 24h). For anything else, just answer; don't call a \
+     tool unless the request matches one.";
 
 /// How many past conversations to keep on disk (oldest dropped first).
 const AI_CHATS_CAP: usize = 100;
@@ -55,6 +59,21 @@ pub(crate) enum AiRole {
 pub(crate) struct AiMessage {
     pub(crate) role: AiRole,
     pub(crate) text: String,
+}
+
+/// A browser action the model chose to run (an OpenAI tool-call): the action
+/// `name` and its JSON `args` object, routed to [`App::perform`](crate::App::perform).
+pub(crate) struct ToolCall {
+    pub(crate) name: String,
+    pub(crate) args: serde_json::Value,
+}
+
+/// What a Groq turn produced: either a plain text answer, or one-or-more browser
+/// actions to perform (the assistant "messing with the browser"). Tool-calls are
+/// executed on the main thread, since they mutate browser state.
+pub(crate) enum AiOutcome {
+    Text(String),
+    Tools(Vec<ToolCall>),
 }
 
 /// State for a `:ai` tab. The conversation is rendered into `buf` (a vim text
@@ -150,9 +169,14 @@ pub(crate) fn save_chats(chats: &[Vec<AiMessage>]) {
 }
 
 /// Ask Groq (blocking — call from a background thread). Sends the whole
-/// conversation so follow-ups keep context; returns the assistant's reply text or
-/// a human-readable error string.
-pub(crate) fn ask_blocking(key: &str, model: &str, history: &[AiMessage]) -> Result<String, String> {
+/// conversation so follow-ups keep context, plus the browser action tools so the
+/// model can choose to operate the browser. Returns either the assistant's text
+/// answer or the action(s) it chose ([`AiOutcome`]), or a human-readable error.
+pub(crate) fn ask_blocking(
+    key: &str,
+    model: &str,
+    history: &[AiMessage],
+) -> Result<AiOutcome, String> {
     let mut msgs = vec![serde_json::json!({"role": "system", "content": SYSTEM_PROMPT})];
     for m in history {
         let role = match m.role {
@@ -162,7 +186,13 @@ pub(crate) fn ask_blocking(key: &str, model: &str, history: &[AiMessage]) -> Res
         };
         msgs.push(serde_json::json!({"role": role, "content": m.text}));
     }
-    let body = serde_json::json!({ "model": model, "messages": msgs, "temperature": 0.4 });
+    let body = serde_json::json!({
+        "model": model,
+        "messages": msgs,
+        "temperature": 0.4,
+        "tools": crate::actions::groq_tools(),
+        "tool_choice": "auto",
+    });
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(40))
         .build()
@@ -183,13 +213,32 @@ pub(crate) fn ask_blocking(key: &str, model: &str, history: &[AiMessage]) -> Res
             .unwrap_or("request failed");
         return Err(format!("groq {}: {msg}", status.as_u16()));
     }
-    val.get("choices")
-        .and_then(|c| c.get(0))
-        .and_then(|c| c.get("message"))
+    let message = val.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("message"));
+    // A tool-call response: the model chose to operate the browser. Parse each call's
+    // name + JSON arguments; `content` is usually empty in this case.
+    if let Some(tcs) =
+        message.and_then(|m| m.get("tool_calls")).and_then(|t| t.as_array()).filter(|a| !a.is_empty())
+    {
+        let calls = tcs
+            .iter()
+            .filter_map(|tc| {
+                let f = tc.get("function")?;
+                let name = f.get("name")?.as_str()?.to_string();
+                let args_str = f.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}");
+                let args = serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+                (!name.is_empty()).then_some(ToolCall { name, args })
+            })
+            .collect::<Vec<_>>();
+        if !calls.is_empty() {
+            return Ok(AiOutcome::Tools(calls));
+        }
+    }
+    message
         .and_then(|m| m.get("content"))
         .and_then(|c| c.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+        .map(AiOutcome::Text)
         .ok_or_else(|| "empty response".to_string())
 }
 
@@ -612,25 +661,55 @@ impl App {
         self.window.request_redraw();
     }
 
-    /// A Groq reply (or error) arrived for the AI tab with this id: append it and
-    /// stick the view to the bottom.
-    pub(crate) fn ai_reply(&mut self, id: u64, result: Result<String, String>) {
-        for tab in &mut self.tabs {
-            if let Some(ai) = tab.ai_mut() {
-                if ai.id == id {
-                    ai.pending = false;
-                    match result {
-                        Ok(text) => ai.messages.push(AiMessage { role: AiRole::Ai, text }),
-                        Err(e) => ai.messages.push(AiMessage { role: AiRole::Err, text: e }),
+    /// A Groq turn finished for the AI tab with this id: append its result and stick
+    /// the view to the bottom. A text answer is shown as-is; a tool-call outcome is
+    /// the assistant operating the browser — each chosen action is echoed (`▸
+    /// clear(history, 24h)`) and then run through [`perform`](App::perform), with its
+    /// result (or error) shown beneath. Actions run BEFORE the tab is re-borrowed so
+    /// `perform` has clean access to the whole `App`.
+    pub(crate) fn ai_reply(&mut self, id: u64, result: Result<AiOutcome, String>) {
+        let mut out: Vec<AiMessage> = Vec::new();
+        match result {
+            Ok(AiOutcome::Text(text)) => out.push(AiMessage { role: AiRole::Ai, text }),
+            Ok(AiOutcome::Tools(calls)) => {
+                // Mark this tab as the actor so an action that finishes asynchronously
+                // (a WebView2 data wipe) routes its "Done — …" back here, not the
+                // status bar. The synchronous result/ack is shown inline below.
+                self.acting_ai = Some(id);
+                for c in &calls {
+                    match self.perform(&c.name, &c.args) {
+                        Ok(msg) => out.push(AiMessage { role: AiRole::Ai, text: msg }),
+                        Err(e) => out.push(AiMessage { role: AiRole::Err, text: e }),
                     }
-                    ai.follow = true;
-                    break;
                 }
+                self.acting_ai = None;
             }
+            Err(e) => out.push(AiMessage { role: AiRole::Err, text: e }),
         }
-        // Re-save so the persisted chat reflects the latest answer (or error).
+        if let Some(ai) = self.tabs.iter_mut().find_map(|t| t.ai_mut().filter(|a| a.id == id)) {
+            ai.pending = false;
+            ai.messages.extend(out);
+            ai.follow = true;
+        }
+        // Re-save so the persisted chat reflects the latest answer (or actions).
         self.commit_ai(id);
         self.window.request_redraw();
+    }
+
+    /// An async browser action initiated from the `:ai` tab `id` finished (e.g. an
+    /// engine data wipe): append a natural-language confirmation to that chat and
+    /// re-persist it. Returns whether that tab is the one currently on screen — the
+    /// caller skips the status bar in that case, since the chat already shows it.
+    pub(crate) fn ai_action_done(&mut self, id: u64, label: &str) -> bool {
+        let active =
+            self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.ai()).is_some_and(|a| a.id == id);
+        if let Some(ai) = self.tabs.iter_mut().find_map(|t| t.ai_mut().filter(|a| a.id == id)) {
+            ai.messages.push(AiMessage { role: AiRole::Ai, text: format!("Done — cleared {label}.") });
+            ai.follow = true;
+        }
+        self.commit_ai(id);
+        self.window.request_redraw();
+        active
     }
 
     /// Rebuild each visible AI pane's vim buffer (wrapped to its current width) and

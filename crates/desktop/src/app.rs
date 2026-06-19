@@ -76,9 +76,10 @@ pub(crate) enum UserEvent {
     /// The page entered (`true`) or left (`false`) HTML fullscreen (e.g. YouTube's
     /// fullscreen button) → match the window's fullscreen so the page fills the screen.
     PageFullscreen(bool),
-    /// A `:ai` tab's background Groq request finished: the reply text (or an error
-    /// string), routed back to the tab with this id.
-    AiReply { id: u64, result: Result<String, String> },
+    /// A `:ai` tab's background Groq request finished: a text answer or chosen
+    /// browser action(s) ([`crate::ai::AiOutcome`]) — or an error string — routed
+    /// back to the tab with this id.
+    AiReply { id: u64, result: Result<crate::ai::AiOutcome, String> },
     /// The keyboard hook saw Esc while the page held focus in Normal mode (a click
     /// yielded the keyboard to a page control): pull keyboard focus back to the shell.
     ReclaimNormal,
@@ -87,9 +88,15 @@ pub(crate) enum UserEvent {
     PageHold,
     /// A Normal-mode click hit a text field: enter Insert so keys type into the page.
     PageEdit,
-    /// A WebView2 browsing-data clear finished (`:clear cookies`/`cache`/`all`):
-    /// confirm it in the status bar. Carries the human label of what was cleared.
-    DataCleared(String),
+    /// A WebView2 browsing-data clear finished (`:clear cookies`/`cache`/`all`).
+    /// `label` is the human description of what was cleared (empty = a silent bonus
+    /// clear, ignored). `ai_id` is the `:ai` tab that initiated it, if any: the
+    /// confirmation goes into that chat, and the status bar is used only when that tab
+    /// isn't the one on screen.
+    DataCleared { label: String, ai_id: Option<u64> },
+    /// The `Ctrl+Alt+Shift+R` keyboard-hook chord (the brick-proof panic button):
+    /// reset all customization to defaults, regardless of mode or how keys are bound.
+    RestoreDefaults,
     Quit,
 }
 
@@ -237,12 +244,25 @@ pub(crate) struct App {
     /// While set, the shell stops reclaiming focus and the keyboard hook watches for
     /// Esc to snap control back. Cleared the moment the shell next holds the keyboard.
     pub(crate) page_focus_yielded: bool,
+    /// The `:ai` tab id currently running a tool-call, so an async action's
+    /// completion (e.g. a WebView2 data wipe) can route its confirmation back to that
+    /// chat. Set only for the duration of [`ai_reply`](App::ai_reply)'s dispatch.
+    pub(crate) acting_ai: Option<u64>,
+    /// Persisted customization (aliases, …) the user/AI tune at runtime. Reset to
+    /// defaults by [`restore_defaults`](App::restore_defaults). See [`config`](crate::config).
+    pub(crate) config: crate::config::Config,
     /// When the window last gained focus — used to swallow the stray `Tab` that
     /// Alt+Tab delivers to a focused terminal.
     pub(crate) last_focus_gain: Instant,
     /// Visited URLs, most-recent first (deduped, capped). Drives command-bar
     /// autocomplete for `:open <partial>` and is persisted in the session.
     pub(crate) history: Vec<String>,
+    /// Visit time (Unix-epoch seconds) parallel to [`history`](Self::history), same
+    /// order/length — kept in lock-step by [`record_history`](Self::record_history)
+    /// so `:clear history <period>` can drop only the entries inside a time window.
+    /// Restored-from-session entries are stamped `0` (their real time is unknown, so
+    /// only an all-time clear removes them).
+    pub(crate) history_at: Vec<u64>,
     /// Recently-closed restorable tabs (kind + url), newest last. `U` /
     /// Ctrl+Shift+T pops the most recent and reopens it. Internal pages (the error/
     /// res/version vim tabs, `browser://…`) are never recorded.
@@ -284,6 +304,15 @@ pub(crate) fn clipboard_set(text: &str) {
 /// Read UTF-8 text from the system clipboard, or `None` if unavailable/non-text.
 pub(crate) fn clipboard_get() -> Option<String> {
     arboard::Clipboard::new().ok()?.get_text().ok()
+}
+
+/// Wall-clock now as Unix-epoch seconds (UTC) — the stamp for visited-history
+/// entries and the reference point for `:clear … <period>` time windows.
+pub(crate) fn now_epoch() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Format a "quick maths" result: drop the decimal point for whole numbers,
@@ -630,14 +659,23 @@ impl App {
     }
 
     /// Record a visited URL for autocomplete: move it to the front (most recent),
-    /// de-duplicated, and cap the list. Skips internal `browser://` pages.
+    /// de-duplicated, and cap the list — keeping [`history_at`](Self::history_at) in
+    /// lock-step (same index, same length). Skips internal `browser://` pages.
     pub(crate) fn record_history(&mut self, url: &str) {
         if url.is_empty() || url.starts_with("browser://") {
             return;
         }
-        self.history.retain(|u| u != url);
+        // Drop any existing copy from BOTH vecs at the same index so they stay aligned.
+        if let Some(pos) = self.history.iter().position(|u| u == url) {
+            self.history.remove(pos);
+            if pos < self.history_at.len() {
+                self.history_at.remove(pos);
+            }
+        }
         self.history.insert(0, url.to_string());
+        self.history_at.insert(0, now_epoch());
         self.history.truncate(HISTORY_CAP);
+        self.history_at.truncate(HISTORY_CAP);
     }
 
     pub(crate) fn resize_window(&self, dw: i32, dh: i32) {
@@ -851,6 +889,7 @@ impl App {
             term_command: self.term_command.clone(),
             active,
             history: self.history.clone(),
+            history_at: self.history_at.clone(),
             window,
             tabs,
         });
@@ -866,6 +905,11 @@ impl App {
         }
         self.history = s.history;
         self.history.truncate(HISTORY_CAP);
+        // Restore visit times, realigning to the URL list: old sessions (and any
+        // length drift) leave entries stamped 0 = "time unknown", so only an
+        // all-time `:clear history` removes them, never a windowed clear.
+        self.history_at = s.history_at;
+        self.history_at.resize(self.history.len(), 0);
         self.nojs = s.nojs;
         self.set_adblock(s.adblock);
         if s.zoom != 1.0 {

@@ -207,6 +207,28 @@ impl App {
         self.clear_status();
     }
 
+    /// `:alias` (no args) — list the defined command aliases in a read-only vim tab,
+    /// `:name → expansion` per line (selectable/yankable like the other pagers).
+    pub(crate) fn open_alias_page(&mut self) {
+        if self.config.aliases.is_empty() {
+            self.set_status("no aliases — :alias <name> <command> to add one");
+            return;
+        }
+        let lines = alias_lines(&self.config.aliases);
+        self.place_tab(
+            Tab {
+                url: "browser://aliases".into(),
+                nojs: false,
+                read: false,
+                research: false,
+                content: TabContent::Pager(vim::TextBuffer::new(lines)),
+            },
+            true,
+        );
+        self.window.set_focus();
+        self.clear_status();
+    }
+
     /// Open an internal HTML page (e.g. `:commands`) in a new tab.
     pub(crate) fn open_local_page(&mut self, label: &str, html: String) {
         match self.build_content_webview(Source::Html(html), false, "") {
@@ -398,6 +420,8 @@ pub(crate) fn commands_document() -> String {
         (":errors · :errs", "every error this session (newest first), same vim tab"),
         (":res · :resources", "live memory/CPU/disk across the whole browser tree (freezes while you select)"),
         (":history · :hist", "visited URLs in a vim tab (v/y to select & open); :history clear wipes it"),
+        (":alias [name] [cmd] · :unalias", "list / set / remove command aliases (e.g. :alias gh open github.com → :gh)"),
+        (":restore", "reset all customization to defaults — also Ctrl+Alt+Shift+R, which works in any mode"),
         (":commands · :help", "this page"),
         (":version", "version and build information"),
         (":w · :write", "save the current session (open tabs + UI state) to disk"),
@@ -428,9 +452,10 @@ pub(crate) fn commands_document() -> String {
          <h2>Vim pager (:error · :errors · :res · :version · read-mode v/V)</h2>{vimpager}\
          <h2>Commands</h2>{cmds}\
          <h2>Actions</h2>\
-         <p class=\"sub\">The data/customization layer — one described verb each, and \
-         what the <code>:ai</code> assistant will drive (\u{201C}wipe my cookies\u{201D}). \
-         Cookies/cache need a page open.</p>{actions}\
+         <p class=\"sub\">The data/customization layer — one described verb each, and what \
+         the <code>:ai</code> assistant can drive (\u{201C}wipe my cookies\u{201D}, \
+         \u{201C}make ‘gh’ open github\u{201D}). Cookies/cache need a page open. \
+         <code>:restore</code> (or Ctrl+Alt+Shift+R) resets everything.</p>{actions}\
          <h2>Bangs</h2>\
          <p class=\"sub\">A <code>!key</code> token in any open/search target jumps to that \
          site's search (no query → the site's home). Trailing form works too: \
@@ -451,6 +476,16 @@ pub(crate) fn history_lines(history: &[String]) -> Vec<String> {
     lines.push(format!("history — {} entries    (:clear history to wipe)", history.len()));
     lines.push(String::new());
     lines.extend(history.iter().cloned());
+    lines
+}
+
+/// Plain-text lines for the `:alias` vim pager: a header plus `:name → expansion`
+/// rows (sorted, since the source is a BTreeMap).
+pub(crate) fn alias_lines(aliases: &std::collections::BTreeMap<String, String>) -> Vec<String> {
+    let mut lines = Vec::with_capacity(aliases.len() + 2);
+    lines.push(format!("aliases — {} defined    (:unalias <name> to remove)", aliases.len()));
+    lines.push(String::new());
+    lines.extend(aliases.iter().map(|(k, v)| format!(":{k} → {v}")));
     lines
 }
 

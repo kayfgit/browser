@@ -29,6 +29,7 @@ mod app;
 mod blocklist;
 mod chrome;
 mod commands;
+mod config;
 mod data;
 mod draw;
 mod find;
@@ -1106,8 +1107,11 @@ fn main() -> Result<()> {
         bar_dragging: false,
         bar_cmd_scroll: 0,
         page_focus_yielded: false,
+        acting_ai: None,
+        config: config::load(),
         last_focus_gain: Instant::now(),
         history: Vec::new(),
+        history_at: Vec::new(),
         closed_tabs: Vec::new(),
         fs_from_page: false,
         split: None,
@@ -1446,13 +1450,23 @@ fn main() -> Result<()> {
                 ));
                 app.window.request_redraw();
             }
-            Event::UserEvent(UserEvent::DataCleared(label)) => {
+            Event::UserEvent(UserEvent::DataCleared { label, ai_id }) => {
                 // The async erase finished. An empty label is a silent bonus clear
                 // (engine history alongside the shell's own list) — don't announce it.
                 if !label.is_empty() {
-                    app.set_status(format!("cleared {label}"));
-                    app.window.request_redraw();
+                    // If an :ai tab asked for it, confirm in that chat; fall back to the
+                    // status bar only when that tab isn't the one on screen.
+                    let shown_in_chat = ai_id.is_some_and(|id| app.ai_action_done(id, &label));
+                    if !shown_in_chat {
+                        app.set_status(format!("cleared {label}"));
+                        app.window.request_redraw();
+                    }
                 }
+            }
+            Event::UserEvent(UserEvent::RestoreDefaults) => {
+                // The Ctrl+Alt+Shift+R panic chord (caught by the keyboard hook below
+                // the keybind layer). Route through the same action so it's one path.
+                app.run_action("restore", serde_json::json!({}));
             }
             Event::UserEvent(UserEvent::TermDone { cmd, output, code }) => {
                 app.show_term_result(&cmd, &output, code);

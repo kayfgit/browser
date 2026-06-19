@@ -1,122 +1,414 @@
-//! The browser **action layer** — one registry of named, described operations that
-//! change browser state or data, and one [`App::perform`] entry point that runs
-//! them. This is the foundation for letting the `:ai` assistant "mess with the
-//! browser" without a config panel or a command per knob: today the `:` command bar
-//! routes `:clear cookies` here; next, the assistant is handed [`ACTIONS`] as its
-//! tool menu and a model choice like `clear(cookies)` is dispatched through the
-//! exact same code and descriptions. One surface, one source of truth.
+//! The browser **action layer** — one registry of named, described, parameterized
+//! operations that change browser state or data, and one [`App::perform`] entry
+//! point that runs them. This is the foundation for letting the `:ai` assistant
+//! "mess with the browser" without a config panel or a command per knob: the `:`
+//! command bar routes `:clear cookies 15m` here, and the assistant is handed
+//! [`groq_tools`] (built from this same registry) as its tool menu, so a model
+//! choice like `clear(what=history, period=24h)` dispatches through the exact same
+//! code and descriptions. One surface, one source of truth.
 //!
-//! Specs are deliberately flat — an action takes zero or one argument, drawn from a
-//! fixed `values` list — so the same [`ActionSpec`] serves command autocomplete, the
-//! `:commands` help, and (soon) the assistant's tool schema with no bespoke schema
-//! language. As the surface grows (open/close tabs, toggles, navigation…) those
-//! verbs migrate here too; for now it hosts the privacy/data actions, which had no
-//! command home before.
+//! Actions take named string arguments drawn from fixed `values` lists, so the same
+//! [`ActionSpec`] serves command autocomplete, the `:commands` help, and the OpenAI
+//! tool schema with no bespoke schema language. As the surface grows (tabs, toggles,
+//! navigation, chrome customization…) those verbs migrate here too; for now it hosts
+//! the privacy/data actions.
 
+use serde_json::Value;
+
+use crate::app::now_epoch;
 use crate::data::DataKind;
 use crate::App;
 
-/// One invokable browser action: a stable `name`, the argument `values` it accepts
-/// (empty for a no-argument action), and a one-line `summary`. The summary is
-/// written to read as an instruction to the assistant as much as to a person.
-pub(crate) struct ActionSpec {
+/// One argument of an action: its `name`, the `values` it accepts, whether it's
+/// `required`, and a `desc` written to guide the assistant.
+pub(crate) struct ParamSpec {
     pub(crate) name: &'static str,
     pub(crate) values: &'static [&'static str],
-    pub(crate) summary: &'static str,
+    pub(crate) required: bool,
+    pub(crate) desc: &'static str,
 }
 
-/// Every action the browser exposes through [`App::perform`]. The single list the
-/// command bar, the help page, and the assistant all read from.
-pub(crate) const ACTIONS: &[ActionSpec] = &[ActionSpec {
-    name: "clear",
-    values: &["history", "cookies", "cache", "all"],
-    summary: "Erase stored browsing data — visited history, cookies (sign-ins/sessions), \
-              the disk cache, or everything (a fresh profile).",
-}];
+/// One invokable browser action: a stable `name`, a one-line `summary` (written to
+/// read as an instruction to the assistant as much as to a person), and its `params`.
+pub(crate) struct ActionSpec {
+    pub(crate) name: &'static str,
+    pub(crate) summary: &'static str,
+    pub(crate) params: &'static [ParamSpec],
+}
+
+/// Every action the browser exposes through [`App::perform`] — the single list the
+/// command bar, the help page, and the assistant all read from. A param with an
+/// empty `values` list is free text (no fixed choices).
+pub(crate) const ACTIONS: &[ActionSpec] = &[
+    ActionSpec {
+        name: "clear",
+        summary: "Erase stored browsing data, optionally only from a recent time window. \
+                  Use when the user asks to clear/delete/wipe history, cookies, cache, or \
+                  everything (e.g. \"clear the last 24h history\", \"wipe the last 15 min cache\").",
+        params: &[
+            ParamSpec {
+                name: "what",
+                values: &["history", "cookies", "cache", "all"],
+                required: true,
+                desc: "Which data to erase: history (the visited-URL list), cookies \
+                       (sign-ins/sessions), cache (cached files), or all (a fresh profile).",
+            },
+            ParamSpec {
+                name: "period",
+                values: &["15m", "1h", "24h", "7d", "all"],
+                required: false,
+                desc: "How far back to erase; defaults to all time. 15m = last 15 minutes, \
+                       1h = last hour, 24h = last day, 7d = last week, all = everything.",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "alias",
+        summary: "Create or update a command alias — a short name typed after ':' that \
+                  expands to a full command line (e.g. name 'gh' → 'open github.com', so \
+                  ':gh' opens GitHub). Use when the user asks for a shortcut/alias.",
+        params: &[
+            ParamSpec {
+                name: "name",
+                values: &[],
+                required: true,
+                desc: "The alias name: a single word, no spaces, typed after ':'.",
+            },
+            ParamSpec {
+                name: "expansion",
+                values: &[],
+                required: true,
+                desc: "The command line it expands to, WITHOUT the leading ':' \
+                       (e.g. 'open github.com', 'research -t', 'clear cache 15m').",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "unalias",
+        summary: "Remove a command alias the user no longer wants.",
+        params: &[ParamSpec {
+            name: "name",
+            values: &[],
+            required: true,
+            desc: "The alias name to remove.",
+        }],
+    },
+    ActionSpec {
+        name: "restore",
+        summary: "Reset ALL customization (aliases and any other tunable settings) back \
+                  to defaults. Use when the user asks to restore/reset defaults or undo \
+                  their customizations.",
+        params: &[],
+    },
+];
 
 /// Render the registry as `(invocation, summary)` rows for the `:commands` help —
-/// the same list that will become the assistant's tool menu, so the help and the AI
-/// can never drift apart. A no-argument action shows as `:name`; one taking values
-/// shows them inline, e.g. `:clear <history|cookies|cache|all>`.
+/// the same list that becomes the assistant's tool menu, so help and AI never drift.
+/// Required args show as `<a|b>`, optional ones as `[a|b]`.
 pub(crate) fn help_rows() -> Vec<(String, String)> {
     ACTIONS
         .iter()
         .map(|a| {
-            let inv = if a.values.is_empty() {
-                format!(":{}", a.name)
-            } else {
-                format!(":{} <{}>", a.name, a.values.join("|"))
-            };
+            let mut inv = format!(":{}", a.name);
+            for p in a.params {
+                // Free-text params (no fixed `values`) show their name as a placeholder.
+                let slot = if p.values.is_empty() { p.name.to_string() } else { p.values.join("|") };
+                if p.required {
+                    inv.push_str(&format!(" <{slot}>"));
+                } else {
+                    inv.push_str(&format!(" [{slot}]"));
+                }
+            }
             (inv, a.summary.to_string())
         })
         .collect()
 }
 
+/// The registry as an OpenAI-style `tools` array for the Groq request: each action
+/// becomes a `function` with an object schema whose properties are its params
+/// (string + `enum` of accepted values). The assistant picks one and supplies args,
+/// which [`App::perform`] runs.
+pub(crate) fn groq_tools() -> Value {
+    let tools: Vec<Value> = ACTIONS
+        .iter()
+        .map(|a| {
+            let mut props = serde_json::Map::new();
+            let mut required = Vec::new();
+            for p in a.params {
+                let mut schema = serde_json::Map::new();
+                schema.insert("type".into(), Value::String("string".into()));
+                schema.insert("description".into(), Value::String(p.desc.into()));
+                // Only constrain to an enum when the param has fixed choices.
+                if !p.values.is_empty() {
+                    schema.insert("enum".into(), serde_json::json!(p.values));
+                }
+                props.insert(p.name.to_string(), Value::Object(schema));
+                if p.required {
+                    required.push(p.name);
+                }
+            }
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": a.name,
+                    "description": a.summary,
+                    "parameters": { "type": "object", "properties": props, "required": required },
+                }
+            })
+        })
+        .collect();
+    Value::Array(tools)
+}
+
+/// Build an args object by zipping whitespace tokens in `rest` onto `names`, so a
+/// command line like `:clear cache 15m` (`names = ["what","period"]`) becomes
+/// `{"what":"cache","period":"15m"}` — the same shape the assistant's tool-calls use.
+pub(crate) fn positional(names: &[&str], rest: &str) -> Value {
+    let mut map = serde_json::Map::new();
+    let mut toks = rest.split_whitespace();
+    for n in names {
+        match toks.next() {
+            Some(t) => {
+                map.insert((*n).to_string(), Value::String(t.to_string()));
+            }
+            None => break,
+        }
+    }
+    Value::Object(map)
+}
+
 impl App {
-    /// Run an action by `name` + `arg` — the one entry point shared by the command
-    /// bar and (soon) the assistant. Returns a status line on success or a
+    /// Run an action by `name` with a JSON `args` object — the one entry point shared
+    /// by the command bar and the assistant. Returns a status line on success or a
     /// human-readable error; unknown names/args are reported, never panic. Anything
-    /// asynchronous (e.g. an engine data wipe) reports its real completion later via
-    /// its own event; the returned line is the "started" acknowledgement.
-    pub(crate) fn perform(&mut self, name: &str, arg: &str) -> Result<String, String> {
+    /// asynchronous (an engine data wipe) reports its real completion later via its
+    /// own event; the returned line is the "started" acknowledgement.
+    pub(crate) fn perform(&mut self, name: &str, args: &Value) -> Result<String, String> {
+        let str_arg = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or("").trim();
         match name {
-            "clear" => self.action_clear(arg.trim()),
+            "clear" => {
+                let period = args
+                    .get("period")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty());
+                self.action_clear(str_arg("what"), period)
+            }
+            "alias" => self.set_alias(str_arg("name"), str_arg("expansion")),
+            "unalias" => self.remove_alias(str_arg("name")),
+            "restore" => Ok(self.restore_defaults()),
             other => Err(format!("unknown action: {other}")),
         }
     }
 
+    /// Define/replace a command alias `name` → `expansion` and persist it. Guards the
+    /// name (single word; never `restore`, so the panic button can't be shadowed) and
+    /// requires a non-empty expansion. The expansion is stored without a leading `:`.
+    pub(crate) fn set_alias(&mut self, name: &str, expansion: &str) -> Result<String, String> {
+        let name = name.trim();
+        let expansion = expansion.trim().trim_start_matches(':').trim();
+        if name.is_empty() || expansion.is_empty() {
+            return Err("usage: :alias <name> <command>  (e.g. :alias gh open github.com)".into());
+        }
+        if name.split_whitespace().count() != 1 {
+            return Err("an alias name must be a single word (no spaces)".into());
+        }
+        if name == "restore" {
+            return Err("'restore' is reserved — it's the reset-to-defaults command".into());
+        }
+        self.config.aliases.insert(name.to_string(), expansion.to_string());
+        crate::config::save(&self.config);
+        Ok(format!("alias :{name} → {expansion}"))
+    }
+
+    /// Remove a command alias, persisting the change. Errors if it didn't exist.
+    pub(crate) fn remove_alias(&mut self, name: &str) -> Result<String, String> {
+        let name = name.trim();
+        if self.config.aliases.remove(name).is_some() {
+            crate::config::save(&self.config);
+            Ok(format!("removed alias :{name}"))
+        } else {
+            Err(format!("no alias :{name}"))
+        }
+    }
+
+    /// Reset ALL customization to defaults and persist the empty config — the safety
+    /// net behind `:restore` and the `Ctrl+Alt+Shift+R` hook chord. Returns the
+    /// status message. (As more config-driven surfaces land — chrome, keybinds —
+    /// this is where they get re-applied live.)
+    pub(crate) fn restore_defaults(&mut self) -> String {
+        self.config = crate::config::Config::default();
+        crate::config::save(&self.config);
+        self.window.request_redraw();
+        "restored default settings".to_string()
+    }
+
+    /// Expand a leading command alias, up to a small depth so chained aliases work
+    /// without an infinite loop. Returns the rewritten line, or `None` if the head
+    /// word isn't an alias. Typed args after the alias are appended to its expansion.
+    pub(crate) fn expand_alias(&self, line: &str) -> Option<String> {
+        let mut cur = line.to_string();
+        let mut changed = false;
+        for _ in 0..8 {
+            let (verb, rest) = match cur.split_once(char::is_whitespace) {
+                Some((v, r)) => (v.to_string(), r.trim().to_string()),
+                None => (cur.clone(), String::new()),
+            };
+            let Some(exp) = self.config.aliases.get(&verb) else { break };
+            cur = if rest.is_empty() { exp.clone() } else { format!("{exp} {rest}") };
+            changed = true;
+        }
+        changed.then_some(cur)
+    }
+
     /// Run an action and report the outcome in the status bar — the command-bar
-    /// convenience over [`perform`](App::perform). (The assistant will call
-    /// `perform` directly so it can read the result text back.)
-    pub(crate) fn run_action(&mut self, name: &str, arg: &str) {
-        match self.perform(name, arg) {
+    /// convenience over [`perform`](App::perform). (The assistant calls `perform`
+    /// directly so it can show the result text in the chat.)
+    pub(crate) fn run_action(&mut self, name: &str, args: Value) {
+        match self.perform(name, &args) {
             Ok(msg) => self.set_status(msg),
             Err(e) => self.set_error(e),
         }
         self.window.request_redraw();
     }
 
-    /// `clear <what>` — wipe a slice of stored data. `history` clears the shell's own
-    /// visited list and reopen stack immediately (and the engine's history if a page
-    /// is open); `cookies` / `cache` / `all` go through the WebView2 profile and so
-    /// need at least one web tab open to reach the engine.
-    fn action_clear(&mut self, what: &str) -> Result<String, String> {
+    /// `clear <what> [period]` — wipe a slice of stored data, optionally only the
+    /// part from a recent time window. `history` clears the shell's own visited list
+    /// (windowed by visit time) and reopen stack, plus the engine's history;
+    /// `cookies`/`cache`/`all` go through the WebView2 profile and so need a web tab
+    /// open. `period` omitted (or `all`) means all time.
+    fn action_clear(&mut self, what: &str, period: Option<&str>) -> Result<String, String> {
+        let (secs, disp) = resolve_period(period)?;
+        let now = now_epoch();
+        // The engine wants an absolute [start, end] window in epoch seconds; `None`
+        // = all time. The shell history uses the same cutoff as a `u64`.
+        let range = secs.map(|s| (now.saturating_sub(s) as f64, now as f64));
+        let cutoff = secs.map(|s| now.saturating_sub(s));
         match what {
             "history" | "hist" => {
-                let n = self.history.len();
-                self.history.clear();
-                self.closed_tabs.clear();
-                // Best-effort: also drop the engine's own history if a page is live.
-                self.clear_engine(DataKind::History, "history");
+                let removed = self.clear_history_window(cutoff);
+                // Best-effort: also drop the engine's own history for the same window.
+                self.clear_engine(DataKind::History, range);
                 self.window.request_redraw();
-                Ok(format!("cleared {n} history entries"))
+                let plural = if removed == 1 { "entry" } else { "entries" };
+                Ok(format!("cleared {removed} history {plural} ({disp})"))
             }
-            "cookies" => self.clear_engine_required(DataKind::Cookies, "cookies"),
-            "cache" => self.clear_engine_required(DataKind::Cache, "cache"),
-            "all" | "everything" => self.clear_engine_required(DataKind::All, "all browsing data"),
+            "cookies" => self.clear_engine_required(DataKind::Cookies, range, &format!("cookies ({disp})")),
+            "cache" => self.clear_engine_required(DataKind::Cache, range, &format!("cache ({disp})")),
+            "all" | "everything" => {
+                // A full wipe takes the shell's own lists with it (windowed too), then
+                // the engine profile. With no web tab we can't reach the engine, but
+                // the shell part still happened — report that rather than erroring.
+                let removed = self.clear_history_window(cutoff);
+                self.window.request_redraw();
+                match self.clear_engine_required(DataKind::All, range, &format!("all browsing data ({disp})")) {
+                    Ok(msg) => Ok(msg),
+                    Err(_) => Ok(format!(
+                        "cleared {removed} local history ({disp}); open a page to also wipe cookies & cache"
+                    )),
+                }
+            }
             "" => Err("clear what? — history, cookies, cache, or all".into()),
             other => Err(format!("can't clear '{other}' — try history, cookies, cache, or all")),
         }
     }
 
+    /// Drop visited-history entries inside the time window: `None` cutoff wipes
+    /// everything (and the reopen stack); `Some(cutoff)` removes only entries
+    /// stamped at-or-after `cutoff` (entries with an unknown time of `0`, e.g.
+    /// restored from an old session, survive any windowed clear). Returns the count
+    /// removed; keeps [`history`](App::history)/[`history_at`](App::history_at) aligned.
+    fn clear_history_window(&mut self, cutoff: Option<u64>) -> usize {
+        match cutoff {
+            None => {
+                let n = self.history.len();
+                self.history.clear();
+                self.history_at.clear();
+                self.closed_tabs.clear();
+                n
+            }
+            Some(c) => {
+                let mut urls = Vec::with_capacity(self.history.len());
+                let mut times = Vec::with_capacity(self.history_at.len());
+                let mut removed = 0;
+                for (u, &at) in self.history.iter().zip(self.history_at.iter()) {
+                    if at >= c {
+                        removed += 1;
+                    } else {
+                        urls.push(u.clone());
+                        times.push(at);
+                    }
+                }
+                self.history = urls;
+                self.history_at = times;
+                removed
+            }
+        }
+    }
+
     /// Fire an engine data-clear if a web tab exists, ignoring the no-engine case
     /// (used for the bonus engine-history wipe alongside the shell's own list).
-    fn clear_engine(&self, kind: DataKind, _label: &str) {
+    fn clear_engine(&self, kind: DataKind, range: Option<(f64, f64)>) {
         if let Some(wv) = self.any_webview() {
-            let _ = crate::data::clear(wv, kind, String::new(), self.proxy.clone());
+            let _ = crate::data::clear(wv, kind, range, String::new(), self.acting_ai, self.proxy.clone());
         }
     }
 
     /// Fire an engine data-clear, requiring a live web tab to reach the shared
     /// profile. Returns the "clearing…" acknowledgement; the real confirmation
     /// arrives later as [`UserEvent::DataCleared`](crate::UserEvent::DataCleared).
-    fn clear_engine_required(&self, kind: DataKind, label: &str) -> Result<String, String> {
+    fn clear_engine_required(
+        &self,
+        kind: DataKind,
+        range: Option<(f64, f64)>,
+        label: &str,
+    ) -> Result<String, String> {
         let Some(wv) = self.any_webview() else {
             return Err(format!("open a page first, then clear {label}"));
         };
-        crate::data::clear(wv, kind, label.to_string(), self.proxy.clone())?;
+        crate::data::clear(wv, kind, range, label.to_string(), self.acting_ai, self.proxy.clone())?;
         Ok(format!("clearing {label}…"))
     }
+}
+
+/// Resolve a `period` argument into `(duration_secs, display)`: `None`/`all`/empty
+/// → all time (`None` duration); a token like `15m`/`1h`/`24h`/`7d`/`1w` → its
+/// length in seconds. Accepts the bare unit words too (`hour`/`day`/`week`). `Err`
+/// for an unparseable token, so a typo is reported rather than silently wiping all.
+fn resolve_period(period: Option<&str>) -> Result<(Option<u64>, String), String> {
+    let raw = period.map(|p| p.trim().to_lowercase());
+    let secs = match raw.as_deref() {
+        None | Some("") | Some("all") | Some("everything") | Some("alltime") => None,
+        Some(p) => Some(parse_duration(p)?),
+    };
+    let disp = match (&raw, secs) {
+        (_, None) => "all time".to_string(),
+        (Some(r), Some(_)) => format!("last {r}"),
+        (None, Some(_)) => unreachable!(),
+    };
+    Ok((secs, disp))
+}
+
+/// Parse a compact duration token (`15m`, `1h`, `24h`, `7d`, `1w`, or a bare
+/// `hour`/`day`/`week`) into seconds.
+fn parse_duration(p: &str) -> Result<u64, String> {
+    match p {
+        "min" | "minute" => return Ok(60),
+        "hour" => return Ok(3600),
+        "day" => return Ok(86_400),
+        "week" => return Ok(604_800),
+        _ => {}
+    }
+    let split = p.find(|c: char| !c.is_ascii_digit()).unwrap_or(p.len());
+    let (num, unit) = p.split_at(split);
+    let n: u64 = num.parse().map_err(|_| format!("don't understand the time period '{p}'"))?;
+    let mult = match unit {
+        "m" | "min" | "mins" | "minute" | "minutes" => 60,
+        "h" | "hr" | "hrs" | "hour" | "hours" => 3600,
+        "d" | "day" | "days" => 86_400,
+        "w" | "wk" | "week" | "weeks" => 604_800,
+        other => return Err(format!("unknown time unit '{other}' — use m, h, d, or w")),
+    };
+    n.checked_mul(mult).ok_or_else(|| "that time period is too large".to_string())
 }
 
 #[cfg(test)]
@@ -124,10 +416,63 @@ mod tests {
     use super::*;
 
     #[test]
-    fn help_rows_render_values_inline_and_cover_the_registry() {
+    fn help_rows_show_required_and_optional_args() {
         let rows = help_rows();
         assert_eq!(rows.len(), ACTIONS.len());
-        let clear = rows.iter().find(|(inv, _)| inv.starts_with(":clear")).expect("clear listed");
-        assert_eq!(clear.0, ":clear <history|cookies|cache|all>");
+        let row = |name: &str| {
+            rows.iter().find(|(inv, _)| inv.starts_with(name)).map(|(i, _)| i.clone()).unwrap()
+        };
+        // Fixed-value params render as enums; free-text params show their name.
+        assert_eq!(row(":clear"), ":clear <history|cookies|cache|all> [15m|1h|24h|7d|all]");
+        assert_eq!(row(":alias"), ":alias <name> <expansion>");
+        assert_eq!(row(":unalias"), ":unalias <name>");
+        assert_eq!(row(":restore"), ":restore");
+    }
+
+    #[test]
+    fn groq_tools_emit_enum_only_for_fixed_params() {
+        let tools = groq_tools();
+        let by_name = |n: &str| {
+            tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["function"]["name"] == n)
+                .unwrap()["function"]["parameters"]["properties"]
+                .clone()
+        };
+        // `clear.what` is constrained; `alias.name` is free text (no enum).
+        assert!(by_name("clear")["what"].get("enum").is_some());
+        assert!(by_name("alias")["name"].get("enum").is_none());
+        assert_eq!(by_name("alias")["name"]["type"], "string");
+    }
+
+    #[test]
+    fn periods_parse_to_seconds_or_all_time() {
+        assert_eq!(resolve_period(None).unwrap().0, None);
+        assert_eq!(resolve_period(Some("all")).unwrap().0, None);
+        assert_eq!(resolve_period(Some("15m")).unwrap().0, Some(900));
+        assert_eq!(resolve_period(Some("1h")).unwrap().0, Some(3600));
+        assert_eq!(resolve_period(Some("24h")).unwrap().0, Some(86_400));
+        assert_eq!(resolve_period(Some("7d")).unwrap().0, Some(604_800));
+        assert_eq!(resolve_period(Some("2 hours".replace(' ', "").as_str())).unwrap().0, Some(7200));
+        assert!(resolve_period(Some("banana")).is_err());
+    }
+
+    #[test]
+    fn period_display_reads_naturally() {
+        assert_eq!(resolve_period(Some("24h")).unwrap().1, "last 24h");
+        assert_eq!(resolve_period(None).unwrap().1, "all time");
+    }
+
+    #[test]
+    fn positional_zips_tokens_onto_names() {
+        let v = positional(&["what", "period"], "cache 15m");
+        assert_eq!(v["what"], "cache");
+        assert_eq!(v["period"], "15m");
+        // Missing trailing tokens are simply absent (period defaults to all time).
+        let v = positional(&["what", "period"], "cookies");
+        assert_eq!(v["what"], "cookies");
+        assert!(v.get("period").is_none());
     }
 }

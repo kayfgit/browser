@@ -9,7 +9,8 @@ use crate::{clipboard_set, commands_document, parse_tab_flag, program_exists, Ap
 pub(crate) const COMMANDS: &[&str] = &[
     "open", "tabopen", "edit", "yank", "read", "research", "reload", "resize", "res", "resources", "reopen", "ai",
     "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock", "downloads",
-    "popups", "pops", "mute", "audio", "css", "model", "history", "clear", "next", "tabnext", "tabprev",
+    "popups", "pops", "mute", "audio", "css", "model", "history", "clear", "alias", "unalias", "restore",
+    "next", "tabnext", "tabprev",
     "prev", "back", "forward", "fullscreen", "move", "commands", "help", "version", "close",
     "vsplit", "split", "write", "wq", "quit",
 ];
@@ -17,8 +18,13 @@ pub(crate) const COMMANDS: &[&str] = &[
 impl App {
     pub(crate) fn run_command(&mut self, line: &str) {
         let line = line.trim();
-        // Attribute any failure raised below to this command in the error log.
+        // Attribute any failure raised below to this command in the error log (keep the
+        // line the user actually typed, before alias expansion).
         self.current_command = if line.is_empty() { None } else { Some(format!(":{line}")) };
+        // Expand a leading command alias (`gh` → `open github.com`), appending any
+        // typed args. Resolved here so aliases work everywhere `:` commands run.
+        let expanded = self.expand_alias(line);
+        let line = expanded.as_deref().unwrap_or(line);
         let (verb, rest) = match line.split_once(char::is_whitespace) {
             Some((v, r)) => (v, r.trim()),
             None => (line, ""),
@@ -188,19 +194,40 @@ impl App {
                 self.mode = ModeKind::Move;
                 self.clear_status();
             }
-            // `:history` opens the visited list as a vim buffer; `:history clear`
-            // wipes it (a shortcut for `:clear history`).
+            // `:history` opens the visited list as a vim buffer; `:history clear
+            // [period]` wipes it (a shortcut for `:clear history [period]`).
             "history" | "hist" => {
-                if rest.trim() == "clear" {
-                    self.run_action("clear", "history");
+                let r = rest.trim();
+                if r == "clear" || r.starts_with("clear ") {
+                    let period = r["clear".len()..].trim();
+                    let line =
+                        if period.is_empty() { "history".to_string() } else { format!("history {period}") };
+                    self.run_action("clear", crate::actions::positional(&["what", "period"], &line));
                 } else {
                     self.open_history_page();
                 }
             }
-            // `:clear <history|cookies|cache|all>` — the privacy/data actions. This is
-            // a single verb (not one per kind) so the command surface stays small; the
-            // same actions are what the AI assistant will drive. See `actions.rs`.
-            "clear" => self.run_action("clear", rest),
+            // `:clear <what> [period]` — the privacy/data actions (e.g. `:clear cache
+            // 15m`, `:clear cookies`, `:clear all`). A single verb (not one per kind)
+            // keeps the command surface small; the same actions are what the AI
+            // assistant drives. See `actions.rs`.
+            "clear" => self.run_action("clear", crate::actions::positional(&["what", "period"], rest)),
+            // Customization: `:alias` (list / set), `:unalias`, and the brick-proof
+            // `:restore`. These run through the same action layer the AI drives.
+            "alias" => {
+                let r = rest.trim();
+                if r.is_empty() {
+                    self.open_alias_page();
+                } else {
+                    let (name, exp) = match r.split_once(char::is_whitespace) {
+                        Some((n, e)) => (n, e.trim()),
+                        None => (r, ""),
+                    };
+                    self.run_action("alias", serde_json::json!({ "name": name, "expansion": exp }));
+                }
+            }
+            "unalias" => self.run_action("unalias", serde_json::json!({ "name": rest.trim() })),
+            "restore" => self.run_action("restore", serde_json::json!({})),
             "commands" | "help" => self.open_local_page("commands", commands_document()),
             "version" => self.open_version_page(),
             // Total the browser's real footprint across its whole process tree

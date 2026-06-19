@@ -27,6 +27,12 @@ pub struct Session {
     /// before the `window`/`tabs` tables (TOML: values precede tables).
     #[serde(default)]
     pub history: Vec<String>,
+    /// Visit times (Unix-epoch seconds) parallel to `history`. `default` (empty) for
+    /// sessions written before time-stamping; realigned to `history` on load, with
+    /// missing entries treated as time-unknown. Keep adjacent to `history` and before
+    /// the `window`/`tabs` tables (TOML: scalar arrays precede tables).
+    #[serde(default)]
+    pub history_at: Vec<u64>,
     /// Last window geometry (outer position + inner size). `None` for sessions
     /// written before this was tracked.
     #[serde(default)]
@@ -98,6 +104,7 @@ mod tests {
             term_command: vec!["nu".into()],
             active: 1,
             history: vec!["https://example.com/".into()],
+            history_at: vec![1_700_000_000],
             window: Some(WindowGeom { x: 40, y: 60, w: 1280, h: 800 }),
             tabs: vec![
                 SavedTab { kind: "open".into(), url: "https://a.test/".into() },

@@ -40,8 +40,10 @@ mod imp {
     const VK_ESCAPE: u32 = 0x1B;
     const VK_S: u32 = 0x53;
     const VK_V: u32 = 0x56;
+    const VK_R: u32 = 0x52;
     const VK_SHIFT: i32 = 0x10;
     const VK_CONTROL: i32 = 0x11;
+    const VK_MENU: i32 = 0x12; // Alt
 
     static MODE: AtomicU8 = AtomicU8::new(super::MODE_OTHER);
     static HWND_VAL: AtomicIsize = AtomicIsize::new(0);
@@ -110,6 +112,18 @@ mod imp {
                         as u16
                         & 0x8000)
                         != 0;
+                    let alt = (windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(VK_MENU)
+                        as u16
+                        & 0x8000)
+                        != 0;
+                    // The brick-proof panic button: Ctrl+Alt+Shift+R resets all
+                    // customization to defaults. Checked here, ABOVE the mode gate and
+                    // independent of the (potentially rebound) keybind layer, so it
+                    // works in any mode no matter how keys get customized.
+                    if ctrl && alt && shift && kb.vkCode == VK_R {
+                        post(UserEvent::RestoreDefaults);
+                        return LRESULT(1);
+                    }
                     if let Some(ev) = decide(MODE.load(Ordering::Relaxed), kb.vkCode, ctrl, shift) {
                         post(ev);
                         return LRESULT(1); // swallow: the page must not also see it
