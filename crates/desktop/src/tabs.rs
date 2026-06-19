@@ -632,6 +632,12 @@ impl App {
     }
 
     pub(crate) fn close_active(&mut self) {
+        // The AI tab is a persistent background singleton: `x` HIDES it (switches to a
+        // content tab, keeping the conversation alive) rather than destroying it.
+        if self.active_is_ai() {
+            self.hide_ai_tab();
+            return;
+        }
         let Some(i) = self.active else {
             self.set_status("no tab to close");
             return;
@@ -646,10 +652,45 @@ impl App {
         // Drop the tab and fix the pane tree (prune its leaf, collapse to single-pane
         // when one remains); focus the surviving pane.
         self.active = self.drop_tab(i);
+        // Closing a tab must never surface the background AI singleton: if the survivor
+        // we'd land on is the AI tab, step away to a real tab (or the welcome screen).
+        if self.active.and_then(|a| self.tabs.get(a)).is_some_and(|t| t.ai().is_some()) {
+            self.focus_away_from_ai();
+        }
         self.find_reset();
         self.mode = ModeKind::Normal;
         self.refresh_visibility();
         self.window.set_focus();
+    }
+
+    /// Hide the AI tab (the `x` action on it): step focus away so the chat stays alive
+    /// in the background, never destroying it. Returns to the tab we came from when the
+    /// AI tab was summoned, or — if the AI tab is the only one left — to the welcome
+    /// screen (`active = None`), exactly as if no tab were open.
+    fn hide_ai_tab(&mut self) {
+        self.focus_away_from_ai();
+        self.mode = ModeKind::Normal;
+        self.find_reset();
+        self.window.set_focus();
+        self.window.request_redraw();
+    }
+
+    /// Point `active` at a visible (non-AI) tab without destroying the AI singleton:
+    /// prefer the tab active before the AI tab was summoned, else the first visible
+    /// tab, else the welcome screen (`None`) when only the background AI tab remains.
+    fn focus_away_from_ai(&mut self) {
+        let prev = self
+            .ai_prev_active
+            .filter(|&i| self.tabs.get(i).is_some_and(|t| t.ai().is_none()));
+        self.ai_prev_active = None;
+        match prev.or_else(|| self.visible_tab_indices().first().copied()) {
+            Some(idx) => self.show_tab(idx),
+            None => {
+                // Only the hidden AI tab is left: fall back to the welcome screen.
+                self.active = None;
+                self.refresh_visibility();
+            }
+        }
     }
 
     /// Remove tab `i` from `tabs` and repair the pane tree: prune its leaf if it was
@@ -680,20 +721,38 @@ impl App {
         Some(collapsed_focus.unwrap_or_else(|| i.min(self.tabs.len() - 1)))
     }
 
+    /// Real indices of the tabs that appear in the strip and are reachable by tab
+    /// navigation: every tab EXCEPT the `:ai` singleton, which is a background tab
+    /// surfaced only by `:ai`. Order matches `tabs`. Navigation/click/`tab_labels`
+    /// all index through this so the AI tab is invisible to the normal tab flow.
+    pub(crate) fn visible_tab_indices(&self) -> Vec<usize> {
+        self.tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.ai().is_none())
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     pub(crate) fn switch_tab(&mut self, delta: i32) {
-        if self.tabs.is_empty() {
+        let visible = self.visible_tab_indices();
+        if visible.is_empty() {
             return;
         }
-        let n = self.tabs.len() as i32;
-        let cur = self.active.unwrap_or(0) as i32;
-        let next = (cur + delta).rem_euclid(n) as usize;
+        let cur = self.active.unwrap_or(visible[0]);
+        // Position of the active tab among the visible ones; if the AI tab is up, start
+        // from the first visible tab so n/p step onto real content.
+        let pos = visible.iter().position(|&i| i == cur).unwrap_or(0) as i32;
+        let n = visible.len() as i32;
+        let next = visible[(pos + delta).rem_euclid(n) as usize];
         self.show_tab(next);
     }
 
-    /// Jump directly to a zero-based tab index (bound to keys 1..9).
+    /// Jump directly to a zero-based *visible* tab position (bound to keys 1..9) —
+    /// the AI singleton isn't counted, so the digits match the strip.
     pub(crate) fn jump_to(&mut self, index: usize) {
-        if index < self.tabs.len() {
-            self.show_tab(index);
+        if let Some(&real) = self.visible_tab_indices().get(index) {
+            self.show_tab(real);
         }
     }
 
@@ -721,24 +780,24 @@ impl App {
         self.window.set_focus();
     }
 
-    /// Map an x pixel coordinate on the tab bar to a tab index, for click-to-switch.
-    /// Mirrors `draw_tab_bar`'s layout (start at x=8, each label `+6` gap), including
-    /// its right-edge truncation, so the clickable regions match what's drawn.
+    /// Map an x pixel on the tab bar to a zero-based *visible* tab position (what
+    /// [`jump_to`](App::jump_to) takes), for click-to-switch. Mirrors `draw_tab_bar`'s
+    /// layout and numbering, which also skip the background AI tab.
     pub(crate) fn tab_at_pixel(&self, px: f64) -> Option<usize> {
         let p = &self.painter;
         let labels = self.tab_labels();
         let limit = self.inner().0 as usize;
         let px = px.max(0.0) as usize;
         let mut x = 8usize;
-        for (i, (label, active, _)) in labels.iter().enumerate() {
+        for (pos, (label, active, _)) in labels.iter().enumerate() {
             let text = if *active {
-                format!("[{}:{}]", i + 1, label)
+                format!("[{}:{}]", pos + 1, label)
             } else {
-                format!(" {}:{} ", i + 1, label)
+                format!(" {}:{} ", pos + 1, label)
             };
             let end = x + p.measure(&text) + 6;
             if px >= x && px < end {
-                return Some(i);
+                return Some(pos);
             }
             x = end;
             if x > limit.saturating_sub(40) {
@@ -748,14 +807,17 @@ impl App {
         None
     }
 
-    /// Move the active tab one position left (-1) or right (+1).
+    /// Move the active tab one position left (-1) or right (+1) among the visible
+    /// tabs (the background AI tab is skipped, so it never wedges the order).
     pub(crate) fn move_tab(&mut self, delta: i32) {
         let Some(i) = self.active else { return };
-        let j = i as i32 + delta;
-        if j < 0 || j as usize >= self.tabs.len() {
+        let visible = self.visible_tab_indices();
+        let Some(pos) = visible.iter().position(|&t| t == i) else { return };
+        let target = pos as i32 + delta;
+        if target < 0 || target as usize >= visible.len() {
             return;
         }
-        let j = j as usize;
+        let j = visible[target as usize];
         self.tabs.swap(i, j);
         // Keep each pane showing the same content after the index swap.
         if let Some(tree) = self.split.as_mut() {

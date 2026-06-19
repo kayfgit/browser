@@ -218,7 +218,30 @@ impl App {
             },
             Key::ArrowDown => self.scroll(80),
             Key::ArrowUp => self.scroll(-80),
+            // Enter on a `:history` line opens that entry (Shift+Enter → new tab);
+            // a no-op anywhere else.
+            Key::Enter => self.open_history_entry(self.modifiers.shift_key()),
             _ => {}
+        }
+    }
+
+    /// Enter on a line of the `:history` pager: open the URL on the cursor line —
+    /// in this tab, or a new one when `new_tab` (Shift+Enter). A no-op on any other
+    /// tab or on a non-URL line (the header/blank), so plain Enter is otherwise inert.
+    pub(crate) fn open_history_entry(&mut self, new_tab: bool) {
+        if self.active_url() != Some("browser://history") {
+            return;
+        }
+        let line = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.vim())
+            .and_then(|b| b.lines.get(b.cy))
+            .map(|chars| chars.iter().collect::<String>());
+        let Some(line) = line else { return };
+        let url = line.trim();
+        if url.starts_with("http") {
+            self.open_tab(url, self.nojs, new_tab);
         }
     }
 

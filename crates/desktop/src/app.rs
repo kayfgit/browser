@@ -5,7 +5,7 @@
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tao::event_loop::EventLoopProxy;
 use tao::keyboard::ModifiersState;
@@ -76,10 +76,16 @@ pub(crate) enum UserEvent {
     /// The page entered (`true`) or left (`false`) HTML fullscreen (e.g. YouTube's
     /// fullscreen button) → match the window's fullscreen so the page fills the screen.
     PageFullscreen(bool),
-    /// A `:ai` tab's background Groq request finished: a text answer or chosen
-    /// browser action(s) ([`crate::ai::AiOutcome`]) — or an error string — routed
-    /// back to the tab with this id.
-    AiReply { id: u64, result: Result<crate::ai::AiOutcome, String> },
+    /// One Groq round finished for the `:ai` tab with this id: a final answer or
+    /// tool-calls to run ([`crate::ai::AiStep`]) — or an error. `convo`/`round` carry
+    /// the running conversation so [`ai_reply`](App::ai_reply) can continue the
+    /// agentic loop (run actions → feed results back → ask again).
+    AiReply {
+        id: u64,
+        convo: Vec<serde_json::Value>,
+        round: u32,
+        result: Result<crate::ai::AiStep, String>,
+    },
     /// The keyboard hook saw Esc while the page held focus in Normal mode (a click
     /// yielded the keyboard to a page control): pull keyboard focus back to the shell.
     ReclaimNormal,
@@ -152,6 +158,14 @@ pub(crate) struct App {
     pub(crate) status: String,
     /// Whether the current `status` is an error (rendered red instead of dim).
     pub(crate) status_is_error: bool,
+    /// When set, the current status is a transient flash (e.g. a background `:ai`
+    /// result) that auto-clears once this deadline passes; any normal status update
+    /// cancels it. See [`flash_status`](Self::flash_status).
+    pub(crate) status_clear_at: Option<Instant>,
+    /// The tab that was active just before the `:ai` tab was summoned, so closing the
+    /// AI tab returns there (rather than to a stray blank pane). `None` = the welcome
+    /// screen. See [`hide_ai_tab`](Self::hide_ai_tab).
+    pub(crate) ai_prev_active: Option<usize>,
     /// Session error log: every failure (message + the command that triggered it +
     /// a wall-clock timestamp), newest last. Inspected with `:error` (latest) and
     /// `:errors` (all), capped to avoid unbounded growth.
@@ -359,9 +373,12 @@ impl App {
         }
     }
 
-    /// Tab-bar height: present only while at least one tab is open and chrome shown.
+    /// Tab-bar height: present only while at least one *visible* tab is open and chrome
+    /// is shown. The background `:ai` singleton doesn't appear in the strip, so a lone
+    /// hidden AI tab leaves the bar at zero height (welcome screen stays clean).
     pub(crate) fn tab_bar_h(&self) -> u32 {
-        if self.tabs.is_empty() || self.chrome_hidden() {
+        let no_visible_tabs = !self.tabs.iter().any(|t| t.ai().is_none());
+        if no_visible_tabs || self.chrome_hidden() {
             0
         } else {
             self.scaled(TAB_BAR_H)
@@ -736,10 +753,36 @@ impl App {
         self.adblock_on.store(on, Ordering::Relaxed);
     }
 
-    /// Set an informational status message (rendered dim). Clears the error flag.
+    /// Set an informational status message (rendered dim). Clears the error flag and
+    /// cancels any pending transient-flash auto-clear.
     pub(crate) fn set_status(&mut self, msg: impl Into<String>) {
         self.status = msg.into();
         self.status_is_error = false;
+        self.status_clear_at = None;
+    }
+
+    /// Show a transient status that auto-clears after ~2s — a fire-and-forget
+    /// confirmation, e.g. a background `:ai` result you'll glance at. Any later status
+    /// update replaces it and cancels the timer.
+    pub(crate) fn flash_status(&mut self, msg: impl Into<String>) {
+        self.set_status(msg);
+        self.status_clear_at = Some(Instant::now() + Duration::from_secs(2));
+    }
+
+    /// Show a persistent warning (red), without logging it to `:errors` — used for a
+    /// background `:ai` failure whose detail already lives in the chat.
+    pub(crate) fn warn_status(&mut self, msg: impl Into<String>) {
+        self.set_status(msg);
+        self.status_is_error = true;
+    }
+
+    /// Clear a transient status flash once its deadline has passed. Called on the
+    /// event-loop timer wake; a no-op until then or when no flash is pending.
+    pub(crate) fn expire_status_flash(&mut self) {
+        if self.status_clear_at.is_some_and(|t| Instant::now() >= t) {
+            self.clear_status();
+            self.window.request_redraw();
+        }
     }
 
     /// "Quick maths": if the command-bar line is an arithmetic expression, return
@@ -757,6 +800,7 @@ impl App {
     pub(crate) fn clear_status(&mut self) {
         self.status.clear();
         self.status_is_error = false;
+        self.status_clear_at = None;
     }
 
     /// Record a failure: show it in the status bar (red) and append it to the
@@ -774,6 +818,7 @@ impl App {
         }
         self.status = msg;
         self.status_is_error = true;
+        self.status_clear_at = None;
     }
 
     /// Mouse-wheel scroll. `dy_lines` > 0 means the wheel rolled up (toward older

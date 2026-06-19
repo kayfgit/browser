@@ -1075,6 +1075,8 @@ fn main() -> Result<()> {
         native_hints: Vec::new(),
         status: String::new(),
         status_is_error: false,
+        status_clear_at: None,
+        ai_prev_active: None,
         errors: Vec::new(),
         current_command: None,
         find: FindState::default(),
@@ -1175,6 +1177,8 @@ fn main() -> Result<()> {
             // Command-bar cursor blink: the WaitUntil deadline (set below while in
             // Command mode) wakes us here to flip the cursor and repaint.
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
+                // A transient status flash (e.g. a finished background `:ai`) times out.
+                app.expire_status_flash();
                 if matches!(app.mode, ModeKind::Command | ModeKind::Find) {
                     app.cursor_on = !app.cursor_on;
                     app.window.request_redraw();
@@ -1485,7 +1489,9 @@ fn main() -> Result<()> {
                     app.window.request_redraw();
                 }
             }
-            Event::UserEvent(UserEvent::AiReply { id, result }) => app.ai_reply(id, result),
+            Event::UserEvent(UserEvent::AiReply { id, convo, round, result }) => {
+                app.ai_reply(id, convo, round, result)
+            }
             Event::UserEvent(UserEvent::PageFullscreen(on)) => app.set_page_fullscreen(on),
             Event::UserEvent(UserEvent::TermClosed { id }) => app.close_term_tab(id),
             Event::UserEvent(UserEvent::Quit) => {
@@ -1522,6 +1528,15 @@ fn main() -> Result<()> {
             } else if app.mode == ModeKind::Normal && app.active_is_res() {
                 // Auto-refresh the live resource monitor about once a second.
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(1000));
+            }
+            // A pending status-flash auto-clear: wake at its deadline (or sooner, if
+            // another timer above already wins).
+            if let Some(clear_at) = app.status_clear_at {
+                let next = match *control_flow {
+                    ControlFlow::WaitUntil(t) => t.min(clear_at),
+                    _ => clear_at,
+                };
+                *control_flow = ControlFlow::WaitUntil(next);
             }
         }
     });

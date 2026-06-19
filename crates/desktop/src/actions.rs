@@ -17,6 +17,7 @@ use serde_json::Value;
 
 use crate::app::now_epoch;
 use crate::data::DataKind;
+use crate::panes::SplitDir;
 use crate::App;
 
 /// One argument of an action: its `name`, the `values` it accepts, whether it's
@@ -100,16 +101,78 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
                   their customizations.",
         params: &[],
     },
+    ActionSpec {
+        name: "open",
+        summary: "Open a URL or search query — in the current tab/pane, or a new tab. \
+                  For a side-by-side layout, 'split' first, then 'open' to fill the new pane.",
+        params: &[
+            ParamSpec {
+                name: "target",
+                values: &[],
+                required: true,
+                desc: "A URL (e.g. github.com) or a search query (anything not a URL is searched).",
+            },
+            ParamSpec {
+                name: "where",
+                values: &["current", "new"],
+                required: false,
+                desc: "Where to open it: the current tab/pane (default), or a new tab.",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "split",
+        summary: "Split the layout into tmux-style panes so two pages show at once. The \
+                  NEW pane becomes focused, so a following 'open' fills it — that's how to \
+                  put two sites side by side.",
+        params: &[ParamSpec {
+            name: "direction",
+            values: &["vertical", "horizontal"],
+            required: false,
+            desc: "vertical = panes side by side (default); horizontal = stacked top/bottom.",
+        }],
+    },
+    ActionSpec {
+        name: "close",
+        summary: "Close the current tab (or focused pane).",
+        params: &[],
+    },
+    ActionSpec {
+        name: "reopen",
+        summary: "Reopen the most recently closed tab.",
+        params: &[],
+    },
+    ActionSpec {
+        name: "tab",
+        summary: "Switch which tab is focused, to the next or previous one.",
+        params: &[ParamSpec {
+            name: "to",
+            values: &["next", "previous"],
+            required: false,
+            desc: "Which tab to focus; defaults to next.",
+        }],
+    },
+    ActionSpec {
+        name: "navigate",
+        summary: "Navigate the current page: go back or forward in its history, or reload it.",
+        params: &[ParamSpec {
+            name: "direction",
+            values: &["back", "forward", "reload"],
+            required: true,
+            desc: "back or forward in history, or reload the current page.",
+        }],
+    },
 ];
 
-/// Render the registry as `(invocation, summary)` rows for the `:commands` help —
+/// Render the registry as `(signature, summary)` rows for the `:commands` help —
 /// the same list that becomes the assistant's tool menu, so help and AI never drift.
-/// Required args show as `<a|b>`, optional ones as `[a|b]`.
+/// Shown as action signatures (no `:` prefix — several map to differently-named
+/// commands): required args as `<a|b>`, optional as `[a|b]`.
 pub(crate) fn help_rows() -> Vec<(String, String)> {
     ACTIONS
         .iter()
         .map(|a| {
-            let mut inv = format!(":{}", a.name);
+            let mut inv = a.name.to_string();
             for p in a.params {
                 // Free-text params (no fixed `values`) show their name as a placeholder.
                 let slot = if p.values.is_empty() { p.name.to_string() } else { p.values.join("|") };
@@ -160,6 +223,13 @@ pub(crate) fn groq_tools() -> Value {
     Value::Array(tools)
 }
 
+/// Whether `name` is a real action in the registry — used to reject a model's
+/// mangled/hallucinated tool name before it's echoed back to Groq (which 400s a
+/// `tool_calls` entry naming a tool that wasn't in the request).
+pub(crate) fn is_action(name: &str) -> bool {
+    ACTIONS.iter().any(|a| a.name == name)
+}
+
 /// Build an args object by zipping whitespace tokens in `rest` onto `names`, so a
 /// command line like `:clear cache 15m` (`names = ["what","period"]`) becomes
 /// `{"what":"cache","period":"15m"}` — the same shape the assistant's tool-calls use.
@@ -196,6 +266,51 @@ impl App {
             "alias" => self.set_alias(str_arg("name"), str_arg("expansion")),
             "unalias" => self.remove_alias(str_arg("name")),
             "restore" => Ok(self.restore_defaults()),
+            "open" => {
+                let target = str_arg("target");
+                if target.is_empty() {
+                    return Err("open what? — give a URL or a search query".into());
+                }
+                let new_tab = str_arg("where") == "new";
+                self.open_tab(target, self.nojs, new_tab);
+                Ok(format!("opened {target}{}", if new_tab { " in a new tab" } else { "" }))
+            }
+            "split" => {
+                let horizontal = matches!(str_arg("direction"), "horizontal" | "stacked");
+                self.split_pane(if horizontal { SplitDir::Col } else { SplitDir::Row });
+                Ok(format!(
+                    "split the layout {}",
+                    if horizontal { "top/bottom" } else { "side by side" }
+                ))
+            }
+            "close" => {
+                self.close_active();
+                Ok("closed the tab".into())
+            }
+            "reopen" => {
+                self.reopen_closed();
+                Ok("reopened the last closed tab".into())
+            }
+            "tab" => {
+                let prev = matches!(str_arg("to"), "previous" | "prev" | "left" | "back");
+                self.switch_tab(if prev { -1 } else { 1 });
+                Ok(format!("switched to the {} tab", if prev { "previous" } else { "next" }))
+            }
+            "navigate" => match str_arg("direction") {
+                "forward" => {
+                    self.history(true);
+                    Ok("went forward".into())
+                }
+                "reload" | "refresh" => {
+                    self.reload_active();
+                    Ok("reloaded the page".into())
+                }
+                "back" | "" => {
+                    self.history(false);
+                    Ok("went back".into())
+                }
+                other => Err(format!("can't navigate '{other}' — try back, forward, or reload")),
+            },
             other => Err(format!("unknown action: {other}")),
         }
     }
@@ -423,10 +538,12 @@ mod tests {
             rows.iter().find(|(inv, _)| inv.starts_with(name)).map(|(i, _)| i.clone()).unwrap()
         };
         // Fixed-value params render as enums; free-text params show their name.
-        assert_eq!(row(":clear"), ":clear <history|cookies|cache|all> [15m|1h|24h|7d|all]");
-        assert_eq!(row(":alias"), ":alias <name> <expansion>");
-        assert_eq!(row(":unalias"), ":unalias <name>");
-        assert_eq!(row(":restore"), ":restore");
+        assert_eq!(row("clear"), "clear <history|cookies|cache|all> [15m|1h|24h|7d|all]");
+        assert_eq!(row("alias "), "alias <name> <expansion>");
+        assert_eq!(row("unalias"), "unalias <name>");
+        assert_eq!(row("restore"), "restore");
+        assert_eq!(row("open"), "open <target> [current|new]");
+        assert_eq!(row("split"), "split [vertical|horizontal]");
     }
 
     #[test]

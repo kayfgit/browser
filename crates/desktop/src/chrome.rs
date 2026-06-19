@@ -480,17 +480,17 @@ impl App {
         Ok(())
     }
 
-    /// (label, is_active, color) for each open tab, in order.
+    /// (label, is_active, color) for each tab shown in the strip, in order. The `:ai`
+    /// singleton is a background tab (surfaced only by `:ai`) and is intentionally
+    /// omitted — see [`visible_tab_indices`](App::visible_tab_indices).
     pub(crate) fn tab_labels(&self) -> Vec<(String, bool, draw::Rgb)> {
-        self.tabs
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
+        self.visible_tab_indices()
+            .into_iter()
+            .map(|i| {
+                let t = &self.tabs[i];
                 let active = Some(i) == self.active;
                 let color = if t.term().is_some() {
                     draw::TERM
-                } else if t.ai().is_some() {
-                    draw::AI
                 } else if t.vim().is_some() {
                     draw::ERR
                 } else if t.read {
@@ -508,8 +508,6 @@ impl App {
                 // reads as "new".
                 let label = if t.is_blank() {
                     "new".to_string()
-                } else if t.ai().is_some() {
-                    "ai".to_string()
                 } else {
                     t.term()
                         .and_then(|s| s.pty.title())

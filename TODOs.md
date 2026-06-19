@@ -19,6 +19,8 @@ issues:
 [] - when splitting it creates a new tab, it should work like tmux in which the tabs are contained in one tab
 [*] - cant press youtube buttons when on normal mode, when i double click it quickly opens and closes
 [*] - sometimes when changing modes through normal to passthrough to term and vice versa it freezes and i cant leave the passthrough mode, only fix is to alt+tab to regain control
+[*] - universalize just "passthrough" mode instead of having "term", "ai", "page" that does the same exact thing. everything should be just "passthrough"
+[] - shift+tab should go back through the options on :model
 
 feat:
 [~] - look for a way to make the browser consume the least amount of resources from the pc, even with the heavy engine running
@@ -26,11 +28,10 @@ feat:
 [] - :commandbar to toggle visibility
 [] - command bar colors for each mode
 [] - currently the tab and command bars get hidden when entering fullscreen, add a command toggle for it
-[~] - :history command to see all past history and manipulate it (go back or delete everything) -- DONE: :history opens a vim buffer of the full visited list; :history clear / :clear history wipes it. TODO: press Enter on a line to open that entry.
 [*] - show the url on the right side of the command bar when hovering a link
-[x] - shorten the current url in command bar, only show full if the mouse hovers it or the command bar is opened
-[x] - allow mouse support on the command bar, highlighting copying etc.
 [*] - ctrl+: enters command bar in vim mode, allows vim motions.
+[] - allow pressing "d" on :history to delete the history on the current line, if selecting multiple lines with "v", wipes them all. currently "d" does the same as "ctrl+d" for some reason, only "ctrl+d" and "ctrl+u" should scroll half-down and half-up.
+[] - some way to open the ai chat history to go to a specific chat instead of just going back and forth with H/L
 
 maybes:
 [] - upgrade :ai so that it can maybe allow for browser manipulation, like "layout for web development" based on prior chat of "for web dev i like my browser on the left and split terminals on the right"

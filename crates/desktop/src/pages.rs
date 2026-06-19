@@ -419,7 +419,8 @@ pub(crate) fn commands_document() -> String {
         (":error · :err", "latest error in a read-only vim tab (v/y to select & copy)"),
         (":errors · :errs", "every error this session (newest first), same vim tab"),
         (":res · :resources", "live memory/CPU/disk across the whole browser tree (freezes while you select)"),
-        (":history · :hist", "visited URLs in a vim tab (v/y to select & open); :history clear wipes it"),
+        (":history · :hist", "visited URLs in a vim tab (Enter opens, ⇧Enter new tab, v/y select); :history clear wipes it"),
+        (":clear <what> [period]", "erase data: history/cookies/cache/all, optionally a window (15m/1h/24h/7d); cookies/cache need a page open"),
         (":alias [name] [cmd] · :unalias", "list / set / remove command aliases (e.g. :alias gh open github.com → :gh)"),
         (":restore", "reset all customization to defaults — also Ctrl+Alt+Shift+R, which works in any mode"),
         (":commands · :help", "this page"),
@@ -451,11 +452,11 @@ pub(crate) fn commands_document() -> String {
          <h2>Other modes</h2>{modes}\
          <h2>Vim pager (:error · :errors · :res · :version · read-mode v/V)</h2>{vimpager}\
          <h2>Commands</h2>{cmds}\
-         <h2>Actions</h2>\
-         <p class=\"sub\">The data/customization layer — one described verb each, and what \
-         the <code>:ai</code> assistant can drive (\u{201C}wipe my cookies\u{201D}, \
-         \u{201C}make ‘gh’ open github\u{201D}). Cookies/cache need a page open. \
-         <code>:restore</code> (or Ctrl+Alt+Shift+R) resets everything.</p>{actions}\
+         <h2>AI actions</h2>\
+         <p class=\"sub\">Operations the <code>:ai</code> assistant can perform on request — \
+         e.g. \u{201C}open github and gmail side by side\u{201D}, \u{201C}wipe my cookies\u{201D}, \
+         \u{201C}make ‘gh’ open github\u{201D}. Several map to the commands above; \
+         <code>:restore</code> (or Ctrl+Alt+Shift+R) resets all customization.</p>{actions}\
          <h2>Bangs</h2>\
          <p class=\"sub\">A <code>!key</code> token in any open/search target jumps to that \
          site's search (no query → the site's home). Trailing form works too: \
@@ -473,7 +474,10 @@ pub(crate) fn commands_document() -> String {
 /// most-recent first, one per line (full URLs so they stay selectable/openable).
 pub(crate) fn history_lines(history: &[String]) -> Vec<String> {
     let mut lines = Vec::with_capacity(history.len() + 2);
-    lines.push(format!("history — {} entries    (:clear history to wipe)", history.len()));
+    lines.push(format!(
+        "history — {} entries    (Enter: open · ⇧Enter: new tab · :clear history to wipe)",
+        history.len()
+    ));
     lines.push(String::new());
     lines.extend(history.iter().cloned());
     lines

@@ -35,13 +35,22 @@ pub(crate) const MODELS: &[&str] = &[
 ];
 /// Keep answers terse — this is a quick-question surface, not a chat companion.
 const SYSTEM_PROMPT: &str =
-    "You are a fast, concise assistant inside a terminal browser. Answer directly \
-     and briefly, with no preamble or sign-off. For conversions or calculations, \
-     give the result first. You can also operate the browser through the provided \
-     tools — use them when the user asks you to clear or delete browsing data \
-     (history, cookies, cache), honouring any time period they mention (e.g. \"the \
-     last 24 hours\" → period 24h). For anything else, just answer; don't call a \
-     tool unless the request matches one.";
+    "You are an assistant embedded in a terminal browser, and you can OPERATE it, not \
+     just talk about it. You have tools to open pages, split the layout into panes, \
+     switch/close/reopen tabs, navigate, clear browsing data, and set aliases. \
+     \
+     When the user asks you to DO something — in any phrasing — carry it out with the \
+     tools instead of explaining how. Break a request into a sequence of tool calls \
+     and make them ONE AT A TIME: you'll see each result and then continue with the \
+     next step. For example, to put two sites side by side: open the first, then \
+     split (vertical), then open the second in the new pane. Plan bigger requests \
+     (\"set up a layout for web dev\") as such a sequence. Don't ask for confirmation \
+     — just do it — and when the whole task is finished, reply with one short \
+     sentence summarizing what you did. \
+     \
+     For questions or chit-chat that don't require operating the browser, just answer \
+     directly and briefly, with no preamble. For conversions/calculations, give the \
+     result first.";
 
 /// How many past conversations to keep on disk (oldest dropped first).
 const AI_CHATS_CAP: usize = 100;
@@ -61,20 +70,29 @@ pub(crate) struct AiMessage {
     pub(crate) text: String,
 }
 
-/// A browser action the model chose to run (an OpenAI tool-call): the action
-/// `name` and its JSON `args` object, routed to [`App::perform`](crate::App::perform).
+/// A browser action the model chose to run (an OpenAI tool-call): the call `id` (for
+/// the tool-result message that reports back), the action `name`, and its JSON `args`
+/// object, routed to [`App::perform`](crate::App::perform).
 pub(crate) struct ToolCall {
+    pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) args: serde_json::Value,
 }
 
-/// What a Groq turn produced: either a plain text answer, or one-or-more browser
-/// actions to perform (the assistant "messing with the browser"). Tool-calls are
-/// executed on the main thread, since they mutate browser state.
-pub(crate) enum AiOutcome {
-    Text(String),
-    Tools(Vec<ToolCall>),
+/// What one Groq turn produced: a final text answer, or tool-calls to run before
+/// continuing. Tool-calls are executed on the main thread (they mutate browser
+/// state); their results are fed back and the model is asked again, so it can chain
+/// actions into a multi-step task (an "agentic" loop). `assistant_msg` is the raw
+/// assistant message (with its `tool_calls`) that must precede the tool results in
+/// the next request.
+pub(crate) enum AiStep {
+    Done(String),
+    Calls { calls: Vec<ToolCall>, assistant_msg: serde_json::Value },
 }
+
+/// Cap on tool-execution rounds per user prompt, so a confused model can't loop
+/// forever calling tools. Generous enough for a big "set up my layout" request.
+pub(crate) const MAX_TOOL_ROUNDS: u32 = 16;
 
 /// State for a `:ai` tab. The conversation is rendered into `buf` (a vim text
 /// buffer) every draw, so Normal-mode motions/visual/yank/find operate on it just
@@ -168,30 +186,40 @@ pub(crate) fn save_chats(chats: &[Vec<AiMessage>]) {
     }
 }
 
-/// Ask Groq (blocking — call from a background thread). Sends the whole
-/// conversation so follow-ups keep context, plus the browser action tools so the
-/// model can choose to operate the browser. Returns either the assistant's text
-/// answer or the action(s) it chose ([`AiOutcome`]), or a human-readable error.
-pub(crate) fn ask_blocking(
-    key: &str,
-    model: &str,
-    history: &[AiMessage],
-) -> Result<AiOutcome, String> {
+/// Build the OpenAI-format message list for a fresh turn: the system prompt followed
+/// by the visible chat history (errors are local-only, so they're skipped). The new
+/// user prompt must already be the last `AiMessage` in `history`.
+pub(crate) fn build_convo(history: &[AiMessage]) -> Vec<serde_json::Value> {
     let mut msgs = vec![serde_json::json!({"role": "system", "content": SYSTEM_PROMPT})];
     for m in history {
         let role = match m.role {
             AiRole::You => "user",
             AiRole::Ai => "assistant",
-            AiRole::Err => continue, // local errors aren't part of the conversation
+            AiRole::Err => continue,
         };
         msgs.push(serde_json::json!({"role": role, "content": m.text}));
     }
+    msgs
+}
+
+/// One round-trip to Groq (blocking — call from a background thread). Sends the
+/// running `messages` plus the browser tools and returns the model's next step:
+/// either a final text answer or tool-calls to run. Tool calls are forced
+/// sequential (`parallel_tool_calls=false`) — the model emits one at a time, which
+/// both sidesteps Groq's parallel-call generation failures and gives the agentic
+/// loop a clean one-action-at-a-time cadence.
+pub(crate) fn ask_raw(
+    key: &str,
+    model: &str,
+    messages: &[serde_json::Value],
+) -> Result<AiStep, String> {
     let body = serde_json::json!({
         "model": model,
-        "messages": msgs,
+        "messages": messages,
         "temperature": 0.4,
         "tools": crate::actions::groq_tools(),
         "tool_choice": "auto",
+        "parallel_tool_calls": false,
     });
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(40))
@@ -206,31 +234,43 @@ pub(crate) fn ask_blocking(
     let status = resp.status();
     let val: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
     if !status.is_success() {
-        let msg = val
-            .get("error")
+        let err = val.get("error");
+        // Groq's `tool_use_failed` 400: the model tried to call a tool but its output
+        // didn't conform to the API, so generation itself failed (common on llama-3.x).
+        // The raw attempt is in `failed_generation`; recover the intended calls from it
+        // so a flaky tool-formatter still drives the browser instead of just erroring.
+        if let Some(fg) = err.and_then(|e| e.get("failed_generation")).and_then(|f| f.as_str()) {
+            if let Some(step) = build_calls_step(recover_calls(fg), serde_json::Value::Null) {
+                return Ok(step);
+            }
+        }
+        let msg = err
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
             .unwrap_or("request failed");
         return Err(format!("groq {}: {msg}", status.as_u16()));
     }
     let message = val.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("message"));
-    // A tool-call response: the model chose to operate the browser. Parse each call's
-    // name + JSON arguments; `content` is usually empty in this case.
+    // A tool-call response: the model chose to operate the browser. Normalise each call
+    // (recovering args crammed into the name) and build the step; `content` is usually
+    // empty here. `build_calls_step` drops unknown names and rebuilds the echoed
+    // assistant message from the cleaned calls, so the next round can't fail validation.
     if let Some(tcs) =
         message.and_then(|m| m.get("tool_calls")).and_then(|t| t.as_array()).filter(|a| !a.is_empty())
     {
-        let calls = tcs
+        let pairs: Vec<(String, serde_json::Value)> = tcs
             .iter()
             .filter_map(|tc| {
                 let f = tc.get("function")?;
-                let name = f.get("name")?.as_str()?.to_string();
+                let name_raw = f.get("name")?.as_str()?;
                 let args_str = f.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}");
-                let args = serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
-                (!name.is_empty()).then_some(ToolCall { name, args })
+                Some(normalize_call(name_raw, args_str))
             })
-            .collect::<Vec<_>>();
-        if !calls.is_empty() {
-            return Ok(AiOutcome::Tools(calls));
+            .collect();
+        let content =
+            message.and_then(|m| m.get("content")).cloned().unwrap_or(serde_json::Value::Null);
+        if let Some(step) = build_calls_step(pairs, content) {
+            return Ok(step);
         }
     }
     message
@@ -238,8 +278,153 @@ pub(crate) fn ask_blocking(
         .and_then(|c| c.as_str())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .map(AiOutcome::Text)
+        .map(AiStep::Done)
         .ok_or_else(|| "empty response".to_string())
+}
+
+/// Turn parsed/recovered `(name, args)` pairs into an [`AiStep::Calls`], synthesising
+/// stable `call_<i>` ids and DROPPING any pair whose name isn't a real action — both
+/// because executing a bogus name only errors and because echoing it would make the
+/// next request 400 (Groq validates the assistant message's `tool_calls` against the
+/// request's `tools`). The echoed `assistant_msg` is rebuilt from the surviving calls,
+/// so its names/args are always clean. Returns `None` if nothing usable remains.
+fn build_calls_step(
+    pairs: Vec<(String, serde_json::Value)>,
+    content: serde_json::Value,
+) -> Option<AiStep> {
+    let calls: Vec<ToolCall> = pairs
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, (name, args))| {
+            crate::actions::is_action(&name).then_some(ToolCall { id: format!("call_{i}"), name, args })
+        })
+        .collect();
+    if calls.is_empty() {
+        return None;
+    }
+    let tool_calls: Vec<serde_json::Value> = calls
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "id": c.id,
+                "type": "function",
+                "function": { "name": c.name, "arguments": c.args.to_string() },
+            })
+        })
+        .collect();
+    let assistant_msg =
+        serde_json::json!({ "role": "assistant", "content": content, "tool_calls": tool_calls });
+    Some(AiStep::Calls { calls, assistant_msg })
+}
+
+/// Recover tool calls from Groq's `failed_generation` text — the raw output the model
+/// produced when its tool call didn't conform to the API (the `tool_use_failed` 400).
+/// Handles the two shapes seen in the wild: llama's `<function=NAME>{json}</function>`
+/// pseudo-syntax, and bare `{"name":...,"arguments":{...}}` JSON objects. Returns
+/// `(name, args)` pairs (possibly several); empty if nothing parseable is found.
+fn recover_calls(text: &str) -> Vec<(String, serde_json::Value)> {
+    let mut out = Vec::new();
+    // Shape A: <function=NAME ...>{ ...json... } , one or more times.
+    let mut hay = text;
+    while let Some(pos) = hay.find("<function") {
+        let after = hay[pos + "<function".len()..].trim_start_matches(['=', ':', ' ']);
+        let name_end = after
+            .find(|c: char| c == '>' || c == '{' || c == '(' || c.is_whitespace())
+            .unwrap_or(after.len());
+        let name = after[..name_end].trim().trim_matches('"').to_string();
+        let tail = &after[name_end..];
+        if let Some(brace) = tail.find('{') {
+            if let Some((obj, consumed)) = take_json_object(&tail[brace..]) {
+                if !name.is_empty() {
+                    out.push((name, obj));
+                }
+                hay = &tail[brace + consumed..];
+                continue;
+            }
+        }
+        hay = tail;
+    }
+    if !out.is_empty() {
+        return out;
+    }
+    // Shape B: one or more {"name": "...", "arguments"/"parameters": {...}} objects.
+    let mut rest = text;
+    while let Some(brace) = rest.find('{') {
+        let Some((obj, consumed)) = take_json_object(&rest[brace..]) else { break };
+        if let Some(name) = obj.get("name").and_then(|n| n.as_str()) {
+            let args = match obj.get("arguments").or_else(|| obj.get("parameters")) {
+                Some(serde_json::Value::String(s)) => {
+                    serde_json::from_str(s).unwrap_or_else(|_| serde_json::json!({}))
+                }
+                Some(v) => v.clone(),
+                None => serde_json::json!({}),
+            };
+            out.push((name.to_string(), args));
+        }
+        rest = &rest[brace + consumed..];
+    }
+    out
+}
+
+/// From a string STARTING with `{`, return the parsed JSON object and the byte length
+/// of its `{...}` span, scanning balanced braces while respecting string literals and
+/// escapes. `None` if it doesn't begin with a parseable object. (Brace/quote bytes are
+/// ASCII, so byte-indexed slicing stays on char boundaries even with UTF-8 content.)
+fn take_json_object(s: &str) -> Option<(serde_json::Value, usize)> {
+    let bytes = s.as_bytes();
+    if bytes.first() != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut escaped = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_str {
+            match b {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_str = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    let val = serde_json::from_str(&s[..=i]).ok()?;
+                    return Some((val, i + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split a (possibly mangled) tool name + arguments string into a clean
+/// `(name, args)`. Well-behaved models return `name = "open"` and the JSON in
+/// `arguments`, which passes straight through. Some models (seen on Groq's llama-3.3)
+/// instead emit the whole call in the name field — `open {"target":"gmail.com"}` —
+/// with empty `arguments`; here we split at the first `{`, take the leading token as
+/// the action name, and parse the trailing JSON as the args. Falls back to the first
+/// whitespace token + the `arguments` JSON when there's no embedded object.
+fn normalize_call(name_raw: &str, args_str: &str) -> (String, serde_json::Value) {
+    let name_raw = name_raw.trim();
+    if let Some(brace) = name_raw.find('{') {
+        let (head, rest) = name_raw.split_at(brace);
+        let head = head.trim();
+        if !head.is_empty() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(rest.trim()) {
+                return (head.to_string(), v);
+            }
+        }
+    }
+    let name = name_raw.split_whitespace().next().unwrap_or(name_raw).to_string();
+    let args = serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+    (name, args)
 }
 
 /// Greedily wrap `text` to `cols` monospace columns, hard-breaking any word longer
@@ -353,34 +538,80 @@ fn render(ai: &AiState, model: &str, has_key: bool, cols: usize) -> (Vec<String>
 }
 
 impl App {
-    /// `:ai [prompt]` — open a native AI tab. With a key already saved and a prompt
-    /// given, the question is asked immediately (Normal mode, so the answer can be
-    /// read/scrolled/yanked). Otherwise it drops straight into the field in Insert
-    /// mode, ready to paste a key or type a question; a prompt given before any key
-    /// is stashed and run the moment the key is entered.
+    /// `:ai [prompt]` — the AI is a single, persistent **background** tab. `:ai` with
+    /// no prompt brings that tab into view (creating it the first time) and drops into
+    /// its input field. `:ai <prompt>` runs the prompt in the background WITHOUT
+    /// switching to the AI tab — you stay where you are while it works (and it acts on
+    /// your current view); the reply/actions land in the chat, viewable later with
+    /// `:ai`. With no key saved yet we must surface the tab so the key can be pasted.
     pub(crate) fn open_ai_tab(&mut self, prompt: &str) {
-        let id = self.next_ai_id;
-        self.next_ai_id += 1;
         let prompt = prompt.trim();
         let has_key = self.groq_key.is_some();
-        let pending_prompt = (!prompt.is_empty() && !has_key).then(|| prompt.to_string());
-        let tab = Tab {
+
+        if prompt.is_empty() {
+            // Remember where we were so closing the AI tab returns here (or the welcome
+            // screen), not a stray blank pane — but don't overwrite it if we're already
+            // looking at the AI tab.
+            if !self.active_is_ai() {
+                self.ai_prev_active = self.active;
+            }
+            // Summon the AI tab into view (create + show if it doesn't exist yet). It
+            // opens as a new tab and we move to it.
+            match self.tabs.iter().position(|t| t.ai().is_some()) {
+                Some(idx) => self.show_tab(idx),
+                None => {
+                    let tab = self.new_ai_tab(None);
+                    self.place_tab(tab, true);
+                }
+            }
+            self.clear_status();
+            self.enter_ai_insert();
+            self.window.request_redraw();
+            return;
+        }
+
+        // `:ai <prompt>`: ensure the singleton exists, then run in the background.
+        let id = match self.tabs.iter().find_map(|t| t.ai().map(|a| a.id)) {
+            Some(id) => id,
+            None => {
+                // Create it WITHOUT activating (stay on the current tab). With no key
+                // we stash the prompt to run once the key is pasted.
+                let stash = (!has_key).then(|| prompt.to_string());
+                let tab = self.new_ai_tab(stash);
+                self.tabs.push(tab);
+                self.refresh_visibility();
+                self.tabs.iter().find_map(|t| t.ai().map(|a| a.id)).unwrap()
+            }
+        };
+        if has_key {
+            self.ask_ai(id, prompt.to_string());
+            self.set_status("ai is working… (:ai to watch)");
+        } else {
+            // Can't run headless without a key — bring the tab up to paste it.
+            if let Some(ai) = self.ai_by_id_mut(id) {
+                ai.pending_prompt = Some(prompt.to_string());
+            }
+            if let Some(idx) = self.tabs.iter().position(|t| t.ai().is_some()) {
+                self.show_tab(idx);
+            }
+            self.enter_ai_insert();
+            self.set_status("paste your Groq key, then it'll run that");
+        }
+        self.window.request_redraw();
+    }
+
+    /// Build a fresh AI tab (allocating its stable id), optionally pre-stashing a
+    /// prompt to run once a key is entered.
+    fn new_ai_tab(&mut self, pending_prompt: Option<String>) -> Tab {
+        let id = self.next_ai_id;
+        self.next_ai_id += 1;
+        Tab {
             url: "browser://ai".into(),
             nojs: false,
             read: false,
             research: false,
             content: TabContent::Ai(AiState::new(id, pending_prompt)),
-        };
-        self.place_tab(tab, true);
-        self.window.set_focus();
-        self.clear_status();
-        if !prompt.is_empty() && has_key {
-            self.ask_ai(prompt.to_string());
-            self.mode = ModeKind::Normal;
-        } else {
-            self.enter_ai_insert();
         }
-        self.window.request_redraw();
     }
 
     /// Whether the active tab is a `:ai` tab.
@@ -515,6 +746,7 @@ impl App {
     /// the line as the key (and runs any stashed prompt); afterwards each line is a
     /// question.
     fn submit_ai(&mut self) {
+        let Some(id) = self.active_ai_mut().map(|ai| ai.id) else { return };
         if self.groq_key.is_none() {
             let key = self
                 .active_ai_mut()
@@ -529,7 +761,7 @@ impl App {
             self.groq_key = Some(key);
             self.set_status("groq key saved");
             if let Some(p) = self.active_ai_mut().and_then(|ai| ai.pending_prompt.take()) {
-                self.ask_ai(p);
+                self.ask_ai(id, p);
             }
             self.window.request_redraw();
             return;
@@ -545,31 +777,46 @@ impl App {
             .trim()
             .to_string();
         if !prompt.is_empty() {
-            self.ask_ai(prompt);
+            self.ask_ai(id, prompt);
         }
     }
 
-    /// Record `prompt` as a question, mark the tab pending, and fire the Groq
-    /// request on a background thread; the reply returns via [`UserEvent::AiReply`].
-    pub(crate) fn ask_ai(&mut self, prompt: String) {
-        let Some(key) = self.groq_key.clone() else { return };
+    /// Start a turn for the AI tab `id` (which need NOT be active — it can run in the
+    /// background): record the user `prompt`, mark the tab pending, and fire the first
+    /// Groq round. The reply returns via [`UserEvent::AiReply`], which drives the
+    /// agentic loop in [`ai_reply`](App::ai_reply).
+    pub(crate) fn ask_ai(&mut self, id: u64, prompt: String) {
+        if self.groq_key.is_none() {
+            return;
+        }
         let model = self.ai_model.clone();
-        let (id, history) = {
-            let Some(ai) = self.active_ai_mut() else { return };
+        let convo = {
+            let Some(ai) = self.ai_by_id_mut(id) else { return };
+            if ai.pending {
+                // A turn is already running for this tab; don't pile on.
+                return;
+            }
             ai.messages.push(AiMessage { role: AiRole::You, text: prompt });
             ai.pending = true;
             ai.follow = true;
-            (ai.id, ai.messages.clone())
+            build_convo(&ai.messages)
         };
         // Save the conversation (with the new question) right away, so it survives
         // even if the reply never arrives.
         self.commit_ai(id);
+        self.spawn_ai_round(id, model, convo, 0);
+        self.window.request_redraw();
+    }
+
+    /// Fire one Groq round on a background thread; its result returns as
+    /// [`UserEvent::AiReply`] carrying `convo`/`round` so the loop can continue.
+    fn spawn_ai_round(&self, id: u64, model: String, convo: Vec<serde_json::Value>, round: u32) {
+        let Some(key) = self.groq_key.clone() else { return };
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
-            let result = ask_blocking(&key, &model, &history);
-            let _ = proxy.send_event(UserEvent::AiReply { id, result });
+            let result = ask_raw(&key, &model, &convo);
+            let _ = proxy.send_event(UserEvent::AiReply { id, convo, round, result });
         });
-        self.window.request_redraw();
     }
 
     /// Persist the conversation in the AI tab with this id into [`App::ai_chats`]
@@ -661,39 +908,116 @@ impl App {
         self.window.request_redraw();
     }
 
-    /// A Groq turn finished for the AI tab with this id: append its result and stick
-    /// the view to the bottom. A text answer is shown as-is; a tool-call outcome is
-    /// the assistant operating the browser — each chosen action is echoed (`▸
-    /// clear(history, 24h)`) and then run through [`perform`](App::perform), with its
-    /// result (or error) shown beneath. Actions run BEFORE the tab is re-borrowed so
+    /// One step of the agentic loop for the AI tab `id`. `convo` is the OpenAI-format
+    /// message list that was sent this round; `round` counts tool rounds so far. A
+    /// text answer is appended and finishes the turn. Tool-calls are each run through
+    /// [`perform`](App::perform) (their result shown in the chat); then the assistant
+    /// message and the tool results are appended to `convo` and the NEXT round fires,
+    /// so the model can continue the task — until it returns text or
+    /// [`MAX_TOOL_ROUNDS`] is hit. Tools run BEFORE the tab is re-borrowed so
     /// `perform` has clean access to the whole `App`.
-    pub(crate) fn ai_reply(&mut self, id: u64, result: Result<AiOutcome, String>) {
-        let mut out: Vec<AiMessage> = Vec::new();
-        match result {
-            Ok(AiOutcome::Text(text)) => out.push(AiMessage { role: AiRole::Ai, text }),
-            Ok(AiOutcome::Tools(calls)) => {
-                // Mark this tab as the actor so an action that finishes asynchronously
-                // (a WebView2 data wipe) routes its "Done — …" back here, not the
-                // status bar. The synchronous result/ack is shown inline below.
-                self.acting_ai = Some(id);
-                for c in &calls {
-                    match self.perform(&c.name, &c.args) {
-                        Ok(msg) => out.push(AiMessage { role: AiRole::Ai, text: msg }),
-                        Err(e) => out.push(AiMessage { role: AiRole::Err, text: e }),
-                    }
-                }
-                self.acting_ai = None;
-            }
-            Err(e) => out.push(AiMessage { role: AiRole::Err, text: e }),
+    pub(crate) fn ai_reply(
+        &mut self,
+        id: u64,
+        convo: Vec<serde_json::Value>,
+        round: u32,
+        result: Result<AiStep, String>,
+    ) {
+        let (calls, assistant_msg) = match result {
+            Ok(AiStep::Done(text)) => return self.ai_finish(id, Some(AiMessage { role: AiRole::Ai, text })),
+            Err(e) => return self.ai_finish(id, Some(AiMessage { role: AiRole::Err, text: e })),
+            Ok(AiStep::Calls { calls, assistant_msg }) => (calls, assistant_msg),
+        };
+        // The AI tab must never be the target of a browser action (open/split would
+        // clobber the chat); move to a content tab/pane first.
+        self.ensure_content_focus();
+        // Mark this tab as the actor so an async action (a data wipe) routes its
+        // "Done — …" confirmation back to this chat.
+        self.acting_ai = Some(id);
+        let mut visible = Vec::new();
+        let mut tool_msgs = Vec::new();
+        for c in &calls {
+            let (text, role) = match self.perform(&c.name, &c.args) {
+                Ok(msg) => (msg, AiRole::Ai),
+                Err(e) => (e, AiRole::Err),
+            };
+            visible.push(AiMessage { role, text: text.clone() });
+            tool_msgs.push(serde_json::json!({ "role": "tool", "tool_call_id": c.id, "content": text }));
         }
-        if let Some(ai) = self.tabs.iter_mut().find_map(|t| t.ai_mut().filter(|a| a.id == id)) {
-            ai.pending = false;
-            ai.messages.extend(out);
+        self.acting_ai = None;
+        if let Some(ai) = self.ai_by_id_mut(id) {
+            ai.messages.extend(visible);
             ai.follow = true;
         }
-        // Re-save so the persisted chat reflects the latest answer (or actions).
+        self.commit_ai(id);
+        // Continue the loop unless we've hit the safety cap.
+        if round + 1 >= MAX_TOOL_ROUNDS {
+            return self.ai_finish(
+                id,
+                Some(AiMessage { role: AiRole::Err, text: "stopped after too many steps".into() }),
+            );
+        }
+        let mut next = convo;
+        next.push(assistant_msg);
+        next.extend(tool_msgs);
+        let model = self.ai_model.clone();
+        self.spawn_ai_round(id, model, next, round + 1);
+        self.window.request_redraw();
+    }
+
+    /// End an AI turn: clear `pending`, append an optional final message, persist. When
+    /// the turn ran in the BACKGROUND (the AI tab isn't on screen — the `:ai <prompt>`
+    /// case), surface its outcome on the status bar: the success summary flashes for a
+    /// couple of seconds, an error shows a brief pointer to the `:ai` tab. While the
+    /// user is watching the AI tab we stay quiet — they already see it in the chat.
+    fn ai_finish(&mut self, id: u64, msg: Option<AiMessage>) {
+        let watching = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.ai())
+            .is_some_and(|a| a.id == id);
+        if let Some(ai) = self.ai_by_id_mut(id) {
+            ai.pending = false;
+            if let Some(m) = &msg {
+                ai.messages.push(m.clone());
+            }
+            ai.follow = true;
+        }
+        if !watching {
+            match msg {
+                Some(m) if m.role == AiRole::Err => {
+                    self.warn_status("the ai hit an error — see the :ai tab")
+                }
+                Some(m) if m.role == AiRole::Ai => self.flash_status(m.text),
+                _ => {}
+            }
+        }
         self.commit_ai(id);
         self.window.request_redraw();
+    }
+
+    /// Mutable access to the AI tab with this id (it may not be the active tab — the
+    /// AI tab runs in the background).
+    pub(crate) fn ai_by_id_mut(&mut self, id: u64) -> Option<&mut AiState> {
+        self.tabs.iter_mut().find_map(|t| t.ai_mut().filter(|a| a.id == id))
+    }
+
+    /// If the active tab is the AI tab, move focus to a fresh blank content tab so a
+    /// browser action lands on real content (never clobbering the chat or an existing
+    /// page). A no-op when the user is already on a content tab/pane — the common
+    /// case for a background `:ai <prompt>`.
+    fn ensure_content_focus(&mut self) {
+        if !self.active_is_ai() {
+            return;
+        }
+        match self.tabs.iter().position(|t| t.is_blank()) {
+            Some(idx) => self.show_tab(idx),
+            None => {
+                self.tabs.push(Tab::blank());
+                let last = self.tabs.len() - 1;
+                self.show_tab(last);
+            }
+        }
     }
 
     /// An async browser action initiated from the `:ai` tab `id` finished (e.g. an
@@ -758,6 +1082,66 @@ mod tests {
         let mut out = Vec::new();
         wrap("supercalifragilistic", 5, &mut out);
         assert_eq!(out, vec!["super", "calif", "ragil", "istic"]);
+    }
+
+    #[test]
+    fn normalize_call_recovers_args_crammed_into_the_name() {
+        // Well-behaved: name is clean, args come from the arguments string.
+        let (n, a) = normalize_call("open", r#"{"target":"gmail.com","where":"new"}"#);
+        assert_eq!(n, "open");
+        assert_eq!(a["target"], "gmail.com");
+        assert_eq!(a["where"], "new");
+
+        // Mangled: the model put the JSON in the name with empty arguments.
+        let (n, a) = normalize_call(r#"open {"target": "gmail.com", "where": "current"}"#, "{}");
+        assert_eq!(n, "open");
+        assert_eq!(a["target"], "gmail.com");
+        assert_eq!(a["where"], "current");
+
+        // No args at all: name only.
+        let (n, a) = normalize_call("restore", "{}");
+        assert_eq!(n, "restore");
+        assert_eq!(a, serde_json::json!({}));
+    }
+
+    #[test]
+    fn take_json_object_scans_balanced_braces_with_strings() {
+        let (v, n) = take_json_object(r#"{"a":{"b":"}"},"c":1} trailing"#).unwrap();
+        assert_eq!(v["a"]["b"], "}"); // the brace inside the string isn't a close
+        assert_eq!(v["c"], 1);
+        assert_eq!(&r#"{"a":{"b":"}"},"c":1} trailing"#[..n], r#"{"a":{"b":"}"},"c":1}"#);
+        assert!(take_json_object("not an object").is_none());
+    }
+
+    #[test]
+    fn recover_calls_parses_llama_function_syntax() {
+        // The `<function=NAME>{json}</function>` shape llama emits on a tool_use_failed.
+        let fg = r#"<function=open>{"target": "gmail.com", "where": "current"}</function>"#;
+        let calls = recover_calls(fg);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "open");
+        assert_eq!(calls[0].1["target"], "gmail.com");
+
+        // Two calls (compound prompt) recovered in order.
+        let fg = "<function=open>{\"target\":\"gmail.com\"}</function>\
+                  <function=open>{\"target\":\"youtube.com\",\"where\":\"new\"}</function>";
+        let calls = recover_calls(fg);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].1["where"], "new");
+    }
+
+    #[test]
+    fn recover_calls_parses_bare_name_arguments_json() {
+        let fg = r#"{"name": "clear", "arguments": {"what": "cache", "period": "15m"}}"#;
+        let calls = recover_calls(fg);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "clear");
+        assert_eq!(calls[0].1["period"], "15m");
+
+        // `arguments` itself may be a JSON-encoded string.
+        let fg = r#"{"name":"open","arguments":"{\"target\":\"github.com\"}"}"#;
+        let calls = recover_calls(fg);
+        assert_eq!(calls[0].1["target"], "github.com");
     }
 
     #[test]
