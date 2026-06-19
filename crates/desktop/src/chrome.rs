@@ -269,13 +269,13 @@ pub(crate) fn paint_pane(
 
 /// Draw a 2px accent outline around the focused pane (only shown while split, as
 /// the cue for which pane the keyboard acts on).
-pub(crate) fn draw_pane_border(r: PaneRect, buf: &mut [u32], wz: usize, hz: usize) {
+pub(crate) fn draw_pane_border(r: PaneRect, buf: &mut [u32], wz: usize, hz: usize, accent: draw::Rgb) {
     let (x0, y0, x1, y1) = (r.x.max(0), r.y.max(0), r.x + r.w, r.y + r.h);
     let t = FOCUS_BORDER;
-    draw::fill_rect(buf, wz, hz, x0 as usize, y0 as usize, x1 as usize, (y0 + t) as usize, draw::ACCENT);
-    draw::fill_rect(buf, wz, hz, x0 as usize, (y1 - t).max(y0) as usize, x1 as usize, y1 as usize, draw::ACCENT);
-    draw::fill_rect(buf, wz, hz, x0 as usize, y0 as usize, (x0 + t) as usize, y1 as usize, draw::ACCENT);
-    draw::fill_rect(buf, wz, hz, (x1 - t).max(x0) as usize, y0 as usize, x1 as usize, y1 as usize, draw::ACCENT);
+    draw::fill_rect(buf, wz, hz, x0 as usize, y0 as usize, x1 as usize, (y0 + t) as usize, accent);
+    draw::fill_rect(buf, wz, hz, x0 as usize, (y1 - t).max(y0) as usize, x1 as usize, y1 as usize, accent);
+    draw::fill_rect(buf, wz, hz, x0 as usize, y0 as usize, (x0 + t) as usize, y1 as usize, accent);
+    draw::fill_rect(buf, wz, hz, (x1 - t).max(x0) as usize, y0 as usize, x1 as usize, y1 as usize, accent);
 }
 
 impl App {
@@ -291,6 +291,9 @@ impl App {
         // Gather all dynamic text + zoom-scaled metrics up front, while we can
         // still borrow &self.
         let tab_labels = self.tab_labels();
+        // Copy the (Copy) chrome theme up front so the paint closures can read it
+        // without holding a borrow of `self`.
+        let theme = self.theme;
         let welcome = self.active.is_none();
         // The pane tiling: each (tab, rect) to paint + the divider rects. With no
         // split this is just the active tab filling the whole content band.
@@ -377,7 +380,7 @@ impl App {
         let baseline = bar_top + (bar_h * 2 / 3);
         // Draw the opaque command bar; called LAST so nothing bleeds through it.
         let draw_bar = |buf: &mut [u32]| {
-            draw::fill_band(buf, wz, hz, bar_top, hz, draw::BAR_BG);
+            draw::fill_band(buf, wz, hz, bar_top, hz, theme.bar_bg);
             if let Some((text, scroll)) = &cmd {
                 // Selection highlight first, so the text paints on top of it.
                 if let Some((sx0, sx1)) = sel {
@@ -389,7 +392,7 @@ impl App {
                 // Command line, scrolled left by `scroll` px; clip at the left
                 // margin so scrolled-off text doesn't bleed into the edge.
                 let endx =
-                    p.text_clipped(buf, wz, hz, MARGIN - *scroll, baseline, text, draw::BAR_FG, MARGIN);
+                    p.text_clipped(buf, wz, hz, MARGIN - *scroll, baseline, text, theme.bar_fg, MARGIN);
                 // Autocomplete ghost text (dim) continuing from the caret.
                 if let Some(sfx) = &cmd_suffix {
                     p.text_clipped(buf, wz, hz, endx, baseline, sfx, draw::DIM, MARGIN);
@@ -404,21 +407,21 @@ impl App {
                 let lh = p.line_height();
                 let y0 = baseline.saturating_sub(lh * 3 / 4);
                 let y1 = (baseline + lh / 6).min(hz);
-                draw::fill_rect(buf, wz, hz, cx, y0, cx + cw, y1, draw::BAR_FG);
+                draw::fill_rect(buf, wz, hz, cx, y0, cx + cw, y1, theme.bar_fg);
             }
             // Right-aligned quick-maths result, painted last so it sits on top.
             if let Some(text) = &math {
                 let tw = p.measure(text) as i32;
                 let x = (wz as i32 - MARGIN - tw).max(0) as usize;
-                p.text(buf, wz, hz, x, baseline, text, draw::ACCENT);
+                p.text(buf, wz, hz, x, baseline, text, theme.accent);
             }
         };
 
         if welcome {
             // No engine running: paint the welcome screen, THEN the bar on top so a
             // long welcome list can't bleed into the command bar.
-            draw::fill_band(&mut buf, wz, hz, 0, bar_top, draw::BG);
-            draw_welcome(p, &mut buf, wz, hz, self.zoom as f32);
+            draw::fill_band(&mut buf, wz, hz, 0, bar_top, theme.bg);
+            draw_welcome(p, &mut buf, wz, hz, self.zoom as f32, theme.accent);
             draw_bar(&mut buf);
             buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
         } else if any_native || self.split.is_some() {
@@ -427,7 +430,7 @@ impl App {
             // to their webview HWNDs (which sit on top of our surface). Then the
             // dividers, the focused-pane border (only while split), the bars, and a
             // full present.
-            draw::fill_band(&mut buf, wz, hz, 0, bar_top, draw::BG);
+            draw::fill_band(&mut buf, wz, hz, 0, bar_top, theme.bg);
             for (t, r) in &panes {
                 if self.tabs.get(*t).is_some_and(|tb| tb.webview().is_none()) {
                     paint_pane(
@@ -445,10 +448,10 @@ impl App {
             }
             if self.split.is_some() {
                 if let Some((_, r)) = panes.iter().find(|(t, _)| Some(*t) == self.active) {
-                    draw_pane_border(*r, &mut buf, wz, hz);
+                    draw_pane_border(*r, &mut buf, wz, hz, theme.accent);
                 }
             }
-            draw::fill_band(&mut buf, wz, hz, 0, tab_h, draw::BAR_BG);
+            draw::fill_band(&mut buf, wz, hz, 0, tab_h, theme.bar_bg);
             draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels);
             draw_bar(&mut buf);
             buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
@@ -456,7 +459,7 @@ impl App {
             // Single web tab: a webview covers the whole content band, so we only
             // repaint the bars and present just those rects — never over the page.
             draw_bar(&mut buf);
-            draw::fill_band(&mut buf, wz, hz, 0, tab_h, draw::BAR_BG);
+            draw::fill_band(&mut buf, wz, hz, 0, tab_h, theme.bar_bg);
             draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels);
             let mut damage = Vec::new();
             if tab_h > 0 {
@@ -498,7 +501,7 @@ impl App {
                 } else if t.research {
                     draw::RESEARCH
                 } else if active {
-                    draw::ACCENT
+                    self.theme.accent
                 } else {
                     draw::DIM
                 };
@@ -541,23 +544,26 @@ impl App {
 
     /// Build the bar as a sequence of (text, color) segments drawn left to right.
     pub(crate) fn bar_segments(&self) -> Vec<(String, draw::Rgb)> {
+        // Themed chrome colours (the mode tags use the accent; typed text uses bar_fg).
+        let accent = self.theme.accent;
+        let fg = self.theme.bar_fg;
         match self.mode {
             // The blinking caret is drawn separately (at the byte cursor), so the
             // text segment is just the literal command line. (Command/Find are drawn
             // via the dedicated caret path in `draw`, so these arms are unreached.)
-            ModeKind::Command => vec![(format!(":{}", self.command), draw::BAR_FG)],
-            ModeKind::Find => vec![(format!("/{}", self.command), draw::BAR_FG)],
+            ModeKind::Command => vec![(format!(":{}", self.command), fg)],
+            ModeKind::Find => vec![(format!("/{}", self.command), fg)],
             ModeKind::Resize => vec![
-                ("[RESIZE]".into(), draw::ACCENT),
+                ("[RESIZE]".into(), accent),
                 ("  hjkl resize window · Esc done".into(), draw::DIM),
             ],
             ModeKind::Move => vec![
-                ("[MOVE]".into(), draw::ACCENT),
+                ("[MOVE]".into(), accent),
                 ("  hjkl move window · Esc done".into(), draw::DIM),
             ],
             ModeKind::Hint => vec![
-                (if self.hint_new_tab { "[HINT ↗]" } else { "[HINT]" }.into(), draw::ACCENT),
-                (format!(" {}", self.hint_input), draw::BAR_FG),
+                (if self.hint_new_tab { "[HINT ↗]" } else { "[HINT]" }.into(), accent),
+                (format!(" {}", self.hint_input), fg),
                 (
                     if self.hint_new_tab {
                         "   label opens a new tab · Esc cancel".into()
@@ -568,7 +574,7 @@ impl App {
                 ),
             ],
             ModeKind::Caret => vec![
-                ("[CARET]".into(), draw::ACCENT),
+                ("[CARET]".into(), accent),
                 ("  hjkl/w/b/0/$/gg/G move · v select · y yank · Esc exit".into(), draw::DIM),
             ],
             ModeKind::Insert => {
@@ -583,8 +589,8 @@ impl App {
                 }
                 let url = self.active_url().unwrap_or("").to_string();
                 vec![
-                    ("[INSERT]".into(), draw::ACCENT),
-                    (url, draw::BAR_FG),
+                    ("[INSERT]".into(), accent),
+                    (url, fg),
                     ("   (Esc normal · Ctrl+V passthrough)".into(), draw::DIM),
                 ]
             }
@@ -598,8 +604,8 @@ impl App {
                 } else {
                     let url = self.active_url().unwrap_or("").to_string();
                     vec![
-                        ("[PASS]".into(), draw::ACCENT),
-                        (url, draw::BAR_FG),
+                        ("[PASS]".into(), accent),
+                        (url, fg),
                         ("   (Ctrl+S to exit)".into(), draw::DIM),
                     ]
                 }
@@ -621,7 +627,7 @@ impl App {
                     }
                     None => ":open <url>  (or press o)".to_string(),
                 };
-                let mut segs = vec![("[N]".into(), draw::ACCENT), (label, draw::BAR_FG)];
+                let mut segs = vec![("[N]".into(), accent), (label, fg)];
                 // The page kept the keyboard after a click on a control; make that
                 // visible so it doesn't read as a freeze, and show the way back.
                 if self.page_focus_yielded {
@@ -637,7 +643,7 @@ impl App {
                         .and_then(|n| n.caret.as_ref())
                     {
                         let m = caret.mode_label().unwrap_or("CARET");
-                        segs.push((format!("   [{m}]"), draw::ACCENT));
+                        segs.push((format!("   [{m}]"), accent));
                         segs.push(("  motions select · y yank · Esc exit".into(), draw::DIM));
                     }
                 }
@@ -675,7 +681,7 @@ impl App {
                 if let Some(t) = self.active.and_then(|i| self.tabs.get(i)) {
                     if let Some(vb) = t.vim() {
                         match vb.mode_label() {
-                            Some(m) => segs.push((format!("   [{m}]"), draw::ACCENT)),
+                            Some(m) => segs.push((format!("   [{m}]"), accent)),
                             None if t.url == "browser://error" => segs.push((
                                 "   [error]  v select · y yank · yi( inner ()".into(),
                                 draw::ERR,
@@ -685,7 +691,7 @@ impl App {
                     }
                 }
                 if self.nojs {
-                    segs.push(("   [no-js]".into(), draw::ACCENT));
+                    segs.push(("   [no-js]".into(), accent));
                 }
                 // Active find-in-page: show the query and (for native tabs) the
                 // current/total match counter; `n`/`N` step, Esc clears.
@@ -811,7 +817,7 @@ pub(crate) fn draw_tab_bar(p: &Painter, buf: &mut [u32], w: usize, h: usize, lab
 
 /// Paint the engine-free welcome screen: title + a key/command cheat-sheet.
 /// `scale` is the global zoom factor so column offsets track the scaled font.
-pub(crate) fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize, _scale: f32) {
+pub(crate) fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize, _scale: f32, accent: draw::Rgb) {
     let lh = p.line_height();
     // A clean splash: the name + tagline centered, with one quiet hint below.
     let name = "browser";
@@ -819,7 +825,7 @@ pub(crate) fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize, _sc
     let title_w = p.measure(name) + p.measure(tag);
     let tx = w.saturating_sub(title_w) / 2;
     let ty = h / 2 - lh;
-    let after = p.text(buf, w, h, tx, ty, name, draw::ACCENT);
+    let after = p.text(buf, w, h, tx, ty, name, accent);
     p.text(buf, w, h, after, ty, tag, draw::DIM);
     let hint = ":open <url> to start   ·   :commands for all keybindings";
     let hint_w = p.measure(hint);

@@ -28,6 +28,56 @@ pub const SEL: Rgb = (0x2d, 0x4f, 0x7a);
 pub const FIND: Rgb = (0x5a, 0x52, 0x14);
 pub const FIND_CUR: Rgb = (0xc8, 0x64, 0x1e);
 
+/// The live, resolved chrome theme used at paint time — the customizable subset of the
+/// colours above plus a bar-height multiplier. Built from the persisted
+/// [`ThemeConfig`](crate::config::ThemeConfig) by
+/// [`rebuild_theme`](crate::App::rebuild_theme); any unset override keeps its default
+/// (the constants above). Only chrome is themed — page/content text keeps [`FG`]/[`BG`].
+#[derive(Clone, Copy)]
+pub struct Theme {
+    /// Multiplier on the command/status bar height (1.0 = default).
+    pub bar_scale: f32,
+    pub bar_bg: Rgb,
+    pub bar_fg: Rgb,
+    pub accent: Rgb,
+    pub bg: Rgb,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Theme { bar_scale: 1.0, bar_bg: BAR_BG, bar_fg: BAR_FG, accent: ACCENT, bg: BG }
+    }
+}
+
+/// Parse a colour written as a `#rrggbb` / `rrggbb` hex string or a common colour
+/// name (case- and space-insensitive). Returns `None` for anything unrecognised, so a
+/// caller can report a typo instead of silently choosing the wrong colour.
+pub fn parse_color(s: &str) -> Option<Rgb> {
+    let hex = s.trim().trim_start_matches('#');
+    if hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        let n = u32::from_str_radix(hex, 16).ok()?;
+        return Some((((n >> 16) & 0xff) as u8, ((n >> 8) & 0xff) as u8, (n & 0xff) as u8));
+    }
+    let name: String = s.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_ascii_lowercase();
+    Some(match name.as_str() {
+        "black" => (0x10, 0x10, 0x10),
+        "white" => (0xf0, 0xf0, 0xf0),
+        "gray" | "grey" => (0x80, 0x80, 0x80),
+        "darkgray" | "darkgrey" => (0x3a, 0x3a, 0x3a),
+        "red" => (0xe0, 0x6c, 0x6c),
+        "green" => (0x3f, 0xb9, 0x50),
+        "darkgreen" => (0x0a, 0x2a, 0x0a),
+        "blue" => (0x6c, 0xb6, 0xff),
+        "navy" | "darkblue" => (0x10, 0x1f, 0x40),
+        "yellow" => (0xe6, 0xc5, 0x4e),
+        "orange" => (0xe6, 0xa5, 0x5e),
+        "purple" | "violet" => (0xc6, 0x9c, 0xf6),
+        "pink" | "magenta" => (0xf6, 0x9c, 0xd0),
+        "cyan" | "teal" => (0x5e, 0xc8, 0xd9),
+        _ => return None,
+    })
+}
+
 pub struct Painter {
     /// Primary monospace font + fallbacks, tried in order for each glyph. The
     /// primary (Consolas) covers normal text; fallbacks (e.g. Segoe UI Symbol)
@@ -245,4 +295,24 @@ fn load_system_font() -> Result<Vec<u8>> {
         }
     }
     Err(anyhow!("no system font found (looked for Consolas/Segoe UI/Arial)"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_color;
+
+    #[test]
+    fn parse_color_accepts_hex_and_names() {
+        assert_eq!(parse_color("#0a2a0a"), Some((0x0a, 0x2a, 0x0a)));
+        assert_eq!(parse_color("0a2a0a"), Some((0x0a, 0x2a, 0x0a)));
+        assert_eq!(parse_color("#FFFFFF"), Some((0xff, 0xff, 0xff)));
+        // Names are case- and space-insensitive.
+        assert_eq!(parse_color("green"), parse_color("GREEN"));
+        assert_eq!(parse_color("dark green"), parse_color("darkgreen"));
+        assert!(parse_color("green").is_some());
+        // Unrecognised input is reported, not silently coerced.
+        assert_eq!(parse_color("chartreuse"), None);
+        assert_eq!(parse_color("#12"), None);
+        assert_eq!(parse_color("#xyzxyz"), None);
+    }
 }

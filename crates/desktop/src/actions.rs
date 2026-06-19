@@ -96,10 +96,54 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "restore",
-        summary: "Reset ALL customization (aliases and any other tunable settings) back \
-                  to defaults. Use when the user asks to restore/reset defaults or undo \
-                  their customizations.",
+        summary: "Reset ALL customization (aliases, appearance, and any other tunable \
+                  settings) back to defaults. Use when the user asks to restore/reset \
+                  defaults or undo their customizations.",
         params: &[],
+    },
+    ActionSpec {
+        name: "theme",
+        summary: "Customize the browser's appearance: the command/status bar HEIGHT and \
+                  the interface COLOURS (the bar background and text, the accent/highlight \
+                  colour, and the page background). Use for requests like 'make the command \
+                  bar 25% taller', 'set the bar background to green', 'change the accent to \
+                  orange', 'dark green background'. Only set the fields the user mentions; \
+                  leave the rest out to keep them unchanged.",
+        params: &[
+            ParamSpec {
+                name: "bar_height_pct",
+                values: &[],
+                required: false,
+                desc: "Command/status bar height as a percent of default: 100 = default, \
+                       125 = 25% taller, 75 = shorter. Range 50–300.",
+            },
+            ParamSpec {
+                name: "bar_bg",
+                values: &[],
+                required: false,
+                desc: "Command/status (and tab) bar background colour: a name like 'green' \
+                       or a hex like '#0a2a0a'.",
+            },
+            ParamSpec {
+                name: "bar_fg",
+                values: &[],
+                required: false,
+                desc: "Command/status bar text colour (name or hex).",
+            },
+            ParamSpec {
+                name: "accent",
+                values: &[],
+                required: false,
+                desc: "Accent/highlight colour — the active tab, caret, and focused-pane \
+                       border (name or hex).",
+            },
+            ParamSpec {
+                name: "bg",
+                values: &[],
+                required: false,
+                desc: "Page and welcome-screen background colour (name or hex).",
+            },
+        ],
     },
     ActionSpec {
         name: "open",
@@ -266,6 +310,7 @@ impl App {
             "alias" => self.set_alias(str_arg("name"), str_arg("expansion")),
             "unalias" => self.remove_alias(str_arg("name")),
             "restore" => Ok(self.restore_defaults()),
+            "theme" => self.set_theme(args),
             "open" => {
                 let target = str_arg("target");
                 if target.is_empty() {
@@ -347,14 +392,85 @@ impl App {
     }
 
     /// Reset ALL customization to defaults and persist the empty config — the safety
-    /// net behind `:restore` and the `Ctrl+Alt+Shift+R` hook chord. Returns the
-    /// status message. (As more config-driven surfaces land — chrome, keybinds —
-    /// this is where they get re-applied live.)
+    /// net behind `:restore` and the `Ctrl+Alt+Shift+R` hook chord. Re-applies every
+    /// config-driven surface live (today: chrome appearance), so a bad theme is undone
+    /// without a restart. Returns the status message.
     pub(crate) fn restore_defaults(&mut self) -> String {
         self.config = crate::config::Config::default();
         crate::config::save(&self.config);
+        self.rebuild_theme();
+        self.refresh_visibility(); // bar height may have changed → reflow content/webviews
         self.window.request_redraw();
         "restored default settings".to_string()
+    }
+
+    /// `theme {bar_height_pct, bar_bg, bar_fg, accent, bg}` — apply the appearance
+    /// overrides the user named (others untouched), persist them, and re-resolve the
+    /// live theme. Colours are validated up front (a typo is reported, with nothing
+    /// partially applied) and a height change reflows the content band. The
+    /// `Ctrl+Alt+Shift+R` chord / `:restore` undo it if a choice turns out unreadable.
+    pub(crate) fn set_theme(&mut self, args: &Value) -> Result<String, String> {
+        let color_arg = |k: &str| {
+            args.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty())
+        };
+        // Validate all provided colours BEFORE mutating, so a bad one aborts cleanly.
+        for key in ["bar_bg", "bar_fg", "accent", "bg"] {
+            if let Some(s) = color_arg(key) {
+                if crate::draw::parse_color(s).is_none() {
+                    return Err(format!(
+                        "'{s}' isn't a colour I recognise — use a name like green or a hex like #0a2a0a"
+                    ));
+                }
+            }
+        }
+        let mut changed: Vec<String> = Vec::new();
+        let mut height_changed = false;
+        if let Some(v) = args.get("bar_height_pct") {
+            // Accept a JSON number or a string like "125" / "125%".
+            let pct = v.as_u64().map(|n| n as u32).or_else(|| {
+                v.as_str().map(|s| s.trim().trim_end_matches('%').trim()).and_then(|s| s.parse().ok())
+            });
+            match pct {
+                Some(p) => {
+                    let p = p.clamp(50, 300);
+                    self.config.theme.bar_height_pct = Some(p);
+                    changed.push(format!("bar height to {p}%"));
+                    height_changed = true;
+                }
+                None => {
+                    return Err("bar_height_pct must be a number like 125 (percent of default)".into())
+                }
+            }
+        }
+        if let Some(s) = color_arg("bar_bg") {
+            self.config.theme.bar_bg = Some(s.to_string());
+            changed.push(format!("bar background to {s}"));
+        }
+        if let Some(s) = color_arg("bar_fg") {
+            self.config.theme.bar_fg = Some(s.to_string());
+            changed.push(format!("bar text to {s}"));
+        }
+        if let Some(s) = color_arg("accent") {
+            self.config.theme.accent = Some(s.to_string());
+            changed.push(format!("accent to {s}"));
+        }
+        if let Some(s) = color_arg("bg") {
+            self.config.theme.bg = Some(s.to_string());
+            changed.push(format!("background to {s}"));
+        }
+        if changed.is_empty() {
+            return Err(
+                "tell me what to change — bar height, bar background/text, accent, or background"
+                    .into(),
+            );
+        }
+        crate::config::save(&self.config);
+        self.rebuild_theme();
+        if height_changed {
+            self.refresh_visibility(); // content band moved → reposition webviews/panes
+        }
+        self.window.request_redraw();
+        Ok(format!("set {}", changed.join(", ")))
     }
 
     /// Expand a leading command alias, up to a small depth so chained aliases work

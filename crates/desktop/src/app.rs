@@ -265,6 +265,10 @@ pub(crate) struct App {
     /// Persisted customization (aliases, …) the user/AI tune at runtime. Reset to
     /// defaults by [`restore_defaults`](App::restore_defaults). See [`config`](crate::config).
     pub(crate) config: crate::config::Config,
+    /// The live chrome theme, resolved from `config.theme` by
+    /// [`rebuild_theme`](Self::rebuild_theme). Read at paint time for the bar
+    /// colours/height and accent; reset by [`restore_defaults`](Self::restore_defaults).
+    pub(crate) theme: crate::draw::Theme,
     /// When the window last gained focus — used to swallow the stray `Tab` that
     /// Alt+Tab delivers to a focused terminal.
     pub(crate) last_focus_gain: Instant,
@@ -369,8 +373,35 @@ impl App {
         if self.chrome_hidden() {
             0
         } else {
-            self.scaled(BAR_H)
+            // Apply the theme's bar-height multiplier on top of the zoom scaling, with a
+            // small floor so a tiny percent can't make the bar unusable.
+            let base = self.scaled(BAR_H) as f32;
+            ((base * self.theme.bar_scale).round() as u32).max(12)
         }
+    }
+
+    /// Re-resolve the live [`Theme`](crate::draw::Theme) from `config.theme` — called at
+    /// startup and after any appearance change or `:restore`. A garbled colour string is
+    /// ignored per-field (that slot keeps its default), so a bad value never blanks the UI.
+    pub(crate) fn rebuild_theme(&mut self) {
+        let mut t = crate::draw::Theme::default();
+        let tc = &self.config.theme;
+        if let Some(pct) = tc.bar_height_pct {
+            t.bar_scale = (pct as f32 / 100.0).clamp(0.5, 3.0);
+        }
+        if let Some(c) = tc.bar_bg.as_deref().and_then(crate::draw::parse_color) {
+            t.bar_bg = c;
+        }
+        if let Some(c) = tc.bar_fg.as_deref().and_then(crate::draw::parse_color) {
+            t.bar_fg = c;
+        }
+        if let Some(c) = tc.accent.as_deref().and_then(crate::draw::parse_color) {
+            t.accent = c;
+        }
+        if let Some(c) = tc.bg.as_deref().and_then(crate::draw::parse_color) {
+            t.bg = c;
+        }
+        self.theme = t;
     }
 
     /// Tab-bar height: present only while at least one *visible* tab is open and chrome

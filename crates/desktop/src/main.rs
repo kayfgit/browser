@@ -1111,6 +1111,7 @@ fn main() -> Result<()> {
         page_focus_yielded: false,
         acting_ai: None,
         config: config::load(),
+        theme: draw::Theme::default(),
         last_focus_gain: Instant::now(),
         history: Vec::new(),
         history_at: Vec::new(),
@@ -1122,6 +1123,8 @@ fn main() -> Result<()> {
         background_webview_visible: false,
         term_scrollback: pty_term::DEFAULT_SCROLLBACK,
     };
+    // Resolve the persisted appearance overrides into the live chrome theme.
+    app.rebuild_theme();
 
     // Compile the ad/redirect blocklist engine off-thread; it goes live a beat after
     // launch (BlocklistReady), and navigations use the timing heuristic until then.

@@ -27,6 +27,35 @@ pub(crate) struct Config {
     /// listing/serialization.
     #[serde(default)]
     pub(crate) aliases: BTreeMap<String, String>,
+    /// Chrome appearance overrides (bar height + colours). Resolved into the live
+    /// [`Theme`](crate::draw::Theme) by [`rebuild_theme`](crate::App::rebuild_theme).
+    #[serde(default)]
+    pub(crate) theme: ThemeConfig,
+}
+
+/// Appearance overrides for the shell chrome — the command/status bar height and the
+/// four themable colours. Every field is optional: an unset field keeps the built-in
+/// default. Colours are stored exactly as given (a name like `green` or a hex like
+/// `#0a2a0a`) and resolved (validated) at apply time, so a future colour name doesn't
+/// invalidate an old file.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub(crate) struct ThemeConfig {
+    /// Command/status bar height as a percent of the default (100 = default, 125 = 25%
+    /// taller). Clamped to a sane range on apply.
+    #[serde(default)]
+    pub(crate) bar_height_pct: Option<u32>,
+    /// Command/status (and tab) bar background.
+    #[serde(default)]
+    pub(crate) bar_bg: Option<String>,
+    /// Command/status bar text.
+    #[serde(default)]
+    pub(crate) bar_fg: Option<String>,
+    /// Accent/highlight (active tab, caret, focused-pane border, mode tags).
+    #[serde(default)]
+    pub(crate) accent: Option<String>,
+    /// Page/welcome background.
+    #[serde(default)]
+    pub(crate) bg: Option<String>,
 }
 
 /// Location of the config file (plain TOML in the app data dir, beside the session).

@@ -19,18 +19,23 @@ use crate::{App, ModeKind, Tab, UserEvent};
 
 /// Groq's OpenAI-compatible chat-completions endpoint.
 const GROQ_URL: &str = "https://api.groq.com/openai/v1/chat/completions";
-/// Default model: cloud Llama 70B on Groq.
-pub(crate) const DEFAULT_MODEL: &str = "llama-3.3-70b-versatile";
-/// A handful of known Groq model ids offered by `:model` (any id is accepted —
-/// these are just the quick suggestions). An unknown id simply surfaces Groq's own
-/// error in the tab, so the list doesn't have to be exhaustive.
+/// Default model: OpenAI's open-weight gpt-oss-120b on Groq. It's free, fast on
+/// Groq, and the most RELIABLE tool-caller of the free models for our agentic browser
+/// control (it natively targets the OpenAI function-calling format this code uses) —
+/// llama-3.3 frequently malforms tool calls (the `tool_use_failed` 400s we recover
+/// from). `moonshotai/kimi-k2-instruct` is the strongest alternative for long
+/// multi-step planning; switch with `:model`.
+pub(crate) const DEFAULT_MODEL: &str = "openai/gpt-oss-120b";
+/// A handful of known Groq model ids offered by `:model` (any id is accepted — these
+/// are just the quick suggestions, best tool-callers first). An unknown id simply
+/// surfaces Groq's own error in the tab, so the list doesn't have to be exhaustive.
 pub(crate) const MODELS: &[&str] = &[
+    "openai/gpt-oss-120b",
+    "moonshotai/kimi-k2-instruct",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3-32b",
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
-    "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
-    "moonshotai/kimi-k2-instruct",
-    "qwen/qwen3-32b",
     "deepseek-r1-distill-llama-70b",
 ];
 /// Keep answers terse — this is a quick-question surface, not a chat companion.
