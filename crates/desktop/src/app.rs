@@ -87,6 +87,9 @@ pub(crate) enum UserEvent {
     PageHold,
     /// A Normal-mode click hit a text field: enter Insert so keys type into the page.
     PageEdit,
+    /// A WebView2 browsing-data clear finished (`:clear cookies`/`cache`/`all`):
+    /// confirm it in the status bar. Carries the human label of what was cleared.
+    DataCleared(String),
     Quit,
 }
 
@@ -562,6 +565,13 @@ impl App {
 
     pub(crate) fn active_webview(&self) -> Option<&WebView> {
         self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.webview())
+    }
+
+    /// The first open web tab's engine handle, if any. All web tabs share one
+    /// WebView2 profile, so this is enough to reach the profile for data clears
+    /// (`:clear cookies`/`cache`/`all`) regardless of which tab is active.
+    pub(crate) fn any_webview(&self) -> Option<&WebView> {
+        self.tabs.iter().find_map(|t| t.webview())
     }
 
     /// Mutable access to the active engine-free read tab's state, if any.

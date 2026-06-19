@@ -182,6 +182,31 @@ impl App {
         self.clear_status();
     }
 
+    /// `:history` — the shell's own visited list (most-recent first) in an
+    /// engine-free, read-only vim tab, so it's navigable and yankable like
+    /// `:error`/`:res`. The full URLs are shown (not the autocomplete short form) so
+    /// they can be selected and re-opened. `:history clear` wipes it (see
+    /// [`App::perform`]).
+    pub(crate) fn open_history_page(&mut self) {
+        if self.history.is_empty() {
+            self.set_status("no history yet");
+            return;
+        }
+        let lines = history_lines(&self.history);
+        self.place_tab(
+            Tab {
+                url: "browser://history".into(),
+                nojs: false,
+                read: false,
+                research: false,
+                content: TabContent::Pager(vim::TextBuffer::new(lines)),
+            },
+            true,
+        );
+        self.window.set_focus();
+        self.clear_status();
+    }
+
     /// Open an internal HTML page (e.g. `:commands`) in a new tab.
     pub(crate) fn open_local_page(&mut self, label: &str, html: String) {
         match self.build_content_webview(Source::Html(html), false, "") {
@@ -372,12 +397,19 @@ pub(crate) fn commands_document() -> String {
         (":error · :err", "latest error in a read-only vim tab (v/y to select & copy)"),
         (":errors · :errs", "every error this session (newest first), same vim tab"),
         (":res · :resources", "live memory/CPU/disk across the whole browser tree (freezes while you select)"),
+        (":history · :hist", "visited URLs in a vim tab (v/y to select & open); :history clear wipes it"),
         (":commands · :help", "this page"),
         (":version", "version and build information"),
         (":w · :write", "save the current session (open tabs + UI state) to disk"),
         (":wq · :x", "save the session, then quit"),
         (":quit · :q", "quit WITHOUT saving (the last :w'd session is kept)"),
     ]);
+    // Actions: the unified action layer (`actions.rs`) — the same described,
+    // invokable operations the `:ai` assistant will drive. Rendered from the one
+    // registry so help and AI never drift.
+    let action_rows = crate::actions::help_rows();
+    let actions =
+        help_table(&action_rows.iter().map(|(k, d)| (k.as_str(), d.as_str())).collect::<Vec<_>>());
     // Bangs: build `!key → description` rows from the core table.
     let bang_rows: Vec<(String, &str)> =
         browser_core::bang_list().into_iter().map(|(k, d)| (format!("!{k} <query>"), d)).collect();
@@ -395,6 +427,10 @@ pub(crate) fn commands_document() -> String {
          <h2>Other modes</h2>{modes}\
          <h2>Vim pager (:error · :errors · :res · :version · read-mode v/V)</h2>{vimpager}\
          <h2>Commands</h2>{cmds}\
+         <h2>Actions</h2>\
+         <p class=\"sub\">The data/customization layer — one described verb each, and \
+         what the <code>:ai</code> assistant will drive (\u{201C}wipe my cookies\u{201D}). \
+         Cookies/cache need a page open.</p>{actions}\
          <h2>Bangs</h2>\
          <p class=\"sub\">A <code>!key</code> token in any open/search target jumps to that \
          site's search (no query → the site's home). Trailing form works too: \
@@ -406,6 +442,16 @@ pub(crate) fn commands_document() -> String {
          result so you can copy it or keep calculating (<code>160+10</code>).</p>\
          </main></body></html>"
     )
+}
+
+/// Plain-text lines for the `:history` vim pager: a header plus the visited URLs,
+/// most-recent first, one per line (full URLs so they stay selectable/openable).
+pub(crate) fn history_lines(history: &[String]) -> Vec<String> {
+    let mut lines = Vec::with_capacity(history.len() + 2);
+    lines.push(format!("history — {} entries    (:clear history to wipe)", history.len()));
+    lines.push(String::new());
+    lines.extend(history.iter().cloned());
+    lines
 }
 
 /// The `:version` page: build/runtime details about this browser.
@@ -455,6 +501,15 @@ mod tests {
         let lines = error_lines(&errs, false);
         assert_eq!(lines[0], "[00:00:02] (no command) — error 2");
         assert_eq!(&lines[1..], &["bad".to_string(), "things".to_string()]);
+    }
+
+    #[test]
+    fn history_lines_keep_order_with_a_count_header() {
+        let h = vec!["https://a.test/".to_string(), "https://b.test/x".to_string()];
+        let lines = history_lines(&h);
+        assert!(lines[0].starts_with("history — 2 entries"));
+        assert_eq!(lines[1], ""); // blank under the header
+        assert_eq!(&lines[2..], &["https://a.test/".to_string(), "https://b.test/x".to_string()]);
     }
 
     #[test]

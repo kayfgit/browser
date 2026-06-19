@@ -9,7 +9,7 @@ use crate::{clipboard_set, commands_document, parse_tab_flag, program_exists, Ap
 pub(crate) const COMMANDS: &[&str] = &[
     "open", "tabopen", "edit", "yank", "read", "research", "reload", "resize", "res", "resources", "reopen", "ai",
     "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock", "downloads",
-    "popups", "pops", "mute", "audio", "css", "model", "next", "tabnext", "tabprev",
+    "popups", "pops", "mute", "audio", "css", "model", "history", "clear", "next", "tabnext", "tabprev",
     "prev", "back", "forward", "fullscreen", "move", "commands", "help", "version", "close",
     "vsplit", "split", "write", "wq", "quit",
 ];
@@ -188,6 +188,19 @@ impl App {
                 self.mode = ModeKind::Move;
                 self.clear_status();
             }
+            // `:history` opens the visited list as a vim buffer; `:history clear`
+            // wipes it (a shortcut for `:clear history`).
+            "history" | "hist" => {
+                if rest.trim() == "clear" {
+                    self.run_action("clear", "history");
+                } else {
+                    self.open_history_page();
+                }
+            }
+            // `:clear <history|cookies|cache|all>` — the privacy/data actions. This is
+            // a single verb (not one per kind) so the command surface stays small; the
+            // same actions are what the AI assistant will drive. See `actions.rs`.
+            "clear" => self.run_action("clear", rest),
             "commands" | "help" => self.open_local_page("commands", commands_document()),
             "version" => self.open_version_page(),
             // Total the browser's real footprint across its whole process tree

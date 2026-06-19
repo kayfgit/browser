@@ -23,11 +23,13 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::keyboard::ModifiersState;
 use tao::window::WindowBuilder;
 
+mod actions;
 mod ai;
 mod app;
 mod blocklist;
 mod chrome;
 mod commands;
+mod data;
 mod draw;
 mod find;
 mod hints;
@@ -1443,6 +1445,14 @@ fn main() -> Result<()> {
                     "blocked download of {short} — executable/installer. :downloads to allow"
                 ));
                 app.window.request_redraw();
+            }
+            Event::UserEvent(UserEvent::DataCleared(label)) => {
+                // The async erase finished. An empty label is a silent bonus clear
+                // (engine history alongside the shell's own list) — don't announce it.
+                if !label.is_empty() {
+                    app.set_status(format!("cleared {label}"));
+                    app.window.request_redraw();
+                }
             }
             Event::UserEvent(UserEvent::TermDone { cmd, output, code }) => {
                 app.show_term_result(&cmd, &output, code);
