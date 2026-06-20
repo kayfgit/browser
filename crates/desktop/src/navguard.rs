@@ -63,6 +63,41 @@ pub(crate) fn mark(intent: &NavIntent) {
     }
 }
 
+/// Whether the webview's OWN session history can step back/forward one page — i.e.
+/// the adjacent page was navigated to WITHIN this webview instance (a clicked link
+/// or form submit), so the engine can restore it from cache instantly (scroll and
+/// form state intact) instead of the shell reopening it. False once a `:open`/search
+/// rebuilt the webview past that boundary, where only the shell's stack can reach.
+#[cfg(windows)]
+pub(crate) fn can_go(webview: &WebView, forward: bool) -> bool {
+    unsafe {
+        let Ok(core) = webview.controller().CoreWebView2() else { return false };
+        let mut b = BOOL::default();
+        let ok = if forward { core.CanGoForward(&mut b) } else { core.CanGoBack(&mut b) };
+        ok.is_ok() && b.as_bool()
+    }
+}
+
+/// Drive the webview's own session history one page back/forward (see [`can_go`]).
+/// Stamp [`mark`] first, like any shell-driven jump, so the native guard lets a
+/// cross-site step through. Best-effort; a failed COM call simply does nothing.
+#[cfg(windows)]
+pub(crate) fn go(webview: &WebView, forward: bool) {
+    unsafe {
+        if let Ok(core) = webview.controller().CoreWebView2() {
+            let _ = if forward { core.GoForward() } else { core.GoBack() };
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn can_go(_webview: &WebView, _forward: bool) -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+pub(crate) fn go(_webview: &WebView, _forward: bool) {}
+
 /// Install the native redirect guard on a freshly built content webview. Best-effort:
 /// if the raw engine handle or the event registration is unavailable, the wry-handler
 /// guards still stand, so this never fails the build.

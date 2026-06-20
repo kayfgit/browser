@@ -382,6 +382,13 @@ impl App {
         let baseline = bar_top + (bar_h * 2 / 3);
         // Draw the opaque command bar; called LAST so nothing bleeds through it.
         let draw_bar = |buf: &mut [u32]| {
+            // Chrome hidden (fullscreen, Normal mode) → bar height is 0. Drawing anyway
+            // would paint the command line at `baseline == hz`, i.e. a sliver clipped at
+            // the very bottom edge of the screen — the "command bar cut off in
+            // fullscreen" bug. Skip it entirely; `:` un-hides the bar by switching mode.
+            if bar_h == 0 {
+                return;
+            }
             draw::fill_band(buf, wz, hz, bar_top, hz, theme.bar_bg);
             if let Some((text, scroll)) = &cmd {
                 // Selection highlight first, so the text paints on top of it.
@@ -791,6 +798,11 @@ pub(crate) fn truncate_label(s: &str) -> String {
 /// Draw the top tab bar: `[1:host]` for the active tab, ` 2:host ` for others.
 /// Read-mode tabs are tinted green.
 pub(crate) fn draw_tab_bar(p: &Painter, buf: &mut [u32], w: usize, h: usize, labels: &[(String, bool, draw::Rgb)]) {
+    // Hidden (fullscreen) or no visible tabs → zero height; drawing would paint the
+    // labels as a clipped sliver at the very top edge, so skip it.
+    if h == 0 {
+        return;
+    }
     let baseline = h * 2 / 3;
     let mut x = 8;
     for (i, (label, active, color)) in labels.iter().enumerate() {

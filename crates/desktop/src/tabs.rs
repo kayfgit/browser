@@ -1018,13 +1018,30 @@ impl App {
     /// read tabs (which have no engine history at all) — so it goes back the full way.
     pub(crate) fn history(&mut self, forward: bool) {
         let Some(i) = self.active else { return };
-        let Some(tab) = self.tabs.get_mut(i) else { return };
-        let entry = if forward { tab.nav.fwd.pop() } else { tab.nav.back.pop() };
-        let Some(entry) = entry else {
+        // Nothing to go to?
+        let empty = {
+            let Some(tab) = self.tabs.get(i) else { return };
+            if forward { tab.nav.fwd.is_empty() } else { tab.nav.back.is_empty() }
+        };
+        if empty {
             self.set_status(if forward { "no forward history" } else { "no back history" });
             return;
-        };
-        // Move the current page onto the opposite stack so the reverse key returns.
+        }
+        // Fast path: if this is a web tab and the ENGINE's own session history can make
+        // this exact step (the adjacent page was a clicked link/form within the current
+        // webview instance), let it — instant and cached, with scroll/form state intact,
+        // no reload. Crossing a `:open`/search rebuild boundary (or a read tab) has no
+        // engine entry to restore, so it falls through to reopening the page.
+        let engine = self
+            .tabs
+            .get(i)
+            .and_then(|t| t.webview())
+            .is_some_and(|wv| crate::navguard::can_go(wv, forward));
+
+        // Pop the target and move the current page onto the opposite stack so the
+        // reverse key returns to it.
+        let tab = self.tabs.get_mut(i).unwrap();
+        let entry = if forward { tab.nav.fwd.pop() } else { tab.nav.back.pop() }.unwrap();
         if let Some(cur) = nav_entry(tab) {
             if forward {
                 nav_push(&mut tab.nav.back, cur);
@@ -1032,7 +1049,20 @@ impl App {
                 nav_push(&mut tab.nav.fwd, cur);
             }
         }
-        self.open_entry(entry);
+
+        if engine {
+            // Pre-set the URL and settle so the engine nav's page-load doesn't record
+            // the step a second time into the back stack.
+            tab.url = entry.url;
+            tab.nav.settling = true;
+            crate::navguard::mark(&self.nav_intent);
+            if let Some(wv) = self.tabs.get(i).and_then(|t| t.webview()) {
+                crate::navguard::go(wv, forward);
+            }
+            self.window.request_redraw();
+        } else {
+            self.open_entry(entry);
+        }
     }
 
     /// Reopen a [`NavEntry`] in place as part of an `H`/`L` replay: the stacks were
