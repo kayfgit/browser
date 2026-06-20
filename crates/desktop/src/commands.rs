@@ -63,7 +63,7 @@ impl App {
                     self.set_status("usage: :read [-t] <url>");
                 } else {
                     // `replace` (open in this tab) is the default; `-t` opens a new tab.
-                    self.start_read(rest, !new_tab);
+                    self.start_read(rest, !new_tab, true);
                 }
             }
             // Inspect this session's errors in an engine-free, scrollable tab:

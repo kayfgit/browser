@@ -3,6 +3,8 @@
 //! This is what keeps the shell engine-free at idle: no WebView is involved in
 //! drawing the UI.
 
+use std::sync::OnceLock;
+
 use anyhow::{anyhow, Result};
 use fontdue::{Font, FontSettings};
 
@@ -84,12 +86,16 @@ pub struct Painter {
     /// cover glyphs it lacks (Braille, symbols, dingbats) so terminals/pages don't
     /// show `.notdef` tofu boxes for them.
     fonts: Vec<Font>,
+    /// Broad-script (CJK …) fallbacks, loaded LAZILY the first time a glyph misses
+    /// every `fonts` entry — so a session that only ever shows Latin text never pays
+    /// the cost of holding several large CJK faces in memory.
+    cjk: OnceLock<Vec<Font>>,
     px: f32,
 }
 
 impl Painter {
     /// Load the monospace primary (Consolas → Segoe UI → Arial) plus best-effort
-    /// symbol fallbacks for broad glyph coverage.
+    /// symbol fallbacks for broad glyph coverage. CJK faces are deferred (see `cjk`).
     pub fn new(px: f32) -> Result<Self> {
         let mut fonts = vec![Font::from_bytes(load_system_font()?, FontSettings::default())
             .map_err(|e| anyhow!("parsing font: {e}"))?];
@@ -101,16 +107,24 @@ impl Painter {
                 }
             }
         }
-        Ok(Painter { fonts, px })
+        Ok(Painter { fonts, cjk: OnceLock::new(), px })
     }
 
     /// The first loaded font that has a glyph for `ch` (else the primary, which
-    /// renders its `.notdef`).
+    /// renders its `.notdef`). The Latin/symbol `fonts` are checked first — the hot
+    /// path for ordinary text — and only on a miss are the CJK fallbacks consulted
+    /// (loading them once, on demand), so Japanese/Chinese/Korean text renders
+    /// instead of showing tofu boxes on `:read` and `:term`.
     fn font_for(&self, ch: char) -> &Font {
-        self.fonts
-            .iter()
-            .find(|f| f.lookup_glyph_index(ch) != 0)
-            .unwrap_or(&self.fonts[0])
+        if let Some(f) = self.fonts.iter().find(|f| f.lookup_glyph_index(ch) != 0) {
+            return f;
+        }
+        for f in self.cjk.get_or_init(load_cjk_fonts) {
+            if f.lookup_glyph_index(ch) != 0 {
+                return f;
+            }
+        }
+        &self.fonts[0]
     }
 
     pub fn line_height(&self) -> usize {
@@ -281,6 +295,30 @@ fn blend(bg: u32, fg: Rgb, cov: u8) -> u32 {
     let g = (fg.1 as u32 * a + bgc * inv) / 255;
     let b = (fg.2 as u32 * a + bb * inv) / 255;
     (r << 16) | (g << 8) | b
+}
+
+/// Best-effort broad-script fallback faces for glyphs the Latin/symbol fonts lack —
+/// chiefly CJK. Loaded once, on first miss (see [`Painter::font_for`]). Each path is
+/// skipped silently if the face isn't installed. Japanese is listed first so the Han
+/// ideographs shared across CJK render in Japanese forms; then Korean, then Chinese.
+/// `.ttc` collections load their first face (fontdue's default `collection_index`).
+fn load_cjk_fonts() -> Vec<Font> {
+    const PATHS: &[&str] = &[
+        r"C:\Windows\Fonts\YuGothR.ttc",   // Yu Gothic — Japanese (kana + kanji)
+        r"C:\Windows\Fonts\msgothic.ttc",  // MS Gothic — Japanese fallback
+        r"C:\Windows\Fonts\malgun.ttf",    // Malgun Gothic — Korean (Hangul)
+        r"C:\Windows\Fonts\msyh.ttc",      // Microsoft YaHei — Simplified Chinese
+        r"C:\Windows\Fonts\simsun.ttc",    // SimSun — Chinese fallback
+    ];
+    let mut fonts = Vec::new();
+    for path in PATHS {
+        if let Ok(bytes) = std::fs::read(path) {
+            if let Ok(f) = Font::from_bytes(bytes, FontSettings::default()) {
+                fonts.push(f);
+            }
+        }
+    }
+    fonts
 }
 
 fn load_system_font() -> Result<Vec<u8>> {

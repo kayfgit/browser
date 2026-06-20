@@ -8,7 +8,7 @@
 //! keystrokes (tao's `KeyEvent` isn't constructible), so it only handles the small,
 //! fixed set of chords below and passes everything else straight through. It acts
 //! ONLY while our own window is the foreground window, so other apps are never
-//! touched, and only in the Insert / Passthrough / yielded states — in ordinary
+//! touched, and only in the web Passthrough / yielded states — in ordinary
 //! Normal-mode browsing the hook is inert and the existing focus model is unchanged.
 
 /// Mode codes the hook reads (lock-free) to decide what to intercept. Kept in sync
@@ -18,7 +18,8 @@ pub(crate) const MODE_OTHER: u8 = 0;
 /// Normal mode, but the page kept keyboard focus after a click on a control (so its
 /// menus/popovers stay open). Esc snaps the shell back into control.
 pub(crate) const MODE_NORMAL_YIELDED: u8 = 1;
-pub(crate) const MODE_INSERT: u8 = 2;
+/// Web passthrough: the page (or a cross-origin iframe) holds OS focus, so the hook is
+/// what catches the anti-trap leave chords — Esc, or Ctrl+S — and returns to Normal.
 pub(crate) const MODE_PASSTHROUGH: u8 = 3;
 
 #[cfg(windows)]
@@ -34,12 +35,11 @@ mod imp {
         WM_KEYDOWN, WM_SYSKEYDOWN,
     };
 
-    use super::{MODE_INSERT, MODE_NORMAL_YIELDED, MODE_PASSTHROUGH};
+    use super::{MODE_NORMAL_YIELDED, MODE_PASSTHROUGH};
     use crate::app::UserEvent;
 
     const VK_ESCAPE: u32 = 0x1B;
     const VK_S: u32 = 0x53;
-    const VK_V: u32 = 0x56;
     const VK_R: u32 = 0x52;
     const VK_SHIFT: i32 = 0x10;
     const VK_CONTROL: i32 = 0x11;
@@ -80,15 +80,13 @@ mod imp {
 
     /// Decide whether to swallow a key-down and which event to raise, given the
     /// current mode. `None` = let the key reach the page unchanged.
-    fn decide(mode: u8, vk: u32, ctrl: bool, shift: bool) -> Option<UserEvent> {
+    fn decide(mode: u8, vk: u32, ctrl: bool, _shift: bool) -> Option<UserEvent> {
         match mode {
-            // Leave passthrough with Ctrl+S (easy reach) or Shift+Esc — now frame-proof.
-            MODE_PASSTHROUGH if (ctrl && vk == VK_S) || (shift && vk == VK_ESCAPE) => {
+            // Web passthrough is anti-trap: Esc (with or without Shift) or Ctrl+S
+            // returns to Normal — frame-proof, so a page can never hold the keys hostage.
+            MODE_PASSTHROUGH if vk == VK_ESCAPE || (ctrl && vk == VK_S) => {
                 Some(UserEvent::ExitToNormal)
             }
-            // Insert: Esc leaves, Ctrl+V promotes to passthrough — also frame-proof.
-            MODE_INSERT if vk == VK_ESCAPE && !shift => Some(UserEvent::ExitToNormal),
-            MODE_INSERT if ctrl && vk == VK_V => Some(UserEvent::InsertToPassthrough),
             // Yielded: the page holds focus so its menu stays open; Esc reclaims the
             // shell keyboard (and blurs the page, closing the menu as a side effect).
             MODE_NORMAL_YIELDED if vk == VK_ESCAPE => Some(UserEvent::ReclaimNormal),

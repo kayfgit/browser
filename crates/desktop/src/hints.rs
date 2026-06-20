@@ -167,7 +167,7 @@ impl App {
             let new_tab = self.hint_new_tab;
             self.exit_hint();
             // New-tab mode opens a fresh read tab; otherwise follow in place.
-            self.start_read(&url, !new_tab);
+            self.start_read(&url, !new_tab, true);
             return;
         }
         if !self.native_hints.iter().any(|h| h.label.starts_with(&self.hint_input)) {

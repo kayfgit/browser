@@ -14,7 +14,7 @@ use tao::keyboard::{Key, KeyCode};
 use std::path::PathBuf;
 
 use crate::{clipboard_get, clipboard_set, draw, vim};
-use crate::tabs::TabContent;
+use crate::tabs::{TabContent, TabNav};
 use crate::{App, ModeKind, Tab, UserEvent};
 
 /// Groq's OpenAI-compatible chat-completions endpoint.
@@ -570,7 +570,7 @@ impl App {
                 }
             }
             self.clear_status();
-            self.enter_ai_insert();
+            self.enter_ai_passthrough();
             self.window.request_redraw();
             return;
         }
@@ -599,7 +599,7 @@ impl App {
             if let Some(idx) = self.tabs.iter().position(|t| t.ai().is_some()) {
                 self.show_tab(idx);
             }
-            self.enter_ai_insert();
+            self.enter_ai_passthrough();
             self.set_status("paste your Groq key, then it'll run that");
         }
         self.window.request_redraw();
@@ -615,6 +615,7 @@ impl App {
             nojs: false,
             read: false,
             research: false,
+            nav: TabNav::default(),
             content: TabContent::Ai(AiState::new(id, pending_prompt)),
         }
     }
@@ -629,15 +630,16 @@ impl App {
         self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.ai_mut())
     }
 
-    /// Enter Insert mode on the AI tab (type into its field). The shell keeps
-    /// keyboard focus — there's no webview — and forwards keys via [`key_ai`].
-    pub(crate) fn enter_ai_insert(&mut self) {
+    /// Enter passthrough on the AI tab (type into its field). The shell keeps keyboard
+    /// focus — there's no webview — and forwards keys via [`key_ai`], which owns Esc
+    /// (leave), Enter (send), and Ctrl+U (clear).
+    pub(crate) fn enter_ai_passthrough(&mut self) {
         if let Some(ai) = self.active_ai_mut() {
             ai.follow = true; // keep the input line in view while typing
         } else {
             return;
         }
-        self.mode = ModeKind::Insert;
+        self.mode = ModeKind::Passthrough;
         self.window.set_focus();
         self.window.request_redraw();
     }

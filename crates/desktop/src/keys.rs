@@ -20,31 +20,21 @@ impl App {
             ModeKind::Move => self.key_move(key),
             ModeKind::Hint => self.key_hint(key),
             ModeKind::Caret => self.key_caret(key),
-            // In Insert/Passthrough the page normally has OS focus and the injected
-            // bridge handles the shell keys; these arms are fallbacks for when the
-            // shell still holds focus (e.g. right after entering the mode).
-            ModeKind::Insert => {
-                if self.active_is_ai() {
-                    // AI tabs type straight into their native field (no webview).
-                    self.key_ai(key);
-                } else if matches!(key.logical_key, Key::Escape) && !self.modifiers.shift_key() {
-                    self.exit_to_normal();
-                } else if self.modifiers.control_key() && key.physical_key == KeyCode::KeyV {
-                    self.enter_passthrough();
-                }
-            }
+            // The single typing mode. The content normally has focus (web page) or the
+            // shell forwards to it (terminal / AI), and the injected bridge + keyboard
+            // hook own the leave chords; these arms are the shell-side fallbacks.
             ModeKind::Passthrough => {
-                // Leave passthrough with Ctrl+S (easy reach) or Shift+Esc (legacy).
-                let leave = (self.modifiers.control_key()
-                    && key.physical_key == KeyCode::KeyS)
-                    || (matches!(key.logical_key, Key::Escape) && self.modifiers.shift_key());
-                if leave {
-                    self.exit_to_normal();
+                if self.active_is_ai() {
+                    // AI tabs type straight into their native field (no webview); key_ai
+                    // owns Esc (leave), Enter (send), Ctrl+U (clear).
+                    self.key_ai(key);
                 } else if self.active_is_term() {
-                    // Native terminal: forward every key to the PTY, except a few
-                    // shell-owned chords — the global zoom keys (Ctrl +/-/0) and
-                    // Ctrl+V, which pastes the clipboard into the PTY (the Windows
-                    // convention) rather than sending a literal ^V.
+                    // Native terminal: Ctrl+S leaves; Esc and everything else go to the
+                    // PTY (vim needs Esc). A few chords stay shell-owned: Ctrl+V pastes
+                    // the clipboard into the PTY, Ctrl +/-/0 zoom.
+                    if self.modifiers.control_key() && key.physical_key == KeyCode::KeyS {
+                        return self.exit_to_normal();
+                    }
                     if self.modifiers.control_key() {
                         match key.physical_key {
                             KeyCode::KeyV => return self.term_paste(),
@@ -55,9 +45,15 @@ impl App {
                         }
                     }
                     self.key_term(key);
+                } else {
+                    // Web page: anti-trap — Esc (with or without Shift) or Ctrl+S returns
+                    // to Normal. Other keys reach the page (which has OS focus).
+                    let leave = matches!(key.logical_key, Key::Escape)
+                        || (self.modifiers.control_key() && key.physical_key == KeyCode::KeyS);
+                    if leave {
+                        self.exit_to_normal();
+                    }
                 }
-                // For a webview in passthrough the page itself has focus and the
-                // injected bridge handles keys; nothing to do here.
             }
             ModeKind::Normal => self.key_normal(key),
         }
@@ -158,12 +154,12 @@ impl App {
                 "G" => self.scroll_edge(true),
                 "/" => self.enter_find(),
                 "i" => {
-                    if self.active_is_term() {
-                        self.enter_passthrough();
-                    } else if self.active_is_ai() {
-                        self.enter_ai_insert();
+                    // One typing mode: the AI field has its own entry (native, no
+                    // webview); terminals and web pages both go through enter_passthrough.
+                    if self.active_is_ai() {
+                        self.enter_ai_passthrough();
                     } else {
-                        self.enter_insert();
+                        self.enter_passthrough();
                     }
                 }
                 "f" => self.enter_hint(false),
@@ -493,7 +489,7 @@ impl App {
                 // Ctrl+Right accepts the autocomplete suggestion (if any) — else moves
                 // a word, as before.
                 KeyCode::ArrowRight => {
-                    if !self.accept_suggestion() {
+                    if !self.accept_suggestion(true) {
                         let p = self.next_word(self.command_cursor);
                         self.move_caret(p, shift);
                     }
@@ -531,9 +527,10 @@ impl App {
                 self.find_confirm();
                 return;
             }
-            // Tab accepts the autocomplete suggestion (a no-op if there isn't one).
+            // Tab accepts the autocomplete suggestion (a no-op if there isn't one);
+            // Shift+Tab steps the `:model` cycle backward.
             Key::Tab => {
-                self.accept_suggestion();
+                self.accept_suggestion(!shift);
             }
             Key::Enter => {
                 // Quick maths: if the line is an arithmetic expression, evaluate it
@@ -858,21 +855,26 @@ impl App {
     }
 
     /// Accept the current autocomplete suggestion into the command line (caret to
-    /// end). Returns whether there was one to accept.
-    pub(crate) fn accept_suggestion(&mut self) -> bool {
+    /// end). Returns whether there was one to accept. `forward` is the cycle
+    /// direction for the `:model` list — Tab advances, Shift+Tab steps back.
+    pub(crate) fn accept_suggestion(&mut self, forward: bool) -> bool {
         // `:model` Tab-cycles through the model list, shell-completion style: each
-        // press advances to the next id (wrapping), so you can flick through the
-        // options and Enter the one you want.
+        // press steps to the next/previous id (wrapping), so you can flick through
+        // the options in either direction and Enter the one you want.
         let model_arg = match self.command.as_str() {
             "model" => Some(""),
             s => s.strip_prefix("model ").map(str::trim),
         };
         if let Some(arg) = model_arg {
             let models = crate::ai::MODELS;
+            let len = models.len();
             let next = if let Some(i) = models.iter().position(|m| *m == arg) {
-                (i + 1) % models.len()
-            } else {
+                if forward { (i + 1) % len } else { (i + len - 1) % len }
+            } else if forward {
                 models.iter().position(|m| m.starts_with(arg)).unwrap_or(0)
+            } else {
+                // Step back from the first matching id (or the end of the list).
+                models.iter().position(|m| m.starts_with(arg)).map_or(len - 1, |i| (i + len - 1) % len)
             };
             self.command = format!("model {}", models[next]);
             self.command_cursor = self.command.len();
@@ -888,21 +890,12 @@ impl App {
         true
     }
 
-    pub(crate) fn enter_insert(&mut self) {
-        if self.active_webview().is_none() {
-            self.set_status("no page — open one first");
-            return;
-        }
-        self.mode = ModeKind::Insert;
-        self.set_page_mode("insert");
-        if let Some(wv) = self.active_webview() {
-            let _ = wv.focus();
-        }
-    }
-
+    /// Enter passthrough for the active content: a web page (keys → page, anti-trap) or
+    /// a native terminal (keys → PTY, Ctrl+S leaves). The `:ai` field has its own entry,
+    /// [`enter_ai_passthrough`](App::enter_ai_passthrough).
     pub(crate) fn enter_passthrough(&mut self) {
-        // Native terminal: Passthrough is the terminal's input mode, but the SHELL
-        // keeps keyboard focus (there's no webview) and forwards keys to the PTY.
+        // Native terminal: the SHELL keeps keyboard focus (there's no webview) and
+        // forwards keys to the PTY.
         if self.active_is_term() {
             // Leave copy/vi mode (if active) so the live grid takes input again.
             if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut())

@@ -23,10 +23,8 @@ use crate::{read_view, session, BAR_H, BASE_PX, HISTORY_CAP, TAB_BAR_H, ZOOM_MAX
 
 /// Events posted from webview IPC back into the event loop.
 pub(crate) enum UserEvent {
-    /// Leave insert/passthrough: move focus from the page back to the shell.
+    /// Leave passthrough: move focus from the page back to the shell.
     ExitToNormal,
-    /// Promote insert → passthrough (Ctrl+V while typing); the page keeps focus.
-    InsertToPassthrough,
     /// Reclaim keyboard focus for the shell (e.g. after a page finishes loading
     /// and WebView2 has grabbed focus), unless the page should keep focus.
     FocusShell,
@@ -43,8 +41,9 @@ pub(crate) enum UserEvent {
     PaneClick,
     /// A `:read` extraction finished: render this Document in an engine-free read
     /// tab. `replace` swaps the active read tab's doc in place (link-follow/reload)
-    /// instead of opening a new tab.
-    ReadReady { doc: Box<browser_core::Document>, replace: bool },
+    /// instead of opening a new tab. `record` adds a back-stack step for the page
+    /// being left (false for reloads and `H`/`L` history replays).
+    ReadReady { doc: Box<browser_core::Document>, replace: bool, record: bool },
     /// A `:read` extraction failed.
     ReadFailed(String),
     /// Redirect the active tab to this URL (e.g. de-proxying a `translate.goog`
@@ -92,7 +91,7 @@ pub(crate) enum UserEvent {
     /// A Normal-mode click hit a page control (button/menu/link): let the page keep
     /// keyboard focus so its popover stays open (don't bounce focus back).
     PageHold,
-    /// A Normal-mode click hit a text field: enter Insert so keys type into the page.
+    /// A Normal-mode click hit a text field: enter passthrough so keys type into the page.
     PageEdit,
     /// A WebView2 browsing-data clear finished (`:clear cookies`/`cache`/`all`).
     /// `label` is the human description of what was cleared (empty = a silent bonus
@@ -110,12 +109,12 @@ pub(crate) enum UserEvent {
 pub(crate) enum ModeKind {
     Normal,
     Command,
-    /// Temporary typing in a field. The page types, but the shell still owns
-    /// Escape (leave) and Ctrl+V (→ passthrough); auto-exits when focus leaves the
-    /// field. Enter: `i` or a hint on an editable element.
-    Insert,
-    /// Every keystroke goes to the page, no exceptions; persists across clicks and
-    /// navigation. Enter: Ctrl+V. Leave: Ctrl+S (or Shift+Esc).
+    /// The single "type into the content" mode, whatever the content is: a web page
+    /// (keys go to the page), a native terminal (keys go to the PTY), or the `:ai`
+    /// field. Entered with `i` (or `Ctrl+V`, a hint on an editable element, or a click
+    /// in a text field). Leaving: for a web page it's anti-trap — Esc, or clicking out
+    /// of a field, returns to Normal (Ctrl+S also works anytime); a terminal keeps Esc
+    /// for the shell and leaves on Ctrl+S; the AI field leaves on Esc.
     Passthrough,
     /// hjkl resize the window; Esc exits. Entered with `:resize`.
     Resize,
@@ -307,6 +306,11 @@ pub(crate) struct App {
     /// Scrollback lines kept per terminal (memory scales with it; see
     /// [`pty_term::DEFAULT_SCROLLBACK`]).
     pub(crate) term_scrollback: usize,
+    /// Set while an `H`/`L` history replay is reopening a page in place, so the
+    /// synchronous navigation paths ([`place_tab`](Self::place_tab)) don't re-record
+    /// the page being left (the stacks were already adjusted by [`history`]). The
+    /// asynchronous read path is gated separately by `ReadReady.record`.
+    pub(crate) nav_replaying: bool,
 }
 
 /// Tag this process with an explicit AppUserModelID so Windows (taskbar + Task
@@ -579,15 +583,14 @@ impl App {
     pub(crate) fn reclaim_focus_tick(&self) {}
 
     /// The mode code the keyboard hook should run under (see [`crate::khook`]). Only
-    /// the web Insert/Passthrough states and a click-yielded Normal need interception;
-    /// everything where the shell already owns the keyboard maps to `OTHER` (inert).
+    /// WEB passthrough (the page holds OS focus, so the hook catches the anti-trap leave
+    /// chords even inside cross-origin iframes) and a click-yielded Normal need
+    /// interception; terminal/AI passthrough keep shell focus, and everything else maps
+    /// to `OTHER` (inert).
     pub(crate) fn hook_mode_code(&self) -> u8 {
         use crate::khook::*;
         match self.mode {
-            // AI Insert types into a native field (no webview); the shell has focus.
-            ModeKind::Insert if !self.active_is_ai() => MODE_INSERT,
-            // Terminal passthrough keeps shell focus (no webview); tao handles Ctrl+S.
-            ModeKind::Passthrough if !self.active_is_term() => MODE_PASSTHROUGH,
+            ModeKind::Passthrough if self.active_webview().is_some() => MODE_PASSTHROUGH,
             ModeKind::Normal if self.page_focus_yielded && self.active_webview().is_some() => {
                 MODE_NORMAL_YIELDED
             }
@@ -696,6 +699,18 @@ impl App {
             let Some(wv) = tab.webview() else { return };
             if let Ok(u) = wv.url() {
                 if u.starts_with("http") {
+                    // A changed live URL is a real in-webview navigation (clicked
+                    // link, form submit, redirect): push the page being left onto
+                    // the back stack so `H` returns to it — unless this is the open's
+                    // own landing (`settling`), which would record a phantom entry.
+                    if u != tab.url {
+                        if tab.nav.settling {
+                            tab.nav.settling = false;
+                        } else if let Some(entry) = crate::tabs::nav_entry(tab) {
+                            crate::tabs::nav_push(&mut tab.nav.back, entry);
+                            tab.nav.fwd.clear();
+                        }
+                    }
                     tab.url = u.clone();
                     visited = Some(u);
                 }
@@ -995,7 +1010,7 @@ impl App {
             // Each restored tab is a NEW tab (push), so they don't replace each other.
             match tab.kind.as_str() {
                 "term" => self.open_terminal(),
-                "read" => self.start_read(&tab.url, false),
+                "read" => self.start_read(&tab.url, false, true),
                 "research" => self.open_research(&tab.url, true),
                 "nojs" => self.open_tab(&tab.url, true, true),
                 _ => self.open_tab(&tab.url, false, true),

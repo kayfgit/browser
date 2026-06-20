@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use crate::tabs::TabContent;
+use crate::tabs::{TabContent, TabNav};
 use crate::{procmon, vim, App, Source, Tab};
 
 /// One recorded failure: when it happened, the command that triggered it (if
@@ -34,6 +34,7 @@ impl App {
                 nojs: false,
                 read: false,
                 research: false,
+                nav: TabNav::default(),
                 content: TabContent::Pager(vim::TextBuffer::new(lines)),
             },
             true,
@@ -64,6 +65,7 @@ impl App {
                 nojs: false,
                 read: false,
                 research: false,
+                nav: TabNav::default(),
                 content: TabContent::Pager(vim::TextBuffer::new(lines)),
             },
             true,
@@ -174,6 +176,7 @@ impl App {
                 nojs: false,
                 read: false,
                 research: false,
+                nav: TabNav::default(),
                 content: TabContent::Pager(vim::TextBuffer::new(version_lines())),
             },
             true,
@@ -199,6 +202,7 @@ impl App {
                 nojs: false,
                 read: false,
                 research: false,
+                nav: TabNav::default(),
                 content: TabContent::Pager(vim::TextBuffer::new(lines)),
             },
             true,
@@ -221,6 +225,7 @@ impl App {
                 nojs: false,
                 read: false,
                 research: false,
+                nav: TabNav::default(),
                 content: TabContent::Pager(vim::TextBuffer::new(lines)),
             },
             true,
@@ -240,6 +245,7 @@ impl App {
                         nojs: false,
                         read: false,
                         research: false,
+                        nav: TabNav::default(),
                     },
                     true,
                 );
@@ -374,8 +380,7 @@ pub(crate) fn commands_document() -> String {
         ("Ctrl+U", "delete to the start of the line"),
     ]);
     let modes = help_table(&[
-        ("Insert", "type into a field; Esc or click-away leaves, Ctrl+V → passthrough"),
-        ("Passthrough", "every key goes to the page; Ctrl+S (or Shift+Esc) leaves"),
+        ("Passthrough", "i (or click a field) types into the content; on a web page Esc or click-away leaves; in a terminal Esc goes to the shell and Ctrl+S leaves"),
         ("Hint", "type a label to follow it (type it UPPERCASE to open in a new tab); Esc cancels"),
         ("Resize / Move", "hjkl to size / reposition the window; Esc finishes"),
     ]);

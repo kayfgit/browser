@@ -214,7 +214,9 @@ pub(crate) fn paint_pane(
                 }
                 x
             };
-            let insert = mode == ModeKind::Insert;
+            // Typing into the AI field (passthrough) shows a caret at the end of the
+            // input line; in Normal it shows the vim block cursor instead.
+            let typing = mode == ModeKind::Passthrough;
             for r in vb.top..vb.lines.len() {
                 let y_top = top + (r - vb.top) as i32 * line_h;
                 if y_top >= bottom {
@@ -239,12 +241,12 @@ pub(crate) fn paint_pane(
                     let text: String = line[vb.left..].iter().collect();
                     p.text_rect(buf, wz, hz, left, baseline, &text, color, left, right, top, bottom);
                 }
-                // Insert: a caret at the end of the input line; Normal: the vim block
+                // Typing: a caret at the end of the input line; Normal: the vim block
                 // cursor on the current row (when this pane is focused).
-                if focused && insert && r + 1 == vb.lines.len() {
+                if focused && typing && r + 1 == vb.lines.len() {
                     let cx0 = col_x(line, line.len());
                     fill(buf, cx0, y_top, cx0 + cw, y_top + line_h, draw::ACCENT);
-                } else if focused && !insert && r == vb.cy {
+                } else if focused && !typing && r == vb.cy {
                     let cx0 = col_x(line, vb.cx);
                     let cx1 = col_x(line, vb.cx + 1).max(cx0 + cw);
                     fill(buf, cx0, y_top, cx1, y_top + line_h, draw::FG);
@@ -577,38 +579,29 @@ impl App {
                 ("[CARET]".into(), accent),
                 ("  hjkl/w/b/0/$/gg/G move · v select · y yank · Esc exit".into(), draw::DIM),
             ],
-            ModeKind::Insert => {
-                // AI tabs type into their own native field; show an AI-specific hint.
+            // One unified typing mode — always reads as [PASS], whatever the content;
+            // only the trailing hint differs (how to leave / use this content).
+            ModeKind::Passthrough => {
                 if self.active_is_ai() {
                     let hint = if self.groq_key.is_none() {
-                        "   paste your Groq key · Enter saves · Esc normal"
+                        "   paste your Groq key · Enter saves · Esc to leave"
                     } else {
-                        "   ask anything · Enter sends · Ctrl+U clear · Esc normal"
+                        "   ask anything · Enter sends · Ctrl+U clear · Esc to leave"
                     };
-                    return vec![("[AI]".into(), draw::AI), (hint.into(), draw::DIM)];
+                    return vec![("[PASS]".into(), accent), (hint.into(), draw::DIM)];
+                }
+                if self.active_is_term() {
+                    return vec![
+                        ("[PASS]".into(), accent),
+                        ("   typing to the shell · Ctrl+V paste · Ctrl+S to leave".into(), draw::DIM),
+                    ];
                 }
                 let url = self.active_url().unwrap_or("").to_string();
                 vec![
-                    ("[INSERT]".into(), accent),
+                    ("[PASS]".into(), accent),
                     (url, fg),
-                    ("   (Esc normal · Ctrl+V passthrough)".into(), draw::DIM),
+                    ("   Esc or click away to leave · Ctrl+S anytime".into(), draw::DIM),
                 ]
-            }
-            ModeKind::Passthrough => {
-                // A native terminal's input mode reads as [TERM]; a web page as [PASS].
-                if self.active_is_term() {
-                    vec![
-                        ("[TERM]".into(), draw::TERM),
-                        ("   typing to the shell · Ctrl+V paste · Ctrl+S to leave".into(), draw::DIM),
-                    ]
-                } else {
-                    let url = self.active_url().unwrap_or("").to_string();
-                    vec![
-                        ("[PASS]".into(), accent),
-                        (url, fg),
-                        ("   (Ctrl+S to exit)".into(), draw::DIM),
-                    ]
-                }
             }
             ModeKind::Normal => {
                 let label = match self.active_url() {

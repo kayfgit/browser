@@ -51,6 +51,78 @@ pub(crate) struct Tab {
     /// Whether this is a "research" tab: a normal page (JS on, images kept) with
     /// heavy media/embeds stripped on the fly for a lighter browse.
     pub(crate) research: bool,
+    /// This tab slot's back/forward navigation history (`H` / `L`). Shell-managed
+    /// rather than delegated to WebView2's own session history, which only spans a
+    /// single webview instance — every `:open`/`o`/search rebuilds the webview, so
+    /// the engine's history can't see past the current page, and read tabs have no
+    /// engine history at all. Carried across in-place rebuilds by [`App::place_tab`].
+    pub(crate) nav: TabNav,
+}
+
+/// What kind of page a [`NavEntry`] is, so back/forward recreates the same view.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NavKind {
+    Web,
+    Nojs,
+    Research,
+    Read,
+}
+
+/// One re-openable location in a tab's [`history`](TabNav): the URL plus the tab
+/// kind needed to recreate it (`:open` / no-js / research / read).
+#[derive(Clone)]
+pub(crate) struct NavEntry {
+    pub(crate) url: String,
+    pub(crate) kind: NavKind,
+}
+
+/// A tab slot's back/forward stacks (`H` pops `back`, `L` pops `fwd`).
+#[derive(Default)]
+pub(crate) struct TabNav {
+    /// Pages behind the current one, oldest first; the top is where `H` goes.
+    pub(crate) back: Vec<NavEntry>,
+    /// Pages ahead of the current one (after an `H`), so `L` returns forward.
+    pub(crate) fwd: Vec<NavEntry>,
+    /// Skip recording the next web URL change as a history step — it's the just-
+    /// opened page's own landing (and any on-load redirect chain), not a navigation
+    /// away from a page worth returning to. Set when a web tab is built; consumed by
+    /// the first live-URL refresh.
+    pub(crate) settling: bool,
+}
+
+/// Cap on each back/forward stack so long browsing can't grow them without bound.
+const NAV_CAP: usize = 100;
+
+/// The [`NavEntry`] for `tab`'s current page, or `None` if it isn't a re-openable
+/// web/read page (terminals, `:ai`, vim pagers and `browser://` internals don't
+/// belong in back/forward history).
+pub(crate) fn nav_entry(tab: &Tab) -> Option<NavEntry> {
+    if tab.url.is_empty() || tab.url.starts_with("browser://") {
+        return None;
+    }
+    let kind = if tab.native().is_some() {
+        tab.read.then_some(NavKind::Read)?
+    } else if tab.webview().is_some() {
+        if tab.research {
+            NavKind::Research
+        } else if tab.nojs {
+            NavKind::Nojs
+        } else {
+            NavKind::Web
+        }
+    } else {
+        return None;
+    };
+    Some(NavEntry { url: tab.url.clone(), kind })
+}
+
+/// Push `entry` onto a back/forward stack, dropping the oldest if it would exceed
+/// [`NAV_CAP`].
+pub(crate) fn nav_push(stack: &mut Vec<NavEntry>, entry: NavEntry) {
+    stack.push(entry);
+    if stack.len() > NAV_CAP {
+        stack.remove(0);
+    }
 }
 
 impl Tab {
@@ -64,6 +136,7 @@ impl Tab {
             nojs: false,
             read: false,
             research: false,
+            nav: TabNav::default(),
         }
     }
 
@@ -191,6 +264,7 @@ pub(crate) fn native_read_tab(doc: browser_core::Document, url: String, read: bo
         nojs: false,
         read,
         research: false,
+        nav: TabNav::default(),
         content: TabContent::Read(NativeRead {
             doc,
             scroll: 0,
@@ -223,6 +297,9 @@ impl App {
                     nojs: disable_js,
                     read: false,
                     research: false,
+                    // The first live-URL refresh after this open is the page's own
+                    // landing, not a navigation worth a back-stack entry.
+                    nav: TabNav { settling: true, ..TabNav::default() },
                 };
                 self.place_tab(tab, new_tab);
                 // Keep the keyboard on the shell; the page-load handler re-asserts
@@ -248,6 +325,7 @@ impl App {
                     nojs: false,
                     read: false,
                     research: true,
+                    nav: TabNav { settling: true, ..TabNav::default() },
                 };
                 self.place_tab(tab, new_tab);
                 self.window.set_focus();
@@ -269,9 +347,24 @@ impl App {
         match self.active {
             Some(i) if replace && i < self.tabs.len() => {
                 self.record_closed(i);
+                // Carry this slot's back/forward stacks across the rebuild. Unless
+                // this replacement IS a back/forward replay (`nav_replaying`), the
+                // page we're leaving becomes the new top of the back stack so `H`
+                // returns to it, and any forward history is truncated.
+                let mut back = std::mem::take(&mut self.tabs[i].nav.back);
+                let mut fwd = std::mem::take(&mut self.tabs[i].nav.fwd);
+                if !self.nav_replaying {
+                    if let Some(entry) = nav_entry(&self.tabs[i]) {
+                        nav_push(&mut back, entry);
+                        fwd.clear();
+                    }
+                }
                 if let Some(session) = self.tabs[i].take_term() {
                     session.shutdown();
                 }
+                let mut tab = tab;
+                tab.nav.back = back;
+                tab.nav.fwd = fwd;
                 self.tabs[i] = tab;
                 self.active = Some(i);
             }
@@ -319,7 +412,7 @@ impl App {
         };
         match c.kind.as_str() {
             "term" => self.open_terminal(),
-            "read" => self.start_read(&c.url, false),
+            "read" => self.start_read(&c.url, false, true),
             "research" => self.open_research(&c.url, true),
             "nojs" => self.open_tab(&c.url, true, true),
             _ => self.open_tab(&c.url, false, true),
@@ -417,11 +510,8 @@ impl App {
                         *g = Some(std::time::Instant::now());
                     }
                 }
-                "leave-passthrough" | "insert-escape" | "insert-blur" => {
+                "leave-passthrough" => {
                     let _ = ipc_proxy.send_event(UserEvent::ExitToNormal);
-                }
-                "to-passthrough" => {
-                    let _ = ipc_proxy.send_event(UserEvent::InsertToPassthrough);
                 }
                 "page-ready" => {
                     let _ = ipc_proxy.send_event(UserEvent::FocusShell);
@@ -554,8 +644,9 @@ impl App {
     /// Kick off a background readability extraction into the Document model; the
     /// result arrives as a ReadReady/ReadFailed user event so the UI stays
     /// responsive. `replace` swaps the active read tab's doc in place (link-follow
-    /// / reload) rather than opening a new tab.
-    pub(crate) fn start_read(&mut self, target: &str, replace: bool) {
+    /// / reload) rather than opening a new tab. `record` adds a back-stack step for
+    /// the page being left (false for reloads and `H`/`L` history replays).
+    pub(crate) fn start_read(&mut self, target: &str, replace: bool, record: bool) {
         let proxy = self.proxy.clone();
         // A plain query (no `!bang`, not a URL) is run through the SEARCH backend,
         // which returns a clean, followable results document — readability can't parse
@@ -568,7 +659,7 @@ impl App {
             self.set_status(format!("searching {query} …"));
             std::thread::spawn(move || {
                 let event = match browser_backend_search::search_blocking(&query, config) {
-                    Ok(doc) => UserEvent::ReadReady { doc: Box::new(doc), replace },
+                    Ok(doc) => UserEvent::ReadReady { doc: Box::new(doc), replace, record },
                     Err(e) => UserEvent::ReadFailed(format!("{e:#}")),
                 };
                 let _ = proxy.send_event(event);
@@ -580,7 +671,7 @@ impl App {
             self.set_status(format!("reading {url} …"));
             std::thread::spawn(move || {
                 let event = match browser_backend_text::fetch_document_blocking(&url) {
-                    Ok(doc) => UserEvent::ReadReady { doc: Box::new(doc), replace },
+                    Ok(doc) => UserEvent::ReadReady { doc: Box::new(doc), replace, record },
                     Err(e) => UserEvent::ReadFailed(format!("{e:#}")),
                 };
                 let _ = proxy.send_event(event);
@@ -593,13 +684,21 @@ impl App {
     /// `replace` means "open in the current tab": if the active tab is ALREADY a read
     /// tab its document is swapped in place (link-follow/reload, keeping the tab); if
     /// it's some other tab type, that tab is replaced with a fresh read tab. Without
-    /// `replace` (`:read -t`), a new read tab is opened.
-    pub(crate) fn show_read_document(&mut self, doc: browser_core::Document, replace: bool) {
+    /// `replace` (`:read -t`), a new read tab is opened. `record` adds a back-stack
+    /// step for the page being left (false for reloads and `H`/`L` history replays).
+    pub(crate) fn show_read_document(&mut self, doc: browser_core::Document, replace: bool, record: bool) {
         let url = doc.url.clone();
         if replace {
             if let Some(i) = self.active {
                 // Fast path: active is already a read tab → swap its doc, keep the tab.
                 if self.tabs.get(i).is_some_and(|t| t.native().is_some()) {
+                    // The page we're leaving becomes the new top of the back stack.
+                    if record {
+                        if let Some(entry) = nav_entry(&self.tabs[i]) {
+                            nav_push(&mut self.tabs[i].nav.back, entry);
+                            self.tabs[i].nav.fwd.clear();
+                        }
+                    }
                     let nr = self.tabs[i].native_mut().unwrap();
                     nr.doc = doc;
                     nr.scroll = 0;
@@ -611,8 +710,12 @@ impl App {
                     return;
                 }
                 // Active is a web/terminal tab → replace it in place with a read tab.
+                // `place_tab` records the page being left, gated by `nav_replaying`.
                 let tab = native_read_tab(doc, url, true);
+                let prev = self.nav_replaying;
+                self.nav_replaying = !record;
                 self.place_tab(tab, false);
+                self.nav_replaying = prev;
                 self.window.set_focus();
                 self.clear_status();
                 return;
@@ -908,14 +1011,52 @@ impl App {
         }
     }
 
+    /// `H` (back) / `L` (forward): walk the active tab's shell-managed history. The
+    /// page being left moves onto the opposite stack, then the target is reopened in
+    /// place. Unlike WebView2's own `history.back()`, this spans webview rebuilds
+    /// (every `:open`/search makes a fresh engine with no prior history) and covers
+    /// read tabs (which have no engine history at all) — so it goes back the full way.
     pub(crate) fn history(&mut self, forward: bool) {
-        // Stamp shell-navigation intent: a scripted history jump reads as not-user-
-        // initiated to the native guard, so without this a back/forward across sites
-        // would be cancelled as a "forced redirect".
-        crate::navguard::mark(&self.nav_intent);
-        if let Some(wv) = self.active_webview() {
-            let js = if forward { "history.forward();" } else { "history.back();" };
-            let _ = wv.evaluate_script(js);
+        let Some(i) = self.active else { return };
+        let Some(tab) = self.tabs.get_mut(i) else { return };
+        let entry = if forward { tab.nav.fwd.pop() } else { tab.nav.back.pop() };
+        let Some(entry) = entry else {
+            self.set_status(if forward { "no forward history" } else { "no back history" });
+            return;
+        };
+        // Move the current page onto the opposite stack so the reverse key returns.
+        if let Some(cur) = nav_entry(tab) {
+            if forward {
+                nav_push(&mut tab.nav.back, cur);
+            } else {
+                nav_push(&mut tab.nav.fwd, cur);
+            }
+        }
+        self.open_entry(entry);
+    }
+
+    /// Reopen a [`NavEntry`] in place as part of an `H`/`L` replay: the stacks were
+    /// already adjusted by [`history`](Self::history), so recording is suppressed
+    /// (`nav_replaying` for the synchronous web/place_tab paths; `record = false`
+    /// threaded through the asynchronous read path).
+    fn open_entry(&mut self, entry: NavEntry) {
+        match entry.kind {
+            NavKind::Web => {
+                self.nav_replaying = true;
+                self.open_tab(&entry.url, false, false);
+                self.nav_replaying = false;
+            }
+            NavKind::Nojs => {
+                self.nav_replaying = true;
+                self.open_tab(&entry.url, true, false);
+                self.nav_replaying = false;
+            }
+            NavKind::Research => {
+                self.nav_replaying = true;
+                self.open_research(&entry.url, false);
+                self.nav_replaying = false;
+            }
+            NavKind::Read => self.start_read(&entry.url, true, false),
         }
     }
 
@@ -985,12 +1126,17 @@ impl App {
                 if let Some(session) = self.tabs[i].take_term() {
                     session.shutdown();
                 }
+                // A reload, not a navigation: keep the slot's back/forward history,
+                // and settle so the reloaded landing isn't recorded as a new step.
+                let mut nav = std::mem::take(&mut self.tabs[i].nav);
+                nav.settling = true;
                 self.tabs[i] = Tab {
                     content: TabContent::Web(webview),
                     url,
                     nojs,
                     read: false,
                     research,
+                    nav,
                 };
                 self.refresh_visibility();
                 self.window.set_focus();
@@ -1009,8 +1155,9 @@ impl App {
             .map(|nr| nr.doc.url.clone())
         {
             // Internal native pages (e.g. `:error`) have nothing to re-extract.
+            // A reload isn't a navigation, so it adds no back-stack step.
             if !url.starts_with("browser://") {
-                self.start_read(&url, true);
+                self.start_read(&url, true, false);
             }
             return;
         }
@@ -1171,10 +1318,22 @@ pub(crate) fn wry_rect(r: PaneRect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::{
-        deproxy_translate, download_name, is_risky_download, is_translate_proxy, origin_of,
-        parse_tab_flag, url_is_ad_host,
+        deproxy_translate, download_name, is_risky_download, is_translate_proxy, nav_push,
+        origin_of, parse_tab_flag, url_is_ad_host, NavEntry, NavKind, NAV_CAP,
     };
     use std::path::Path;
+
+    #[test]
+    fn nav_push_caps_the_stack_dropping_the_oldest() {
+        let mut stack = Vec::new();
+        for i in 0..NAV_CAP + 5 {
+            nav_push(&mut stack, NavEntry { url: format!("https://e/{i}"), kind: NavKind::Web });
+        }
+        // Capped at NAV_CAP, and it's the OLDEST entries that fell off the front.
+        assert_eq!(stack.len(), NAV_CAP);
+        assert_eq!(stack.first().unwrap().url, "https://e/5");
+        assert_eq!(stack.last().unwrap().url, format!("https://e/{}", NAV_CAP + 4));
+    }
 
     #[test]
     fn tab_flag_only_matches_whole_token() {

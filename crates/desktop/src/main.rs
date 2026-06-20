@@ -7,9 +7,11 @@
 //! renderer immediately.
 //!
 //! Modes (qutebrowser-style):
-//!   * Normal  — shell has focus; command bar works; j/k/space scroll the page.
-//!   * Command — typing a `:`-command (entered with `:` or `o`).
-//!   * Insert  — `i` hands focus to the page (e.g. to click YouTube); Esc returns.
+//!   * Normal      — shell has focus; command bar works; j/k/space scroll the page.
+//!   * Command     — typing a `:`-command (entered with `:` or `o`).
+//!   * Passthrough — `i` hands keys to the content (page / terminal / `:ai` field).
+//!     For a web page it's anti-trap: Esc, or clicking out of a field, returns; a
+//!     terminal keeps Esc for the shell and leaves on Ctrl+S.
 
 #![windows_subsystem = "windows"]
 
@@ -125,22 +127,19 @@ const BRIDGE_JS: &str = r#"
   }
   window.__shellEditable = editable;
   document.addEventListener('keydown', function (e) {
-    var m = window.__mode;
-    if (m === 'insert') {
-      if (e.key === 'Escape' && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); post('insert-escape'); }
-      else if (e.ctrlKey && (e.key === 'v' || e.key === 'V')) { e.preventDefault(); e.stopPropagation(); post('to-passthrough'); }
-    } else if (m === 'passthrough') {
-      // Ctrl+S (easy reach) or Shift+Esc (legacy) leaves passthrough.
-      if ((e.ctrlKey && (e.key === 's' || e.key === 'S')) || (e.key === 'Escape' && e.shiftKey)) {
-        e.preventDefault(); e.stopPropagation(); post('leave-passthrough');
-      }
+    if (window.__mode !== 'passthrough') return;
+    // Anti-trap: Esc (with or without Shift) or Ctrl+S returns to the shell, so a page
+    // can never hold the keyboard hostage. Esc still reaches the page only in Normal.
+    if (e.key === 'Escape' || (e.ctrlKey && (e.key === 's' || e.key === 'S'))) {
+      e.preventDefault(); e.stopPropagation(); post('leave-passthrough');
     }
   }, true);
   document.addEventListener('focusout', function () {
-    if (window.__mode !== 'insert') return;
+    if (window.__mode !== 'passthrough') return;
+    // Clicking/tabbing out of an editable element returns to Normal automatically.
     setTimeout(function () {
       var a = document.activeElement;
-      if (!a || !editable(a)) post('insert-blur');
+      if (!a || !editable(a)) post('leave-passthrough');
     }, 0);
   }, true);
   // In Normal mode the shell owns the keyboard. A click — or a script calling
@@ -159,7 +158,7 @@ const BRIDGE_JS: &str = r#"
   }
   // Decide what a Normal-mode click should do with keyboard focus, on `click` (the
   // END of the gesture, so the page's own handlers run first):
-  //   * a text field  → 'page-edit', the shell enters Insert so you can type;
+  //   * a text field  → 'page-edit', the shell enters passthrough so you can type;
   //   * a control/menu/link → 'page-hold', let the PAGE keep focus so its popover
   //     stays open (the old blanket grab-back blurred YouTube menus shut on click);
   //   * empty page area → grabBack(), reclaim the shell keyboard as before.
@@ -172,7 +171,19 @@ const BRIDGE_JS: &str = r#"
     if (field && editable(field)) { post('page-edit'); return; }
     var ctrl = (t && t.closest) ? t.closest(
       "a[href],button,select,summary,label,[role='button'],[role='link']," +
-      "[role='menuitem'],[role='tab'],[onclick],[tabindex]:not([tabindex='-1'])") : null;
+      "[role='menuitem'],[role='tab'],[role='checkbox'],[role='radio']," +
+      "[role='option'],[role='switch'],[role='combobox']," +
+      "[onclick],[tabindex]:not([tabindex='-1'])") : null;
+    // Component frameworks (YouTube, Gmail, …) wire clicks onto custom elements
+    // with addEventListener and none of the above attributes, so the selector
+    // misses them and the old fall-through to grabBack() blurred the webview the
+    // instant you clicked — snapping the control's just-opened menu/popover shut
+    // (the "can't press YouTube buttons; a double-click opens then closes" bug).
+    // Such controls almost always style themselves `cursor: pointer`, so treat
+    // that as the catch-all clickability signal and let the PAGE keep focus.
+    if (!ctrl && t && t.nodeType === 1) {
+      try { if (getComputedStyle(t).cursor === 'pointer') ctrl = t; } catch (_) {}
+    }
     if (ctrl) { post('page-hold'); return; }
     grabBack();
   }
@@ -1122,6 +1133,7 @@ fn main() -> Result<()> {
         active_pane_is_webview: false,
         background_webview_visible: false,
         term_scrollback: pty_term::DEFAULT_SCROLLBACK,
+        nav_replaying: false,
     };
     // Resolve the persisted appearance overrides into the live chrome theme.
     app.rebuild_theme();
@@ -1306,11 +1318,6 @@ fn main() -> Result<()> {
                 _ => {}
             },
             Event::UserEvent(UserEvent::ExitToNormal) => app.exit_to_normal(),
-            Event::UserEvent(UserEvent::InsertToPassthrough) => {
-                app.mode = ModeKind::Passthrough;
-                app.set_page_mode("passthrough");
-                app.window.request_redraw();
-            }
             Event::UserEvent(UserEvent::FocusShell) => {
                 match app.mode {
                     // Passthrough persists across navigation: re-assert it on the new
@@ -1321,9 +1328,9 @@ fn main() -> Result<()> {
                             let _ = wv.focus();
                         }
                     }
-                    // Insert and Caret are tied to the old page's DOM; a navigation
-                    // ends them (the injected caret is gone on the new document).
-                    ModeKind::Insert | ModeKind::Caret => {
+                    // Caret is tied to the old page's DOM; a navigation ends it (the
+                    // injected caret is gone on the new document).
+                    ModeKind::Caret => {
                         app.mode = ModeKind::Normal;
                         app.reclaim_shell_focus();
                         app.window.request_redraw();
@@ -1362,11 +1369,11 @@ fn main() -> Result<()> {
                     app.window.request_redraw();
                 }
             }
-            // A click landed in a text field: enter Insert so typing goes to the page.
+            // A click landed in a text field: enter passthrough so typing goes to the page.
             Event::UserEvent(UserEvent::PageEdit) => {
                 if app.mode == ModeKind::Normal {
                     app.page_focus_yielded = false;
-                    app.enter_insert();
+                    app.enter_passthrough();
                     app.window.request_redraw();
                 }
             }
@@ -1391,10 +1398,10 @@ fn main() -> Result<()> {
                 app.window.request_redraw();
             }
             Event::UserEvent(UserEvent::HintEdit) => {
-                // The hint selected a text field: enter insert (temporary typing),
+                // The hint selected a text field: enter passthrough (type into the page),
                 // then focus the field itself within the page.
                 app.hint_input.clear();
-                app.enter_insert();
+                app.enter_passthrough();
                 if let Some(wv) = app.active_webview() {
                     let _ = wv.evaluate_script(
                         "window.__hintTarget&&(window.__hintTarget.focus(),window.__hintTarget=null)",
@@ -1411,8 +1418,8 @@ fn main() -> Result<()> {
                 app.window.set_focus();
                 app.open_tab(&url, app.nojs, true);
             }
-            Event::UserEvent(UserEvent::ReadReady { doc, replace }) => {
-                app.show_read_document(*doc, replace);
+            Event::UserEvent(UserEvent::ReadReady { doc, replace, record }) => {
+                app.show_read_document(*doc, replace, record);
             }
             Event::UserEvent(UserEvent::ReadFailed(e)) => {
                 app.set_error(format!("read failed: {e}"));

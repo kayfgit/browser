@@ -12,7 +12,7 @@ use tao::keyboard::{Key, KeyCode};
 
 use crate::panes::PaneRect;
 use crate::pty_term;
-use crate::tabs::TabContent;
+use crate::tabs::{TabContent, TabNav};
 use crate::{clipboard_get, clipboard_set, App, ModeKind, Tab, UserEvent, TERM_PAD};
 
 /// A terminal tab's link to its companion `browser-pty-host` process. The ConPTY
@@ -218,6 +218,7 @@ impl App {
                 nojs: false,
                 read: false,
                 research: false,
+                nav: TabNav::default(),
                 content: TabContent::Term(TermSession {
                     id,
                     child,

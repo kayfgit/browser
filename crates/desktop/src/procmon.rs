@@ -14,7 +14,10 @@
 pub struct ProcSample {
     pub name: String,
     pub pid: u32,
-    /// Working-set size in bytes (resident physical memory).
+    /// Private working set in bytes — the resident physical memory unique to this
+    /// process (shared pages excluded). This is what Task Manager's "Memory" column
+    /// shows; summing the full working set instead double-counts the pages WebView2's
+    /// processes share, inflating the total well above Task Manager's figure.
     pub working_set: u64,
     /// Total CPU time used so far (kernel + user), in 100-nanosecond units.
     pub cpu_100ns: u64,
@@ -103,7 +106,9 @@ pub fn tree_sample() -> Vec<ProcSample> {
 fn metrics(pid: u32) -> Option<(u64, u64, u64)> {
     use std::mem::size_of;
     use windows::Win32::Foundation::{CloseHandle, FILETIME};
-    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX2,
+    };
     use windows::Win32::System::Threading::{
         GetProcessIoCounters, GetProcessTimes, OpenProcess, IO_COUNTERS,
         PROCESS_QUERY_LIMITED_INFORMATION,
@@ -112,13 +117,28 @@ fn metrics(pid: u32) -> Option<(u64, u64, u64)> {
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
 
-        let mut mem = PROCESS_MEMORY_COUNTERS::default();
-        let working_set =
-            match GetProcessMemoryInfo(handle, &mut mem, size_of::<PROCESS_MEMORY_COUNTERS>() as u32)
-            {
+        // Prefer the private working set (Task Manager's "Memory" column): ask for the
+        // EX2 counters (Win10 1709+), whose `PrivateWorkingSetSize` excludes shared
+        // pages. Fall back to the full working set if the EX2 query isn't available.
+        let mut ex2 = PROCESS_MEMORY_COUNTERS_EX2 {
+            cb: size_of::<PROCESS_MEMORY_COUNTERS_EX2>() as u32,
+            ..Default::default()
+        };
+        let working_set = if GetProcessMemoryInfo(
+            handle,
+            (&mut ex2 as *mut PROCESS_MEMORY_COUNTERS_EX2).cast(),
+            size_of::<PROCESS_MEMORY_COUNTERS_EX2>() as u32,
+        )
+        .is_ok()
+        {
+            ex2.PrivateWorkingSetSize as u64
+        } else {
+            let mut mem = PROCESS_MEMORY_COUNTERS::default();
+            match GetProcessMemoryInfo(handle, &mut mem, size_of::<PROCESS_MEMORY_COUNTERS>() as u32) {
                 Ok(()) => mem.WorkingSetSize as u64,
                 Err(_) => 0,
-            };
+            }
+        };
 
         let (mut create, mut exit, mut kernel, mut user) = Default::default();
         let cpu = match GetProcessTimes(handle, &mut create, &mut exit, &mut kernel, &mut user) {
