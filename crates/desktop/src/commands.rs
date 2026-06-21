@@ -9,7 +9,7 @@ use crate::{clipboard_set, commands_document, parse_tab_flag, program_exists, Ap
 pub(crate) const COMMANDS: &[&str] = &[
     "open", "tabopen", "edit", "yank", "read", "research", "reload", "resize", "res", "resources", "reopen", "ai",
     "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock", "downloads",
-    "popups", "pops", "mute", "audio", "css", "model", "history", "clear", "alias", "unalias", "restore",
+    "popups", "pops", "mute", "audio", "css", "video", "model", "history", "clear", "alias", "unalias", "restore",
     "next", "tabnext", "tabprev",
     "prev", "back", "forward", "fullscreen", "move", "commands", "help", "version", "close",
     "vsplit", "split", "write", "wq", "quit",
@@ -164,6 +164,24 @@ impl App {
                 self.set_status(if self.no_css { "CSS off" } else { "CSS on" });
                 self.window.request_redraw();
             }
+            // `:video` (no args) toggles video stripping live on every web tab (like
+            // `:research`, but reversible — turning it back on takes a reload to
+            // restore already-stripped players). `:video <url>` hands the URL to an
+            // external player (mpv) instead — handy for watching without the engine.
+            "video" | "vid" => {
+                if rest.is_empty() {
+                    self.no_video = !self.no_video;
+                    self.broadcast_toggle("video", self.no_video);
+                    self.set_status(if self.no_video {
+                        "video disabled (stripped from pages)"
+                    } else {
+                        "video enabled (reload pages to restore)"
+                    });
+                    self.window.request_redraw();
+                } else {
+                    self.play_video(rest);
+                }
+            }
             "close" | "tabclose" | "bd" => self.close_active(),
             // tmux-style panes: split the focused pane (side-by-side / stacked) into a
             // new blank pane. Navigate between them with Ctrl+W h/j/k/l.
@@ -241,6 +259,25 @@ impl App {
             other => self.set_error(format!("unknown command: {other}")),
         }
         self.current_command = None;
+    }
+
+    /// `:video <url>`: hand the URL to an external media player so it plays without
+    /// the browser engine (lighter, and seekable). Prefers `mpv` (which streams
+    /// YouTube & friends via yt-dlp), then `vlc`; reports if neither is installed.
+    /// The player runs detached — we don't wait on it.
+    pub(crate) fn play_video(&mut self, target: &str) {
+        let url = browser_core::normalize_url(target).unwrap_or_else(|| target.trim().to_string());
+        const PLAYERS: &[&str] = &["mpv", "vlc"];
+        let Some(player) = PLAYERS.iter().copied().find(|p| program_exists(p)) else {
+            self.set_error(
+                "no external player found — install mpv (or vlc) to use :video <url>".to_string(),
+            );
+            return;
+        };
+        match std::process::Command::new(player).arg(&url).spawn() {
+            Ok(_child) => self.set_status(format!("opening in {player}: {url}")),
+            Err(e) => self.set_error(format!("failed to launch {player}: {e}")),
+        }
     }
 
     /// Turn a command-bar target into a URL the way `:open` does: a bare query

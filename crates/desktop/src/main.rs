@@ -192,6 +192,28 @@ const BRIDGE_JS: &str = r#"
   // (when split). Fired on pointerdown — before any link navigation — so clicking a
   // non-focused web pane switches focus to it instead of stranding the keyboard.
   document.addEventListener('pointerdown', function () { post('pane-click'); }, true);
+  // Link-hover readout: report the href under the pointer so the shell can show it
+  // on the right of the command bar (like a browser status bar). Posted only when
+  // the target link CHANGES (mouseover bubbles, so this is event-delegated and
+  // cheap); cleared when the pointer leaves a link or the document entirely.
+  var __hoverHref = '';
+  function reportHover(href) {
+    if (href === __hoverHref) return;
+    __hoverHref = href;
+    post('link-hover:' + href);
+  }
+  document.addEventListener('mouseover', function (e) {
+    var a = (e.target && e.target.closest) ? e.target.closest('a[href]') : null;
+    var href = (a && a.href && !/^javascript:/i.test(a.href)) ? a.href : '';
+    reportHover(href);
+  }, true);
+  document.addEventListener('mouseout', function (e) {
+    // Leaving an element with no related link target underneath clears the readout.
+    var to = e.relatedTarget;
+    var a = (to && to.closest) ? to.closest('a[href]') : null;
+    if (!a) reportHover('');
+  }, true);
+  window.addEventListener('blur', function () { reportHover(''); });
   // Tell the shell once the page is up so it can reclaim keyboard focus — works
   // for both URL and with_html content, independent of native load events.
   window.addEventListener('load', function () { post('page-ready'); });
@@ -782,7 +804,7 @@ const FEATURES_JS: &str = r#"
   if (window.__featuresInit) return;
   window.__featuresInit = true;
   var d = window.__featureDefaults || {};
-  var muted = !!d.mute, noCss = !!d.css;
+  var muted = !!d.mute, noCss = !!d.css, noVideo = !!d.video;
 
   // audio: force every media element's muted flag to match the toggle.
   function applyMute(root, val) {
@@ -790,6 +812,24 @@ const FEATURES_JS: &str = r#"
       var r = (root && root.querySelectorAll) ? root : document;
       var m = r.querySelectorAll('video,audio');
       for (var i = 0; i < m.length; i++) m[i].muted = val;
+    } catch (e) {}
+  }
+
+  // video: strip players (like :research) — <video> plus the embed elements sites
+  // use for video, EXCEPT bot-challenge iframes (removing those traps the page).
+  var VID_SEL = 'video,iframe,embed,object,source,track';
+  var VID_KEEP = /recaptcha|hcaptcha|turnstile|challenges?\.cloudflare|cf[-_]?chl|captcha/i;
+  function vidKeep(el) {
+    if (el.tagName !== 'IFRAME') return false;
+    var s = (el.getAttribute('src') || '') + ' ' + (el.title || '') + ' ' + (el.name || '');
+    return VID_KEEP.test(s);
+  }
+  function applyVideo(root) {
+    if (!noVideo) return;
+    try {
+      var r = (root && root.querySelectorAll) ? root : document;
+      var hits = r.querySelectorAll(VID_SEL);
+      for (var i = 0; i < hits.length; i++) { if (!vidKeep(hits[i])) hits[i].remove(); }
     } catch (e) {}
   }
 
@@ -818,19 +858,29 @@ const FEATURES_JS: &str = r#"
           if (noCss && (n.tagName === 'STYLE' || n.tagName === 'LINK')) {
             try { n.disabled = true; } catch (e) {}
           }
+          if (noVideo) {
+            if (n.matches && n.matches(VID_SEL)) { if (!vidKeep(n)) n.remove(); }
+            else applyVideo(n);
+          }
         }
       }
     }).observe(document.documentElement, { childList: true, subtree: true });
   }
   observe();
   applyCss();
-  document.addEventListener('DOMContentLoaded', function () { applyCss(); if (muted) applyMute(document, true); });
+  applyVideo(document);
+  document.addEventListener('DOMContentLoaded', function () {
+    applyCss();
+    if (muted) applyMute(document, true);
+    applyVideo(document);
+  });
   setInterval(function () { if (muted) applyMute(document, true); }, 1000);
 
   window.__setToggle = function (name, val) {
     val = !!val;
     if (name === 'mute') { muted = val; applyMute(document, val); }
     else if (name === 'css') { noCss = val; applyCss(); }
+    else if (name === 'video') { noVideo = val; applyVideo(document); }
   };
 })();
 "#;
@@ -1102,6 +1152,7 @@ fn main() -> Result<()> {
         blocker: blocklist::new_shared(),
         mute: false,
         no_css: false,
+        no_video: false,
         term_command: vec!["nu".to_string()],
         search_template: browser_core::DEFAULT_SEARCH_URL.to_string(),
         next_term_id: 0,
@@ -1117,6 +1168,7 @@ fn main() -> Result<()> {
         res_at: Instant::now(),
         cursor_pos: (0.0, 0.0),
         bar_hover: false,
+        hover_link: None,
         bar_dragging: false,
         bar_cmd_scroll: 0,
         page_focus_yielded: false,
@@ -1347,6 +1399,8 @@ fn main() -> Result<()> {
                 // A navigation (e.g. clicking a link that yielded focus) lands on a
                 // fresh page with the shell back in control — end any page-focus yield.
                 app.page_focus_yielded = false;
+                // The old page's hovered-link readout is stale on a new document.
+                app.hover_link = None;
                 // A fresh navigation can reset the page's zoom factor — re-apply.
                 app.apply_active_zoom();
                 // Track the post-navigation URL in the status bar.
@@ -1374,6 +1428,15 @@ fn main() -> Result<()> {
                 if app.mode == ModeKind::Normal {
                     app.page_focus_yielded = false;
                     app.enter_passthrough();
+                    app.window.request_redraw();
+                }
+            }
+            Event::UserEvent(UserEvent::LinkHover(href)) => {
+                // Only the focused tab's hover readout matters; ignore stray reports
+                // from a background pane. Empty = the pointer left the link.
+                let next = (!href.is_empty()).then_some(href);
+                if app.hover_link != next {
+                    app.hover_link = next;
                     app.window.request_redraw();
                 }
             }

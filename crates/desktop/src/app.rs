@@ -93,6 +93,9 @@ pub(crate) enum UserEvent {
     PageHold,
     /// A Normal-mode click hit a text field: enter passthrough so keys type into the page.
     PageEdit,
+    /// The page pointer moved onto (or off) a link: show its href on the right of the
+    /// command bar. Carries the URL, or empty when the pointer left the link.
+    LinkHover(String),
     /// A WebView2 browsing-data clear finished (`:clear cookies`/`cache`/`all`).
     /// `label` is the human description of what was cleared (empty = a silent bonus
     /// clear, ignored). `ai_id` is the `:ai` tab that initiated it, if any: the
@@ -205,10 +208,12 @@ pub(crate) struct App {
     /// way Brave/uBlock do it. `None` until it finishes compiling just after launch.
     pub(crate) blocker: crate::blocklist::SharedBlocker,
     /// Live page-feature toggles ([`FEATURES_JS`]), applied to every web tab without
-    /// a reload. `mute` keeps all media muted; `no_css` disables every stylesheet.
+    /// a reload. `mute` keeps all media muted; `no_css` disables every stylesheet;
+    /// `no_video` strips `<video>`/player embeds (like `:research`, but toggleable).
     /// Session-only (reset to off each launch). (Pop-up blocking moved under `:ads`.)
     pub(crate) mute: bool,
     pub(crate) no_css: bool,
+    pub(crate) no_video: bool,
     /// Shell command for `:te` (program + args), set via `:config`.
     pub(crate) term_command: Vec<String>,
     /// Search-engine URL template (`%s` = query) for a non-URL `:open`. Defaults
@@ -246,6 +251,10 @@ pub(crate) struct App {
     /// True while the pointer hovers the command/status bar. In Normal mode the bar
     /// shows the URL shortened to its host; hovering reveals the full address.
     pub(crate) bar_hover: bool,
+    /// The href of the link the page pointer is currently hovering, reported live by
+    /// the page bridge. Shown right-aligned in the Normal-mode command bar (like a
+    /// browser status bar); `None` when the pointer isn't over a link.
+    pub(crate) hover_link: Option<String>,
     /// True while a left-drag is selecting text in the command/find line (mouse
     /// highlight). Set on a press inside the bar, cleared on release.
     pub(crate) bar_dragging: bool,

@@ -490,10 +490,10 @@ impl App {
             // while a toggle is active is already in that state. `extra_init` (e.g.
             // research-mode DOM pruning) is appended last.
             .with_initialization_script({
-                let (m, c) = (self.mute, self.no_css);
+                let (m, c, v) = (self.mute, self.no_css, self.no_video);
                 let mut init = format!(
                     "{IPC_PRELUDE}\n{BRIDGE_JS}\n{FIND_JS}\n{CARET_JS}\n\
-                     window.__featureDefaults={{mute:{m},css:{c}}};\n{FEATURES_JS}"
+                     window.__featureDefaults={{mute:{m},css:{c},video:{v}}};\n{FEATURES_JS}"
                 );
                 if !extra_init.is_empty() {
                     init.push('\n');
@@ -553,6 +553,9 @@ impl App {
                     // The page blocker neutered a scripted pop-up. `popup-blocked:<url>`.
                     } else if let Some(url) = body.strip_prefix("popup-blocked:") {
                         let _ = ipc_proxy.send_event(UserEvent::PopupBlocked(url.to_string()));
+                    // The pointer moved onto/off a link: `link-hover:<href>` (empty = off).
+                    } else if let Some(href) = body.strip_prefix("link-hover:") {
+                        let _ = ipc_proxy.send_event(UserEvent::LinkHover(href.to_string()));
                     }
                 }
             })
@@ -879,6 +882,8 @@ impl App {
         }
         self.active = Some(target);
         self.find_reset();
+        // The previous tab's hovered-link readout doesn't belong to the new tab.
+        self.hover_link = None;
         self.refresh_visibility();
         self.window.set_focus();
     }

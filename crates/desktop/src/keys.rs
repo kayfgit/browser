@@ -104,6 +104,25 @@ impl App {
         if self.active_term_vi() && self.key_term_vi(key) {
             return;
         }
+        // On the `:history` pager, `d` deletes the entry under the cursor (or the
+        // whole visual selection); `u` is inert. Half-page scrolling stays on the
+        // Ctrl chords. Intercept before the generic pager, where plain `d`/`u` would
+        // otherwise half-page scroll (the reported "d acts like Ctrl+D" bug).
+        if self.active_is_vim()
+            && !self.modifiers.control_key()
+            && self.active_url() == Some("browser://history")
+        {
+            if let Key::Character(s) = &key.logical_key {
+                match *s {
+                    "d" => {
+                        self.delete_history_lines();
+                        return;
+                    }
+                    "u" => return,
+                    _ => {}
+                }
+            }
+        }
         // A `:error`/`:errors` tab is a read-only vim pager: let it claim the motion/
         // visual/yank keys first; anything it doesn't want (`:`, n/p, x, …) falls
         // through to the normal browser bindings below.
@@ -239,6 +258,54 @@ impl App {
         if url.starts_with("http") {
             self.open_tab(url, self.nojs, new_tab);
         }
+    }
+
+    /// `d` on the `:history` pager: delete the visited entry under the cursor — or,
+    /// with a visual selection, every selected entry — from the history list, then
+    /// rebuild the page. A no-op on any other tab. The change is in memory (like
+    /// `:clear history`); it's persisted on the next session write.
+    pub(crate) fn delete_history_lines(&mut self) {
+        if self.active_url() != Some("browser://history") {
+            return;
+        }
+        let Some(i) = self.active else { return };
+        // The row span to delete: the visual selection if any, else the cursor line.
+        let (lo, hi) = {
+            let Some(buf) = self.tabs.get(i).and_then(|t| t.vim()) else { return };
+            match buf.anchor {
+                Some((ay, _)) => (ay.min(buf.cy), ay.max(buf.cy)),
+                None => (buf.cy, buf.cy),
+            }
+        };
+        // The page is a 2-line header (title + blank) followed by the URLs in the
+        // same order as `history`, so row r maps to history index r - HEADER.
+        const HEADER: usize = 2;
+        if self.history.is_empty() || hi < HEADER {
+            return;
+        }
+        let start = lo.max(HEADER) - HEADER;
+        let end = (hi - HEADER).min(self.history.len() - 1);
+        if start > end {
+            return;
+        }
+        let removed = end - start + 1;
+        // Drop the slice from both parallel vecs, keeping them aligned.
+        self.history.drain(start..=end);
+        let end_at = end.min(self.history_at.len().saturating_sub(1));
+        if start <= end_at && start < self.history_at.len() {
+            self.history_at.drain(start..=end_at);
+        }
+        // Rebuild and park the cursor on whatever slid up into the deleted row.
+        let lines = crate::pages::history_lines(&self.history);
+        if let Some(buf) = self.tabs.get_mut(i).and_then(|t| t.vim_mut()) {
+            buf.set_lines(lines);
+            buf.anchor = None;
+            buf.cy = lo.min(buf.lines.len().saturating_sub(1));
+            buf.cx = 0;
+        }
+        let plural = if removed == 1 { "entry" } else { "entries" };
+        self.set_status(format!("deleted {removed} history {plural}"));
+        self.window.request_redraw();
     }
 
     /// Translate a raw key event into a vim-pager [`vim::Key`], or `None` if it

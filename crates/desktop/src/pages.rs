@@ -414,6 +414,7 @@ pub(crate) fn commands_document() -> String {
         (":downloads · :dl", "allow executable/installer downloads (.exe/.msi…; blocked by default)"),
         (":mute · :audio", "toggle muting all page audio/video (live, all tabs)"),
         (":css", "toggle page styling off/on (live, all tabs)"),
+        (":video [url]", "no url: toggle stripping video/players off pages (live, all tabs); with a url: play it in mpv/vlc"),
         (":close · :bd", "close the current tab"),
         (":vsplit · :split", "split into tmux-style panes (Ctrl+W h/j/k/l to move between them)"),
         (":reload · :r", "reload"),
@@ -424,7 +425,7 @@ pub(crate) fn commands_document() -> String {
         (":error · :err", "latest error in a read-only vim tab (v/y to select & copy)"),
         (":errors · :errs", "every error this session (newest first), same vim tab"),
         (":res · :resources", "live memory/CPU/disk across the whole browser tree (freezes while you select)"),
-        (":history · :hist", "visited URLs in a vim tab (Enter opens, ⇧Enter new tab, v/y select); :history clear wipes it"),
+        (":history · :hist", "visited URLs in a vim tab (Enter opens, ⇧Enter new tab, v/y select, d deletes the line/selection); :history clear wipes it"),
         (":clear <what> [period]", "erase data: history/cookies/cache/all, optionally a window (15m/1h/24h/7d); cookies/cache need a page open"),
         (":alias [name] [cmd] · :unalias", "list / set / remove command aliases (e.g. :alias gh open github.com → :gh)"),
         (":restore", "reset all customization to defaults — also Ctrl+Alt+Shift+R, which works in any mode"),
@@ -480,7 +481,7 @@ pub(crate) fn commands_document() -> String {
 pub(crate) fn history_lines(history: &[String]) -> Vec<String> {
     let mut lines = Vec::with_capacity(history.len() + 2);
     lines.push(format!(
-        "history — {} entries    (Enter: open · ⇧Enter: new tab · :clear history to wipe)",
+        "history — {} entries    (Enter: open · ⇧Enter: new tab · d: delete · v: select · :clear history to wipe)",
         history.len()
     ));
     lines.push(String::new());

@@ -365,6 +365,12 @@ impl App {
             .command_suggestion()
             .and_then(|s| s.strip_prefix(self.command.as_str()).map(str::to_string))
             .filter(|t| !t.is_empty());
+        // Hovered-link target, shown right-aligned in the Normal-mode bar (like a
+        // browser status bar). Only for a live web page; mutually exclusive with the
+        // command-mode math readout above.
+        let hover = (self.mode == ModeKind::Normal && self.active_webview().is_some())
+            .then(|| self.hover_link.clone())
+            .flatten();
 
         self.surface
             .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
@@ -423,6 +429,19 @@ impl App {
                 let tw = p.measure(text) as i32;
                 let x = (wz as i32 - MARGIN - tw).max(0) as usize;
                 p.text(buf, wz, hz, x, baseline, text, theme.accent);
+            }
+            // Right-aligned hovered-link URL, dimmed. Truncated to the right ~70% of
+            // the bar so it doesn't swamp the page URL; a bg patch behind it keeps any
+            // overlapping left text from bleeding through.
+            if let Some(url) = &hover {
+                let shown = elide_to_width(p, url, (wz as i32 * 7 / 10).max(40));
+                let tw = p.measure(&shown) as i32;
+                let x = (wz as i32 - MARGIN - tw).max(MARGIN);
+                let lh = p.line_height();
+                let y0 = baseline.saturating_sub(lh * 3 / 4);
+                let y1 = (baseline + lh / 6).min(hz);
+                draw::fill_rect(buf, wz, hz, (x - 6).max(0) as usize, y0, wz, y1, theme.bar_bg);
+                p.text(buf, wz, hz, x as usize, baseline, &shown, draw::DIM);
             }
         };
 
@@ -757,6 +776,28 @@ pub(crate) fn bar_short_url(url: &str) -> String {
         Some((host, _)) => host.to_string(),
         None => s.to_string(),
     }
+}
+
+/// Truncate `s` to fit within `max_px` at the painter's current size, appending an
+/// ellipsis if it was cut. Keeps the START of the string (host/path of a link — the
+/// useful part), unlike a plain right-clip.
+fn elide_to_width(p: &Painter, s: &str, max_px: i32) -> String {
+    if p.measure(s) as i32 <= max_px {
+        return s.to_string();
+    }
+    let ell_w = p.measure("…") as i32;
+    let mut out = String::new();
+    let mut w = 0i32;
+    for ch in s.chars() {
+        let cw = p.advance(ch) as i32;
+        if w + cw + ell_w > max_px {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out.push('…');
+    out
 }
 
 /// A short tab label: the host without scheme/`www.`, truncated.
