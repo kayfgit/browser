@@ -14,8 +14,6 @@ issues:
 [?] - i pressed o and i together and the browser froze in a state of half normal and half insert mode, had to alt+f4
 [?] - sometimes crashes after taking a windows screenshot (prntscreen button)
 [] - when splitting it creates a new tab, it should work like tmux in which the tabs are contained in one tab
-[?] - sometimes when changing modes through normal to passthrough to term and vice versa it freezes and i cant leave the passthrough mode, only fix is to alt+tab to regain control
-[*] - if i search something on google and click on a link the browser gets stuck in passthrough mode, not being able to exit with ctrl+s or shift+escape, only ifx is to alt-tab
 
 feat:
 [*] - ctrl+: enters command bar in vim mode, allows vim motions.

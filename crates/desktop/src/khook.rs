@@ -28,11 +28,12 @@ mod imp {
     use std::sync::atomic::{AtomicIsize, AtomicU8, Ordering};
 
     use tao::event_loop::EventLoopProxy;
-    use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::System::Threading::GetCurrentProcessId;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, GetForegroundWindow, SetWindowsHookExW, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL,
-        WM_KEYDOWN, WM_SYSKEYDOWN,
+        CallNextHookEx, GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId,
+        SetWindowsHookExW, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
     };
 
     use super::{MODE_NORMAL_YIELDED, MODE_PASSTHROUGH};
@@ -94,11 +95,40 @@ mod imp {
         }
     }
 
+    /// Whether the foreground window belongs to US, so the hook may act on it. This is
+    /// our main shell window OR any other top-level window owned by our process —
+    /// WebView2 spins up auxiliary top-level windows (popup hosts, the fullscreen-video
+    /// helper, permission/print hosts) and a page (e.g. clicking a Google result) can
+    /// briefly hand one of those the foreground. When that happens the OLD gate
+    /// (`fg == main window` only) went inert, so NONE of the leave chords worked and the
+    /// user was locked in passthrough until they alt-tab'd back — the recurring "stuck
+    /// in passthrough" bug. We still refuse to touch GENUINELY other apps (PID check),
+    /// and we exclude standard dialog windows (`#32770` — file/print/message boxes) so
+    /// Esc keeps cancelling those rather than getting swallowed to leave passthrough.
+    unsafe fn fg_is_ours(fg: HWND) -> bool {
+        if fg.0 as isize == HWND_VAL.load(Ordering::Relaxed) {
+            return true;
+        }
+        if fg.0.is_null() {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        if pid != GetCurrentProcessId() {
+            return false;
+        }
+        // Skip standard dialog class so Esc still closes native file/print/msg dialogs.
+        let mut buf = [0u16; 32];
+        let n = GetClassNameW(fg, &mut buf);
+        let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+        class != "#32770"
+    }
+
     unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         if code >= 0 {
             // Only ever act when WE are foreground — never intercept keys for other apps.
             let fg = GetForegroundWindow();
-            if fg.0 as isize == HWND_VAL.load(Ordering::Relaxed) {
+            if fg_is_ours(fg) {
                 let msg = wparam.0 as u32;
                 if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
                     let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
