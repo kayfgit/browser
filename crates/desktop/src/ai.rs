@@ -995,7 +995,7 @@ impl App {
                 Some(m) if m.role == AiRole::Err => {
                     self.warn_status("the ai hit an error — see the :ai tab")
                 }
-                Some(m) if m.role == AiRole::Ai => self.flash_status(m.text),
+                Some(m) if m.role == AiRole::Ai => self.flash_status_colored(m.text, draw::AI),
                 _ => {}
             }
         }

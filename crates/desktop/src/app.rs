@@ -21,6 +21,11 @@ use crate::panes::PaneNode;
 use crate::tabs::{NativeRead, Tab};
 use crate::{read_view, session, BAR_H, BASE_PX, HISTORY_CAP, TAB_BAR_H, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP};
 
+/// How long any status message stays on the command bar before it auto-clears.
+/// The bar shouldn't hold stale text indefinitely; every status (info, warning, or
+/// error — errors also persist in `:errors`) disappears after this.
+pub(crate) const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Events posted from webview IPC back into the event loop.
 pub(crate) enum UserEvent {
     /// Leave passthrough: move focus from the page back to the shell.
@@ -160,9 +165,13 @@ pub(crate) struct App {
     pub(crate) status: String,
     /// Whether the current `status` is an error (rendered red instead of dim).
     pub(crate) status_is_error: bool,
-    /// When set, the current status is a transient flash (e.g. a background `:ai`
-    /// result) that auto-clears once this deadline passes; any normal status update
-    /// cancels it. See [`flash_status`](Self::flash_status).
+    /// Optional colour override for the status text (e.g. the `:ai` answer flashes in
+    /// purple so it stands out from ordinary dim status). `None` = the default dim
+    /// (or red when `status_is_error`). Reset by every [`set_status`](Self::set_status).
+    pub(crate) status_color: Option<crate::draw::Rgb>,
+    /// When the current status auto-clears. EVERY status now self-expires after a few
+    /// seconds (see [`STATUS_TIMEOUT`]) so the command bar doesn't keep stale text —
+    /// the event loop wakes at this deadline and calls [`expire_status_flash`](Self::expire_status_flash).
     pub(crate) status_clear_at: Option<Instant>,
     /// The tab that was active just before the `:ai` tab was summoned, so closing the
     /// AI tab returns there (rather than to a stray blank pane). `None` = the welcome
@@ -809,23 +818,25 @@ impl App {
     }
 
     /// Set an informational status message (rendered dim). Clears the error flag and
-    /// cancels any pending transient-flash auto-clear.
+    /// any colour override, and arms the auto-clear so it disappears after
+    /// [`STATUS_TIMEOUT`] rather than lingering until the next status replaces it.
     pub(crate) fn set_status(&mut self, msg: impl Into<String>) {
         self.status = msg.into();
         self.status_is_error = false;
-        self.status_clear_at = None;
+        self.status_color = None;
+        self.status_clear_at = Some(Instant::now() + STATUS_TIMEOUT);
     }
 
-    /// Show a transient status that auto-clears after ~2s — a fire-and-forget
-    /// confirmation, e.g. a background `:ai` result you'll glance at. Any later status
-    /// update replaces it and cancels the timer.
-    pub(crate) fn flash_status(&mut self, msg: impl Into<String>) {
+    /// Like [`set_status`](Self::set_status) but paints the status in `color` instead
+    /// of the default dim — used for the background `:ai` answer so it reads as the
+    /// AI's reply (purple) rather than a generic status line. Auto-clears like the rest.
+    pub(crate) fn flash_status_colored(&mut self, msg: impl Into<String>, color: crate::draw::Rgb) {
         self.set_status(msg);
-        self.status_clear_at = Some(Instant::now() + Duration::from_secs(2));
+        self.status_color = Some(color);
     }
 
-    /// Show a persistent warning (red), without logging it to `:errors` — used for a
-    /// background `:ai` failure whose detail already lives in the chat.
+    /// Show a warning (red). Like the others it auto-clears after [`STATUS_TIMEOUT`].
+    /// Used for a background `:ai` failure whose detail already lives in the chat.
     pub(crate) fn warn_status(&mut self, msg: impl Into<String>) {
         self.set_status(msg);
         self.status_is_error = true;
@@ -855,6 +866,7 @@ impl App {
     pub(crate) fn clear_status(&mut self) {
         self.status.clear();
         self.status_is_error = false;
+        self.status_color = None;
         self.status_clear_at = None;
     }
 
@@ -873,7 +885,8 @@ impl App {
         }
         self.status = msg;
         self.status_is_error = true;
-        self.status_clear_at = None;
+        self.status_color = None;
+        self.status_clear_at = Some(Instant::now() + STATUS_TIMEOUT);
     }
 
     /// Mouse-wheel scroll. `dy_lines` > 0 means the wheel rolled up (toward older

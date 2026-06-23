@@ -469,7 +469,8 @@ pub(crate) const AD_HOSTS: &[&str] = &[
     "hotjar.com", "mixpanel.com", "segment.io", "amplitude.com", "branch.io",
     "onesignal.com", "clarity.ms", "fullstory.com", "heap.io", "nr-data.net",
     "bugsnag.com", "optimizely.com", "chartbeat.com", "parsely.com",
-    "permutive.com", "cxense.com", "facebook.net/en_us/fbevents", "analytics.tiktok",
+    "permutive.com", "cxense.com", "nitropay.com", "nitrocnct.com",
+    "facebook.net/en_us/fbevents", "analytics.tiktok",
     "ads.linkedin.com", "ads.pinterest.com", "ads.yahoo.com",
     "/pagead/", "/adsbygoogle", "/gampad/", "/securepubads",
     "youtube.com/api/stats/ads", "youtube.com/ptracking", "/get_midroll_",
@@ -512,6 +513,35 @@ const ADBLOCK_JS: &str = r#"
   if (window.__adblockInit) return;
   window.__adblockInit = true;
   var on = (typeof window.__adblockDefault === 'undefined') ? true : !!window.__adblockDefault;
+
+  // --- NitroPay neutraliser (the fixed left/right "skin" rails + anchor bar) ---
+  // Many wikis (e.g. taskbarhero.wiki) serve ads via NitroPay: the page plants an
+  // inline `window.nitroAds` stub that QUEUES createAd() calls until
+  // s.nitropay.com/ads-*.js loads and renders them — including the fixed side rails
+  // and the bottom anchor (the dismissible-with-an-X popups). Those containers have
+  // site-specific ids, so cosmetic selectors are unreliable; instead we kill the
+  // source. This init script runs at document-start, BEFORE that inline stub, so we
+  // plant our OWN inert nitroAds first and lock it with a non-configurable accessor:
+  // the page's `nitroAds = nitroAds || {…}` and the loader can't replace it, createAd
+  // is a no-op that never resolves, and the queue swallows pushes — so no ad is ever
+  // created even if the loader script itself slips past the host blocklist. The host
+  // is also in AD_HOSTS so the network/DOM-sweep layers attack the script too.
+  if (on) {
+    try {
+      var nzStub = {
+        createAd: function () { return new Promise(function () {}); },
+        addUserToken: function () {},
+        abortAd: function () {},
+        queue: { push: function () {}, length: 0 },
+        loaded: true,
+      };
+      Object.defineProperty(window, 'nitroAds', {
+        configurable: false,
+        get: function () { return nzStub; },
+        set: function () {},
+      });
+    } catch (e) {}
+  }
 
   // Hostnames / URL fragments to drop (substring match, lower-cased). Baked from
   // Rust's AD_HOSTS (single source of truth, also used by the native redirect guard).
@@ -1136,6 +1166,7 @@ fn main() -> Result<()> {
         native_hints: Vec::new(),
         status: String::new(),
         status_is_error: false,
+        status_color: None,
         status_clear_at: None,
         ai_prev_active: None,
         errors: Vec::new(),

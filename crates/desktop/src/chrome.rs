@@ -723,7 +723,11 @@ impl App {
                     segs.push((label, draw::FIND_CUR));
                 }
                 if !self.status.is_empty() {
-                    let color = if self.status_is_error { draw::ERR } else { draw::DIM };
+                    let color = if self.status_is_error {
+                        draw::ERR
+                    } else {
+                        self.status_color.unwrap_or(draw::DIM)
+                    };
                     segs.push((format!("   {}", self.status), color));
                 }
                 segs
