@@ -104,22 +104,27 @@ impl App {
         if self.active_term_vi() && self.key_term_vi(key) {
             return;
         }
-        // On the `:history` pager, `d` deletes the entry under the cursor (or the
-        // whole visual selection); `u` is inert. Half-page scrolling stays on the
-        // Ctrl chords. Intercept before the generic pager, where plain `d`/`u` would
-        // otherwise half-page scroll (the reported "d acts like Ctrl+D" bug).
-        if self.active_is_vim()
-            && !self.modifiers.control_key()
-            && self.active_url() == Some("browser://history")
-        {
-            if let Key::Character(s) = &key.logical_key {
-                match *s {
-                    "d" => {
-                        self.delete_history_lines();
-                        return;
+        // On the `:history` and `:aihist` pickers, `d` deletes the entry/chat under
+        // the cursor (or the whole visual selection); `u` is inert. Half-page scrolling
+        // stays on the Ctrl chords. Intercept before the generic pager, where plain
+        // `d`/`u` would otherwise half-page scroll (the reported "d acts like Ctrl+D" bug).
+        if self.active_is_vim() && !self.modifiers.control_key() {
+            let is_hist = self.active_url() == Some("browser://history");
+            let is_aihist = self.active_url() == Some("browser://aihist");
+            if is_hist || is_aihist {
+                if let Key::Character(s) = &key.logical_key {
+                    match *s {
+                        "d" => {
+                            if is_aihist {
+                                self.delete_ai_chat_lines();
+                            } else {
+                                self.delete_history_lines();
+                            }
+                            return;
+                        }
+                        "u" => return,
+                        _ => {}
                     }
-                    "u" => return,
-                    _ => {}
                 }
             }
         }
@@ -234,8 +239,11 @@ impl App {
             Key::ArrowDown => self.scroll(80),
             Key::ArrowUp => self.scroll(-80),
             // Enter on a `:history` line opens that entry (Shift+Enter → new tab);
-            // a no-op anywhere else.
-            Key::Enter => self.open_history_entry(self.modifiers.shift_key()),
+            // on a `:aihist` line it opens that saved chat; a no-op anywhere else.
+            Key::Enter => match self.active_url() {
+                Some("browser://aihist") => self.open_ai_history_entry(),
+                _ => self.open_history_entry(self.modifiers.shift_key()),
+            },
             _ => {}
         }
     }
@@ -305,6 +313,56 @@ impl App {
         }
         let plural = if removed == 1 { "entry" } else { "entries" };
         self.set_status(format!("deleted {removed} history {plural}"));
+        self.window.request_redraw();
+    }
+
+    /// `d` on the `:aihist` picker: delete the saved chat under the cursor — or every
+    /// chat in the visual selection — from `ai_chats`, persist, and rebuild the page.
+    /// The rows are NEWEST-FIRST (header + one per chat), so a buffer row span maps to
+    /// a contiguous chat-index range `[n-1-(hi-HEADER), n-1-(lo-HEADER)]`. Every open
+    /// `:ai` tab's `chat_idx` is realigned (a deleted chat → draft; a higher index
+    /// shifts down) so it keeps pointing at the right conversation, exactly like the
+    /// cap-trim in [`commit_ai`](App::commit_ai). A no-op on any other tab.
+    pub(crate) fn delete_ai_chat_lines(&mut self) {
+        if self.active_url() != Some("browser://aihist") {
+            return;
+        }
+        let Some(i) = self.active else { return };
+        let n = self.ai_chats.len();
+        // The buffer row span to delete: the visual selection if any, else the cursor.
+        let (lo, hi) = {
+            let Some(buf) = self.tabs.get(i).and_then(|t| t.vim()) else { return };
+            match buf.anchor {
+                Some((ay, _)) => (ay.min(buf.cy), ay.max(buf.cy)),
+                None => (buf.cy, buf.cy),
+            }
+        };
+        // Invert the newest-first rows to the contiguous chat-index range they cover.
+        let Some((start, end)) = crate::pages::aihist_rows_to_chat_range(n, lo, hi) else {
+            return;
+        };
+        let removed = end - start + 1;
+        self.ai_chats.drain(start..=end);
+        for tab in &mut self.tabs {
+            if let Some(a) = tab.ai_mut() {
+                a.chat_idx = match a.chat_idx {
+                    Some(c) if c >= start && c <= end => None,
+                    Some(c) if c > end => Some(c - removed),
+                    other => other,
+                };
+            }
+        }
+        crate::ai::save_chats(&self.ai_chats);
+        // Rebuild and park the cursor on whatever slid up into the deleted span.
+        let lines = crate::pages::ai_history_lines(&self.ai_chats);
+        if let Some(buf) = self.tabs.get_mut(i).and_then(|t| t.vim_mut()) {
+            buf.set_lines(lines);
+            buf.anchor = None;
+            buf.cy = lo.min(buf.lines.len().saturating_sub(1));
+            buf.cx = 0;
+        }
+        let plural = if removed == 1 { "chat" } else { "chats" };
+        self.set_status(format!("deleted {removed} {plural}"));
         self.window.request_redraw();
     }
 

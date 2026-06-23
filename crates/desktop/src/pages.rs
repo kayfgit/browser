@@ -338,6 +338,35 @@ pub(crate) fn now_hms() -> String {
     format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
 }
 
+/// Local wall-clock as `YYYY-MM-DD HH:MM`, for stamping a saved `:ai` chat's
+/// creation time (shown in the `:aihist` picker).
+#[cfg(windows)]
+pub(crate) fn now_stamp() -> String {
+    use windows::Win32::System::SystemInformation::GetLocalTime;
+    let st = unsafe { GetLocalTime() };
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn now_stamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs =
+        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
+    let (days, tod) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // Howard Hinnant's days-from-civil, inverted: civil date from days since epoch (UTC).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as i64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", y, m, d, tod / 3600, (tod % 3600) / 60)
+}
+
 /// The `:commands` page: every keybind and command (not customizable yet).
 pub(crate) fn commands_document() -> String {
     let normal = help_table(&[
@@ -404,6 +433,7 @@ pub(crate) fn commands_document() -> String {
         (":read <url|query>", "engine-free reader (no WebView2) in this tab; -t = new tab; non-URL → search"),
         (":search [name|template]", "show/set the search engine — a name (ddg/google/wiki…) or a %s URL"),
         (":ai [question]", "AI tab (Groq): i to ask; Normal mode is a vim buffer (v/y select, / find); H/L step through past chats (persisted)"),
+        (":aihist · :aihistory", "saved-chat picker in a vim tab: each row shows created time · size · name (first prompt); Enter opens that chat, d deletes the row/selection"),
         (":model [id]", "show/set the :ai model; in the command bar, Tab cycles the model list; persisted"),
         (":te", "native terminal (Ctrl+V pastes · Ctrl+S → vim copy-mode: navigate/yank, i resumes)"),
         (":te <command>", "run a local command, result in the command bar"),
@@ -489,6 +519,63 @@ pub(crate) fn history_lines(history: &[String]) -> Vec<String> {
     lines
 }
 
+/// Plain-text lines for the `:aihist` vim pager: a header then one row per saved
+/// chat NEWEST-FIRST — `created   size   name` — so a row's display position maps to
+/// chat index `len-1-position` (see [`App::open_ai_history_entry`]). The name is the
+/// chat's first prompt; an un-stamped (migrated) chat shows `—` for its time.
+pub(crate) fn ai_history_lines(chats: &[crate::ai::AiChat]) -> Vec<String> {
+    let n = chats.len();
+    let mut lines = Vec::with_capacity(n + 2);
+    lines.push(format!(
+        "ai chats — {n} saved    (Enter: open · d: delete · v: select · y: yank · H/L step chats inside :ai)"
+    ));
+    lines.push(String::new());
+    for chat in chats.iter().rev() {
+        let when = if chat.created.is_empty() { "—".to_string() } else { chat.created.clone() };
+        let size = fmt_chat_size(chat.size_bytes());
+        lines.push(format!("{when:<16}  {size:>8}  {}", truncate_name(&chat.name(), 80)));
+    }
+    lines
+}
+
+/// The number of header lines `ai_history_lines` emits before the chat rows.
+pub(crate) const AIHIST_HEADER: usize = 2;
+
+/// Map a buffer row span `[lo, hi]` on the NEWEST-FIRST `:aihist` page to the
+/// contiguous `[start, end]` range of `ai_chats` indices it covers (`n` = chat count).
+/// Display position `p = row - HEADER` is chat index `n-1-p`, so the span inverts.
+/// Rows above the first chat are clamped in; `None` if the span hits no chat rows.
+pub(crate) fn aihist_rows_to_chat_range(n: usize, lo: usize, hi: usize) -> Option<(usize, usize)> {
+    if n == 0 || hi < AIHIST_HEADER {
+        return None;
+    }
+    let lo_row = lo.max(AIHIST_HEADER);
+    let hi_row = hi.min(AIHIST_HEADER + n - 1);
+    if lo_row > hi_row {
+        return None;
+    }
+    Some((n - 1 - (hi_row - AIHIST_HEADER), n - 1 - (lo_row - AIHIST_HEADER)))
+}
+
+/// Compact chat size: KB up to 1 MB, then MB — so a few-KB chat doesn't read `0.0 MB`.
+fn fmt_chat_size(bytes: u64) -> String {
+    let kb = bytes as f64 / 1024.0;
+    if kb >= 1024.0 {
+        format!("{:.1} MB", kb / 1024.0)
+    } else {
+        format!("{kb:.1} KB")
+    }
+}
+
+/// Truncate a chat name to `max` characters, appending `…` when shortened.
+fn truncate_name(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let kept: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{kept}…")
+}
+
 /// Plain-text lines for the `:alias` vim pager: a header plus `:name → expansion`
 /// rows (sorted, since the source is a BTreeMap).
 pub(crate) fn alias_lines(aliases: &std::collections::BTreeMap<String, String>) -> Vec<String> {
@@ -546,6 +633,39 @@ mod tests {
         let lines = error_lines(&errs, false);
         assert_eq!(lines[0], "[00:00:02] (no command) — error 2");
         assert_eq!(&lines[1..], &["bad".to_string(), "things".to_string()]);
+    }
+
+    #[test]
+    fn ai_history_lines_are_newest_first_with_header() {
+        use crate::ai::{AiChat, AiMessage, AiRole};
+        let mk = |created: &str, prompt: &str| AiChat {
+            created: created.into(),
+            messages: vec![AiMessage { role: AiRole::You, text: prompt.into() }],
+        };
+        let chats = vec![mk("2026-06-20 10:00", "first"), mk("2026-06-21 11:00", "second")];
+        let lines = ai_history_lines(&chats);
+        assert!(lines[0].starts_with("ai chats — 2 saved"));
+        assert_eq!(lines[1], "");
+        // Newest-first: the row at display position 0 (chat index len-1) is "second".
+        assert!(lines[2].contains("second") && lines[2].contains("2026-06-21 11:00"));
+        assert!(lines[3].contains("first"));
+        // An empty created stamp renders as "—".
+        let migrated = ai_history_lines(&[mk("", "old chat")]);
+        assert!(migrated[2].trim_start().starts_with('—'));
+    }
+
+    #[test]
+    fn aihist_row_span_inverts_to_chat_indices_newest_first() {
+        // 3 chats: rows 2,3,4 show chats 2,1,0 (newest-first).
+        assert_eq!(aihist_rows_to_chat_range(3, 2, 2), Some((2, 2))); // newest row → chat 2
+        assert_eq!(aihist_rows_to_chat_range(3, 4, 4), Some((0, 0))); // oldest row → chat 0
+        assert_eq!(aihist_rows_to_chat_range(3, 2, 3), Some((1, 2))); // two newest rows
+        assert_eq!(aihist_rows_to_chat_range(3, 2, 4), Some((0, 2))); // all rows
+        // A header-only or out-of-range span deletes nothing.
+        assert_eq!(aihist_rows_to_chat_range(3, 0, 1), None);
+        assert_eq!(aihist_rows_to_chat_range(0, 2, 2), None);
+        // A span starting in the header clamps to the chat rows.
+        assert_eq!(aihist_rows_to_chat_range(3, 0, 2), Some((2, 2)));
     }
 
     #[test]

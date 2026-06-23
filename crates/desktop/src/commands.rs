@@ -9,7 +9,7 @@ use crate::{clipboard_set, commands_document, parse_tab_flag, program_exists, Ap
 pub(crate) const COMMANDS: &[&str] = &[
     "open", "tabopen", "edit", "yank", "read", "research", "reload", "resize", "res", "resources", "reopen", "ai",
     "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock", "downloads",
-    "popups", "pops", "mute", "audio", "css", "video", "model", "history", "clear", "alias", "unalias", "restore",
+    "popups", "pops", "mute", "audio", "css", "video", "model", "history", "aihist", "aihistory", "clear", "alias", "unalias", "restore",
     "next", "tabnext", "tabprev",
     "prev", "back", "forward", "fullscreen", "move", "commands", "help", "version", "close",
     "vsplit", "split", "write", "wq", "quit",
@@ -225,6 +225,8 @@ impl App {
                     self.open_history_page();
                 }
             }
+            // `:aihist` — the saved `:ai` conversation picker (Enter on a row opens it).
+            "aihist" | "aihistory" => self.open_ai_history_page(),
             // `:clear <what> [period]` — the privacy/data actions (e.g. `:clear cache
             // 15m`, `:clear cookies`, `:clear all`). A single verb (not one per kind)
             // keeps the command surface small; the same actions are what the AI

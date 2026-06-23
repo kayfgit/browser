@@ -17,8 +17,8 @@ issues:
 
 feat:
 [*] - ctrl+: enters command bar in vim mode, allows vim motions.
-[*] - some way to open the ai chat history to go to a specific chat instead of just going back and forth with H/L
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
 [] - maybe add a :engine command to change browser engine? might be overkill and dont know if its possible
+[] - maybe figure out a way to make the browser not be compiled while being with rust

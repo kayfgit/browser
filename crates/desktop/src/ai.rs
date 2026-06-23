@@ -75,6 +75,37 @@ pub(crate) struct AiMessage {
     pub(crate) text: String,
 }
 
+/// One saved conversation: its turns plus a created-at stamp (local wall-clock,
+/// `"YYYY-MM-DD HH:MM"`) shown in the `:aihist` picker. Saves from before this field
+/// existed were a bare `Vec<AiMessage>` array; [`load_chats`] migrates those, leaving
+/// `created` empty (rendered as `—`).
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct AiChat {
+    #[serde(default)]
+    pub(crate) created: String,
+    pub(crate) messages: Vec<AiMessage>,
+}
+
+impl AiChat {
+    /// The chat's display name: its first user prompt (trimmed/one line), or a
+    /// placeholder when it somehow has no user turn yet.
+    pub(crate) fn name(&self) -> String {
+        let raw = self
+            .messages
+            .iter()
+            .find(|m| m.role == AiRole::You)
+            .or_else(|| self.messages.first())
+            .map(|m| m.text.as_str())
+            .unwrap_or("(empty chat)");
+        raw.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// Rough on-disk size of the conversation (its serialized JSON), for the picker.
+    pub(crate) fn size_bytes(&self) -> u64 {
+        serde_json::to_string(&self.messages).map(|s| s.len() as u64).unwrap_or(0)
+    }
+}
+
 /// A browser action the model chose to run (an OpenAI tool-call): the call `id` (for
 /// the tool-result message that reports back), the action `name`, and its JSON `args`
 /// object, routed to [`App::perform`](crate::App::perform).
@@ -172,16 +203,22 @@ pub(crate) fn save_model(model: &str) {
 }
 
 /// Load past conversations (newest last), or an empty list if none/unreadable.
-pub(crate) fn load_chats() -> Vec<Vec<AiMessage>> {
+/// Accepts the current `Vec<AiChat>` format and transparently migrates the older
+/// `Vec<Vec<AiMessage>>` one (a chat was just its messages, no timestamp).
+pub(crate) fn load_chats() -> Vec<AiChat> {
     let Some(path) = data_file("groq.chats.json") else { return Vec::new() };
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
+    let Ok(s) = std::fs::read_to_string(path) else { return Vec::new() };
+    if let Ok(chats) = serde_json::from_str::<Vec<AiChat>>(&s) {
+        return chats;
+    }
+    // Old format: an array of message-arrays with no stamp — wrap each (created blank).
+    serde_json::from_str::<Vec<Vec<AiMessage>>>(&s)
+        .map(|old| old.into_iter().map(|messages| AiChat { created: String::new(), messages }).collect())
         .unwrap_or_default()
 }
 
 /// Persist all conversations (best-effort; failures are ignored).
-pub(crate) fn save_chats(chats: &[Vec<AiMessage>]) {
+pub(crate) fn save_chats(chats: &[AiChat]) {
     let Some(path) = data_file("groq.chats.json") else { return };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -840,11 +877,12 @@ impl App {
         }
         let mut new_idx = match idx {
             Some(i) if i < self.ai_chats.len() => {
-                self.ai_chats[i] = msgs;
+                // Update in place — keep the original created stamp.
+                self.ai_chats[i].messages = msgs;
                 i
             }
             _ => {
-                self.ai_chats.push(msgs);
+                self.ai_chats.push(AiChat { created: crate::pages::now_stamp(), messages: msgs });
                 self.ai_chats.len() - 1
             }
         };
@@ -892,7 +930,7 @@ impl App {
             return;
         }
         // Clone the target conversation before re-borrowing the tab mutably.
-        let load = (target < n).then(|| self.ai_chats[target].clone());
+        let load = (target < n).then(|| self.ai_chats[target].messages.clone());
         let Some(ai) = self.active_ai_mut() else { return };
         match load {
             Some(msgs) => {
@@ -912,6 +950,88 @@ impl App {
             format!("chat {}/{}", target + 1, n)
         };
         self.set_status(label);
+        self.window.request_redraw();
+    }
+
+    /// `:aihist` — open the saved-conversation picker: a read-only vim pager
+    /// (`browser://aihist`) listing every chat newest-first with its created time,
+    /// size and name (first prompt). `Enter` on a row loads that chat into the AI tab
+    /// — see [`open_ai_history_entry`](App::open_ai_history_entry). Mirrors `:history`.
+    pub(crate) fn open_ai_history_page(&mut self) {
+        if self.ai_chats.is_empty() {
+            self.set_status("no past chats yet — ask the ai something first (:ai)");
+            return;
+        }
+        let lines = crate::pages::ai_history_lines(&self.ai_chats);
+        self.place_tab(
+            Tab {
+                url: "browser://aihist".into(),
+                nojs: false,
+                read: false,
+                research: false,
+                nav: TabNav::default(),
+                content: TabContent::Pager(vim::TextBuffer::new(lines)),
+            },
+            true,
+        );
+        self.window.set_focus();
+        self.clear_status();
+    }
+
+    /// `Enter` on a `:aihist` row: map the cursor line to its chat and open it. The
+    /// page is a 2-line header then one row per chat NEWEST-FIRST, so display row `p`
+    /// (`cy - HEADER`) is chat index `len-1-p`. A no-op off a chat row or any other tab.
+    pub(crate) fn open_ai_history_entry(&mut self) {
+        if self.active_url() != Some("browser://aihist") {
+            return;
+        }
+        let n = self.ai_chats.len();
+        let cy = match self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.vim()) {
+            Some(b) => b.cy,
+            None => return,
+        };
+        const HEADER: usize = 2;
+        if cy < HEADER {
+            return;
+        }
+        let p = cy - HEADER;
+        if p >= n {
+            return;
+        }
+        self.open_ai_chat(n - 1 - p);
+    }
+
+    /// Load saved chat `idx` into the AI tab and bring it into view (creating the tab
+    /// the first time). Shows it as a navigable vim buffer in Normal mode (press `i`
+    /// to continue the conversation). Won't clobber a chat that's mid-request.
+    pub(crate) fn open_ai_chat(&mut self, idx: usize) {
+        let Some(chat) = self.ai_chats.get(idx) else { return };
+        let msgs = chat.messages.clone();
+        // Remember where we were so closing the AI tab returns there (unless we're
+        // already on it) — same as summoning it with `:ai`.
+        if !self.active_is_ai() {
+            self.ai_prev_active = self.active;
+        }
+        match self.tabs.iter().position(|t| t.ai().is_some()) {
+            Some(i) => self.show_tab(i),
+            None => {
+                let tab = self.new_ai_tab(None);
+                self.place_tab(tab, true);
+            }
+        }
+        if self.active_ai_mut().is_some_and(|a| a.pending) {
+            self.set_status("the ai is mid-reply — wait for it before switching chats");
+            return;
+        }
+        if let Some(ai) = self.active_ai_mut() {
+            ai.messages = msgs;
+            ai.chat_idx = Some(idx);
+            ai.input.clear();
+            ai.follow = true;
+        }
+        self.mode = ModeKind::Normal;
+        self.window.set_focus();
+        self.set_status(format!("chat {}/{}", idx + 1, self.ai_chats.len()));
         self.window.request_redraw();
     }
 
@@ -1149,6 +1269,40 @@ mod tests {
         let fg = r#"{"name":"open","arguments":"{\"target\":\"github.com\"}"}"#;
         let calls = recover_calls(fg);
         assert_eq!(calls[0].1["target"], "github.com");
+    }
+
+    #[test]
+    fn load_chats_old_format_falls_through_to_migration() {
+        // The pre-timestamp on-disk shape: an array of message-arrays. It must NOT
+        // parse as the new `Vec<AiChat>` (so `load_chats` takes the migration branch),
+        // but must parse as the legacy `Vec<Vec<AiMessage>>`.
+        let old = r#"[[{"role":"You","text":"hi"},{"role":"Ai","text":"hello"}]]"#;
+        assert!(serde_json::from_str::<Vec<AiChat>>(old).is_err());
+        let legacy: Vec<Vec<AiMessage>> = serde_json::from_str(old).unwrap();
+        assert_eq!(legacy.len(), 1);
+
+        // New format round-trips and exposes name()/size_bytes().
+        let chat = AiChat {
+            created: "2026-06-22 12:00".into(),
+            messages: legacy.into_iter().next().unwrap(),
+        };
+        let s = serde_json::to_string(&[&chat]).unwrap();
+        let back: Vec<AiChat> = serde_json::from_str(&s).unwrap();
+        assert_eq!(back[0].created, "2026-06-22 12:00");
+        assert_eq!(back[0].name(), "hi");
+        assert!(back[0].size_bytes() > 0);
+    }
+
+    #[test]
+    fn chat_name_is_the_first_user_prompt_on_one_line() {
+        let chat = AiChat {
+            created: String::new(),
+            messages: vec![
+                AiMessage { role: AiRole::Ai, text: "system-ish".into() },
+                AiMessage { role: AiRole::You, text: "  center  a\n  div  ".into() },
+            ],
+        };
+        assert_eq!(chat.name(), "center a div");
     }
 
     #[test]

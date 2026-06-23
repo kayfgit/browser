@@ -239,7 +239,7 @@ pub(crate) struct App {
     pub(crate) ai_model: String,
     /// Past `:ai` conversations (newest last), persisted to disk. `H`/`L` on an AI
     /// tab step through these; new AI tabs start as a fresh draft.
-    pub(crate) ai_chats: Vec<Vec<crate::ai::AiMessage>>,
+    pub(crate) ai_chats: Vec<crate::ai::AiChat>,
     /// Global UI zoom factor (1.0 = 100%). Scales native chrome, web content,
     /// and terminal font together.
     pub(crate) zoom: f64,
