@@ -9,6 +9,7 @@ nothing means its untouched
 done todos gets erased shortly after.
 
 issues:
+[~] - youtube anti-adblock wall / black screen: ROOT CAUSE was blocking YT's own first-party ad telemetry (api/stats/ads, ptracking, get_midroll) — that's what YT's detector checks, so it served a stream-less enforcement response. Fix (uBO's approach): let the telemetry flow, kill ads purely by pruning the player-response JSON (adPlacements/playerAds/adSlots). playabilityStatus un-wall only fires when streams exist (no more black screen). NEEDS LIVE VERIFY — cat-and-mouse
 [] - opening spotify_player.exe and playing a song freezes :resources
 [?] - random not responding after exiting cs2 (might have to do with constant changes to resolution)
 [?] - i pressed o and i together and the browser froze in a state of half normal and half insert mode, had to alt+f4
@@ -17,6 +18,7 @@ issues:
 
 feat:
 [*] - ctrl+: enters command bar in vim mode, allows vim motions.
+[] - :freeze command that freezes the browser in place to consume the least ammount of ram possible even with a bunch of webview2 tabs opened, :unfreeze returns to normal (useful when playing games that hog the ram)
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"

@@ -473,7 +473,13 @@ pub(crate) const AD_HOSTS: &[&str] = &[
     "facebook.net/en_us/fbevents", "analytics.tiktok",
     "ads.linkedin.com", "ads.pinterest.com", "ads.yahoo.com",
     "/pagead/", "/adsbygoogle", "/gampad/", "/securepubads",
-    "youtube.com/api/stats/ads", "youtube.com/ptracking", "/get_midroll_",
+    // NOTE: YouTube's own first-party ad telemetry (`youtube.com/api/stats/ads`,
+    // `youtube.com/ptracking`, `/get_midroll_`) is DELIBERATELY NOT listed. YouTube's
+    // anti-adblock detector concludes a blocker is active when those ad pings fail, then
+    // serves a stream-less enforcement response (the "Ad blockers violate ToS" wall /
+    // black screen). uBlock Origin's lesson: let the telemetry flow untouched and kill
+    // the ads purely by pruning the player-response JSON (see ADBLOCK_JS) — so the ad
+    // infra "loads correctly" from YouTube's view, there's just nothing to play.
 ];
 
 /// Render [`AD_HOSTS`] as a JS array literal for `window.__adHosts`. The entries are
@@ -627,14 +633,45 @@ const ADBLOCK_JS: &str = r#"
   // on YouTube to avoid overhead/risk elsewhere.
   var isYT = location.hostname.indexOf('youtube.com') !== -1 ||
              location.hostname.indexOf('youtube-nocookie.com') !== -1;
-  var YT_AD_KEYS = ['adPlacements', 'playerAds', 'adSlots', 'adBreakHeartbeatParams',
-                    'adParams', 'importantHeaders'];
+  // The CANONICAL uBO key set — and only these. Earlier we also pruned
+  // `adParams`/`adBreakHeartbeatParams`/`importantHeaders`; that over-reach mangled
+  // the response shape (importantHeaders isn't even an ad key) and is exactly the kind
+  // of tampering YouTube's anti-adblock detector trips on, which is what was raising
+  // the "Ad blockers violate ToS" wall. Prune the ads, leave the rest intact.
+  var YT_AD_KEYS = ['adPlacements', 'playerAds', 'adSlots'];
+  // The enforcement wall ITSELF arrives as data: YouTube delivers it in the player
+  // response's `playabilityStatus` (status != OK + an errorScreen carrying the
+  // "ad blocker" message). Neutralise it at the source so the popup never renders and
+  // playback proceeds — but ONLY for the ad-block case. We gate on the response actually
+  // mentioning ad-blocking so genuine unavailability (private/age/region/deleted) still
+  // errors correctly instead of being forced to a broken "OK" with no streams.
+  function fixPlayability(data) {
+    var ps = data.playabilityStatus;
+    if (!on || !ps || typeof ps !== 'object' || !ps.status || ps.status === 'OK') return;
+    // Only lift the wall when there are real streams to REVEAL. If YouTube withheld
+    // `streamingData` (the detected case), forcing "OK" just yields a black screen —
+    // worse than its actual message — so leave it. With ad telemetry now flowing
+    // (see AD_HOSTS) detection shouldn't fire at all; this is the belt-and-braces path
+    // for when the wall rides along with an otherwise-playable response.
+    if (!data.streamingData) return;
+    try {
+      var blob = JSON.stringify(ps).toLowerCase();
+      if (blob.indexOf('ad block') !== -1 || blob.indexOf('ad-block') !== -1 ||
+          blob.indexOf('adblock') !== -1) {
+        ps.status = 'OK';
+        delete ps.errorScreen;
+        delete ps.reason;
+        delete ps.messages;
+      }
+    } catch (e) {}
+  }
   function prunePlayerAds(data) {
     if (!on || !data || typeof data !== 'object') return data;
     try {
       for (var i = 0; i < YT_AD_KEYS.length; i++) {
         if (data[YT_AD_KEYS[i]] != null) delete data[YT_AD_KEYS[i]];
       }
+      if (data.playabilityStatus) fixPlayability(data);
       if (data.playerResponse) prunePlayerAds(data.playerResponse);
       if (Array.isArray(data)) for (var j = 0; j < data.length; j++) prunePlayerAds(data[j]);
     } catch (e) {}
@@ -738,6 +775,24 @@ const ADBLOCK_JS: &str = r#"
       }
       var close = document.querySelector('.ytp-ad-overlay-close-button');
       if (close) close.click();
+      // The dismissible "ad blockers are not allowed" MODAL that rides over a playing
+      // video. We match it by its dedicated COMPONENT TAG, not by text — that's how uBO
+      // does it, and it's why this works in every language (the old English-text gate
+      // let the PT/ES/etc. versions through). `ytd-enforcement-message-view-model` is
+      // used for nothing else, so removing its enclosing popup + scrim is safe.
+      var enf = document.querySelectorAll(
+        'ytd-enforcement-message-view-model, ytd-enforcement-message-view-model-renderer');
+      for (var d = 0; d < enf.length; d++) {
+        (enf[d].closest('ytd-popup-container') ||
+         enf[d].closest('tp-yt-paper-dialog') || enf[d]).remove();
+      }
+      if (enf.length) {
+        // Drop the scrim too, else the page stays click-blocked / scroll-locked.
+        var bd = document.querySelector('tp-yt-iron-overlay-backdrop');
+        if (bd) bd.remove();
+        var vid = document.querySelector('video.html5-main-video');
+        if (vid && vid.paused) { try { vid.play(); } catch (e) {} }
+      }
     } catch (e) {}
   }
 
