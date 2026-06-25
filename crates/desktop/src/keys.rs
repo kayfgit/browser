@@ -186,9 +186,12 @@ impl App {
                         self.enter_passthrough();
                     }
                 }
-                "f" => self.enter_hint(false),
+                // Hint mode labels clickable things — but a terminal has none, and
+                // its copy/vi mode (handled above) uses f/F/t/T for vim find-char.
+                // So suppress hints on terminal tabs (the source of the f/F conflict).
+                "f" if !self.active_is_term() => self.enter_hint(false),
                 // Shift+F: hints open the picked link in a NEW tab (like `:open -t`).
-                "F" => self.enter_hint(true),
+                "F" if !self.active_is_term() => self.enter_hint(true),
                 // Caret/visual selection — highlight & yank text with vim motions.
                 // Read tabs use the native caret; web tabs (open/research) use the
                 // injected page caret. Terminal tabs are excluded.
@@ -1022,6 +1025,8 @@ impl App {
         // Native terminal: the SHELL keeps keyboard focus (there's no webview) and
         // forwards keys to the PTY.
         if self.active_is_term() {
+            // Abandon any half-typed vi find-char (f/F/t/T awaiting its target).
+            self.term_find_pending = None;
             // Leave copy/vi mode (if active) so the live grid takes input again.
             if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut())
             {

@@ -269,6 +269,23 @@ pub(crate) fn paint_pane(
         p.text_rect(buf, wz, hz, tx, ty as usize, msg, draw::DIM, left, right, top, bottom);
     }
 
+/// Paint a "frozen" placeholder over a web pane whose webview is hidden+suspended
+/// (`:freeze`). The content band is already cleared to the theme bg by the caller,
+/// so this just centres a short note — the suspended pane reads as deliberately
+/// paused instead of a blank/stale gap.
+fn paint_frozen_pane(p: &Painter, buf: &mut [u32], wz: usize, hz: usize, rect: PaneRect) {
+    const MARGIN: i32 = 8;
+    let lh = p.line_height() as i32;
+    let cy = rect.y + rect.h / 2;
+    let centered = |buf: &mut [u32], y: i32, text: &str, color: draw::Rgb| {
+        let tw = p.measure(text) as i32;
+        let x = (rect.x + (rect.w - tw) / 2).max(rect.x + MARGIN);
+        p.text_rect(buf, wz, hz, x, y as usize, text, color, rect.x, rect.x + rect.w, rect.y, rect.y + rect.h);
+    };
+    centered(buf, cy - lh, "frozen", draw::AI);
+    centered(buf, cy + lh, ":unfreeze to resume this tab", draw::DIM);
+}
+
 /// Draw a 2px accent outline around the focused pane (only shown while split, as
 /// the cue for which pane the keyboard acts on).
 pub(crate) fn draw_pane_border(r: PaneRect, buf: &mut [u32], wz: usize, hz: usize, accent: draw::Rgb) {
@@ -452,20 +469,24 @@ impl App {
             draw_welcome(p, &mut buf, wz, hz, self.zoom as f32, theme.accent);
             draw_bar(&mut buf);
             buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
-        } else if any_native || self.split.is_some() {
-            // At least one pane is native, or we're split: repaint the content band
-            // ourselves. Native panes are drawn into their rects; web panes are left
-            // to their webview HWNDs (which sit on top of our surface). Then the
-            // dividers, the focused-pane border (only while split), the bars, and a
-            // full present.
+        } else if any_native || self.split.is_some() || self.frozen {
+            // At least one pane is native, we're split, or we're frozen: repaint the
+            // content band ourselves. Native panes are drawn into their rects; LIVE web
+            // panes are left to their webview HWNDs (which sit on top of our surface);
+            // a FROZEN web pane is hidden, so paint a placeholder over its (now empty)
+            // rect. Then the dividers, the focused-pane border (only while split), the
+            // bars, and a full present.
             draw::fill_band(&mut buf, wz, hz, 0, bar_top, theme.bg);
             for (t, r) in &panes {
-                if self.tabs.get(*t).is_some_and(|tb| tb.webview().is_none()) {
+                let is_web = self.tabs.get(*t).is_some_and(|tb| tb.webview().is_some());
+                if !is_web {
                     paint_pane(
                         &self.tabs[*t], p, &self.find, self.mode, &self.native_hints,
                         &self.hint_input, self.hint_new_tab, Some(*t) == self.active, *r,
                         &mut buf, wz, hz,
                     );
+                } else if self.frozen {
+                    paint_frozen_pane(p, &mut buf, wz, hz, *r);
                 }
             }
             for d in &dividers {
@@ -647,10 +668,8 @@ impl App {
                     None => ":open <url>  (or press o)".to_string(),
                 };
                 let mut segs = vec![("[N]".into(), accent), (label, fg)];
-                // The page kept the keyboard after a click on a control; make that
-                // visible so it doesn't read as a freeze, and show the way back.
-                if self.page_focus_yielded {
-                    segs.push(("   [page]  keys → page · Esc: shell".into(), draw::AI));
+                if self.frozen {
+                    segs.push(("   [FROZEN]  :unfreeze".into(), draw::AI));
                 }
                 if self.active_is_read() {
                     segs.push(("   [read]".into(), draw::READ));
@@ -687,7 +706,7 @@ impl App {
                 if self.active_is_term() {
                     if self.active_term_vi() {
                         segs.push((
-                            "   [COPY]  hjkl/w/b move · v select · y yank · i resume".into(),
+                            "   [COPY]  hjkl/w/b move · f find · v select · y yank · i resume".into(),
                             draw::TERM,
                         ));
                     } else {

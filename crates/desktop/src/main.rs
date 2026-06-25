@@ -35,6 +35,7 @@ mod config;
 mod data;
 mod draw;
 mod find;
+mod freeze;
 mod hints;
 mod keys;
 mod khook;
@@ -1272,6 +1273,9 @@ fn main() -> Result<()> {
         background_webview_visible: false,
         term_scrollback: pty_term::DEFAULT_SCROLLBACK,
         nav_replaying: false,
+        term_find_pending: None,
+        term_last_find: None,
+        frozen: false,
     };
     // Resolve the persisted appearance overrides into the live chrome theme.
     app.rebuild_theme();

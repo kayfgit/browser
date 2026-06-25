@@ -329,6 +329,17 @@ pub(crate) struct App {
     /// the page being left (the stacks were already adjusted by [`history`]). The
     /// asynchronous read path is gated separately by `ReadReady.record`.
     pub(crate) nav_replaying: bool,
+    /// Pending vi find-char in a terminal's copy mode: `(forward, till)` while
+    /// waiting for the target character after `f`/`F`/`t`/`T`. The next key is the
+    /// target; cleared once consumed (or on Esc). See [`key_term_vi`](App::key_term_vi).
+    pub(crate) term_find_pending: Option<(bool, bool)>,
+    /// The last terminal find-char (`target, forward, till`) so `;`/`,` can repeat it
+    /// (in the same / opposite direction), like vim.
+    pub(crate) term_last_find: Option<(char, bool, bool)>,
+    /// True while the browser is frozen (`:freeze`): every web tab is hidden and
+    /// suspended to minimize RAM; the content band shows a frozen notice instead of
+    /// the (hidden) webviews. `:unfreeze` resumes them. See [`freeze`](crate::freeze).
+    pub(crate) frozen: bool,
 }
 
 /// Tag this process with an explicit AppUserModelID so Windows (taskbar + Task

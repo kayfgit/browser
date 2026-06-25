@@ -163,6 +163,32 @@ impl PtyTerm {
         self.vi_goto_line(cur.line.0 + lines, cur.column);
     }
 
+    /// Vi find-char on the current line (`f`/`F`/`t`/`T`): move the vi cursor to the
+    /// next/previous occurrence of `target`. `forward` = search rightward (`f`/`t`);
+    /// `till` = stop one cell short of the match (`t`/`T`). A no-op if the char isn't
+    /// found on the line, so an unmatched find leaves the cursor put (like vim).
+    pub fn vi_find_char(&mut self, target: char, forward: bool, till: bool) {
+        let point = self.vt.vi_mode_cursor.point;
+        let line = point.line;
+        let start = point.column.0;
+        let cols = self.cols;
+        let grid = self.vt.grid();
+        let hit = |c: usize| grid[Point::new(line, Column(c))].c == target;
+        let found = if forward {
+            (start + 1..cols).find(|&c| hit(c))
+        } else {
+            (0..start).rev().find(|&c| hit(c))
+        };
+        if let Some(mut col) = found {
+            // `t`/`T` land just before the target (toward the cursor's side).
+            if till {
+                col = if forward { col.saturating_sub(1) } else { col + 1 };
+            }
+            self.vt.vi_goto_point(Point::new(line, Column(col)));
+            self.force_extend();
+        }
+    }
+
     /// Scroll the viewport through scrollback by `lines` (positive = up, toward
     /// older output) without entering vi mode — for mouse-wheel scrolling a live
     /// shell. New PTY output snaps the view back to the bottom, as terminals do.
@@ -498,6 +524,29 @@ mod tests {
         // Yank clears the selection; leaving vi mode works.
         pty.toggle_vi();
         assert!(!pty.is_vi());
+    }
+
+    #[test]
+    fn vi_find_char_moves_along_the_line() {
+        let mut pty = PtyTerm::new(20, 5, DEFAULT_SCROLLBACK);
+        pty.feed(b"abcdef\r\n");
+        pty.toggle_vi();
+        // Park the cursor at the start of "abcdef".
+        pty.vi_motion(ViMotion::Up);
+        pty.vi_motion(ViMotion::First);
+        assert_eq!(pty.vt.vi_mode_cursor.point.column.0, 0);
+        // `f e` lands ON the 'e' (column 4).
+        pty.vi_find_char('e', true, false);
+        assert_eq!(pty.vt.vi_mode_cursor.point.column.0, 4);
+        // `F b` searches backward to 'b' (column 1).
+        pty.vi_find_char('b', false, false);
+        assert_eq!(pty.vt.vi_mode_cursor.point.column.0, 1);
+        // `t f` (till) from column 1 stops one short of 'f' → column 4.
+        pty.vi_find_char('f', true, true);
+        assert_eq!(pty.vt.vi_mode_cursor.point.column.0, 4);
+        // A char that isn't on the line leaves the cursor put.
+        pty.vi_find_char('z', true, false);
+        assert_eq!(pty.vt.vi_mode_cursor.point.column.0, 4);
     }
 
     #[test]

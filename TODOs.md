@@ -15,12 +15,14 @@ issues:
 [?] - i pressed o and i together and the browser froze in a state of half normal and half insert mode, had to alt+f4
 [?] - sometimes crashes after taking a windows screenshot (prntscreen button)
 [] - when splitting it creates a new tab, it should work like tmux in which the tabs are contained in one tab
+[x] - hint mode conflicting in terminal mode, there should be NO hint mode when pressin f/F in terminal, only vim's "find"
+[x] - remove the "[page] keys -> page * esc: shell" status everytime something happens in a webpage
 
 feat:
-[*] - ctrl+: enters command bar in vim mode, allows vim motions.
-[] - :freeze command that freezes the browser in place to consume the least ammount of ram possible even with a bunch of webview2 tabs opened, :unfreeze returns to normal (useful when playing games that hog the ram)
+[] - ctrl+: enters command bar in vim mode, allows vim motions.
+[x] - :freeze command that freezes the browser in place to consume the least ammount of ram possible even with a bunch of webview2 tabs opened, :unfreeze returns to normal (useful when a lot of things are consuming ram but you dont want to close the browser)
+[] - :save/saved or :favorite/favorites for saving a page for later
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
 [] - maybe add a :engine command to change browser engine? might be overkill and dont know if its possible
-[] - maybe figure out a way to make the browser not be compiled while being with rust

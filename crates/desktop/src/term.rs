@@ -338,9 +338,28 @@ impl App {
     pub(crate) fn key_term_vi(&mut self, key: &KeyEvent) -> bool {
         use pty_term::ViMotion as M;
         let ctrl = self.modifiers.control_key();
+        // Awaiting the target char after f/F/t/T: this key IS the target. Any
+        // non-character key (e.g. Esc) just cancels the pending find.
+        if let Some((forward, till)) = self.term_find_pending.take() {
+            if let Key::Character(c) = &key.logical_key {
+                if let Some(ch) = c.chars().next() {
+                    if let Some(s) =
+                        self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut())
+                    {
+                        s.pty.vi_find_char(ch, forward, till);
+                    }
+                    self.term_last_find = Some((ch, forward, till));
+                }
+            }
+            self.window.request_redraw();
+            return true;
+        }
+        let last_find = self.term_last_find;
         let mut yank: Option<String> = None;
         let mut exit = false;
         let mut consumed = true;
+        // An f/F/t/T that needs to wait for its target char (applied after the borrow).
+        let mut pending: Option<(bool, bool)> = None;
         {
             let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut())
             else {
@@ -385,6 +404,22 @@ impl App {
                         "L" => pty.vi_motion(M::Low),
                         "G" => pty.vi_bottom(),
                         "g" => pty.vi_top(),
+                        // Vim find-char: f/F/t/T arm a pending find for the next key;
+                        // `;`/`,` repeat the last find (same / opposite direction).
+                        "f" => pending = Some((true, false)),
+                        "F" => pending = Some((false, false)),
+                        "t" => pending = Some((true, true)),
+                        "T" => pending = Some((false, true)),
+                        ";" => {
+                            if let Some((ch, fwd, till)) = last_find {
+                                pty.vi_find_char(ch, fwd, till);
+                            }
+                        }
+                        "," => {
+                            if let Some((ch, fwd, till)) = last_find {
+                                pty.vi_find_char(ch, !fwd, till);
+                            }
+                        }
                         "v" => {
                             if !pty.clear_selection() {
                                 pty.start_selection(false);
@@ -402,6 +437,9 @@ impl App {
                     _ => consumed = false,
                 }
             }
+        }
+        if let Some(p) = pending {
+            self.term_find_pending = Some(p);
         }
         if let Some(text) = yank {
             let n = text.chars().count();

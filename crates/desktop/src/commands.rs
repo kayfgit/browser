@@ -11,7 +11,7 @@ pub(crate) const COMMANDS: &[&str] = &[
     "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock", "downloads",
     "popups", "pops", "mute", "audio", "css", "video", "model", "history", "aihist", "aihistory", "clear", "alias", "unalias", "restore",
     "next", "tabnext", "tabprev",
-    "prev", "back", "forward", "fullscreen", "move", "commands", "help", "version", "close",
+    "prev", "back", "forward", "freeze", "unfreeze", "fullscreen", "move", "commands", "help", "version", "close",
     "vsplit", "split", "write", "wq", "quit",
 ];
 
@@ -198,6 +198,10 @@ impl App {
                 self.quit = true;
             }
             "quit" | "q" | "q!" => self.quit = true,
+            // Suspend every web tab to hold the least RAM possible while staying open
+            // (WebView2 keeps a renderer process per tab); `:unfreeze` resumes them.
+            "freeze" => self.freeze(),
+            "unfreeze" | "thaw" => self.unfreeze(),
             "reload" | "r" => self.reload_active(),
             "next" | "tabnext" | "tn" => self.switch_tab(1),
             "prev" | "tabprev" | "tp" => self.switch_tab(-1),

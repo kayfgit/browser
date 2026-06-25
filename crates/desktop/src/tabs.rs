@@ -287,6 +287,12 @@ impl App {
     /// otherwise it replaces the active tab in place (`:open` default, `o`). With no
     /// active tab the two are equivalent (a fresh tab is created).
     pub(crate) fn open_tab(&mut self, target: &str, disable_js: bool, new_tab: bool) {
+        // Frozen: refuse to spin up a new web engine — the whole point is to NOT
+        // process web content. Native pages (:read/:te/:res/…) stay available.
+        if self.frozen {
+            self.set_status("browser is frozen — :unfreeze first");
+            return;
+        }
         let url = self.resolve_target(target);
         self.record_history(&url);
         match self.build_content_webview(Source::Url(url.clone()), disable_js, "") {
@@ -316,6 +322,10 @@ impl App {
     /// images and text stay. A lighter browse for "how do I…" lookups. `new_tab` as
     /// in [`open_tab`].
     pub(crate) fn open_research(&mut self, target: &str, new_tab: bool) {
+        if self.frozen {
+            self.set_status("browser is frozen — :unfreeze first");
+            return;
+        }
         let url = self.resolve_target(target);
         match self.build_content_webview(Source::Url(url.clone()), false, RESEARCH_JS) {
             Ok(webview) => {
@@ -943,6 +953,12 @@ impl App {
         let split = self.split.is_some();
         for (i, tab) in self.tabs.iter().enumerate() {
             let Some(wv) = tab.webview() else { continue };
+            // Frozen: every web tab stays hidden (and suspended) regardless of layout,
+            // so switching tabs can't un-hide one. `:unfreeze` clears the flag.
+            if self.frozen {
+                let _ = wv.set_visible(false);
+                continue;
+            }
             match panes.iter().find(|(t, _)| *t == i) {
                 Some((_, r)) => {
                     let mut rect = *r;
