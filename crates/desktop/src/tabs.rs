@@ -445,9 +445,16 @@ impl App {
         let popup_adblock = self.adblock_on.clone();
         let popup_proxy = self.proxy.clone();
         // This tab's current top origin, so the blocklist's `$third-party` rules resolve
-        // against the right source on each navigation.
+        // against the right source on each navigation. `cur_top` is the full top-frame
+        // URL, used by the sub-resource blocker to avoid 403-ing the main document.
         let cur_origin = Arc::new(Mutex::new(String::new()));
         let nav_origin = cur_origin.clone();
+        let cur_top = Arc::new(Mutex::new(String::new()));
+        let nav_top = cur_top.clone();
+        // Dedicated clones for the sub-resource (WebResourceRequested) blocker, since the
+        // closures below consume their own.
+        let net_blocker = self.blocker.clone();
+        let net_adblock = self.adblock_on.clone();
         // Page-reported "a TRUSTED gesture landed on a real cross-site link/submit" — the
         // one signal that a cross-site top navigation is genuinely wanted. Stamped here,
         // directly (no event-loop hop), so it lands before the navigation it authorises
@@ -603,10 +610,13 @@ impl App {
                     }
                 }
                 // Remember the current top origin so the blocklist's `$third-party` rules
-                // resolve against the right source on the next navigation.
+                // resolve against the right source on the next navigation, and the full
+                // top URL so the sub-resource blocker can tell the main document apart
+                // from sub-frames.
                 let origin = origin_of(&url);
                 if !origin.is_empty() {
                     *nav_origin.lock().unwrap() = origin;
+                    *nav_top.lock().unwrap() = url.clone();
                 }
                 true
             })
@@ -651,6 +661,10 @@ impl App {
             self.nav_intent.clone(),
             self.proxy.clone(),
         );
+        // The uBlock-style sub-resource network blocker: runs the full EasyList engine
+        // over every script/iframe/XHR so ad/scam injectors never load (Windows only).
+        #[cfg(windows)]
+        crate::netblock::install(&webview, net_blocker, net_adblock, cur_origin, cur_top);
         Ok(webview)
     }
 

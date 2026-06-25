@@ -40,6 +40,7 @@ mod hints;
 mod keys;
 mod khook;
 mod navguard;
+mod netblock;
 mod pages;
 mod panes;
 mod procmon;

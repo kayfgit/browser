@@ -57,6 +57,23 @@ pub(crate) fn spawn_build(blocker: SharedBlocker, proxy: EventLoopProxy<UserEven
 /// engine. `source` lets `$third-party` rules resolve; an empty source (first load)
 /// falls back to the URL itself. Returns `false` while the engine is still building.
 pub(crate) fn blocks_navigation(blocker: &SharedBlocker, url: &str, source: &str) -> bool {
+    blocks_request(blocker, url, source, "document")
+}
+
+/// Whether a SUB-RESOURCE request — a script, iframe, image, XHR/fetch, … of type
+/// `request_type` (an adblock-rust content-type string: `script`, `subdocument`,
+/// `xmlhttprequest`, `image`, …) — to `url` from page `source` is blocked by the list
+/// engine. This is the uBlock-style network layer: it's what stops an ad/scam injector
+/// script (and the fake-dialog / popunder code it carries) from ever LOADING, rather
+/// than hiding the result after the fact. `source` is the top page's origin/URL so
+/// `$third-party` and `$domain=` rules resolve; empty falls back to the URL itself.
+/// Returns `false` while the engine is still building.
+pub(crate) fn blocks_request(
+    blocker: &SharedBlocker,
+    url: &str,
+    source: &str,
+    request_type: &str,
+) -> bool {
     let Ok(guard) = blocker.read() else {
         return false;
     };
@@ -64,7 +81,7 @@ pub(crate) fn blocks_navigation(blocker: &SharedBlocker, url: &str, source: &str
         return false;
     };
     let src = if source.is_empty() { url } else { source };
-    match Request::new(url, src, "document") {
+    match Request::new(url, src, request_type) {
         Ok(req) => engine.check_network_request(&req).matched,
         Err(_) => false,
     }
