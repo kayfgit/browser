@@ -211,6 +211,56 @@ impl App {
         self.clear_status();
     }
 
+    /// `:extensions` — kick off the async query of the installed browser extensions. The
+    /// picker opens once the result lands ([`UserEvent::ExtensionsListed`] →
+    /// [`show_extensions_page`](Self::show_extensions_page)). Extensions hang off the webview
+    /// profile, so this needs a live web engine — it asks you to open a page first if none.
+    pub(crate) fn open_extensions_page(&mut self) {
+        #[cfg(windows)]
+        match self.any_webview() {
+            Some(wv) => {
+                crate::extensions::list(wv, self.proxy.clone());
+                self.set_status("loading extensions…");
+            }
+            None => {
+                self.set_status("open a web page first — extensions load with the browser engine")
+            }
+        }
+        #[cfg(not(windows))]
+        self.set_status("browser extensions are only available on Windows");
+    }
+
+    /// Render the cached extension list into the `:extensions` vim picker — refreshing it in
+    /// place (keeping the cursor row) if it's already active, else opening a new tab. Called
+    /// when a query completes and after Enter toggles a row.
+    pub(crate) fn show_extensions_page(&mut self) {
+        let lines = ext_lines(&self.extensions);
+        if self.active_url() == Some("browser://extensions") {
+            let cy = self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.vim()).map_or(0, |b| b.cy);
+            if let Some(buf) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.vim_mut()) {
+                buf.set_lines(lines);
+                buf.anchor = None;
+                buf.cy = cy.min(buf.lines.len().saturating_sub(1));
+                buf.cx = 0;
+            }
+            self.window.request_redraw();
+        } else {
+            self.place_tab(
+                Tab {
+                    url: "browser://extensions".into(),
+                    nojs: false,
+                    read: false,
+                    research: false,
+                    nav: TabNav::default(),
+                    content: TabContent::Pager(vim::TextBuffer::new(lines)),
+                },
+                true,
+            );
+            self.window.set_focus();
+        }
+        self.clear_status();
+    }
+
     /// `:alias` (no args) — list the defined command aliases in a read-only vim tab,
     /// `:name → expansion` per line (selectable/yankable like the other pagers).
     pub(crate) fn open_alias_page(&mut self) {
@@ -509,6 +559,27 @@ pub(crate) fn commands_document() -> String {
 
 /// Plain-text lines for the `:history` vim pager: a header plus the visited URLs,
 /// most-recent first, one per line (full URLs so they stay selectable/openable).
+/// The `:extensions` picker body: a header plus one row per installed extension —
+/// `[on ]`/`[off]` state, name, then the extension id (kept as the last token so Enter can
+/// parse it back out to toggle that exact extension). See `open_extensions_page`.
+pub(crate) fn ext_lines(exts: &[crate::ExtInfo]) -> Vec<String> {
+    let mut lines = Vec::with_capacity(exts.len() + 3);
+    lines.push(format!(
+        "extensions — {} installed    (Enter: toggle on/off · :adblock ubo|native switches engines)",
+        exts.len()
+    ));
+    lines.push(String::new());
+    if exts.is_empty() {
+        lines.push("(none installed)".into());
+    }
+    for e in exts {
+        let mark = if e.enabled { "[on ]" } else { "[off]" };
+        let name = if e.name.trim().is_empty() { "(unnamed extension)" } else { e.name.trim() };
+        lines.push(format!("{mark}  {name}    {}", e.id));
+    }
+    lines
+}
+
 pub(crate) fn history_lines(history: &[String]) -> Vec<String> {
     let mut lines = Vec::with_capacity(history.len() + 2);
     lines.push(format!(

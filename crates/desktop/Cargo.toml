@@ -36,6 +36,9 @@ adblock = { version = "0.12.5", default-features = false, features = [
     "embedded-domain-resolver",
     "full-regex-handling",
 ] }
+# Decodes the `data:<mime>;base64,…` bodies adblock-rust hands back for `$redirect`
+# surrogate rules, so the sub-resource blocker can serve the neutered stub (see netblock.rs).
+base64 = "0.22"
 
 [target.'cfg(windows)'.build-dependencies]
 embed-manifest = "1.4"
@@ -47,6 +50,16 @@ embed-manifest = "1.4"
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
 windows-core = "0.61"
+# `$redirect` surrogate serving (netblock.rs) hands WebView2 a response body as an
+# `IStream`. `CreateWebResourceResponse` wants the `IStream` from `windows` 0.61 (the
+# version webview2-com-sys is built against), NOT our 0.62 below — the two are distinct
+# types. This renamed alias resolves to that same 0.61 build so the COM types unify; it's
+# used solely for `SHCreateMemStream` + `IStream`.
+windows061 = { package = "windows", version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Security",

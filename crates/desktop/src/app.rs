@@ -62,11 +62,19 @@ pub(crate) enum UserEvent {
     /// `window.open`, or `target=_blank` while adblock is on) → note it in the status
     /// bar. Carries the target URL (or `about:blank` for a shell popunder).
     PopupBlocked(String),
+    /// A new-window request the popup guard judged legitimate — a real click on a
+    /// `target=_blank`/new-tab link (carries a trusted `nav-intent` gesture, destination
+    /// not an ad domain). New tabs here are shell-managed rather than OS popups, so the
+    /// native window is suppressed and the URL re-opened as a managed tab. Carries the URL.
+    OpenPopupTab(String),
     /// The download guard blocked an executable/installer download → warn in the status
     /// bar. Carries the file name. Toggle `:downloads` to permit such files.
     DownloadBlocked(String),
     /// The network blocklist engine finished compiling and is now live.
     BlocklistReady,
+    /// The async `GetBrowserExtensions` query finished — carries the installed extensions
+    /// (id/name/enabled). The shell caches them and (re)renders the `:extensions` picker.
+    ExtensionsListed(Vec<ExtInfo>),
     /// A `:te` command finished: combined output and exit code.
     TermDone { cmd: String, output: String, code: Option<i32> },
     /// Raw output bytes from a terminal's PTY → feed to its native VT engine.
@@ -139,6 +147,28 @@ pub(crate) enum ModeKind {
     Caret,
 }
 
+/// Which ad blocker is active. The two engines are mutually exclusive so only one runs at a
+/// time — the whole point of the `:adblock` switch is to not pay for both.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum AdblockMode {
+    /// uBlock Origin extension on, native blocker (and its guards) off. The default.
+    Ubo,
+    /// Native blocker on (engine + `netblock` + `ADBLOCK_JS` + redirect/popup guards),
+    /// uBlock extension disabled.
+    Native,
+    /// Neither — no ad blocking.
+    Off,
+}
+
+/// One installed browser extension, as surfaced by `:extensions` (id/name/enabled). Plain
+/// data so it can travel in a [`UserEvent`] and be cached on [`App`] regardless of platform.
+#[derive(Clone, Debug)]
+pub(crate) struct ExtInfo {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+}
+
 pub(crate) struct App {
     pub(crate) window: Rc<Window>,
     // Kept alive for the lifetime of `surface`, which is created from it.
@@ -192,8 +222,18 @@ pub(crate) struct App {
     pub(crate) modifiers: ModifiersState,
     /// When true, new tabs are opened with JavaScript disabled.
     pub(crate) nojs: bool,
-    /// When true, the uBlock-style content blocker ([`ADBLOCK_JS`]) is injected
-    /// into web tabs. Toggled with `:ads`; persisted across sessions.
+    /// Which ad blocker is active (mutually exclusive to save resources). `Ubo` (the
+    /// default) runs the uBlock Origin *extension* and keeps every native guard off;
+    /// `Native` runs the built-in blocker (engine + `netblock` + `ADBLOCK_JS` + redirect/
+    /// popup guards) with the extension disabled; `Off` disables both. Set via
+    /// `:adblock <mode>`; persisted across sessions. See [`set_adblock_mode`](Self::set_adblock_mode).
+    pub(crate) adblock_mode: AdblockMode,
+    /// The installed browser extensions from the last `GetBrowserExtensions` query, cached
+    /// to render the `:extensions` picker and to flip an entry's enabled state optimistically
+    /// when Enter toggles it.
+    pub(crate) extensions: Vec<ExtInfo>,
+    /// When true, the native uBlock-style content blocker ([`ADBLOCK_JS`]) is injected
+    /// into web tabs. Driven by [`adblock_mode`](Self::adblock_mode) (true only in `Native`).
     pub(crate) adblock: bool,
     /// A live mirror of [`adblock`](Self::adblock) shared (cloned `Arc`) into every
     /// web tab's navigation handler, so the native top-level redirect guard
@@ -1009,6 +1049,12 @@ impl App {
             zoom: self.zoom,
             nojs: self.nojs,
             adblock: self.adblock,
+            adblock_mode: match self.adblock_mode {
+                AdblockMode::Ubo => "ubo",
+                AdblockMode::Native => "native",
+                AdblockMode::Off => "off",
+            }
+            .to_string(),
             search_template: self.search_template.clone(),
             term_command: self.term_command.clone(),
             active,
@@ -1035,7 +1081,15 @@ impl App {
         self.history_at = s.history_at;
         self.history_at.resize(self.history.len(), 0);
         self.nojs = s.nojs;
-        self.set_adblock(s.adblock);
+        // Adopt the saved ad-blocker mode (default uBlock). Tabs restored below enforce the
+        // per-mode extension state as they're built; here we just set the mode + native flag
+        // (no webviews exist yet, so the full `set_adblock_mode` sweep would be a no-op).
+        self.adblock_mode = match s.adblock_mode.as_str() {
+            "native" => AdblockMode::Native,
+            "off" => AdblockMode::Off,
+            _ => AdblockMode::Ubo,
+        };
+        self.set_adblock(self.adblock_mode == AdblockMode::Native);
         if s.zoom != 1.0 {
             self.set_zoom(s.zoom);
         }

@@ -8,8 +8,8 @@ use crate::{clipboard_set, commands_document, parse_tab_flag, program_exists, Ap
 /// useful canonical spellings; ordered so the first prefix match is the best one.
 pub(crate) const COMMANDS: &[&str] = &[
     "open", "tabopen", "edit", "yank", "read", "research", "reload", "resize", "res", "resources", "reopen", "ai",
-    "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock", "downloads",
-    "popups", "pops", "mute", "audio", "css", "video", "model", "history", "aihist", "aihistory", "clear", "alias", "unalias", "restore",
+    "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock", "extensions", "downloads",
+    "mute", "audio", "css", "video", "model", "history", "aihist", "aihistory", "clear", "alias", "unalias", "restore",
     "next", "tabnext", "tabprev",
     "prev", "back", "forward", "freeze", "unfreeze", "fullscreen", "move", "commands", "help", "version", "close",
     "vsplit", "split", "write", "wq", "quit",
@@ -142,12 +142,23 @@ impl App {
             }
             // Reopen the most recently closed tab (also `u` / Ctrl+Shift+T).
             "reopen" | "undo" => self.reopen_closed(),
-            // Toggle the uBlock-style content blocker. Applies live to every open web
-            // tab (no reload) and is the default for new tabs; persisted in the session.
-            // `:ads` is now the single blocker switch: ads, trackers, forced/auto
-            // redirects, popunders, and drive-by executable downloads. `:pops`/`:popups`
-            // are kept as aliases so old habits don't error.
-            "ads" | "adblock" | "pops" | "popups" => self.toggle_adblock(),
+            // Ad blocker control. `:adblock <mode>` picks the engine — `ubo`/`ublockorigin`
+            // (the default: the uBlock Origin extension) or `native` (the built-in blocker) —
+            // and keeps them mutually exclusive so only one runs. `:adblock off` disables both.
+            // Bare `:ads`/`:adblock` is a quick on/off toggle. Applies live; persisted.
+            "ads" | "adblock" => match rest.trim().to_ascii_lowercase().as_str() {
+                "" => self.toggle_adblock(),
+                "native" | "own" => self.set_adblock_mode(crate::AdblockMode::Native),
+                "ubo" | "ublock" | "ublockorigin" | "ublock-origin" | "ublock origin" => {
+                    self.set_adblock_mode(crate::AdblockMode::Ubo)
+                }
+                "off" | "none" | "disable" => self.set_adblock_mode(crate::AdblockMode::Off),
+                other => self
+                    .set_error(format!("unknown adblock mode '{other}' — use: ubo, native, or off")),
+            },
+            // `:extensions` — the installed-extension picker (a vim tab); Enter toggles the
+            // extension under the cursor on/off. See `open_extensions_page`.
+            "extensions" | "ext" | "exts" => self.open_extensions_page(),
             // Allow/deny executable-installer downloads (off by default — blocks
             // drive-by `.exe`/`.msi` installs).
             "downloads" | "dl" => self.toggle_downloads(),

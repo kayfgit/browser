@@ -34,6 +34,7 @@ mod commands;
 mod config;
 mod data;
 mod draw;
+mod extensions;
 mod find;
 mod freeze;
 mod hints;
@@ -51,7 +52,7 @@ mod tabs;
 mod term;
 mod vim;
 use draw::Painter;
-use app::{clipboard_get, clipboard_set, App, ModeKind, UserEvent};
+use app::{clipboard_get, clipboard_set, AdblockMode, App, ExtInfo, ModeKind, UserEvent};
 use commands::COMMANDS;
 use find::FindState;
 use tabs::{js_string, parse_tab_flag, Source, Tab};
@@ -447,14 +448,13 @@ const RESEARCH_JS: &str = r#"
 })();
 "#;
 
-/// Hostnames / URL fragments the blocker drops (substring match, lower-cased).
-/// Kept to well-known ad-exchange, analytics and tracker endpoints to avoid false
-/// hits. This is the single source of truth: it's baked into the page blocker as
-/// `window.__adHosts` (see [`ad_hosts_js`]) AND consulted by the native navigation
-/// guard ([`url_is_ad_host`]) so a forced redirect to any of these hosts is stopped
-/// regardless of how it was triggered (script, `<meta refresh>`, or a server 3xx).
-/// Entries containing `/` are path fragments (sub-resource paths) and are ignored
-/// by the host-only native guard.
+/// Well-known ad-exchange / analytics / tracker hostnames, lower-cased. Consulted by the
+/// native navigation guard ([`url_is_ad_host`]) as the tiny always-on fallback that stops
+/// a forced top-level redirect to one of these hosts during the brief window before the
+/// full EasyList [`Engine`](crate::blocklist) finishes compiling off-thread at startup.
+/// Sub-resource blocking ([`netblock`](crate::netblock)) and the page-side cosmetic layer
+/// no longer read this list — the engine is the source of truth there. Matched as a host
+/// substring, so `adservice.google.` catches `adservice.google.com`.
 pub(crate) const AD_HOSTS: &[&str] = &[
     "doubleclick.net", "googlesyndication.com", "googleadservices.com",
     "google-analytics.com", "googletagmanager.com", "googletagservices.com",
@@ -471,51 +471,30 @@ pub(crate) const AD_HOSTS: &[&str] = &[
     "hotjar.com", "mixpanel.com", "segment.io", "amplitude.com", "branch.io",
     "onesignal.com", "clarity.ms", "fullstory.com", "heap.io", "nr-data.net",
     "bugsnag.com", "optimizely.com", "chartbeat.com", "parsely.com",
-    "permutive.com", "cxense.com", "nitropay.com", "nitrocnct.com",
-    "facebook.net/en_us/fbevents", "analytics.tiktok",
+    "permutive.com", "cxense.com", "nitropay.com", "nitrocnct.com", "analytics.tiktok",
     "ads.linkedin.com", "ads.pinterest.com", "ads.yahoo.com",
-    "/pagead/", "/adsbygoogle", "/gampad/", "/securepubads",
-    // NOTE: YouTube's own first-party ad telemetry (`youtube.com/api/stats/ads`,
-    // `youtube.com/ptracking`, `/get_midroll_`) is DELIBERATELY NOT listed. YouTube's
-    // anti-adblock detector concludes a blocker is active when those ad pings fail, then
-    // serves a stream-less enforcement response (the "Ad blockers violate ToS" wall /
-    // black screen). uBlock Origin's lesson: let the telemetry flow untouched and kill
-    // the ads purely by pruning the player-response JSON (see ADBLOCK_JS) — so the ad
-    // infra "loads correctly" from YouTube's view, there's just nothing to play.
+    // NOTE: YouTube's own first-party ad telemetry (`/api/stats/ads`, `/ptracking`,
+    // `/get_midroll_`) is DELIBERATELY absent — blocking it trips YouTube's anti-adblock
+    // detector, which then serves the "Ad blockers violate ToS" enforcement wall. The ads
+    // are killed by pruning the player-response JSON instead (see ADBLOCK_JS). `netblock`
+    // enforces the same carve-out for sub-resource requests to YouTube's own hosts.
 ];
 
-/// Render [`AD_HOSTS`] as a JS array literal for `window.__adHosts`. The entries are
-/// static and contain no `"`/`\`, so a plain quote-join is safe.
-fn ad_hosts_js() -> String {
-    let mut s = String::from("[");
-    for (i, h) in AD_HOSTS.iter().enumerate() {
-        if i > 0 {
-            s.push(',');
-        }
-        s.push('"');
-        s.push_str(h);
-        s.push('"');
-    }
-    s.push(']');
-    s
-}
-
-/// uBlock-style content blocker, injected at document-start into every web tab
-/// while adblock is on. wry exposes no sub-resource request blocker (see
-/// [`RESEARCH_JS`]), so we do it page-side in four layers:
-///   * network — wrap `fetch`/`XHR`/`sendBeacon` so requests to known ad/tracker
-///     hosts resolve empty instead of hitting the network;
-///   * DOM — a MutationObserver removes script/iframe/img/ins nodes that load from
-///     those hosts (and `ins.adsbygoogle`) as the page builds itself;
-///   * cosmetic — a `<style>` hides generic ad containers (EasyList-ish), plus
-///     YouTube's ad slots, and a 400ms tick skips/seeks past YouTube video ads;
-///   * redirects — trap scripted navigation (`location` href/assign/replace) and
-///     `<meta refresh>` to stop forced/auto redirects (see the guard near the end).
+/// uBlock-style content blocker, injected at document-start into every web tab while
+/// adblock is on. NETWORK-level blocking — stopping the ad/scam scripts, iframes and
+/// XHRs from ever loading — is done natively against the full EasyList engine by the
+/// WebView2 sub-resource blocker ([`netblock`](crate::netblock)); this page-side script
+/// handles only what must run inside the page:
+///   * cosmetic — imperatively hide generic ad containers (EasyList-ish) plus YouTube's
+///     ad slots (inline `display:none`, which survives a strict CSP a `<style>` wouldn't);
+///   * YouTube — prune the ad descriptors from the player-response JSON, skip/seek past
+///     in-player ads, and remove the "ad blocker" enforcement modal;
+///   * redirects/popups — report a trusted cross-site gesture (`nav-intent`, the signal
+///     the native redirect guard needs) and neuter scripted `window.open` popunders.
 ///
-/// All layers honour a live `on` flag: the shell flips it via `window.__setAdblock`
-/// on `:ads` (no reload needed), and bakes the initial value as `__adblockDefault`
-/// per tab so new tabs start in the current state. The host list arrives as
-/// `window.__adHosts` (baked from Rust's [`AD_HOSTS`], the single source of truth).
+/// Every layer honours a live `on` flag: the shell flips it via `window.__setAdblock`
+/// on `:ads` (no reload needed) and bakes the initial value as `__adblockDefault` per
+/// tab so a tab opened while a toggle is active starts in that state.
 const ADBLOCK_JS: &str = r#"
 (function () {
   if (window.__adblockInit) return;
@@ -551,64 +530,12 @@ const ADBLOCK_JS: &str = r#"
     } catch (e) {}
   }
 
-  // Hostnames / URL fragments to drop (substring match, lower-cased). Baked from
-  // Rust's AD_HOSTS (single source of truth, also used by the native redirect guard).
-  var HOSTS = (window.__adHosts && window.__adHosts.length) ? window.__adHosts : [];
-  function blocked(url) {
-    if (!on || !url) return false;
-    try {
-      var u = String(url).toLowerCase();
-      for (var i = 0; i < HOSTS.length; i++) if (u.indexOf(HOSTS[i]) !== -1) return true;
-    } catch (e) {}
-    return false;
-  }
-
-  // --- network: make ad/tracker requests resolve empty instead of loading ------
-  var _fetch = window.fetch;
-  if (_fetch) {
-    window.fetch = function (input) {
-      var url = (input && input.url) ? input.url : input;
-      // 204 must carry a NULL body (an empty string throws in the Response ctor).
-      if (blocked(url)) return Promise.resolve(new Response(null, { status: 204, statusText: 'No Content' }));
-      return _fetch.apply(this, arguments);
-    };
-  }
-  var _open = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function (method, url) {
-    this.__adBlocked = blocked(url);
-    return _open.apply(this, arguments);
-  };
-  var _send = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.send = function () {
-    if (this.__adBlocked) { try { this.abort(); } catch (e) {} return; }
-    return _send.apply(this, arguments);
-  };
-  var _beacon = navigator.sendBeacon && navigator.sendBeacon.bind(navigator);
-  if (_beacon) {
-    navigator.sendBeacon = function (url) { return blocked(url) ? true : _beacon.apply(null, arguments); };
-  }
-
-  // --- DOM: strip nodes that pull in ad URLs (and adsbygoogle <ins>) -----------
-  function adNode(n) {
-    if (!on || n.nodeType !== 1) return false;
-    var tag = n.tagName;
-    if (tag === 'SCRIPT' || tag === 'IFRAME' || tag === 'IMG' || tag === 'EMBED' ||
-        tag === 'OBJECT' || tag === 'SOURCE') {
-      var s = n.getAttribute('src') || n.getAttribute('data-src') ||
-              n.getAttribute('data') || '';
-      if (blocked(s)) return true;
-    }
-    if (tag === 'INS' && /adsbygoogle/i.test(n.className)) return true;
-    return false;
-  }
-  function sweep(root) {
-    if (!on) return;
-    try {
-      var r = (root && root.querySelectorAll) ? root : document;
-      var hits = r.querySelectorAll('script,iframe,img,embed,object,ins,source');
-      for (var i = 0; i < hits.length; i++) if (adNode(hits[i])) hits[i].remove();
-    } catch (e) {}
-  }
+  // --- DOM cosmetic observer: hide ad containers as the page builds itself ------
+  // Blocking the ad SCRIPTS/iframes/XHRs at the network level (so nothing loads in the
+  // first place) is done natively against the full EasyList engine — see `netblock.rs`.
+  // The page-side job here is to HIDE leftover ad containers cosmetically, and — on
+  // YouTube — to remove the anti-adblock enforcement modal the INSTANT it's inserted,
+  // before it can paint (the observer fires before the next render, so no 0.3s flash).
   function observe() {
     if (!document.documentElement) { setTimeout(observe, 0); return; }
     new MutationObserver(function (muts) {
@@ -618,9 +545,8 @@ const ADBLOCK_JS: &str = r#"
         for (var j = 0; j < a.length; j++) {
           var n = a[j];
           if (n.nodeType !== 1) continue;
-          if (adNode(n)) { n.remove(); continue; }
-          sweep(n);
           hideCosmetic(n);
+          if (isYT) killEnforcement(n);
         }
       }
     }).observe(document.documentElement, { childList: true, subtree: true });
@@ -777,25 +703,42 @@ const ADBLOCK_JS: &str = r#"
       }
       var close = document.querySelector('.ytp-ad-overlay-close-button');
       if (close) close.click();
-      // The dismissible "ad blockers are not allowed" MODAL that rides over a playing
-      // video. We match it by its dedicated COMPONENT TAG, not by text — that's how uBO
-      // does it, and it's why this works in every language (the old English-text gate
-      // let the PT/ES/etc. versions through). `ytd-enforcement-message-view-model` is
-      // used for nothing else, so removing its enclosing popup + scrim is safe.
-      var enf = document.querySelectorAll(
-        'ytd-enforcement-message-view-model, ytd-enforcement-message-view-model-renderer');
+      killEnforcement(document);
+    } catch (e) {}
+  }
+
+  // The dismissible "ad blockers are not allowed" MODAL that rides over a playing video.
+  // We match it by its dedicated COMPONENT TAG, not by text — that's how uBO does it, and
+  // it's why this works in every language (the old English-text gate let the PT/ES/etc.
+  // versions through). `ytd-enforcement-message-view-model` is used for nothing else, so
+  // removing its enclosing popup + scrim is safe. Returns whether one was found+removed.
+  // Called from the MutationObserver the instant the modal is INSERTED (so it never paints
+  // — killing the ~0.3s flash) and from the YouTube tick as a backstop. `root` is the node
+  // to scan (an inserted subtree, or `document`).
+  function killEnforcement(root) {
+    if (!on || !isYT) return false;
+    try {
+      var sel = 'ytd-enforcement-message-view-model, ytd-enforcement-message-view-model-renderer';
+      var enf = [];
+      if (root.matches && root.matches(sel)) enf.push(root);
+      if (root.querySelectorAll) {
+        var hits = root.querySelectorAll(sel);
+        for (var i = 0; i < hits.length; i++) enf.push(hits[i]);
+      }
+      if (!enf.length) return false;
       for (var d = 0; d < enf.length; d++) {
         (enf[d].closest('ytd-popup-container') ||
          enf[d].closest('tp-yt-paper-dialog') || enf[d]).remove();
       }
-      if (enf.length) {
-        // Drop the scrim too, else the page stays click-blocked / scroll-locked.
-        var bd = document.querySelector('tp-yt-iron-overlay-backdrop');
-        if (bd) bd.remove();
-        var vid = document.querySelector('video.html5-main-video');
-        if (vid && vid.paused) { try { vid.play(); } catch (e) {} }
-      }
+      // Drop the scrim too, else the page stays click-blocked / scroll-locked, and
+      // resume playback if YouTube paused it behind the wall.
+      var bd = document.querySelector('tp-yt-iron-overlay-backdrop');
+      if (bd) bd.remove();
+      var vid = document.querySelector('video.html5-main-video');
+      if (vid && vid.paused) { try { vid.play(); } catch (e) {} }
+      return true;
     } catch (e) {}
+    return false;
   }
 
   // --- forced / auto redirect guard -------------------------------------------
@@ -849,28 +792,31 @@ const ADBLOCK_JS: &str = r#"
     }, true);
   }
   // window.open popunders are THE dominant "click anywhere → scam tab" vector on
-  // scummy streaming sites. Neuter scripted opens to ad hosts / cross-origin while
-  // blocking is on. The shell's native new-window handler is the primary guard (it
-  // also catches frames and about:blank shells); this is the in-page backstop. Runs
-  // in every frame, so the ad iframe's own window.open is stopped at the source.
+  // scummy streaming sites. Neuter scripted cross-origin opens while blocking is on.
+  // The shell's native new-window handler is the primary guard (it also catches frames
+  // and about:blank shells); this is the in-page backstop. Runs in every frame, so the
+  // ad iframe's own window.open is stopped at the source.
   var _winOpen = window.open ? window.open.bind(window) : null;
   if (_winOpen) {
     window.open = function (u) {
-      if (on && (!u || blocked(u) || crossOrigin(u))) { reportPopup(u || 'about:blank'); return null; }
+      if (on && (!u || crossOrigin(u))) { reportPopup(u || 'about:blank'); return null; }
       return _winOpen.apply(null, arguments);
     };
   }
-  // One periodic pass covers SPA navigations and lazily-inserted ads that slip the
-  // observer; cheap (a couple of querySelectorAll calls).
+  // Periodic backstop. YouTube needs a FAST poll — youtube() skips in-player ads, seeks
+  // past unskippables and strips the enforcement modal, all hinging on player state the
+  // MutationObserver (childList only) can't see. Everywhere else the observer already
+  // hides inserted ad containers as they appear, so a slow pass (catching ad classes
+  // toggled onto existing nodes) is plenty — 4x fewer idle wakeups per non-YouTube tab.
   function tick() { if (!on) return; hideCosmetic(document); youtube(); }
   hideCosmetic(document);
-  document.addEventListener('DOMContentLoaded', function () { sweep(document); hideCosmetic(document); });
-  setInterval(tick, 500);
+  document.addEventListener('DOMContentLoaded', function () { hideCosmetic(document); });
+  setInterval(tick, isYT ? 500 : 2000);
 
   // --- live toggle from the shell (`:ads`), no reload needed -------------------
   window.__setAdblock = function (v) {
     on = !!v;
-    if (on) { sweep(document); hideCosmetic(document); youtube(); }
+    if (on) { hideCosmetic(document); youtube(); }
     else { unhideCosmetic(); }
   };
 })();
@@ -1233,8 +1179,12 @@ fn main() -> Result<()> {
         active: None,
         modifiers: ModifiersState::default(),
         nojs: false,
-        adblock: true,
-        adblock_on: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        // Default to the uBlock Origin extension (native blocker off); session restore may
+        // override the mode below. `adblock`/`adblock_on` mirror "native on" = false here.
+        adblock_mode: AdblockMode::Ubo,
+        extensions: Vec::new(),
+        adblock: false,
+        adblock_on: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         allow_risky_downloads: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         nav_intent: std::sync::Arc::new(std::sync::Mutex::new(None)),
         blocker: blocklist::new_shared(),
@@ -1607,9 +1557,19 @@ fn main() -> Result<()> {
                 app.set_status(format!("blocked pop-up → {short}  (:ads off to allow)"));
                 app.window.request_redraw();
             }
+            Event::UserEvent(UserEvent::OpenPopupTab(url)) => {
+                // A real new-tab click the popup guard cleared: re-open it as a managed
+                // tab (new tabs here live in our tab strip, not as OS popups).
+                app.open_tab(&url, app.nojs, true);
+            }
             Event::UserEvent(UserEvent::BlocklistReady) => {
                 // Quiet by default (don't clobber a useful status); the engine simply
                 // starts catching navigations from here on.
+            }
+            Event::UserEvent(UserEvent::ExtensionsListed(list)) => {
+                // The async extension query finished: cache it and (re)render `:extensions`.
+                app.extensions = list;
+                app.show_extensions_page();
             }
             Event::UserEvent(UserEvent::DownloadBlocked(name)) => {
                 let short: String = name.chars().take(60).collect();

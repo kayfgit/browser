@@ -23,19 +23,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2Environment, ICoreWebView2_2, COREWEBVIEW2_WEB_RESOURCE_CONTEXT,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET,
-    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST,
+    ICoreWebView2, ICoreWebView2Environment, ICoreWebView2WebResourceResponse, ICoreWebView2_2,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST,
 };
 use webview2_com::{take_pwstr, WebResourceRequestedEventHandler};
-use windows_core::{w, Interface, PWSTR};
+use windows_core::{w, Interface, PCWSTR, PWSTR};
+// `windows061` is the 0.61 `windows` build webview2-com is compiled against (see Cargo.toml):
+// its `IStream` is the exact type `CreateWebResourceResponse` wants, so a stream we mint with
+// its `SHCreateMemStream` unifies. (Our default `windows` 0.62 would be a distinct type.)
+use windows061::Win32::System::Com::IStream;
+use windows061::Win32::UI::Shell::SHCreateMemStream;
 use wry::{WebView, WebViewExtWindows};
 
-use crate::blocklist::SharedBlocker;
+use crate::blocklist::{BlockAction, SharedBlocker};
 
 /// Install the sub-resource blocker on a freshly built content webview. Best-effort: if
 /// the raw engine handle, the environment cast, or the filter/event registration is
@@ -62,11 +66,14 @@ pub(crate) fn install(
             Ok(e) => e,
             Err(_) => return,
         };
-    // Route every request (every context) through our handler.
-    if unsafe { core.AddWebResourceRequestedFilter(w!("*"), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL) }
-        .is_err()
-    {
-        return;
+    // Only intercept the contexts we actually block (see `FILTER_CONTEXTS`). High-frequency
+    // MEDIA (video/audio segments — the bulk of traffic on the streaming sites this browser
+    // targets) and FONT are deliberately left out, so they never reach this UI-thread
+    // handler at all — the per-segment cost was the whole reason to narrow this.
+    for ctx in FILTER_CONTEXTS {
+        if unsafe { core.AddWebResourceRequestedFilter(w!("*"), ctx) }.is_err() {
+            return;
+        }
     }
     let handler = WebResourceRequestedEventHandler::create(Box::new(
         move |_sender: Option<ICoreWebView2>, args| {
@@ -84,6 +91,17 @@ pub(crate) fn install(
                 args.ResourceContext(&mut ctx)?;
                 (uri, ctx)
             };
+            // YouTube's OWN first-party ad telemetry (`/api/stats/ads`, `/ptracking`,
+            // `/pagead/`, `/get_midroll_`) MUST reach the network: if it fails, YouTube's
+            // anti-adblock detector serves the "ad blockers violate ToS" enforcement wall.
+            // The ads are killed instead by pruning the player-response JSON (see
+            // `ADBLOCK_JS`). EasyList/EasyPrivacy DO list those endpoints, so the full
+            // engine would block them — exempt YouTube's own hosts here, mirroring the
+            // deliberate carve-out in `AD_HOSTS`. (Third-party trackers ON youtube.com are
+            // still blocked; only youtube.com's own requests are spared.)
+            if is_youtube_host(&uri) {
+                return Ok(());
+            }
             let Some(req_type) = request_type(ctx) else { return Ok(()) };
             // Never 403 the main document — it was already vetted by the nav handler, and
             // blanking it would break the page. A DOCUMENT-context request whose URL is
@@ -98,13 +116,27 @@ pub(crate) fn install(
                 .map(|g| g.clone())
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| uri.clone());
-            if crate::blocklist::blocks_request(&blocker, &uri, &src, req_type) {
-                // `None` content → an empty body; the trait bound fixes the (0.61)
-                // `IStream` type, so bare `None` is the correct optional-COM-param form.
-                if let Ok(resp) =
-                    unsafe { env.CreateWebResourceResponse(None, 403, w!("Blocked"), w!("")) }
-                {
-                    let _ = unsafe { args.SetResponse(&resp) };
+            match crate::blocklist::classify_request(&blocker, &uri, &src, req_type) {
+                // Untouched — reaches the network normally.
+                BlockAction::Pass => {}
+                // Plain block: answer with an empty 403. `None` content → an empty body; the
+                // trait bound fixes the (0.61) `IStream` type, so bare `None` is the correct
+                // optional-COM-param form.
+                BlockAction::Block => {
+                    if let Ok(resp) =
+                        unsafe { env.CreateWebResourceResponse(None, 403, w!("Blocked"), w!("")) }
+                    {
+                        let _ = unsafe { args.SetResponse(&resp) };
+                    }
+                }
+                // uBlock-style surrogate: serve the neutered stub body so the page keeps
+                // working (the blocked script's API still exists, just does nothing). If the
+                // stream/response can't be built we leave the request alone rather than break
+                // the page — the original would load, but that's strictly safer than a 403 here.
+                BlockAction::Redirect { mime, body } => {
+                    if let Some(resp) = build_surrogate_response(&env, &mime, &body) {
+                        let _ = unsafe { args.SetResponse(&resp) };
+                    }
                 }
             }
             Ok(())
@@ -114,10 +146,59 @@ pub(crate) fn install(
     let _ = unsafe { core.add_WebResourceRequested(&handler, &mut token) };
 }
 
+/// Build a 200-OK WebView2 response that serves `body` as `mime` — the neutered surrogate
+/// for a `$redirect` rule. The body is copied into a COM memory stream (`SHCreateMemStream`,
+/// whose `IStream` is the type [`CreateWebResourceResponse`](ICoreWebView2Environment) wants),
+/// and a single `Content-Type` header tells the page how to interpret it. `None` on any COM
+/// failure, in which case the caller leaves the request alone (safer than a broken page).
+fn build_surrogate_response(
+    env: &ICoreWebView2Environment,
+    mime: &str,
+    body: &[u8],
+) -> Option<ICoreWebView2WebResourceResponse> {
+    let stream: IStream = unsafe { SHCreateMemStream(Some(body)) }?;
+    // NUL-terminated wide string; must outlive the call (PCWSTR borrows it).
+    let headers: Vec<u16> = format!("Content-Type: {mime}\0").encode_utf16().collect();
+    unsafe { env.CreateWebResourceResponse(&stream, 200, w!("OK"), PCWSTR(headers.as_ptr())) }.ok()
+}
+
+/// Whether `url`'s host is one of YouTube's own properties — requests we must NOT
+/// network-block (see the carve-out in the handler). A cheap substring pre-filter keeps
+/// it free on the overwhelming majority of requests, which never mention YouTube.
+fn is_youtube_host(url: &str) -> bool {
+    if !url.contains("youtube") {
+        return false;
+    }
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+        .is_some_and(|h| {
+            h == "youtube.com"
+                || h.ends_with(".youtube.com")
+                || h == "youtube-nocookie.com"
+                || h.ends_with(".youtube-nocookie.com")
+        })
+}
+
+/// The resource contexts the blocker registers a filter for — exactly those
+/// [`request_type`] maps to a blockable adblock-rust type. MEDIA and FONT are omitted on
+/// purpose (see [`install`]): video/audio segments are extremely high-frequency and
+/// blocking ad fonts is near-useless, so keeping them off the handler is a pure win.
+const FILTER_CONTEXTS: [COREWEBVIEW2_WEB_RESOURCE_CONTEXT; 8] = [
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_IMAGE,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING,
+];
+
 /// Map a WebView2 resource context to the adblock-rust content-type string its filter
-/// rules are keyed on. `None` for contexts we deliberately don't network-block here
-/// (text tracks, manifests, CSP reports, …) — letting them through is harmless and
-/// avoids mis-typing a request the lists don't target. DOCUMENT maps to `subdocument`:
+/// rules are keyed on. `None` for anything we don't network-block — in practice only the
+/// contexts in [`FILTER_CONTEXTS`] ever reach here (MEDIA/FONT/etc. are filtered out
+/// upstream), so this is the authoritative per-context decision. DOCUMENT maps to `subdocument`:
 /// the only document request we ever see here that we'd want to block is a sub-frame's
 /// (the main document is skipped by the `top_url` guard above), and ad-frame rules use
 /// `$subdocument`.
@@ -134,10 +215,6 @@ fn request_type(ctx: COREWEBVIEW2_WEB_RESOURCE_CONTEXT) -> Option<&'static str> 
         "image"
     } else if ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET {
         "stylesheet"
-    } else if ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FONT {
-        "font"
-    } else if ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_MEDIA {
-        "media"
     } else if ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET {
         "websocket"
     } else if ctx == COREWEBVIEW2_WEB_RESOURCE_CONTEXT_PING {

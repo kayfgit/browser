@@ -168,8 +168,10 @@ pub(crate) fn install(
     let _ = unsafe { core.add_NavigationStarting(&handler, &mut token) };
 }
 
-/// Whether a navigation-intent stamp landed within [`INTENT_WINDOW`].
-fn recent(intent: &NavIntent) -> bool {
+/// Whether a navigation-intent stamp landed within [`INTENT_WINDOW`] — i.e. a trusted
+/// user gesture just asked to leave/open a link. Shared with the popup guard in
+/// `tabs.rs`, which uses the same signal to tell a real "open in new tab" from a popunder.
+pub(crate) fn recent(intent: &NavIntent) -> bool {
     intent.lock().ok().and_then(|g| *g).is_some_and(|t| t.elapsed() < INTENT_WINDOW)
 }
 

@@ -15,10 +15,14 @@ use serde::{Deserialize, Serialize};
 pub struct Session {
     pub zoom: f64,
     pub nojs: bool,
-    /// Whether the ad/tracker blocker is on. Defaults to `true` so sessions written
-    /// before this field existed still load with blocking enabled (the app default).
+    /// Legacy field: whether the (native) ad blocker was on. Superseded by
+    /// [`adblock_mode`](Self::adblock_mode); still written/read for older builds.
     #[serde(default = "default_adblock")]
     pub adblock: bool,
+    /// Which ad blocker is active: `"ubo"` (default), `"native"`, or `"off"`. Defaults to
+    /// `"ubo"` so sessions written before this field existed adopt the new default engine.
+    #[serde(default = "default_adblock_mode")]
+    pub adblock_mode: String,
     pub search_template: String,
     pub term_command: Vec<String>,
     /// Index of the focused tab within `tabs`.
@@ -66,6 +70,11 @@ fn default_adblock() -> bool {
     true
 }
 
+/// Serde default for [`Session::adblock_mode`]: the uBlock Origin extension.
+fn default_adblock_mode() -> String {
+    "ubo".to_string()
+}
+
 /// `%APPDATA%\browser\session.toml` on Windows, the XDG data dir elsewhere.
 fn path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "browser").map(|d| d.data_dir().join("session.toml"))
@@ -100,6 +109,7 @@ mod tests {
             zoom: 1.2,
             nojs: true,
             adblock: true,
+            adblock_mode: "ubo".into(),
             search_template: "https://example.com/?q=%s".into(),
             term_command: vec!["nu".into()],
             active: 1,

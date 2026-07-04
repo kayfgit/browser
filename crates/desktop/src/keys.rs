@@ -245,6 +245,7 @@ impl App {
             // on a `:aihist` line it opens that saved chat; a no-op anywhere else.
             Key::Enter => match self.active_url() {
                 Some("browser://aihist") => self.open_ai_history_entry(),
+                Some("browser://extensions") => self.toggle_extension_entry(),
                 _ => self.open_history_entry(self.modifiers.shift_key()),
             },
             _ => {}
@@ -269,6 +270,35 @@ impl App {
         if url.starts_with("http") {
             self.open_tab(url, self.nojs, new_tab);
         }
+    }
+
+    /// Enter on an `:extensions` row: flip that extension on/off (WebView2 enable/disable),
+    /// update the cached list, and refresh the picker in place. A no-op on any other tab or a
+    /// header/blank line (the id parse simply finds no matching extension).
+    pub(crate) fn toggle_extension_entry(&mut self) {
+        if self.active_url() != Some("browser://extensions") {
+            return;
+        }
+        let line = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.vim())
+            .and_then(|b| b.lines.get(b.cy))
+            .map(|chars| chars.iter().collect::<String>());
+        let Some(line) = line else { return };
+        // Row form: "[on ]  Name    <id>" — the id is the last whitespace-delimited token.
+        let Some(id) = line.split_whitespace().last().map(str::to_string) else { return };
+        let Some(pos) = self.extensions.iter().position(|e| e.id == id) else { return };
+        let want = !self.extensions[pos].enabled;
+        #[cfg(windows)]
+        if let Some(wv) = self.any_webview() {
+            crate::extensions::set_enabled(wv, id, want);
+        }
+        self.extensions[pos].enabled = want;
+        let name = self.extensions[pos].name.trim().to_string();
+        self.show_extensions_page();
+        let name = if name.is_empty() { "extension".to_string() } else { name };
+        self.set_status(format!("{} {name}", if want { "enabled" } else { "disabled" }));
     }
 
     /// `d` on the `:history` pager: delete the visited entry under the cursor — or,

@@ -1,7 +1,7 @@
 //! Tabs: the Tab/NativeRead content model, opening every tab kind (web,
 //! research, no-js, read), the WebView2 build glue, close/reopen/switch/move,
 //! webview visibility + bounds, scrolling, history, and the page-feature
-//! toggles (adblock/popups/mute/css/js).
+//! toggles (adblock/mute/css/js).
 
 use anyhow::Result;
 use wry::dpi::{PhysicalPosition, PhysicalSize};
@@ -12,7 +12,7 @@ use wry::{
 use crate::panes::{PaneRect, FOCUS_BORDER};
 use crate::term::TermSession;
 use crate::{
-    ad_hosts_js, read_view, session, vim, App, ModeKind, UserEvent, ADBLOCK_JS, AD_HOSTS,
+    read_view, session, vim, AdblockMode, App, ModeKind, UserEvent, ADBLOCK_JS, AD_HOSTS,
     BRIDGE_JS, BROWSER_ARGS, CARET_JS, CLOSED_CAP, FEATURES_JS, FIND_JS, IPC_PRELUDE, RESEARCH_JS,
 };
 use std::sync::atomic::Ordering;
@@ -22,6 +22,22 @@ use std::sync::{Arc, Mutex};
 pub(crate) enum Source {
     Url(String),
     Html(String),
+}
+
+/// Directory of unpacked browser extensions loaded into every content webview (uBlock
+/// Origin lives here as `uBlock0.chromium/`). Prefers `<exe dir>\extensions` (the installed
+/// layout that `install.ps1` lays down), falling back to the in-repo
+/// `crates/desktop/extensions` for `cargo run`. `None` if neither exists — then no
+/// extensions load and the browser still runs.
+fn ublock_extensions_dir() -> Option<std::path::PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        let beside = exe.with_file_name("extensions");
+        if beside.is_dir() {
+            return Some(beside);
+        }
+    }
+    let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("extensions");
+    dev.is_dir().then_some(dev)
 }
 
 /// What a tab shows. Exactly one of these — the invariants the old
@@ -444,6 +460,10 @@ impl App {
         let adblock_on = self.adblock_on.clone();
         let popup_adblock = self.adblock_on.clone();
         let popup_proxy = self.proxy.clone();
+        // The popup guard consults the same trusted-gesture stamp and blocklist engine the
+        // navigation guards do, to tell a real "open in new tab" from a scripted popunder.
+        let popup_intent = self.nav_intent.clone();
+        let popup_blocker = self.blocker.clone();
         // This tab's current top origin, so the blocklist's `$third-party` rules resolve
         // against the right source on each navigation. `cur_top` is the full top-frame
         // URL, used by the sub-resource blocker to avoid 403-ing the main document.
@@ -470,6 +490,15 @@ impl App {
             Source::Url(u) => builder.with_url(u),
             Source::Html(h) => builder.with_html(h),
         };
+        // Load uBlock Origin (any unpacked extension in the dir) into WebView2's own
+        // Chromium engine. The extension does network + cosmetic + scriptlet ad-blocking
+        // natively — far more capable than a hand-rolled blocker, and it doesn't depend on
+        // the WebResourceRequested path. Extensions are per-profile and off by default;
+        // every content webview shares the default profile and enables them the same way
+        // (wry requires that consistency). Absent dir → simply no extensions.
+        if let Some(ext_dir) = ublock_extensions_dir() {
+            builder = builder.with_browser_extensions_enabled(true).with_extensions_path(ext_dir);
+        }
         builder = builder
             .with_bounds(self.content_rect())
             .with_focused(false)
@@ -480,24 +509,19 @@ impl App {
             // Browser process flags — see BROWSER_ARGS. MUST match every other
             // webview (terminal included) or WebView2 creation fails with 0x8007139F.
             .with_additional_browser_args(BROWSER_ARGS)
-            // The blocker is injected into EVERY frame (for_main_only = false), not
-            // just the top document: scummy sites drive popunders and forced redirects
-            // from cross-origin player/ad iframes, which the old main-frame-only
-            // injection left completely unguarded. It starts in the shell's current
-            // state (baked as `__adblockDefault`), so `:ads` flips it live in the top
-            // frame via `__setAdblock` (sub-frames adopt the new state on reload). The
-            // host blocklist is baked once from Rust's AD_HOSTS so the page blocker and
-            // the native redirect guard share one source of truth. `window.ipc` is
-            // absent in sub-frames, so the blocker's status reports are main-frame-only
-            // (guarded), but the blocking itself is universal.
+            // The page-side blocker (cosmetic hiding + popunder/redirect-intent) is
+            // injected into EVERY frame (for_main_only = false), not just the top
+            // document: scummy sites drive popunders from cross-origin player/ad iframes,
+            // which a main-frame-only injection would leave unguarded. (Network blocking
+            // of the ad scripts themselves is native — see `netblock`.) It starts in the
+            // shell's current state (baked as `__adblockDefault`), so `:ads` flips it live
+            // in the top frame via `__setAdblock` (sub-frames adopt it on reload).
+            // `window.ipc` is absent in sub-frames, so the blocker's status reports are
+            // main-frame-only (guarded), but the neutering itself is universal.
             .with_initialization_script_for_main_only(
                 {
                     let ab = self.adblock;
-                    let hosts = ad_hosts_js();
-                    format!(
-                        "{IPC_PRELUDE}\nwindow.__adHosts={hosts};\n\
-                         window.__adblockDefault={ab};\n{ADBLOCK_JS}"
-                    )
+                    format!("{IPC_PRELUDE}\nwindow.__adblockDefault={ab};\n{ADBLOCK_JS}")
                 },
                 false,
             )
@@ -620,20 +644,32 @@ impl App {
                 }
                 true
             })
-            // Popunder / forced-popup guard. Scummy sites spawn scam tabs via
-            // `window.open` (often an `about:blank` shell they then navigate) or
-            // `target=_blank` on ANY click — this native handler fires for every frame
-            // and every variant, which the page-side neuter alone can't guarantee. In
-            // this browser new tabs are opened via hints (`F`) over our own IPC, NOT
-            // `window.open`, so while adblock is on we deny scripted new windows
-            // outright and note the blocked target. `:ads` off restores normal popups.
+            // Popunder / forced-popup guard, uBlock-Origin-style. Scummy sites spawn scam
+            // tabs via `window.open` (often an `about:blank` shell they then navigate) or
+            // `target=_blank` on ANY click; this native handler fires for every frame and
+            // every variant. Rather than deny EVERY new window (which also killed real
+            // "open in new tab" clicks — e.g. Google results), we decide like uBO does:
+            // a new window is legitimate only when a TRUSTED user gesture just landed on a
+            // link (the same `nav-intent` stamp the redirect guard trusts) AND the
+            // destination isn't a known ad/scam domain. Real clicks carry that gesture, so
+            // they now re-open as a shell-managed tab; scripted popunders (timers/onload,
+            // or synthetic clicks aimed at an ad domain) carry no gesture or hit the
+            // blocklist, so they stay blocked. Either way the native OS window is suppressed
+            // — new tabs here live in our tab strip, not as OS popups. `:ads` off restores
+            // normal popups. (The page-side `window.open` neuter is a further backstop.)
             .with_new_window_req_handler(move |url, _features| {
-                if popup_adblock.load(Ordering::Relaxed) {
-                    let _ = popup_proxy.send_event(UserEvent::PopupBlocked(url));
-                    NewWindowResponse::Deny
-                } else {
-                    NewWindowResponse::Allow
+                if !popup_adblock.load(Ordering::Relaxed) {
+                    return NewWindowResponse::Allow;
                 }
+                let wanted = crate::navguard::recent(&popup_intent)
+                    && !crate::blocklist::blocks_navigation(&popup_blocker, &url, "")
+                    && !url_is_ad_host(&url);
+                let _ = popup_proxy.send_event(if wanted {
+                    UserEvent::OpenPopupTab(url)
+                } else {
+                    UserEvent::PopupBlocked(url)
+                });
+                NewWindowResponse::Deny
             })
             // Drive-by install guard. A scam page (or a redirect we missed) can kick off
             // a download of an `.exe`/`.msi`/etc. that a careless click would run. Block
@@ -665,6 +701,12 @@ impl App {
         // over every script/iframe/XHR so ad/scam injectors never load (Windows only).
         #[cfg(windows)]
         crate::netblock::install(&webview, net_blocker, net_adblock, cur_origin, cur_top);
+        // wry loads bundled extensions ENABLED on every new webview; if we're not in uBlock
+        // mode, disable them here so the current `:adblock` choice holds for this tab too.
+        #[cfg(windows)]
+        if self.adblock_mode != AdblockMode::Ubo {
+            crate::extensions::set_all_enabled(&webview, false);
+        }
         Ok(webview)
     }
 
@@ -1125,19 +1167,42 @@ impl App {
         }
     }
 
-    /// Toggle the ad/tracker blocker. Flips the live `on` flag inside every open
-    /// web tab via `__setAdblock` (cosmetic hiding + DOM sweep + YouTube skip update
-    /// immediately; already-loaded requests aren't undone — reload for a clean slate)
-    /// and updates the default baked into newly opened tabs.
+    /// Bare `:ads`/`:adblock` — a quick on/off toggle: off when a blocker is active,
+    /// otherwise back to the default uBlock Origin engine. Use `:adblock native|ubo|off`
+    /// to pick a specific engine.
     pub(crate) fn toggle_adblock(&mut self) {
-        let on = !self.adblock;
-        self.set_adblock(on); // keeps the native guard's shared flag in lock-step
+        let mode = if self.adblock_mode == AdblockMode::Off {
+            AdblockMode::Ubo
+        } else {
+            AdblockMode::Off
+        };
+        self.set_adblock_mode(mode);
+    }
+
+    /// Switch the active ad blocker, keeping the two engines mutually exclusive so only one
+    /// runs at a time. The native guards all honour the shared `adblock_on` flag, so flipping
+    /// it (plus the page-side `__setAdblock`) turns the whole native stack — `netblock`, the
+    /// redirect/popup guards, and `ADBLOCK_JS` — on or off in one move; the uBlock extension
+    /// is enabled/disabled profile-wide via [`extensions`](crate::extensions). Persisted on
+    /// the next session write; re-applied to newly built webviews (see `build_content_webview`).
+    pub(crate) fn set_adblock_mode(&mut self, mode: AdblockMode) {
+        self.adblock_mode = mode;
+        let native_on = mode == AdblockMode::Native;
+        let ext_on = mode == AdblockMode::Ubo;
+        self.set_adblock(native_on); // keeps the native guards' shared flag in lock-step
         for tab in &self.tabs {
             if let Some(wv) = tab.webview() {
-                let _ = wv.evaluate_script(&format!("window.__setAdblock&&window.__setAdblock({on})"));
+                let _ =
+                    wv.evaluate_script(&format!("window.__setAdblock&&window.__setAdblock({native_on})"));
+                #[cfg(windows)]
+                crate::extensions::set_all_enabled(wv, ext_on);
             }
         }
-        self.set_status(if on { "adblock ON — ads blocked" } else { "adblock OFF — ads allowed" });
+        self.set_status(match mode {
+            AdblockMode::Ubo => "adblock: uBlock Origin (extension) — native blocker off",
+            AdblockMode::Native => "adblock: native blocker — uBlock extension off",
+            AdblockMode::Off => "adblock OFF — no blocking",
+        });
         self.window.request_redraw();
     }
 
@@ -1155,7 +1220,7 @@ impl App {
     }
 
     /// Flip a live page-feature toggle ([`FEATURES_JS`]) on every open web tab via
-    /// `__setToggle` (no reload). `name` is `popups` | `mute` | `css`.
+    /// `__setToggle` (no reload). `name` is `mute` | `css` | `video`.
     pub(crate) fn broadcast_toggle(&self, name: &str, on: bool) {
         for tab in &self.tabs {
             if let Some(wv) = tab.webview() {
