@@ -108,8 +108,8 @@ window.__post = window.__post || function (m) {
 /// Injected into every page. Reads a synchronous `window.__mode` flag (kept in
 /// sync by the shell) and, per mode, intercepts exactly the keys the shell owns.
 /// In `insert` it takes Escape (leave) and Ctrl+V (to passthrough) and lets the
-/// rest type; in `passthrough` it takes only the leave chord (Ctrl+S or Shift+Esc)
-/// and lets every other key reach the page. In insert it also reports when focus leaves the editable element,
+/// rest type; in `passthrough` it takes only the leave chord (Ctrl+S) and lets every
+/// other key — including Esc — reach the page. In insert it also reports when focus leaves the editable element,
 /// so the shell can drop back to normal when you click away.
 const BRIDGE_JS: &str = r#"
 (function () {
@@ -131,9 +131,9 @@ const BRIDGE_JS: &str = r#"
   window.__shellEditable = editable;
   document.addEventListener('keydown', function (e) {
     if (window.__mode !== 'passthrough') return;
-    // Anti-trap: Esc (with or without Shift) or Ctrl+S returns to the shell, so a page
-    // can never hold the keyboard hostage. Esc still reaches the page only in Normal.
-    if (e.key === 'Escape' || (e.ctrlKey && (e.key === 's' || e.key === 'S'))) {
+    // Ctrl+S is the only leave chord; Esc is deliberately left for the page (a web
+    // SSH/vim needs it), so passthrough is never exited by Esc.
+    if (e.ctrlKey && (e.key === 's' || e.key === 'S')) {
       e.preventDefault(); e.stopPropagation(); post('leave-passthrough');
     }
   }, true);

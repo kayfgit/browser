@@ -83,11 +83,10 @@ mod imp {
     /// current mode. `None` = let the key reach the page unchanged.
     fn decide(mode: u8, vk: u32, ctrl: bool, _shift: bool) -> Option<UserEvent> {
         match mode {
-            // Web passthrough is anti-trap: Esc (with or without Shift) or Ctrl+S
-            // returns to Normal — frame-proof, so a page can never hold the keys hostage.
-            MODE_PASSTHROUGH if vk == VK_ESCAPE || (ctrl && vk == VK_S) => {
-                Some(UserEvent::ExitToNormal)
-            }
+            // Web passthrough leaves ONLY on Ctrl+S — frame-proof, so a page can never
+            // hold that chord hostage. Esc is intentionally NOT a leave chord: it must
+            // reach the page so a web SSH/vim gets its Escape.
+            MODE_PASSTHROUGH if ctrl && vk == VK_S => Some(UserEvent::ExitToNormal),
             // Yielded: the page holds focus so its menu stays open; Esc reclaims the
             // shell keyboard (and blurs the page, closing the menu as a side effect).
             MODE_NORMAL_YIELDED if vk == VK_ESCAPE => Some(UserEvent::ReclaimNormal),

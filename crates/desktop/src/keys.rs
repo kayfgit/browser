@@ -46,10 +46,10 @@ impl App {
                     }
                     self.key_term(key);
                 } else {
-                    // Web page: anti-trap — Esc (with or without Shift) or Ctrl+S returns
-                    // to Normal. Other keys reach the page (which has OS focus).
-                    let leave = matches!(key.logical_key, Key::Escape)
-                        || (self.modifiers.control_key() && key.physical_key == KeyCode::KeyS);
+                    // Web page: Ctrl+S is the only leave chord. Esc is left for the page
+                    // (a web SSH/vim needs it), so passthrough is never exited by Esc.
+                    let leave =
+                        self.modifiers.control_key() && key.physical_key == KeyCode::KeyS;
                     if leave {
                         self.exit_to_normal();
                     }

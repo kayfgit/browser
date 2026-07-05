@@ -459,7 +459,7 @@ pub(crate) fn commands_document() -> String {
         ("Ctrl+U", "delete to the start of the line"),
     ]);
     let modes = help_table(&[
-        ("Passthrough", "i (or click a field) types into the content; on a web page Esc or click-away leaves; in a terminal Esc goes to the shell and Ctrl+S leaves"),
+        ("Passthrough", "i (or click a field) types into the content; on a web page Ctrl+S or click-away leaves (Esc reaches the page); in a terminal Esc goes to the shell and Ctrl+S leaves"),
         ("Hint", "type a label to follow it (type it UPPERCASE to open in a new tab); Esc cancels"),
         ("Resize / Move", "hjkl to size / reposition the window; Esc finishes"),
     ]);

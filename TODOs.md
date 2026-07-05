@@ -15,12 +15,9 @@ issues:
 [?] - i pressed o and i together and the browser froze in a state of half normal and half insert mode, had to alt+f4
 [?] - sometimes crashes after taking a windows screenshot (prntscreen button)
 [] - when splitting it creates a new tab, it should work like tmux in which the tabs are contained in one tab
-[x] - hint mode conflicting in terminal mode, there should be NO hint mode when pressin f/F in terminal, only vim's "find"
-[x] - remove the "[page] keys -> page * esc: shell" status everytime something happens in a webpage
 
 feat:
 [] - ctrl+: enters command bar in vim mode, allows vim motions.
-[x] - :freeze command that freezes the browser in place to consume the least ammount of ram possible even with a bunch of webview2 tabs opened, :unfreeze returns to normal (useful when a lot of things are consuming ram but you dont want to close the browser)
 [] - :save/saved or :favorite/favorites for saving a page for later
 
 maybes:
