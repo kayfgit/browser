@@ -346,11 +346,15 @@ pub(crate) struct App {
     /// fullscreen (YouTube's button), so leaving page fullscreen exits it again —
     /// without disturbing a fullscreen the user set manually with `:f`.
     pub(crate) fs_from_page: bool,
-    /// tmux-style pane layout tiling the content area. `None` = a single pane (the
-    /// active tab fills the content band, exactly as without splits). `Some(tree)`
-    /// once the user `:split`s: leaves reference distinct tab indices, the focused
-    /// leaf is the active tab, and Ctrl+W h/j/k/l moves focus between panes.
-    pub(crate) split: Option<PaneNode>,
+    /// tmux-style tab-strip "windows": one pane tree per tab-bar entry, each tiling
+    /// the content band with leaves that reference distinct tab indices. A standalone
+    /// (unsplit) tab is a lone `Leaf`; `:split`/`:vsplit` grows the ACTIVE window's
+    /// tree with a new pane rather than adding a strip entry — so a split's panes are
+    /// "contained in one tab", like tmux. The active window is the one whose tree holds
+    /// the active tab (see [`active_window`](Self::active_window)); the `:ai` singleton
+    /// has no window (it overlays the whole band when summoned). Every non-AI tab is a
+    /// leaf in exactly one window.
+    pub(crate) windows: Vec<PaneNode>,
     /// True after Ctrl+W in Normal mode: the next h/j/k/l moves pane focus and
     /// s/v splits (vim-window style). Cleared by the following key.
     pub(crate) pending_window_key: bool,
@@ -481,7 +485,9 @@ impl App {
     /// is shown. The background `:ai` singleton doesn't appear in the strip, so a lone
     /// hidden AI tab leaves the bar at zero height (welcome screen stays clean).
     pub(crate) fn tab_bar_h(&self) -> u32 {
-        let no_visible_tabs = !self.tabs.iter().any(|t| t.ai().is_none());
+        // The strip shows one entry per window; with none (only the AI overlay, or
+        // nothing open) it collapses to zero height so the welcome screen stays clean.
+        let no_visible_tabs = self.windows.is_empty();
         if no_visible_tabs || self.chrome_hidden() {
             0
         } else {
@@ -585,11 +591,12 @@ impl App {
                 let _ = wv.zoom(z);
             }
         }
-        // Tab/command bars changed height → refit the visible page.
-        let rect = self.content_rect();
-        if let Some(wv) = self.active_webview() {
-            let _ = wv.set_bounds(rect);
-        }
+        // Tab/command bars changed height → refit every visible pane. This must go
+        // through `refresh_visibility` (not a single `set_bounds` on the active
+        // webview to the whole content band): under a split the active webview only
+        // owns its pane's rect, so bounding it to the full band overlapped the other
+        // panes and effectively unsplit the view until the next relayout.
+        self.refresh_visibility();
         self.set_status(format!("zoom {}%", (z * 100.0).round() as i32));
         self.window.request_redraw();
     }
@@ -1006,6 +1013,9 @@ impl App {
             }
         }
         self.tabs.clear();
+        // Windows reference tab indices; drop them in lock-step so a stray post-quit
+        // redraw can't index the now-empty tab list through a stale window.
+        self.windows.clear();
         self.active = None;
     }
 

@@ -44,6 +44,15 @@ impl PaneNode {
         }
     }
 
+    /// Whether any leaf shows `tab` — a cheap, allocation-free membership test (used
+    /// to find which window holds the active tab, on every layout/draw).
+    pub(crate) fn contains_leaf(&self, tab: usize) -> bool {
+        match self {
+            PaneNode::Leaf(t) => *t == tab,
+            PaneNode::Split { a, b, .. } => a.contains_leaf(tab) || b.contains_leaf(tab),
+        }
+    }
+
     /// Collect every leaf's tab index.
     pub(crate) fn leaves(&self, out: &mut Vec<usize>) {
         match self {
@@ -67,40 +76,6 @@ impl PaneNode {
             PaneNode::Split { a, b, .. } => {
                 a.shift_after_remove(removed);
                 b.shift_after_remove(removed);
-            }
-        }
-    }
-
-    /// Point the leaf currently showing `from` at `to` instead (used to load a
-    /// different tab into the focused pane).
-    pub(crate) fn retarget(&mut self, from: usize, to: usize) {
-        match self {
-            PaneNode::Leaf(t) => {
-                if *t == from {
-                    *t = to;
-                }
-            }
-            PaneNode::Split { a, b, .. } => {
-                a.retarget(from, to);
-                b.retarget(from, to);
-            }
-        }
-    }
-
-    /// Swap which tabs two leaves show (when bringing a tab that's already in another
-    /// pane into the focused pane, the two panes trade contents).
-    pub(crate) fn swap_leaves(&mut self, x: usize, y: usize) {
-        match self {
-            PaneNode::Leaf(t) => {
-                if *t == x {
-                    *t = y;
-                } else if *t == y {
-                    *t = x;
-                }
-            }
-            PaneNode::Split { a, b, .. } => {
-                a.swap_leaves(x, y);
-                b.swap_leaves(x, y);
             }
         }
     }
@@ -173,15 +148,30 @@ impl App {
         PaneRect { x: 0, y: top, w: w as i32, h: (bot - top).max(1) }
     }
 
-    /// The current pane tiling: each `(tab, rect)` to paint/position, plus the
-    /// divider rects between them. With no split it's just the active tab filling
-    /// the whole content band.
+    /// Index into [`windows`](Self::windows) of the active window — the one whose pane
+    /// tree holds the active tab. `None` when nothing is open, or when the active tab is
+    /// the windowless `:ai` singleton (which overlays the whole band).
+    pub(crate) fn active_window(&self) -> Option<usize> {
+        let a = self.active?;
+        self.windows.iter().position(|tree| tree.contains_leaf(a))
+    }
+
+    /// Whether the active window is split into more than one pane (a `Split` tree).
+    /// False for a standalone tab, the `:ai` overlay, or the welcome screen.
+    pub(crate) fn is_split(&self) -> bool {
+        self.active_window()
+            .is_some_and(|w| matches!(self.windows[w], PaneNode::Split { .. }))
+    }
+
+    /// The current pane tiling: each `(tab, rect)` to paint/position, plus the divider
+    /// rects between them. Only the ACTIVE window is tiled (the rest are hidden); a
+    /// standalone tab or the `:ai` overlay fills the whole content band.
     pub(crate) fn pane_layout(&self) -> (Vec<(usize, PaneRect)>, Vec<PaneRect>) {
         let band = self.content_band();
         let mut panes = Vec::new();
         let mut divs = Vec::new();
-        match &self.split {
-            Some(tree) => tree.layout(band, &mut panes, &mut divs),
+        match self.active_window() {
+            Some(w) => self.windows[w].layout(band, &mut panes, &mut divs),
             None => {
                 if let Some(a) = self.active {
                     panes.push((a, band));
@@ -202,7 +192,8 @@ impl App {
     }
 
     /// Make `tab` the focused pane (the active tab), repositioning webviews and
-    /// returning the shell to Normal so its keys work in the newly focused pane.
+    /// returning the shell to Normal so its keys work in the newly focused pane. Used
+    /// by the Ctrl+W keyboard move, which deliberately pulls the keyboard to the shell.
     pub(crate) fn set_active_pane(&mut self, tab: usize) {
         if Some(tab) == self.active || tab >= self.tabs.len() {
             return;
@@ -212,6 +203,23 @@ impl App {
         self.find_reset();
         self.refresh_visibility();
         self.window.set_focus();
+        self.window.request_redraw();
+    }
+
+    /// Mark `tab` the active pane because the user CLICKED inside it. Unlike
+    /// [`set_active_pane`](Self::set_active_pane) (the Ctrl+W keyboard move), this does
+    /// NOT wrestle keyboard focus back to the shell or reset the mode: the click is
+    /// already being handled by that pane's own content — the page bridge focuses a
+    /// field (→ passthrough), follows a link, or keeps a control's menu open — so the
+    /// focus border is a purely visual cue. Stealing focus here is what made a click on
+    /// a non-focused web pane merely "select" it, needing a second click to interact.
+    pub(crate) fn focus_pane_click(&mut self, tab: usize) {
+        if Some(tab) == self.active || tab >= self.tabs.len() {
+            return;
+        }
+        self.active = Some(tab);
+        self.find_reset();
+        self.refresh_visibility();
         self.window.request_redraw();
     }
 
@@ -259,22 +267,24 @@ impl App {
     }
 
     /// Split the focused pane, opening a new blank pane beside it (`:vsplit` = Row,
-    /// side by side; `:split` = Col, stacked) and focusing the new pane.
+    /// side by side; `:split` = Col, stacked) and focusing the new pane. The new pane
+    /// grows the ACTIVE window's tree, so it stays "inside" the same tab-strip entry
+    /// (tmux-style) rather than spawning another tab.
     pub(crate) fn split_pane(&mut self, dir: SplitDir) {
         let Some(a) = self.active else {
             self.set_status("no pane to split — open something first");
             return;
         };
+        // The `:ai` singleton has no window of its own (it overlays the band); there's
+        // nothing to tile it against, so don't fold it into a split.
+        let Some(w) = self.active_window() else {
+            self.set_status("can't split this — open a page first");
+            return;
+        };
         let new_idx = self.tabs.len();
         self.tabs.push(Tab::blank());
-        self.split = Some(match self.split.take() {
-            None => PaneNode::Split {
-                dir,
-                a: Box::new(PaneNode::Leaf(a)),
-                b: Box::new(PaneNode::Leaf(new_idx)),
-            },
-            Some(tree) => tree.insert_split(a, dir, new_idx),
-        });
+        let tree = std::mem::replace(&mut self.windows[w], PaneNode::Leaf(new_idx));
+        self.windows[w] = tree.insert_split(a, dir, new_idx);
         self.active = Some(new_idx);
         self.mode = ModeKind::Normal;
         self.find_reset();
@@ -337,12 +347,10 @@ mod tests {
     }
 
     #[test]
-    fn swap_and_retarget_change_leaf_tabs() {
-        let mut t = split(SplitDir::Row, 0, 1);
-        t.swap_leaves(0, 1);
-        assert_eq!(leaves(&t), vec![1, 0]);
-        t.retarget(0, 5); // the leaf showing 0 now shows 5.
-        assert_eq!(leaves(&t), vec![1, 5]);
+    fn contains_leaf_finds_membership() {
+        let t = split(SplitDir::Row, 0, 2);
+        assert!(t.contains_leaf(0) && t.contains_leaf(2));
+        assert!(!t.contains_leaf(1));
     }
 
     #[test]

@@ -9,7 +9,7 @@ use wry::{
     NewWindowResponse, PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewBuilderExtWindows,
 };
 
-use crate::panes::{PaneRect, FOCUS_BORDER};
+use crate::panes::{PaneNode, PaneRect, FOCUS_BORDER};
 use crate::term::TermSession;
 use crate::{
     read_view, session, vim, AdblockMode, App, ModeKind, UserEvent, ADBLOCK_JS, AD_HOSTS,
@@ -369,7 +369,7 @@ impl App {
     /// Under a split, new content ALWAYS lands in the focused pane (in place), since
     /// a background tab would have no pane to show it — `new_tab` is ignored there.
     pub(crate) fn place_tab(&mut self, tab: Tab, new_tab: bool) {
-        let replace = (!new_tab || self.split.is_some()) && self.active.is_some();
+        let replace = (!new_tab || self.is_split()) && self.active.is_some();
         match self.active {
             Some(i) if replace && i < self.tabs.len() => {
                 self.record_closed(i);
@@ -396,12 +396,27 @@ impl App {
             }
             _ => {
                 self.tabs.push(tab);
-                self.active = Some(self.tabs.len() - 1);
+                let idx = self.tabs.len() - 1;
+                // A brand-new content tab becomes its own tab-strip window. The `:ai`
+                // singleton is windowless (it overlays the band), so it never gets one.
+                if self.tabs[idx].ai().is_none() {
+                    self.windows.push(PaneNode::Leaf(idx));
+                }
+                self.active = Some(idx);
             }
         }
         self.find_reset();
         self.refresh_visibility();
         self.window.request_redraw();
+    }
+
+    /// Push a brand-new standalone content tab as its own tab-strip window and return
+    /// its index (does NOT change focus). For raw pushes that bypass `place_tab`.
+    pub(crate) fn push_tab_window(&mut self, tab: Tab) -> usize {
+        self.tabs.push(tab);
+        let idx = self.tabs.len() - 1;
+        self.windows.push(PaneNode::Leaf(idx));
+        idx
     }
 
     /// Record tab `i` on the closed-tab stack so `U` / Ctrl+Shift+T can reopen it.
@@ -855,97 +870,92 @@ impl App {
             .ai_prev_active
             .filter(|&i| self.tabs.get(i).is_some_and(|t| t.ai().is_none()));
         self.ai_prev_active = None;
-        match prev.or_else(|| self.visible_tab_indices().first().copied()) {
+        // Fall back to the first tab-strip window's first pane if we've no remembered
+        // spot; the welcome screen (`None`) if only the hidden AI tab remains.
+        match prev.or_else(|| self.windows.first().map(|tree| tree.first_leaf())) {
             Some(idx) => self.show_tab(idx),
             None => {
-                // Only the hidden AI tab is left: fall back to the welcome screen.
                 self.active = None;
                 self.refresh_visibility();
             }
         }
     }
 
-    /// Remove tab `i` from `tabs` and repair the pane tree: prune its leaf if it was
-    /// in a pane, shift higher leaf indices down, and collapse to a single pane (no
-    /// split) when only one leaf remains. Returns the tab index that should take
-    /// focus if the *focused* pane was the one closed (else the caller keeps its own
-    /// active tab, adjusted for the shift). `None` when no tabs remain.
+    /// Remove tab `i` from `tabs` and repair every tab-strip window: prune its leaf,
+    /// shift higher leaf indices down, and drop any window left empty. Returns the tab
+    /// index that should take focus afterwards — the (adjusted) active window's first
+    /// pane, or the window that slid into its place if that window was emptied — or
+    /// `None` when no tabs remain.
     pub(crate) fn drop_tab(&mut self, i: usize) -> Option<usize> {
+        // Which window held the tab being removed (it's the only one that can empty,
+        // since every tab is a leaf of exactly one window).
+        let aw = self.active_window();
         self.tabs.remove(i);
-        let collapsed_focus = if let Some(tree) = self.split.take() {
-            match tree.prune(i) {
-                Some(mut t) => {
-                    t.shift_after_remove(i);
-                    let mut leaves = Vec::new();
-                    t.leaves(&mut leaves);
-                    let focus = t.first_leaf();
-                    self.split = (leaves.len() > 1).then_some(t);
-                    Some(focus)
-                }
-                None => None, // the pruned leaf was the whole tree
+        let mut kept = Vec::with_capacity(self.windows.len());
+        for tree in std::mem::take(&mut self.windows) {
+            if let Some(mut t) = tree.prune(i) {
+                t.shift_after_remove(i);
+                kept.push(t);
             }
-        } else {
-            None
-        };
-        if self.tabs.is_empty() {
+        }
+        self.windows = kept;
+        if self.tabs.is_empty() || self.windows.is_empty() {
             return None;
         }
-        Some(collapsed_focus.unwrap_or_else(|| i.min(self.tabs.len() - 1)))
+        // Land on the active window (still at index `aw` if it survived; otherwise the
+        // window that slid into that slot), clamped into range.
+        let w = aw.unwrap_or(0).min(self.windows.len() - 1);
+        Some(self.windows[w].first_leaf())
     }
 
-    /// Real indices of the tabs that appear in the strip and are reachable by tab
-    /// navigation: every tab EXCEPT the `:ai` singleton, which is a background tab
-    /// surfaced only by `:ai`. Order matches `tabs`. Navigation/click/`tab_labels`
-    /// all index through this so the AI tab is invisible to the normal tab flow.
-    pub(crate) fn visible_tab_indices(&self) -> Vec<usize> {
-        self.tabs
+    /// The tab-strip entries (one per tmux-style window), each as `(rep, panes)`: the
+    /// tab to LABEL the entry by — the focused pane for the active window, else the
+    /// window's top-left pane — and how many panes it tiles (>1 = a split). The `:ai`
+    /// singleton has no window, so it's naturally excluded. Order matches `windows`.
+    pub(crate) fn window_strip(&self) -> Vec<(usize, usize)> {
+        let aw = self.active_window();
+        self.windows
             .iter()
             .enumerate()
-            .filter(|(_, t)| t.ai().is_none())
-            .map(|(i, _)| i)
+            .map(|(wi, tree)| {
+                let mut leaves = Vec::new();
+                tree.leaves(&mut leaves);
+                let rep = if Some(wi) == aw {
+                    self.active.filter(|a| leaves.contains(a)).unwrap_or_else(|| tree.first_leaf())
+                } else {
+                    tree.first_leaf()
+                };
+                (rep, leaves.len())
+            })
             .collect()
     }
 
     pub(crate) fn switch_tab(&mut self, delta: i32) {
-        let visible = self.visible_tab_indices();
-        if visible.is_empty() {
+        let n = self.windows.len() as i32;
+        if n == 0 {
             return;
         }
-        let cur = self.active.unwrap_or(visible[0]);
-        // Position of the active tab among the visible ones; if the AI tab is up, start
-        // from the first visible tab so n/p step onto real content.
-        let pos = visible.iter().position(|&i| i == cur).unwrap_or(0) as i32;
-        let n = visible.len() as i32;
-        let next = visible[(pos + delta).rem_euclid(n) as usize];
-        self.show_tab(next);
+        // Step between tab-strip windows; if the AI overlay is up (no active window),
+        // start from the first so n/p steps onto real content.
+        let cur = self.active_window().unwrap_or(0) as i32;
+        let next = (cur + delta).rem_euclid(n) as usize;
+        let target = self.windows[next].first_leaf();
+        self.show_tab(target);
     }
 
-    /// Jump directly to a zero-based *visible* tab position (bound to keys 1..9) —
-    /// the AI singleton isn't counted, so the digits match the strip.
+    /// Jump directly to a zero-based tab-strip window (bound to keys 1..9) — the AI
+    /// singleton has no window, so the digits match the visible strip.
     pub(crate) fn jump_to(&mut self, index: usize) {
-        if let Some(&real) = self.visible_tab_indices().get(index) {
-            self.show_tab(real);
+        if let Some(tree) = self.windows.get(index) {
+            let target = tree.first_leaf();
+            self.show_tab(target);
         }
     }
 
-    /// Show tab `target` as the active one. With no split it simply becomes active;
-    /// while split it's loaded into the FOCUSED pane (swapping panes if it's already
-    /// shown in another), so the layout never points at a tab outside the tiling.
+    /// Show tab `target` as the active one. Its window (the one holding it) becomes the
+    /// active window, so the whole strip switches to that entry's pane layout. A
+    /// windowless target (the `:ai` singleton) simply overlays the band.
     pub(crate) fn show_tab(&mut self, target: usize) {
-        if self.split.is_some() {
-            let Some(cur) = self.active else { return };
-            if cur != target {
-                if let Some(tree) = self.split.as_mut() {
-                    let mut leaves = Vec::new();
-                    tree.leaves(&mut leaves);
-                    if leaves.contains(&target) {
-                        tree.swap_leaves(cur, target);
-                    } else {
-                        tree.retarget(cur, target);
-                    }
-                }
-            }
-        }
         self.active = Some(target);
         self.find_reset();
         // The previous tab's hovered-link readout doesn't belong to the new tab.
@@ -954,7 +964,7 @@ impl App {
         self.window.set_focus();
     }
 
-    /// Map an x pixel on the tab bar to a zero-based *visible* tab position (what
+    /// Map an x pixel on the tab bar to a zero-based tab-strip window position (what
     /// [`jump_to`](App::jump_to) takes), for click-to-switch. Mirrors `draw_tab_bar`'s
     /// layout and numbering, which also skip the background AI tab.
     pub(crate) fn tab_at_pixel(&self, px: f64) -> Option<usize> {
@@ -981,23 +991,16 @@ impl App {
         None
     }
 
-    /// Move the active tab one position left (-1) or right (+1) among the visible
-    /// tabs (the background AI tab is skipped, so it never wedges the order).
+    /// Move the active window one slot left (-1) or right (+1) in the tab strip.
+    /// Reordering the `windows` vec leaves every tab index (and each window's pane
+    /// tree) untouched, so nothing about the layout changes — just the strip order.
     pub(crate) fn move_tab(&mut self, delta: i32) {
-        let Some(i) = self.active else { return };
-        let visible = self.visible_tab_indices();
-        let Some(pos) = visible.iter().position(|&t| t == i) else { return };
-        let target = pos as i32 + delta;
-        if target < 0 || target as usize >= visible.len() {
+        let Some(cur) = self.active_window() else { return };
+        let target = cur as i32 + delta;
+        if target < 0 || target as usize >= self.windows.len() {
             return;
         }
-        let j = visible[target as usize];
-        self.tabs.swap(i, j);
-        // Keep each pane showing the same content after the index swap.
-        if let Some(tree) = self.split.as_mut() {
-            tree.swap_leaves(i, j);
-        }
-        self.active = Some(j);
+        self.windows.swap(cur, target as usize);
         self.refresh_visibility();
     }
 
@@ -1006,7 +1009,7 @@ impl App {
         // rect. With no split this is just the active tab filling the band.
         let (panes, _) = self.pane_layout();
         let active = self.active;
-        let split = self.split.is_some();
+        let split = self.is_split();
         for (i, tab) in self.tabs.iter().enumerate() {
             let Some(wv) = tab.webview() else { continue };
             // Frozen: every web tab stays hidden (and suspended) regardless of layout,

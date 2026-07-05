@@ -317,6 +317,9 @@ impl App {
         // The pane tiling: each (tab, rect) to paint + the divider rects. With no
         // split this is just the active tab filling the whole content band.
         let (panes, dividers) = self.pane_layout();
+        // Hoisted before the `buf` borrow below (which holds `self.surface`): a method
+        // call would borrow all of `self` and clash with that.
+        let is_split = self.is_split();
         // We must repaint native content (and any divider/border) ourselves; only the
         // pure single-web-tab case can take the cheap bars-only damage present.
         let any_native = panes
@@ -469,7 +472,7 @@ impl App {
             draw_welcome(p, &mut buf, wz, hz, self.zoom as f32, theme.accent);
             draw_bar(&mut buf);
             buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
-        } else if any_native || self.split.is_some() || self.frozen {
+        } else if any_native || is_split || self.frozen {
             // At least one pane is native, we're split, or we're frozen: repaint the
             // content band ourselves. Native panes are drawn into their rects; LIVE web
             // panes are left to their webview HWNDs (which sit on top of our surface);
@@ -495,7 +498,7 @@ impl App {
                     (d.x + d.w) as usize, (d.y + d.h) as usize, draw::DIM,
                 );
             }
-            if self.split.is_some() {
+            if is_split {
                 if let Some((_, r)) = panes.iter().find(|(t, _)| Some(*t) == self.active) {
                     draw_pane_border(*r, &mut buf, wz, hz, theme.accent);
                 }
@@ -532,15 +535,18 @@ impl App {
         Ok(())
     }
 
-    /// (label, is_active, color) for each tab shown in the strip, in order. The `:ai`
-    /// singleton is a background tab (surfaced only by `:ai`) and is intentionally
-    /// omitted — see [`visible_tab_indices`](App::visible_tab_indices).
+    /// (label, is_active, color) for each tab-strip entry (one per tmux-style window),
+    /// in order. A split window is labelled by its focused pane with a ` ⁝N` pane-count
+    /// suffix so it reads as one entry containing N panes. The `:ai` singleton has no
+    /// window, so it's omitted — see [`window_strip`](App::window_strip).
     pub(crate) fn tab_labels(&self) -> Vec<(String, bool, draw::Rgb)> {
-        self.visible_tab_indices()
+        let aw = self.active_window();
+        self.window_strip()
             .into_iter()
-            .map(|i| {
-                let t = &self.tabs[i];
-                let active = Some(i) == self.active;
+            .enumerate()
+            .filter_map(|(wi, (rep, panes))| {
+                let t = self.tabs.get(rep)?;
+                let active = Some(wi) == aw;
                 let color = if t.term().is_some() {
                     draw::TERM
                 } else if t.vim().is_some() {
@@ -558,7 +564,7 @@ impl App {
                 // (vim → the open file, Claude Code → "Claude Code"); fall back to
                 // the shell name until something sets a title. A blank split pane
                 // reads as "new".
-                let label = if t.is_blank() {
+                let mut label = if t.is_blank() {
                     "new".to_string()
                 } else {
                     t.term()
@@ -566,7 +572,11 @@ impl App {
                         .map(|title| term_label(&title))
                         .unwrap_or_else(|| short_label(&t.url))
                 };
-                (label, active, color)
+                // A split window shows how many panes it holds, tmux-style.
+                if panes > 1 {
+                    label.push_str(&format!(" ⁝{panes}"));
+                }
+                Some((label, active, color))
             })
             .collect()
     }

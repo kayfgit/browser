@@ -1218,7 +1218,7 @@ fn main() -> Result<()> {
         history_at: Vec::new(),
         closed_tabs: Vec::new(),
         fs_from_page: false,
-        split: None,
+        windows: Vec::new(),
         pending_window_key: false,
         active_pane_is_webview: false,
         background_webview_visible: false,
@@ -1374,11 +1374,13 @@ fn main() -> Result<()> {
                         } else {
                             let _ = app.window.drag_window();
                         }
-                    } else if app.split.is_some() {
+                    } else if app.is_split() {
                         // Click a (native) pane below the tab bar to focus it. Web
                         // panes consume the click in their own HWND, so this only
                         // fires for terminal/read/vim/blank panes — Ctrl+W covers the
-                        // rest.
+                        // rest. These have no child HWND (keys already route through the
+                        // shell), so focusing to Normal here is the expected behaviour;
+                        // the web two-click problem is handled on the PaneClick path.
                         if let Some((tab, _)) =
                             app.pane_at_pixel(app.cursor_pos.0, app.cursor_pos.1)
                         {
@@ -1486,10 +1488,13 @@ fn main() -> Result<()> {
                 // Clicking inside a web pane focuses it (web panes consume the click in
                 // their HWND, so this is the only way they reach us). Use the OS cursor
                 // position, since CursorMoved isn't delivered over a child webview.
-                if app.split.is_some() {
+                // `focus_pane_click` only marks the pane active — it must NOT reclaim the
+                // keyboard, or it'd yank focus straight back off the page you just
+                // clicked, leaving the pane merely "selected" until a second click.
+                if app.is_split() {
                     if let Some((x, y)) = app.cursor_client_pos() {
                         if let Some((tab, _)) = app.pane_at_pixel(x as f64, y as f64) {
-                            app.set_active_pane(tab);
+                            app.focus_pane_click(tab);
                         }
                     }
                 }

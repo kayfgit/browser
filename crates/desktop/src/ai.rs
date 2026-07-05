@@ -601,10 +601,7 @@ impl App {
             // opens as a new tab and we move to it.
             match self.tabs.iter().position(|t| t.ai().is_some()) {
                 Some(idx) => self.show_tab(idx),
-                None => {
-                    let tab = self.new_ai_tab(None);
-                    self.place_tab(tab, true);
-                }
+                None => self.summon_ai_tab(),
             }
             self.clear_status();
             self.enter_ai_passthrough();
@@ -640,6 +637,16 @@ impl App {
             self.set_status("paste your Groq key, then it'll run that");
         }
         self.window.request_redraw();
+    }
+
+    /// Create the AI singleton (first summon) and bring it on screen. It's pushed
+    /// WITHOUT a tab-strip window — the `:ai` tab is a background overlay that fills the
+    /// whole content band when shown, never a pane in a split — then focused.
+    fn summon_ai_tab(&mut self) {
+        let tab = self.new_ai_tab(None);
+        self.tabs.push(tab);
+        let idx = self.tabs.len() - 1;
+        self.show_tab(idx);
     }
 
     /// Build a fresh AI tab (allocating its stable id), optionally pre-stashing a
@@ -1014,10 +1021,7 @@ impl App {
         }
         match self.tabs.iter().position(|t| t.ai().is_some()) {
             Some(i) => self.show_tab(i),
-            None => {
-                let tab = self.new_ai_tab(None);
-                self.place_tab(tab, true);
-            }
+            None => self.summon_ai_tab(),
         }
         if self.active_ai_mut().is_some_and(|a| a.pending) {
             self.set_status("the ai is mid-reply — wait for it before switching chats");
@@ -1140,8 +1144,7 @@ impl App {
         match self.tabs.iter().position(|t| t.is_blank()) {
             Some(idx) => self.show_tab(idx),
             None => {
-                self.tabs.push(Tab::blank());
-                let last = self.tabs.len() - 1;
+                let last = self.push_tab_window(Tab::blank());
                 self.show_tab(last);
             }
         }
