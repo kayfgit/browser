@@ -14,6 +14,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 pub struct Session {
     pub zoom: f64,
+    /// Web-content zoom (page scale inside web tabs), separate from the chrome
+    /// [`zoom`](Self::zoom). `default` (1.0) for sessions written before it existed.
+    #[serde(default = "default_content_zoom")]
+    pub content_zoom: f64,
     pub nojs: bool,
     /// Legacy field: whether the (native) ad blocker was on. Superseded by
     /// [`adblock_mode`](Self::adblock_mode); still written/read for older builds.
@@ -70,6 +74,12 @@ pub struct SavedTab {
     pub url: String,
 }
 
+/// Serde default for [`Session::content_zoom`]: 100% (no page scaling) for
+/// sessions written before content zoom was split from the chrome zoom.
+fn default_content_zoom() -> f64 {
+    1.0
+}
+
 /// Serde default for [`Session::adblock`]: blocking is on unless a session
 /// explicitly records it off.
 fn default_adblock() -> bool {
@@ -113,6 +123,7 @@ mod tests {
         // TOML rejects it — this guards that ordering.
         let s = Session {
             zoom: 1.2,
+            content_zoom: 1.1,
             nojs: true,
             adblock: true,
             adblock_mode: "ubo".into(),

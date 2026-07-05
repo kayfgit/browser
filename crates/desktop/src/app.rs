@@ -300,9 +300,13 @@ pub(crate) struct App {
     /// Past `:ai` conversations (newest last), persisted to disk. `H`/`L` on an AI
     /// tab step through these; new AI tabs start as a fresh draft.
     pub(crate) ai_chats: Vec<crate::ai::AiChat>,
-    /// Global UI zoom factor (1.0 = 100%). Scales native chrome, web content,
-    /// and terminal font together.
+    /// Browser (chrome) zoom factor (1.0 = 100%). Scales the native chrome and the
+    /// terminal font — the shell UI, not page content. Bound to `Ctrl +/-/0`.
     pub(crate) zoom: f64,
+    /// Web content zoom factor (1.0 = 100%). Scales the page inside each web tab's
+    /// WebView2 only, independent of the chrome/terminal [`zoom`](Self::zoom). Bound
+    /// to plain `+/-` (and `Shift +/-`).
+    pub(crate) content_zoom: f64,
     /// Blink state for the command-bar cursor (toggled on a timer in Command mode).
     pub(crate) cursor_on: bool,
     pub(crate) quit: bool,
@@ -609,27 +613,45 @@ impl App {
         self.set_zoom(1.0);
     }
 
-    /// Set the global zoom and apply it to every layer: the native chrome font
-    /// (painter) and each web tab (WebView2 zoom). Native terminals scale with the
-    /// painter too — their grid is re-sized to the new cell count on the next draw
-    /// (`sync_active_term_size`). Bar/tab-bar heights scale, so the active webview is
-    /// re-laid-out to fit between them.
+    /// Set the browser (chrome) zoom and apply it to the native layers: the chrome
+    /// font (painter). Native terminals scale with the painter too — their grid is
+    /// re-sized to the new cell count on the next draw (`sync_active_term_size`).
+    /// Bar/tab-bar heights scale, so every visible pane is re-laid-out to fit. Web
+    /// page content is *not* touched here — that's [`set_content_zoom`](Self::set_content_zoom).
     pub(crate) fn set_zoom(&mut self, factor: f64) {
         let z = ((factor.clamp(ZOOM_MIN, ZOOM_MAX)) * 100.0).round() / 100.0;
         self.zoom = z;
         self.painter.set_px(BASE_PX * z as f32);
-        for tab in &self.tabs {
-            if let Some(wv) = tab.webview() {
-                let _ = wv.zoom(z);
-            }
-        }
         // Tab/command bars changed height → refit every visible pane. This must go
         // through `refresh_visibility` (not a single `set_bounds` on the active
         // webview to the whole content band): under a split the active webview only
         // owns its pane's rect, so bounding it to the full band overlapped the other
         // panes and effectively unsplit the view until the next relayout.
         self.refresh_visibility();
-        self.set_status(format!("zoom {}%", (z * 100.0).round() as i32));
+        self.set_status(format!("browser zoom {}%", (z * 100.0).round() as i32));
+        self.window.request_redraw();
+    }
+
+    pub(crate) fn content_zoom_by(&mut self, steps: i32) {
+        self.set_content_zoom(self.content_zoom + steps as f64 * ZOOM_STEP);
+    }
+
+    pub(crate) fn content_zoom_reset(&mut self) {
+        self.set_content_zoom(1.0);
+    }
+
+    /// Set the web-content zoom and apply it to every web tab's WebView2. This only
+    /// scales page content — the chrome/terminal font is the separate browser
+    /// [`zoom`](Self::zoom), so the bars don't move and no relayout is needed.
+    pub(crate) fn set_content_zoom(&mut self, factor: f64) {
+        let z = ((factor.clamp(ZOOM_MIN, ZOOM_MAX)) * 100.0).round() / 100.0;
+        self.content_zoom = z;
+        for tab in &self.tabs {
+            if let Some(wv) = tab.webview() {
+                let _ = wv.zoom(z);
+            }
+        }
+        self.set_status(format!("content zoom {}%", (z * 100.0).round() as i32));
         self.window.request_redraw();
     }
 
@@ -737,13 +759,13 @@ impl App {
         Some((self.cursor_pos.0 as i32, self.cursor_pos.1 as i32))
     }
 
-    /// Re-assert the current zoom on the active web tab (e.g. after a navigation,
-    /// which can reset the WebView2 zoom factor). No-op for terminal tabs.
+    /// Re-assert the current content zoom on the active web tab (e.g. after a
+    /// navigation, which can reset the WebView2 zoom factor). No-op for terminal tabs.
     pub(crate) fn apply_active_zoom(&self) {
         if let Some(tab) = self.active.and_then(|i| self.tabs.get(i)) {
             if tab.term().is_none() {
                 if let Some(wv) = tab.webview() {
-                    let _ = wv.zoom(self.zoom);
+                    let _ = wv.zoom(self.content_zoom);
                 }
             }
         }
@@ -1101,6 +1123,7 @@ impl App {
         });
         session::save(&session::Session {
             zoom: self.zoom,
+            content_zoom: self.content_zoom,
             nojs: self.nojs,
             adblock: self.adblock,
             adblock_mode: match self.adblock_mode {
@@ -1148,6 +1171,9 @@ impl App {
         if s.zoom != 1.0 {
             self.set_zoom(s.zoom);
         }
+        // Web tabs restored below re-assert this via `apply_active_zoom`, but keep the
+        // field in sync now so it's already correct when they're built.
+        self.content_zoom = s.content_zoom.clamp(ZOOM_MIN, ZOOM_MAX);
         // Maps each SAVED tab index to the LIVE index it restored to (`None` for a tab
         // that isn't created synchronously — a `read` tab is re-fetched on a thread and
         // arrives later as its own window). Drives the pane-layout rebuild below.

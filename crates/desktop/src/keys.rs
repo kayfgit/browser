@@ -183,7 +183,8 @@ impl App {
                 // Half-page scroll (vim Ctrl+D / Ctrl+U).
                 KeyCode::KeyD => self.scroll(self.half_page()),
                 KeyCode::KeyU => self.scroll(-self.half_page()),
-                // Browser-wide zoom (native chrome + web content + terminal).
+                // Browser (chrome) zoom: the bars + terminal font. Web page content is
+                // the separate plain `+/-` binding below.
                 KeyCode::Equal => self.zoom_by(1),
                 KeyCode::Minus => self.zoom_by(-1),
                 KeyCode::Digit0 => self.zoom_reset(),
@@ -258,6 +259,12 @@ impl App {
                 "p" => self.switch_tab(-1),
                 "<" => self.move_tab(-1),
                 ">" => self.move_tab(1),
+                // Web-content zoom (page scale), separate from the chrome `Ctrl +/-`.
+                // Both the unshifted (`=`/`-`) and shifted (`+`/`_`) keys work, so
+                // "+/-" and "Shift +/-" both hit it; `)` (Shift+0) resets to 100%.
+                "+" | "=" => self.content_zoom_by(1),
+                "-" | "_" => self.content_zoom_by(-1),
+                ")" => self.content_zoom_reset(),
                 d if d.len() == 1 && d.as_bytes()[0].is_ascii_digit() => {
                     let n = (d.as_bytes()[0] - b'0') as usize;
                     if n >= 1 {

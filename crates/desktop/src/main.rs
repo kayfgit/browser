@@ -1199,6 +1199,7 @@ fn main() -> Result<()> {
         ai_model: ai::load_model().unwrap_or_else(|| ai::DEFAULT_MODEL.to_string()),
         ai_chats: ai::load_chats(),
         zoom: 1.0,
+        content_zoom: 1.0,
         cursor_on: true,
         quit: false,
         torn_down: false,
