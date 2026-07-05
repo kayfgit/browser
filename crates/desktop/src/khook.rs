@@ -30,15 +30,19 @@ mod imp {
     use tao::event_loop::EventLoopProxy;
     use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::System::SystemInformation::GetTickCount;
     use windows::Win32::System::Threading::GetCurrentProcessId;
     use windows::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId,
         SetWindowsHookExW, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
     };
 
+    use std::sync::atomic::AtomicU32;
+
     use super::{MODE_NORMAL_YIELDED, MODE_PASSTHROUGH};
     use crate::app::UserEvent;
 
+    const VK_TAB: u32 = 0x09;
     const VK_ESCAPE: u32 = 0x1B;
     const VK_S: u32 = 0x53;
     const VK_R: u32 = 0x52;
@@ -46,8 +50,18 @@ mod imp {
     const VK_CONTROL: i32 = 0x11;
     const VK_MENU: i32 = 0x12; // Alt
 
+    /// How long after regaining focus a lone `Tab` is treated as the Alt+Tab straggler
+    /// and swallowed rather than typed into the page. Matches the terminal guard in
+    /// [`crate::term::App::key_term`].
+    const TAB_SWALLOW_MS: u32 = 150;
+
     static MODE: AtomicU8 = AtomicU8::new(super::MODE_OTHER);
     static HWND_VAL: AtomicIsize = AtomicIsize::new(0);
+    /// `GetTickCount` at the moment our window last gained focus, stamped from the event
+    /// loop via [`note_focus_gain`]. Read by the hook (lock-free) to swallow the stray
+    /// `Tab` that Alt+Tab delivers to a focused web page right after the switch. `0` = no
+    /// focus gain recorded yet.
+    static LAST_FOCUS_TICK: AtomicU32 = AtomicU32::new(0);
 
     // The proxy lives on (and is only used from) the main thread — the LL hook proc
     // runs in the context of the thread that installed it, which is our event-loop
@@ -58,6 +72,15 @@ mod imp {
 
     pub(crate) fn set_mode(code: u8) {
         MODE.store(code, Ordering::Relaxed);
+    }
+
+    /// Record that our window just regained focus (called from `WindowEvent::Focused`).
+    /// The hook uses this to swallow the Alt+Tab straggler `Tab` on a focused web page.
+    pub(crate) fn note_focus_gain() {
+        // SAFETY: `GetTickCount` is a pure, always-safe millisecond counter read.
+        let now = unsafe { GetTickCount() };
+        // Never store 0 (the "no gain yet" sentinel) — bump to 1 on the rare wrap.
+        LAST_FOCUS_TICK.store(now.max(1), Ordering::Relaxed);
     }
 
     pub(crate) fn install(hwnd: isize, proxy: EventLoopProxy<UserEvent>) {
@@ -151,7 +174,21 @@ mod imp {
                         post(UserEvent::RestoreDefaults);
                         return LRESULT(1);
                     }
-                    if let Some(ev) = decide(MODE.load(Ordering::Relaxed), kb.vkCode, ctrl, shift) {
+                    let mode = MODE.load(Ordering::Relaxed);
+                    // Swallow the lone `Tab` that Alt+Tab leaves behind on a focused web
+                    // page: right after the switch it would otherwise move form focus /
+                    // type a tab. Only a bare Tab (no live modifier — Alt is already
+                    // released by the time this straggler lands) within the guard window,
+                    // and only in web passthrough where the page holds OS focus (the
+                    // terminal has its own guard in `key_term`). We never touch the Tab
+                    // while Alt is held, so the OS Alt+Tab switcher itself is unaffected.
+                    if mode == MODE_PASSTHROUGH && kb.vkCode == VK_TAB && !alt && !ctrl {
+                        let last = LAST_FOCUS_TICK.load(Ordering::Relaxed);
+                        if last != 0 && GetTickCount().wrapping_sub(last) < TAB_SWALLOW_MS {
+                            return LRESULT(1); // swallow: the page must not see it
+                        }
+                    }
+                    if let Some(ev) = decide(mode, kb.vkCode, ctrl, shift) {
                         post(ev);
                         return LRESULT(1); // swallow: the page must not also see it
                     }
@@ -163,10 +200,13 @@ mod imp {
 }
 
 #[cfg(windows)]
-pub(crate) use imp::{install, set_mode};
+pub(crate) use imp::{install, note_focus_gain, set_mode};
 
 #[cfg(not(windows))]
 pub(crate) fn set_mode(_code: u8) {}
+
+#[cfg(not(windows))]
+pub(crate) fn note_focus_gain() {}
 
 #[cfg(not(windows))]
 pub(crate) fn install(_hwnd: isize, _proxy: tao::event_loop::EventLoopProxy<crate::app::UserEvent>) {}

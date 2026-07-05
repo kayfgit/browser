@@ -9,13 +9,11 @@ nothing means its untouched
 done todos gets erased shortly after.
 
 issues:
-[~] - youtube anti-adblock wall / black screen: ROOT CAUSE was blocking YT's own first-party ad telemetry (api/stats/ads, ptracking, get_midroll) — that's what YT's detector checks, so it served a stream-less enforcement response. Fix (uBO's approach): let the telemetry flow, kill ads purely by pruning the player-response JSON (adPlacements/playerAds/adSlots). playabilityStatus un-wall only fires when streams exist (no more black screen). NEEDS LIVE VERIFY — cat-and-mouse
 [] - opening spotify_player.exe and playing a song freezes :resources
 [?] - random not responding after exiting cs2 (might have to do with constant changes to resolution)
 [?] - i pressed o and i together and the browser froze in a state of half normal and half insert mode, had to alt+f4
 [?] - sometimes crashes after taking a windows screenshot (prntscreen button)
-[x] - when splitting it creates a new tab, it should work like tmux in which the tabs are contained in one tab
-[] - if i alt+tab into the browser or alt+tab out of the browser, the "tab" key gets registered in the browser
+[x] - if i alt+tab into the browser or alt+tab out of the browser, the "tab" key gets registered in the browser
 
 feat:
 [] - ctrl+: enters command bar in vim mode, allows vim motions.

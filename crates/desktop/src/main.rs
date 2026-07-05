@@ -1327,6 +1327,9 @@ fn main() -> Result<()> {
                 WindowEvent::Focused(focused) => {
                     if focused {
                         app.last_focus_gain = Instant::now();
+                        // Let the keyboard hook swallow the Alt+Tab straggler `Tab` on a
+                        // focused web page too (the terminal is guarded in `key_term`).
+                        khook::note_focus_gain();
                     }
                 }
                 WindowEvent::CursorMoved { position, .. } => {
