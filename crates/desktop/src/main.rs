@@ -1222,6 +1222,7 @@ fn main() -> Result<()> {
         pending_window_key: false,
         pending_window_at: Instant::now(),
         pane_resize_at: Instant::now(),
+        pane_move_orig: None,
         active_pane_is_webview: false,
         background_webview_visible: false,
         term_scrollback: pty_term::DEFAULT_SCROLLBACK,

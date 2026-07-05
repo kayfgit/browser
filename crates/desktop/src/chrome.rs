@@ -498,9 +498,12 @@ impl App {
                     (d.x + d.w) as usize, (d.y + d.h) as usize, draw::DIM,
                 );
             }
-            if is_split {
+            if is_split || self.mode == ModeKind::PaneMove {
                 if let Some((_, r)) = panes.iter().find(|(t, _)| Some(*t) == self.active) {
-                    draw_pane_border(*r, &mut buf, wz, hz, theme.accent);
+                    // The pane being moved is highlighted yellow; the ordinary focused
+                    // pane keeps the theme accent.
+                    let col = if self.mode == ModeKind::PaneMove { draw::GRAB } else { theme.accent };
+                    draw_pane_border(*r, &mut buf, wz, hz, col);
                 }
             }
             draw::fill_band(&mut buf, wz, hz, 0, tab_h, theme.bar_bg);
@@ -623,6 +626,10 @@ impl App {
             ModeKind::PaneResize => vec![
                 ("[RESIZE PANE]".into(), accent),
                 ("  hjkl resize · Esc done".into(), draw::DIM),
+            ],
+            ModeKind::PaneMove => vec![
+                ("[MOVE PANE]".into(), draw::GRAB),
+                ("  hjkl swap · Enter set · Esc cancel".into(), draw::DIM),
             ],
             ModeKind::Hint => vec![
                 (if self.hint_new_tab { "[HINT ↗]" } else { "[HINT]" }.into(), accent),

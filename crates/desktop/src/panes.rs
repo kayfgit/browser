@@ -26,6 +26,7 @@ pub(crate) enum SplitDir {
 /// a `Split` divides its region between two children, `ratio` being the fraction of
 /// the space given to the first child `a` (left in a Row split, top in a Col split).
 /// New splits start at `0.5` (an even divide); Ctrl+W H/J/K/L nudge it.
+#[derive(Clone)]
 pub(crate) enum PaneNode {
     Leaf(usize),
     Split { dir: SplitDir, ratio: f32, a: Box<PaneNode>, b: Box<PaneNode> },
@@ -134,6 +135,46 @@ impl PaneNode {
             return true;
         }
         false
+    }
+
+    /// Exchange the two leaves showing `x` and `y` (swapping which pane each tab
+    /// occupies) — the primitive behind move-pane's h/j/k/l. Leaves the tree shape and
+    /// every split ratio untouched, so only the contents slide. A no-op for any leaf
+    /// that isn't one of the two.
+    pub(crate) fn swap_leaves(&mut self, x: usize, y: usize) {
+        match self {
+            PaneNode::Leaf(t) => {
+                if *t == x {
+                    *t = y;
+                } else if *t == y {
+                    *t = x;
+                }
+            }
+            PaneNode::Split { a, b, .. } => {
+                a.swap_leaves(x, y);
+                b.swap_leaves(x, y);
+            }
+        }
+    }
+
+    /// Flip the orientation (Row ↔ Col) of the split that is the *immediate parent* of the
+    /// leaf showing `tab` — turning that pane's divider from side-by-side to stacked or
+    /// vice versa. Ratios and every other split stay put. Returns whether such a parent
+    /// was found (false if `tab` is a lone leaf with no split above it here).
+    pub(crate) fn flip_parent_split(&mut self, tab: usize) -> bool {
+        let PaneNode::Split { dir, a, b, .. } = self else {
+            return false;
+        };
+        let child_is_target = |n: &PaneNode| matches!(n, PaneNode::Leaf(t) if *t == tab);
+        if child_is_target(a) || child_is_target(b) {
+            *dir = match *dir {
+                SplitDir::Row => SplitDir::Col,
+                SplitDir::Col => SplitDir::Row,
+            };
+            return true;
+        }
+        (a.contains_leaf(tab) && a.flip_parent_split(tab))
+            || (b.contains_leaf(tab) && b.flip_parent_split(tab))
     }
 
     /// Remove the leaf showing `tab`, collapsing its parent split into the sibling.
@@ -266,14 +307,12 @@ impl App {
         self.window.request_redraw();
     }
 
-    /// Move pane focus in a direction (`h`/`j`/`k`/`l`): the spatially-nearest pane
-    /// whose center lies that way from the focused pane's center, preferring panes
-    /// aligned on the cross axis. No-op when not split or nothing lies that way.
-    pub(crate) fn move_pane_focus(&mut self, dir: char) {
+    /// The spatially-nearest pane whose center lies `dir` (`h`/`j`/`k`/`l`) from the
+    /// focused pane's center, preferring panes aligned on the cross axis. `None` when not
+    /// split or nothing lies that way. Shared by pane-focus movement and move-pane swaps.
+    pub(crate) fn pane_neighbor(&self, dir: char) -> Option<usize> {
         let (panes, _) = self.pane_layout();
-        let Some((_, fr)) = panes.iter().find(|(t, _)| Some(*t) == self.active) else {
-            return;
-        };
+        let (_, fr) = panes.iter().find(|(t, _)| Some(*t) == self.active)?;
         let (fcx, fcy) = (fr.x + fr.w / 2, fr.y + fr.h / 2);
         let mut best: Option<usize> = None;
         let mut best_score = i32::MAX;
@@ -304,7 +343,13 @@ impl App {
                 best = Some(*t);
             }
         }
-        if let Some(t) = best {
+        best
+    }
+
+    /// Move pane focus in a direction (`h`/`j`/`k`/`l`): focus the spatially-nearest pane
+    /// that way. No-op when not split or nothing lies that way.
+    pub(crate) fn move_pane_focus(&mut self, dir: char) {
+        if let Some(t) = self.pane_neighbor(dir) {
             self.set_active_pane(t);
         }
     }
@@ -375,6 +420,147 @@ impl App {
         self.window.request_redraw();
     }
 
+    /// `Ctrl+W <n>` in Normal: start moving a pane. `win` is a tab-bar entry index. If it
+    /// is the active window, grab its focused pane to rearrange in place; otherwise pull
+    /// that tab into the active window as a new pane beside the focused one. Either way we
+    /// enter [`PaneMove`](ModeKind::PaneMove) with the grabbed pane highlighted yellow.
+    pub(crate) fn grab_pane_move(&mut self, win: usize) {
+        let Some(aw) = self.active_window() else {
+            self.set_status("can't move panes here — open a page first");
+            return;
+        };
+        if win >= self.windows.len() {
+            self.set_status("no such tab to grab");
+            return;
+        }
+        if win == aw {
+            return self.grab_focused_pane_move();
+        }
+        let Some(anchor) = self.active else { return };
+        // Snapshot first so Esc can restore the exact prior layout (including the pulled
+        // tab's own window).
+        self.pane_move_orig = Some((self.windows.clone(), self.active));
+        let tab = self.windows[win].first_leaf();
+        // Add the pulled tab beside the focused pane in the active window…
+        let tree = std::mem::replace(&mut self.windows[aw], PaneNode::Leaf(tab));
+        self.windows[aw] = tree.insert_split(anchor, SplitDir::Row, tab);
+        // …then remove it from its source window, dropping that window if it's now empty.
+        let src = std::mem::replace(&mut self.windows[win], PaneNode::Leaf(tab));
+        match src.prune(tab) {
+            Some(t) => self.windows[win] = t,
+            None => {
+                self.windows.remove(win);
+            }
+        }
+        self.active = Some(tab);
+        self.enter_pane_move();
+    }
+
+    /// Grab the currently focused pane to rearrange it within its split (`Ctrl+W m`). A
+    /// no-op (with a hint) unless the active window is actually split.
+    pub(crate) fn grab_focused_pane_move(&mut self) {
+        let Some(aw) = self.active_window() else {
+            self.set_status("nothing to move — open a page first");
+            return;
+        };
+        if !matches!(self.windows[aw], PaneNode::Split { .. }) {
+            self.set_status("this tab isn't split — split it first (Ctrl+W v)");
+            return;
+        }
+        self.pane_move_orig = Some((self.windows.clone(), self.active));
+        self.enter_pane_move();
+    }
+
+    /// Common tail of both grabs: switch to move mode with the shell holding the keyboard
+    /// (so h/j/k/l reach us, not the page) and the grabbed pane focused/highlighted.
+    fn enter_pane_move(&mut self) {
+        self.mode = ModeKind::PaneMove;
+        self.find_reset();
+        self.refresh_visibility();
+        self.window.set_focus();
+        self.window.request_redraw();
+        self.set_status("move pane: hjkl swap · Enter set · Esc cancel");
+    }
+
+    /// Move-pane h/j/k/l: swap the grabbed (focused) pane with its neighbour that way,
+    /// so the pane slides through the arrangement. Focus stays on the grabbed tab, so the
+    /// yellow highlight follows it. A no-op when nothing lies that direction.
+    pub(crate) fn pane_move_swap(&mut self, dir: char) {
+        let Some(a) = self.active else { return };
+        let Some(t) = self.pane_neighbor(dir) else { return };
+        let Some(aw) = self.active_window() else { return };
+        self.windows[aw].swap_leaves(a, t);
+        self.refresh_visibility();
+        self.window.set_focus();
+        self.window.request_redraw();
+    }
+
+    /// Commit the move: keep the current arrangement and return to Normal.
+    pub(crate) fn commit_pane_move(&mut self) {
+        self.pane_move_orig = None;
+        self.mode = ModeKind::Normal;
+        self.clear_status();
+        self.refresh_visibility();
+        self.window.set_focus();
+        self.window.request_redraw();
+    }
+
+    /// Cancel the move: restore the arrangement snapshotted when the pane was grabbed
+    /// (undoing any swaps and, for a pulled-in tab, returning it to its own window).
+    pub(crate) fn revert_pane_move(&mut self) {
+        if let Some((windows, active)) = self.pane_move_orig.take() {
+            self.windows = windows;
+            self.active = active;
+        }
+        self.mode = ModeKind::Normal;
+        self.clear_status();
+        self.refresh_visibility();
+        self.window.set_focus();
+        self.window.request_redraw();
+    }
+
+    /// `Ctrl+W b`: break the focused pane out of its split into its own standalone tab
+    /// (a new tab-bar entry) — the reverse of pulling a tab in. A no-op (with a hint) when
+    /// the pane is already standalone.
+    pub(crate) fn break_pane(&mut self) {
+        let Some(a) = self.active else { return };
+        let Some(aw) = self.active_window() else { return };
+        if !matches!(self.windows[aw], PaneNode::Split { .. }) {
+            self.set_status("pane isn't split — nothing to break out");
+            return;
+        }
+        let src = std::mem::replace(&mut self.windows[aw], PaneNode::Leaf(a));
+        if let Some(t) = src.prune(a) {
+            self.windows[aw] = t;
+        }
+        self.windows.push(PaneNode::Leaf(a));
+        self.mode = ModeKind::Normal;
+        self.find_reset();
+        self.refresh_visibility();
+        self.window.set_focus();
+        self.window.request_redraw();
+        self.set_status("pane broken out into its own tab");
+    }
+
+    /// Flip the focused pane's split between side-by-side and stacked (`Ctrl+W r`): turns
+    /// its divider from vertical to horizontal or back, re-tiling the two panes. Only the
+    /// split directly dividing the focused pane from its neighbour is flipped; ratios and
+    /// any other splits are left alone. A no-op (with a hint) unless the pane is split.
+    pub(crate) fn toggle_pane_orientation(&mut self) {
+        let Some(a) = self.active else { return };
+        let Some(aw) = self.active_window() else {
+            self.set_status("nothing to flip — open a page first");
+            return;
+        };
+        if self.windows[aw].flip_parent_split(a) {
+            self.refresh_visibility();
+            self.window.set_focus();
+            self.window.request_redraw();
+        } else {
+            self.set_status("this tab isn't split — split it first (Ctrl+W v)");
+        }
+    }
+
     /// The tab + rect of the pane under a pixel (for wheel/click routing). With no
     /// split this is the active tab filling the band.
     pub(crate) fn pane_at_pixel(&self, x: f64, y: f64) -> Option<(usize, PaneRect)> {
@@ -383,6 +569,79 @@ impl App {
             .0
             .into_iter()
             .find(|(_, r)| px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h)
+    }
+}
+
+// --- Session persistence of the pane layout -------------------------------------------
+// A window's tree is stored as a compact string so it drops into the TOML session as a
+// plain `Vec<String>` (no fragile nested-enum tables). Grammar: a leaf is its tab index;
+// a split is `R`/`C` (Row/Col) + ratio + `(a|b)`, e.g. `R0.5000(0|C0.6000(1|2))`.
+
+/// Encode a window's pane tree to its string form, remapping each leaf's LIVE tab index
+/// to a SAVED-tab index via `live_to_saved` and pruning leaves that aren't being saved
+/// (collapsing the split into its surviving side, exactly like [`PaneNode::prune`]).
+/// `None` when the whole tree maps away (every leaf was unsaved).
+pub(crate) fn encode_window(tree: &PaneNode, live_to_saved: &[Option<usize>]) -> Option<String> {
+    match tree {
+        PaneNode::Leaf(t) => live_to_saved.get(*t).copied().flatten().map(|s| s.to_string()),
+        PaneNode::Split { dir, ratio, a, b } => {
+            let dc = if *dir == SplitDir::Row { 'R' } else { 'C' };
+            match (encode_window(a, live_to_saved), encode_window(b, live_to_saved)) {
+                (Some(a), Some(b)) => Some(format!("{dc}{ratio:.4}({a}|{b})")),
+                (Some(x), None) | (None, Some(x)) => Some(x),
+                (None, None) => None,
+            }
+        }
+    }
+}
+
+/// Decode a window string back into a tree of LIVE tab indices, translating each stored
+/// SAVED index through `saved_to_live` and pruning any tab that didn't come back (e.g. an
+/// async read tab not yet restored). `None` if the string is malformed or fully pruned.
+pub(crate) fn decode_window(s: &str, saved_to_live: &[Option<usize>]) -> Option<PaneNode> {
+    let (tree, rest) = parse_node(s)?;
+    if !rest.is_empty() {
+        return None;
+    }
+    remap_window(tree, saved_to_live)
+}
+
+/// Recursive-descent parse of one node, returning it and the unconsumed tail. Leaves are
+/// left as their stored (saved) indices; [`decode_window`] remaps them afterwards.
+fn parse_node(s: &str) -> Option<(PaneNode, &str)> {
+    let first = s.as_bytes().first()?;
+    match first {
+        b'R' | b'C' => {
+            let dir = if *first == b'R' { SplitDir::Row } else { SplitDir::Col };
+            let rest = &s[1..];
+            let open = rest.find('(')?;
+            let ratio: f32 = rest[..open].parse().ok()?;
+            let (a, rest) = parse_node(&rest[open + 1..])?;
+            let (b, rest) = parse_node(rest.strip_prefix('|')?)?;
+            let rest = rest.strip_prefix(')')?;
+            Some((PaneNode::Split { dir, ratio, a: Box::new(a), b: Box::new(b) }, rest))
+        }
+        _ => {
+            let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+            let n: usize = s[..end].parse().ok()?;
+            Some((PaneNode::Leaf(n), &s[end..]))
+        }
+    }
+}
+
+/// Translate a parsed tree's saved indices to live ones, pruning unmapped leaves.
+fn remap_window(node: PaneNode, map: &[Option<usize>]) -> Option<PaneNode> {
+    match node {
+        PaneNode::Leaf(s) => map.get(s).copied().flatten().map(PaneNode::Leaf),
+        PaneNode::Split { dir, ratio, a, b } => {
+            match (remap_window(*a, map), remap_window(*b, map)) {
+                (Some(a), Some(b)) => {
+                    Some(PaneNode::Split { dir, ratio, a: Box::new(a), b: Box::new(b) })
+                }
+                (Some(x), None) | (None, Some(x)) => Some(x),
+                (None, None) => None,
+            }
+        }
     }
 }
 
@@ -431,6 +690,91 @@ mod tests {
         let mut t = split(SplitDir::Row, 0, 2);
         t.shift_after_remove(1); // tab 1 was deleted: 2 → 1, 0 unchanged.
         assert_eq!(leaves(&t), vec![0, 1]);
+    }
+
+    #[test]
+    fn swap_leaves_exchanges_positions_and_keeps_shape() {
+        // Row(Leaf0, Row(Leaf1, Leaf2)): swapping 0 and 2 moves each into the other's
+        // slot while the tree structure and ratios are untouched.
+        let inner = split(SplitDir::Row, 1, 2);
+        let mut t = PaneNode::Split {
+            dir: SplitDir::Row,
+            ratio: 0.5,
+            a: Box::new(PaneNode::Leaf(0)),
+            b: Box::new(inner),
+        };
+        t.swap_leaves(0, 2);
+        assert_eq!(leaves(&t), vec![2, 1, 0]);
+        // Swapping two tabs that aren't present leaves the tree unchanged.
+        t.swap_leaves(7, 8);
+        assert_eq!(leaves(&t), vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn flip_parent_split_toggles_only_the_focused_divider() {
+        // Row(Leaf0, Row(Leaf1, Leaf2)): flipping from leaf 1 hits the INNER split (its
+        // immediate parent), turning it Col; the outer Row is untouched.
+        let inner = split(SplitDir::Row, 1, 2);
+        let mut t = PaneNode::Split {
+            dir: SplitDir::Row,
+            ratio: 0.5,
+            a: Box::new(PaneNode::Leaf(0)),
+            b: Box::new(inner),
+        };
+        assert!(t.flip_parent_split(1));
+        match &t {
+            PaneNode::Split { dir: outer, b, .. } => {
+                assert!(*outer == SplitDir::Row, "outer divider unchanged");
+                match b.as_ref() {
+                    PaneNode::Split { dir: innr, .. } => assert!(*innr == SplitDir::Col),
+                    _ => panic!("expected inner split"),
+                }
+            }
+            _ => panic!("expected a split"),
+        }
+        // A lone leaf has no parent split here → no-op, reports false.
+        assert!(!PaneNode::Leaf(0).flip_parent_split(0));
+    }
+
+    #[test]
+    fn encode_decode_roundtrips_and_remaps_indices() {
+        // Row(Leaf0, Col(Leaf1, Leaf2)) with live indices 0,1,2.
+        let inner = PaneNode::Split {
+            dir: SplitDir::Col,
+            ratio: 0.6,
+            a: Box::new(PaneNode::Leaf(1)),
+            b: Box::new(PaneNode::Leaf(2)),
+        };
+        let tree = PaneNode::Split {
+            dir: SplitDir::Row,
+            ratio: 0.5,
+            a: Box::new(PaneNode::Leaf(0)),
+            b: Box::new(inner),
+        };
+        // Identity save map → the canonical string.
+        let id = [Some(0), Some(1), Some(2)];
+        let enc = encode_window(&tree, &id).expect("encodes");
+        assert_eq!(enc, "R0.5000(0|C0.6000(1|2))");
+        // Restore with a shifted map (saved i → live i+10): shape/ratios preserved.
+        let shift = [Some(10), Some(11), Some(12)];
+        let back = decode_window(&enc, &shift).expect("decodes");
+        assert_eq!(leaves(&back), vec![10, 11, 12]);
+        match &back {
+            PaneNode::Split { ratio, .. } => assert!((*ratio - 0.5).abs() < 1e-4),
+            _ => panic!("expected a split"),
+        }
+    }
+
+    #[test]
+    fn decode_prunes_leaves_that_didnt_restore() {
+        // A split of tabs 0 and 1 where tab 1 didn't come back (None) collapses to a lone
+        // leaf 0; a leaf that's entirely gone yields None.
+        let none_for_1 = [Some(5), None];
+        let one = decode_window("R0.5000(0|1)", &none_for_1).expect("collapses to survivor");
+        assert!(matches!(one, PaneNode::Leaf(5)));
+        assert!(decode_window("3", &[None, None, None, None]).is_none());
+        // Malformed strings are rejected, not panicked on.
+        assert!(decode_window("R0.5(0|", &[Some(0), Some(1)]).is_none());
     }
 
     #[test]

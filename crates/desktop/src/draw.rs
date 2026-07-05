@@ -29,6 +29,8 @@ pub const SEL: Rgb = (0x2d, 0x4f, 0x7a);
 /// Find-in-page: all matches (dim) and the current match (bright).
 pub const FIND: Rgb = (0x5a, 0x52, 0x14);
 pub const FIND_CUR: Rgb = (0xc8, 0x64, 0x1e);
+/// The yellow highlight around a pane being moved (`Ctrl+W` move-pane mode).
+pub const GRAB: Rgb = (0xf2, 0xc6, 0x4f);
 
 /// The live, resolved chrome theme used at paint time — the customizable subset of the
 /// colours above plus a bar-height multiplier. Built from the persisted

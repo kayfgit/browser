@@ -151,6 +151,11 @@ pub(crate) enum ModeKind {
     /// until Esc/another key or a short idle timeout. Entered with Ctrl+W then
     /// Shift+H/J/K/L so you don't re-press the chord for each nudge.
     PaneResize,
+    /// Move-pane: the focused pane is highlighted yellow and hjkl swap it with its
+    /// neighbours to rearrange the split; Enter commits, Esc reverts to the original
+    /// arrangement. Entered with `Ctrl+W` then a tab number (pull another tab into the
+    /// split) or `Ctrl+W m` (grab the focused pane). See [`pane_move_orig`](App::pane_move_orig).
+    PaneMove,
     /// Link hints are shown; typed characters select one. Entered with `f`.
     Hint,
     /// Find-in-page: `/` opened a search prompt. Typing searches live; Enter keeps
@@ -381,6 +386,10 @@ pub(crate) struct App {
     /// Last keypress handled in [`PaneResize`](ModeKind::PaneResize) mode; the mode
     /// auto-exits once this ages past [`PANE_RESIZE_TIMEOUT`].
     pub(crate) pane_resize_at: Instant,
+    /// While in [`PaneMove`](ModeKind::PaneMove): a snapshot of `(windows, active)` taken
+    /// when the pane was grabbed, so Esc can restore the exact prior arrangement (undoing
+    /// both a pulled-in tab and any swaps). `None` outside move mode.
+    pub(crate) pane_move_orig: Option<(Vec<PaneNode>, Option<usize>)>,
     /// Cached by `refresh_visibility()`: the focused pane shows a webview, which can
     /// trap keyboard focus on click — arms the fast (300 ms) focus backstop.
     pub(crate) active_pane_is_webview: bool,
@@ -1052,6 +1061,10 @@ impl App {
         }
         let mut tabs = Vec::new();
         let mut active = 0;
+        // Maps each LIVE tab index to its position in `tabs` (the SAVED index), or `None`
+        // for tabs that aren't persisted (internal pages). Used to re-express the pane
+        // layout in saved-index terms so it survives the restore's re-indexing.
+        let mut live_to_saved = vec![None; self.tabs.len()];
         for (i, tab) in self.tabs.iter().enumerate() {
             if tab.url.starts_with("browser://") || tab.vim().is_some() {
                 continue;
@@ -1070,8 +1083,16 @@ impl App {
             if Some(i) == self.active {
                 active = tabs.len();
             }
+            live_to_saved[i] = Some(tabs.len());
             tabs.push(session::SavedTab { kind: kind.to_string(), url: tab.url.clone() });
         }
+        // Encode each window's split tree (dropping windows whose tabs were all skipped),
+        // so `:wq` remembers the layout and reopening restores it.
+        let windows = self
+            .windows
+            .iter()
+            .filter_map(|tree| crate::panes::encode_window(tree, &live_to_saved))
+            .collect();
         // Remember the window placement (outer position + inner size) so it reopens
         // exactly where it was.
         let window = self.window.outer_position().ok().map(|p| {
@@ -1093,6 +1114,7 @@ impl App {
             active,
             history: self.history.clone(),
             history_at: self.history_at.clone(),
+            windows,
             window,
             tabs,
         });
@@ -1126,7 +1148,12 @@ impl App {
         if s.zoom != 1.0 {
             self.set_zoom(s.zoom);
         }
-        for tab in &s.tabs {
+        // Maps each SAVED tab index to the LIVE index it restored to (`None` for a tab
+        // that isn't created synchronously — a `read` tab is re-fetched on a thread and
+        // arrives later as its own window). Drives the pane-layout rebuild below.
+        let mut saved_to_live = vec![None; s.tabs.len()];
+        for (si, tab) in s.tabs.iter().enumerate() {
+            let before = self.tabs.len();
             // Each restored tab is a NEW tab (push), so they don't replace each other.
             match tab.kind.as_str() {
                 "term" => self.open_terminal(),
@@ -1135,9 +1162,46 @@ impl App {
                 "nojs" => self.open_tab(&tab.url, true, true),
                 _ => self.open_tab(&tab.url, false, true),
             }
+            if self.tabs.len() > before {
+                saved_to_live[si] = Some(self.tabs.len() - 1);
+            }
+        }
+        // Rebuild the saved split layout. Each opened tab currently sits in its own
+        // standalone window; replace that flat list with the decoded pane trees, then
+        // append a window for any tab no tree covered (belt-and-suspenders, and async
+        // `read` tabs which restore standalone).
+        if !s.windows.is_empty() {
+            let mut rebuilt: Vec<PaneNode> = s
+                .windows
+                .iter()
+                .filter_map(|enc| crate::panes::decode_window(enc, &saved_to_live))
+                .collect();
+            let mut covered = vec![false; self.tabs.len()];
+            let mut leaves = Vec::new();
+            for w in &rebuilt {
+                w.leaves(&mut leaves);
+            }
+            for l in leaves {
+                if let Some(c) = covered.get_mut(l) {
+                    *c = true;
+                }
+            }
+            for i in 0..self.tabs.len() {
+                if !covered[i] && self.tabs[i].ai().is_none() {
+                    rebuilt.push(PaneNode::Leaf(i));
+                }
+            }
+            self.windows = rebuilt;
         }
         if !self.tabs.is_empty() {
-            self.active = Some(s.active.min(self.tabs.len() - 1));
+            // Prefer the saved active tab's new index; fall back to the first tab.
+            let active = saved_to_live
+                .get(s.active)
+                .copied()
+                .flatten()
+                .filter(|&i| i < self.tabs.len())
+                .unwrap_or(0);
+            self.active = Some(active);
             self.refresh_visibility();
         }
         self.clear_status();

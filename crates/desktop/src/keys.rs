@@ -19,6 +19,7 @@ impl App {
             ModeKind::Resize => self.key_resize(key),
             ModeKind::Move => self.key_move(key),
             ModeKind::PaneResize => self.key_pane_resize(key),
+            ModeKind::PaneMove => self.key_pane_move(key),
             ModeKind::Hint => self.key_hint(key),
             ModeKind::Caret => self.key_caret(key),
             // The single typing mode. The content normally has focus (web page) or the
@@ -84,7 +85,17 @@ impl App {
                     KeyCode::KeyS => self.split_pane(SplitDir::Col),
                     KeyCode::KeyV => self.split_pane(SplitDir::Row),
                     KeyCode::KeyC | KeyCode::KeyQ => self.close_active(),
-                    _ => {}
+                    // Grab a pane to move it: `m` grabs the focused pane, a digit pulls
+                    // that tab-bar entry into the split. `b` breaks the focused pane out.
+                    KeyCode::KeyM => self.grab_focused_pane_move(),
+                    KeyCode::KeyB => self.break_pane(),
+                    // Flip the focused pane's split between side-by-side and stacked.
+                    KeyCode::KeyR => self.toggle_pane_orientation(),
+                    _ => {
+                        if let Some(n) = digit_index(key.physical_key) {
+                            self.grab_pane_move(n);
+                        }
+                    }
                 }
                 return;
             }
@@ -1198,6 +1209,39 @@ impl App {
             }
         }
     }
+
+    /// Move-pane mode (see [`ModeKind::PaneMove`]): h/j/k/l swap the grabbed pane with its
+    /// neighbour that way, Enter commits the new arrangement, Esc reverts to the layout
+    /// from when it was grabbed. Any other key is ignored so a stray press can't drop the
+    /// pane in the wrong place — you leave deliberately with Enter or Esc.
+    pub(crate) fn key_pane_move(&mut self, key: &KeyEvent) {
+        match key.physical_key {
+            KeyCode::KeyH => self.pane_move_swap('h'),
+            KeyCode::KeyJ => self.pane_move_swap('j'),
+            KeyCode::KeyK => self.pane_move_swap('k'),
+            KeyCode::KeyL => self.pane_move_swap('l'),
+            KeyCode::Enter => self.commit_pane_move(),
+            KeyCode::Escape => self.revert_pane_move(),
+            _ => {}
+        }
+    }
+}
+
+/// Map a top-row digit key `1`–`9` to a zero-based index (`Digit1` → 0). Used by the
+/// `Ctrl+W <n>` move-pane grab, where the digit is a tab-bar entry number.
+fn digit_index(code: KeyCode) -> Option<usize> {
+    Some(match code {
+        KeyCode::Digit1 => 0,
+        KeyCode::Digit2 => 1,
+        KeyCode::Digit3 => 2,
+        KeyCode::Digit4 => 3,
+        KeyCode::Digit5 => 4,
+        KeyCode::Digit6 => 5,
+        KeyCode::Digit7 => 6,
+        KeyCode::Digit8 => 7,
+        KeyCode::Digit9 => 8,
+        _ => return None,
+    })
 }
 
 /// A "word" character for command-bar word motions (`Ctrl+W`, `Ctrl+←/→`):

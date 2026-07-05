@@ -37,6 +37,12 @@ pub struct Session {
     /// the `window`/`tabs` tables (TOML: scalar arrays precede tables).
     #[serde(default)]
     pub history_at: Vec<u64>,
+    /// The pane/split layout: one encoded string per tab-strip window (see
+    /// `panes::encode_window`), with leaf numbers indexing into `tabs`. Empty for sessions
+    /// without splits or written by older builds — then each tab restores standalone. Must
+    /// stay before the `window`/`tabs` tables (TOML: values precede tables).
+    #[serde(default)]
+    pub windows: Vec<String>,
     /// Last window geometry (outer position + inner size). `None` for sessions
     /// written before this was tracked.
     #[serde(default)]
@@ -115,6 +121,7 @@ mod tests {
             active: 1,
             history: vec!["https://example.com/".into()],
             history_at: vec![1_700_000_000],
+            windows: vec!["R0.5000(0|1)".into()],
             window: Some(WindowGeom { x: 40, y: 60, w: 1280, h: 800 }),
             tabs: vec![
                 SavedTab { kind: "open".into(), url: "https://a.test/".into() },
@@ -129,5 +136,6 @@ mod tests {
         assert_eq!((g.x, g.y, g.w, g.h), (40, 60, 1280, 800));
         assert_eq!(back.tabs[0].url, "https://a.test/");
         assert_eq!(back.tabs[1].kind, "term");
+        assert_eq!(back.windows, vec!["R0.5000(0|1)".to_string()]);
     }
 }
