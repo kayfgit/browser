@@ -1220,6 +1220,8 @@ fn main() -> Result<()> {
         fs_from_page: false,
         windows: Vec::new(),
         pending_window_key: false,
+        pending_window_at: Instant::now(),
+        pane_resize_at: Instant::now(),
         active_pane_is_webview: false,
         background_webview_visible: false,
         term_scrollback: pty_term::DEFAULT_SCROLLBACK,
@@ -1287,6 +1289,15 @@ fn main() -> Result<()> {
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
                 // A transient status flash (e.g. a finished background `:ai`) times out.
                 app.expire_status_flash();
+                // Repeatable pane-resize auto-leaves after a spell of no resize key, so a
+                // later j/k (meant to scroll) doesn't silently resize.
+                if app.mode == ModeKind::PaneResize
+                    && app.pane_resize_at.elapsed() >= crate::app::PANE_RESIZE_TIMEOUT
+                {
+                    app.mode = ModeKind::Normal;
+                    app.clear_status();
+                    app.window.request_redraw();
+                }
                 if matches!(app.mode, ModeKind::Command | ModeKind::Find) {
                     app.cursor_on = !app.cursor_on;
                     app.window.request_redraw();
@@ -1657,6 +1668,10 @@ fn main() -> Result<()> {
             } else if app.mode == ModeKind::Normal && app.active_is_res() {
                 // Auto-refresh the live resource monitor about once a second.
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(1000));
+            } else if app.mode == ModeKind::PaneResize {
+                // Wake at the resize-mode idle deadline so it can auto-exit.
+                *control_flow =
+                    ControlFlow::WaitUntil(app.pane_resize_at + crate::app::PANE_RESIZE_TIMEOUT);
             }
             // A pending status-flash auto-clear: wake at its deadline (or sooner, if
             // another timer above already wins).

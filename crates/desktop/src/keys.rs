@@ -18,6 +18,7 @@ impl App {
             ModeKind::Command | ModeKind::Find => self.key_command(key),
             ModeKind::Resize => self.key_resize(key),
             ModeKind::Move => self.key_move(key),
+            ModeKind::PaneResize => self.key_pane_resize(key),
             ModeKind::Hint => self.key_hint(key),
             ModeKind::Caret => self.key_caret(key),
             // The single typing mode. The content normally has focus (web page) or the
@@ -62,21 +63,32 @@ impl App {
 
     pub(crate) fn key_normal(&mut self, key: &KeyEvent) {
         // Ctrl+W window prefix: the next key picks a pane action (vim-window style).
-        // h/j/k/l move focus, s/v split (stacked / side-by-side), c/q close the pane.
-        // Matched on the physical key so it works whether or not Ctrl is still held.
+        // h/j/k/l move focus, Shift+H/J/K/L enter repeatable resize, s/v split (stacked
+        // / side-by-side), c/q close the pane. Matched on the physical key so it works
+        // whether or not Ctrl is still held. A prefix left dangling past the timeout is
+        // dropped so a forgotten Ctrl+W can't hijack a later key (that key falls through
+        // to its normal binding).
         if self.pending_window_key {
             self.pending_window_key = false;
-            match key.physical_key {
-                KeyCode::KeyH => self.move_pane_focus('h'),
-                KeyCode::KeyJ => self.move_pane_focus('j'),
-                KeyCode::KeyK => self.move_pane_focus('k'),
-                KeyCode::KeyL => self.move_pane_focus('l'),
-                KeyCode::KeyS => self.split_pane(SplitDir::Col),
-                KeyCode::KeyV => self.split_pane(SplitDir::Row),
-                KeyCode::KeyC | KeyCode::KeyQ => self.close_active(),
-                _ => {}
+            if self.pending_window_at.elapsed() <= crate::app::WINDOW_PREFIX_TIMEOUT {
+                let resize = self.modifiers.shift_key();
+                match key.physical_key {
+                    KeyCode::KeyH if resize => self.enter_pane_resize('h'),
+                    KeyCode::KeyJ if resize => self.enter_pane_resize('j'),
+                    KeyCode::KeyK if resize => self.enter_pane_resize('k'),
+                    KeyCode::KeyL if resize => self.enter_pane_resize('l'),
+                    KeyCode::KeyH => self.move_pane_focus('h'),
+                    KeyCode::KeyJ => self.move_pane_focus('j'),
+                    KeyCode::KeyK => self.move_pane_focus('k'),
+                    KeyCode::KeyL => self.move_pane_focus('l'),
+                    KeyCode::KeyS => self.split_pane(SplitDir::Col),
+                    KeyCode::KeyV => self.split_pane(SplitDir::Row),
+                    KeyCode::KeyC | KeyCode::KeyQ => self.close_active(),
+                    _ => {}
+                }
+                return;
             }
-            return;
+            // else: stale prefix — fall through and handle this key normally.
         }
         // Once a `/` search is live, `n`/`N` step through matches and Esc clears it
         // (qutebrowser-style) — in every tab type, so this takes precedence over both
@@ -149,8 +161,12 @@ impl App {
         if self.modifiers.control_key() {
             match key.physical_key {
                 KeyCode::KeyV => self.enter_passthrough(),
-                // Ctrl+W: arm the window/pane prefix (next key picks the action).
-                KeyCode::KeyW => self.pending_window_key = true,
+                // Ctrl+W: arm the window/pane prefix (next key picks the action), with a
+                // timestamp so a dangling prefix expires instead of eating a later key.
+                KeyCode::KeyW => {
+                    self.pending_window_key = true;
+                    self.pending_window_at = std::time::Instant::now();
+                }
                 // Reopen the last closed tab (the familiar browser shortcut).
                 KeyCode::KeyT if self.modifiers.shift_key() => self.reopen_closed(),
                 // Half-page scroll (vim Ctrl+D / Ctrl+U).
@@ -1149,6 +1165,37 @@ impl App {
                 _ => {}
             },
             _ => {}
+        }
+    }
+
+    /// Repeatable pane resize (see [`ModeKind::PaneResize`]): h/j/k/l keep sliding the
+    /// focused pane's dividers — Shift optional, no need to re-arm Ctrl+W — refreshing
+    /// the idle timer each time. Esc/Enter leave; ANY other key leaves too and is then
+    /// handled as a normal binding, so nothing is swallowed. Matched on the physical key
+    /// so a held Shift (from entering the mode) doesn't change which key is which.
+    pub(crate) fn key_pane_resize(&mut self, key: &KeyEvent) {
+        let dir = match key.physical_key {
+            KeyCode::KeyH => Some('h'),
+            KeyCode::KeyJ => Some('j'),
+            KeyCode::KeyK => Some('k'),
+            KeyCode::KeyL => Some('l'),
+            _ => None,
+        };
+        match dir {
+            Some(d) => {
+                self.resize_pane(d);
+                self.pane_resize_at = std::time::Instant::now();
+            }
+            None if key.physical_key == KeyCode::Escape || key.physical_key == KeyCode::Enter => {
+                self.mode = ModeKind::Normal;
+                self.clear_status();
+            }
+            None => {
+                // Any other key ends resize mode and is re-dispatched, so it still acts.
+                self.mode = ModeKind::Normal;
+                self.clear_status();
+                self.key_normal(key);
+            }
         }
     }
 }

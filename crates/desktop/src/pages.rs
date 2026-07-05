@@ -438,6 +438,7 @@ pub(crate) fn commands_document() -> String {
         ("1 – 9", "jump straight to tab N"),
         ("< / >", "move the current tab left / right"),
         ("Ctrl+W then h/j/k/l", "move focus between split panes"),
+        ("Ctrl+W then H/J/K/L", "resize the focused pane in that direction"),
         ("Ctrl+W then s / v", "split the pane stacked / side-by-side (also :split / :vsplit)"),
         ("Ctrl+W then c", "close the focused pane"),
         ("Ctrl+V", "passthrough mode (every key to the page)"),

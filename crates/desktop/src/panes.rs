@@ -23,11 +23,20 @@ pub(crate) enum SplitDir {
 }
 
 /// A node in the pane layout tree. A `Leaf` shows one tab (by index into `tabs`);
-/// a `Split` divides its region 50/50 between two children.
+/// a `Split` divides its region between two children, `ratio` being the fraction of
+/// the space given to the first child `a` (left in a Row split, top in a Col split).
+/// New splits start at `0.5` (an even divide); Ctrl+W H/J/K/L nudge it.
 pub(crate) enum PaneNode {
     Leaf(usize),
-    Split { dir: SplitDir, a: Box<PaneNode>, b: Box<PaneNode> },
+    Split { dir: SplitDir, ratio: f32, a: Box<PaneNode>, b: Box<PaneNode> },
 }
+
+/// Clamp on a split's [`ratio`](PaneNode::Split) so a pane can't be resized to nothing
+/// (or swallow its sibling) — each side keeps at least this fraction.
+const RATIO_MIN: f32 = 0.1;
+const RATIO_MAX: f32 = 0.9;
+/// How much one Ctrl+W H/J/K/L step moves a divider (fraction of the split's extent).
+const RESIZE_STEP: f32 = 0.05;
 
 /// Width/height in px of the line drawn between two panes.
 pub(crate) const DIVIDER: i32 = 1;
@@ -85,16 +94,46 @@ impl PaneNode {
         match self {
             PaneNode::Leaf(t) if t == target => PaneNode::Split {
                 dir,
+                ratio: 0.5,
                 a: Box::new(PaneNode::Leaf(t)),
                 b: Box::new(PaneNode::Leaf(new)),
             },
             PaneNode::Leaf(t) => PaneNode::Leaf(t),
-            PaneNode::Split { dir: d, a, b } => PaneNode::Split {
+            PaneNode::Split { dir: d, ratio, a, b } => PaneNode::Split {
                 dir: d,
+                ratio,
                 a: Box::new(a.insert_split(target, dir, new)),
                 b: Box::new(b.insert_split(target, dir, new)),
             },
         }
+    }
+
+    /// Nudge the divider of the deepest split on the path to `tab` whose axis matches
+    /// `axis`, by `delta` (a signed fraction added to the first child's `ratio`). That
+    /// deepest match is the divider closest to the focused pane, so resizing feels
+    /// local. `delta` is applied in screen terms — positive grows the first child
+    /// (left/top), so a rightward/downward key passes `+`, a leftward/upward one `-`,
+    /// regardless of which side the focused pane sits on. Returns whether one was found.
+    pub(crate) fn resize_split(&mut self, tab: usize, axis: SplitDir, delta: f32) -> bool {
+        let PaneNode::Split { dir, ratio, a, b } = self else {
+            return false;
+        };
+        let (in_a, in_b) = (a.contains_leaf(tab), b.contains_leaf(tab));
+        if !in_a && !in_b {
+            return false;
+        }
+        // Try a deeper matching divider first (closest to the pane wins).
+        if in_a && a.resize_split(tab, axis, delta) {
+            return true;
+        }
+        if in_b && b.resize_split(tab, axis, delta) {
+            return true;
+        }
+        if *dir == axis {
+            *ratio = (*ratio + delta).clamp(RATIO_MIN, RATIO_MAX);
+            return true;
+        }
+        false
     }
 
     /// Remove the leaf showing `tab`, collapsing its parent split into the sibling.
@@ -102,9 +141,10 @@ impl PaneNode {
     pub(crate) fn prune(self, tab: usize) -> Option<PaneNode> {
         match self {
             PaneNode::Leaf(t) => (t != tab).then_some(PaneNode::Leaf(t)),
-            PaneNode::Split { dir, a, b } => match (a.prune(tab), b.prune(tab)) {
+            PaneNode::Split { dir, ratio, a, b } => match (a.prune(tab), b.prune(tab)) {
                 (Some(a), Some(b)) => Some(PaneNode::Split {
                     dir,
+                    ratio,
                     a: Box::new(a),
                     b: Box::new(b),
                 }),
@@ -119,19 +159,22 @@ impl PaneNode {
     pub(crate) fn layout(&self, r: PaneRect, panes: &mut Vec<(usize, PaneRect)>, divs: &mut Vec<PaneRect>) {
         match self {
             PaneNode::Leaf(t) => panes.push((*t, r)),
-            PaneNode::Split { dir, a, b } => match dir {
+            PaneNode::Split { dir, ratio, a, b } => match dir {
                 SplitDir::Row => {
-                    let half = ((r.w - DIVIDER) / 2).max(1);
-                    a.layout(PaneRect { w: half, ..r }, panes, divs);
-                    divs.push(PaneRect { x: r.x + half, w: DIVIDER, ..r });
-                    let bx = r.x + half + DIVIDER;
+                    // First child gets `ratio` of the space left after the divider.
+                    let avail = (r.w - DIVIDER).max(2);
+                    let first = ((avail as f32 * ratio).round() as i32).clamp(1, avail - 1);
+                    a.layout(PaneRect { w: first, ..r }, panes, divs);
+                    divs.push(PaneRect { x: r.x + first, w: DIVIDER, ..r });
+                    let bx = r.x + first + DIVIDER;
                     b.layout(PaneRect { x: bx, w: (r.x + r.w - bx).max(1), ..r }, panes, divs);
                 }
                 SplitDir::Col => {
-                    let half = ((r.h - DIVIDER) / 2).max(1);
-                    a.layout(PaneRect { h: half, ..r }, panes, divs);
-                    divs.push(PaneRect { y: r.y + half, h: DIVIDER, ..r });
-                    let by = r.y + half + DIVIDER;
+                    let avail = (r.h - DIVIDER).max(2);
+                    let first = ((avail as f32 * ratio).round() as i32).clamp(1, avail - 1);
+                    a.layout(PaneRect { h: first, ..r }, panes, divs);
+                    divs.push(PaneRect { y: r.y + first, h: DIVIDER, ..r });
+                    let by = r.y + first + DIVIDER;
                     b.layout(PaneRect { y: by, h: (r.y + r.h - by).max(1), ..r }, panes, divs);
                 }
             },
@@ -266,6 +309,45 @@ impl App {
         }
     }
 
+    /// Resize the focused pane in a direction (`h`/`j`/`k`/`l`, bound to Ctrl+W then
+    /// Shift+H/J/K/L): `h`/`l` slide the nearest vertical divider left/right, `j`/`k`
+    /// the nearest horizontal one down/up. Repositions the panes and repaints; a no-op
+    /// (with a hint) when nothing lies along that axis to resize.
+    pub(crate) fn resize_pane(&mut self, dir: char) {
+        let Some(a) = self.active else { return };
+        let Some(w) = self.active_window() else { return };
+        // `h`/`l` move a Row split's divider (delta on the left child's width); `j`/`k`
+        // a Col split's (delta on the top child's height). Right/down grow the first
+        // child (+), left/up shrink it (−).
+        let (axis, delta) = match dir {
+            'h' => (SplitDir::Row, -RESIZE_STEP),
+            'l' => (SplitDir::Row, RESIZE_STEP),
+            'k' => (SplitDir::Col, -RESIZE_STEP),
+            'j' => (SplitDir::Col, RESIZE_STEP),
+            _ => return,
+        };
+        if self.windows[w].resize_split(a, axis, delta) {
+            self.refresh_visibility();
+            self.window.request_redraw();
+        } else {
+            self.set_status("no divider to resize that way");
+        }
+    }
+
+    /// Enter the repeatable pane-resize mode ([`ModeKind::PaneResize`]) with a first
+    /// nudge, so `Ctrl+W` then `Shift+H/J/K/L` starts resizing and subsequent h/j/k/l
+    /// keep going without re-arming. No-op (with a hint) when there's no split to size.
+    pub(crate) fn enter_pane_resize(&mut self, dir: char) {
+        if !self.is_split() {
+            self.set_status("nothing to resize — split first (Ctrl+W v, or :vsplit)");
+            return;
+        }
+        self.resize_pane(dir);
+        self.mode = ModeKind::PaneResize;
+        self.pane_resize_at = std::time::Instant::now();
+        self.window.request_redraw();
+    }
+
     /// Split the focused pane, opening a new blank pane beside it (`:vsplit` = Row,
     /// side by side; `:split` = Col, stacked) and focusing the new pane. The new pane
     /// grows the ACTIVE window's tree, so it stays "inside" the same tab-strip entry
@@ -308,9 +390,14 @@ impl App {
 mod tests {
     use super::*;
 
-    /// Build `Split(dir, Leaf(a), Leaf(b))`.
+    /// Build an even `Split(dir, Leaf(a), Leaf(b))`.
     fn split(dir: SplitDir, a: usize, b: usize) -> PaneNode {
-        PaneNode::Split { dir, a: Box::new(PaneNode::Leaf(a)), b: Box::new(PaneNode::Leaf(b)) }
+        PaneNode::Split {
+            dir,
+            ratio: 0.5,
+            a: Box::new(PaneNode::Leaf(a)),
+            b: Box::new(PaneNode::Leaf(b)),
+        }
     }
 
     fn leaves(n: &PaneNode) -> Vec<usize> {
@@ -351,6 +438,53 @@ mod tests {
         let t = split(SplitDir::Row, 0, 2);
         assert!(t.contains_leaf(0) && t.contains_leaf(2));
         assert!(!t.contains_leaf(1));
+    }
+
+    #[test]
+    fn resize_split_moves_the_matching_divider_and_clamps() {
+        // A Row split: `l` grows the left child, shrinking on repeated `h`.
+        let mut t = split(SplitDir::Row, 0, 1);
+        assert!(t.resize_split(0, SplitDir::Row, RESIZE_STEP));
+        match &t {
+            PaneNode::Split { ratio, .. } => assert!((*ratio - 0.55).abs() < 1e-5),
+            _ => panic!("expected a split"),
+        }
+        // A Col motion finds no horizontal divider here → no change, reports false.
+        assert!(!t.resize_split(0, SplitDir::Col, RESIZE_STEP));
+        // Ratio can't be driven past the clamp even with many steps.
+        for _ in 0..100 {
+            t.resize_split(1, SplitDir::Row, RESIZE_STEP);
+        }
+        match &t {
+            PaneNode::Split { ratio, .. } => assert!(*ratio <= RATIO_MAX + 1e-5),
+            _ => panic!("expected a split"),
+        }
+    }
+
+    #[test]
+    fn resize_targets_the_deepest_matching_divider() {
+        // Row(Leaf0, Row(Leaf1, Leaf2)): resizing from leaf 1 hits the INNER Row split
+        // (the divider next to it), leaving the outer 0.5 untouched.
+        let inner = split(SplitDir::Row, 1, 2);
+        let mut t = PaneNode::Split {
+            dir: SplitDir::Row,
+            ratio: 0.5,
+            a: Box::new(PaneNode::Leaf(0)),
+            b: Box::new(inner),
+        };
+        assert!(t.resize_split(1, SplitDir::Row, RESIZE_STEP));
+        match &t {
+            PaneNode::Split { ratio: outer, b, .. } => {
+                assert!((*outer - 0.5).abs() < 1e-5, "outer divider untouched");
+                match b.as_ref() {
+                    PaneNode::Split { ratio: innr, .. } => {
+                        assert!((*innr - 0.55).abs() < 1e-5, "inner divider moved")
+                    }
+                    _ => panic!("expected inner split"),
+                }
+            }
+            _ => panic!("expected a split"),
+        }
     }
 
     #[test]

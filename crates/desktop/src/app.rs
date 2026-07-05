@@ -26,6 +26,17 @@ use crate::{read_view, session, BAR_H, BASE_PX, HISTORY_CAP, TAB_BAR_H, ZOOM_MAX
 /// error — errors also persist in `:errors`) disappears after this.
 pub(crate) const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// How long the `Ctrl+W` pane prefix stays armed for its follow-up key. Past this a
+/// stale prefix is dropped and the next key is handled normally, so a forgotten
+/// `Ctrl+W` can't hijack an unrelated keypress later. (150ms is too tight for the
+/// deliberate release-Ctrl-then-Shift+key chord — a missed window would fire the raw
+/// key, e.g. `H` = history-back — so this is a hair longer.)
+pub(crate) const WINDOW_PREFIX_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Auto-leave the repeatable pane-resize mode after this much keyboard inactivity, so
+/// a later `j`/`k` (meant to scroll) doesn't silently resize instead.
+pub(crate) const PANE_RESIZE_TIMEOUT: Duration = Duration::from_millis(1000);
+
 /// Events posted from webview IPC back into the event loop.
 pub(crate) enum UserEvent {
     /// Leave passthrough: move focus from the page back to the shell.
@@ -136,6 +147,10 @@ pub(crate) enum ModeKind {
     Resize,
     /// hjkl move the window across the desktop; Esc exits. Entered with `:move`.
     Move,
+    /// Repeatable pane-resize: hjkl slide the focused pane's dividers, over and over,
+    /// until Esc/another key or a short idle timeout. Entered with Ctrl+W then
+    /// Shift+H/J/K/L so you don't re-press the chord for each nudge.
+    PaneResize,
     /// Link hints are shown; typed characters select one. Entered with `f`.
     Hint,
     /// Find-in-page: `/` opened a search prompt. Typing searches live; Enter keeps
@@ -355,9 +370,17 @@ pub(crate) struct App {
     /// has no window (it overlays the whole band when summoned). Every non-AI tab is a
     /// leaf in exactly one window.
     pub(crate) windows: Vec<PaneNode>,
-    /// True after Ctrl+W in Normal mode: the next h/j/k/l moves pane focus and
-    /// s/v splits (vim-window style). Cleared by the following key.
+    /// True after Ctrl+W in Normal mode: the next h/j/k/l moves pane focus, Shift+H/J/K/L
+    /// resizes, and s/v splits (vim-window style). Cleared by the following key, or
+    /// dropped as stale once [`pending_window_at`](Self::pending_window_at) ages past
+    /// [`WINDOW_PREFIX_TIMEOUT`].
     pub(crate) pending_window_key: bool,
+    /// When [`pending_window_key`](Self::pending_window_key) was armed — the Ctrl+W
+    /// prefix expires this long after so a forgotten prefix can't eat a later key.
+    pub(crate) pending_window_at: Instant,
+    /// Last keypress handled in [`PaneResize`](ModeKind::PaneResize) mode; the mode
+    /// auto-exits once this ages past [`PANE_RESIZE_TIMEOUT`].
+    pub(crate) pane_resize_at: Instant,
     /// Cached by `refresh_visibility()`: the focused pane shows a webview, which can
     /// trap keyboard focus on click — arms the fast (300 ms) focus backstop.
     pub(crate) active_pane_is_webview: bool,

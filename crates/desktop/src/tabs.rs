@@ -1021,10 +1021,15 @@ impl App {
             match panes.iter().find(|(t, _)| *t == i) {
                 Some((_, r)) => {
                     let mut rect = *r;
-                    // Inset the FOCUSED web pane by the border width so the accent
-                    // border we paint on our surface shows around it (the webview HWND
-                    // otherwise covers it). Native panes draw their border on top.
-                    if split && Some(i) == active {
+                    // Reserve the border ring on EVERY web pane while split (not just
+                    // the focused one): the webview HWND covers our surface, so an
+                    // accent border can only show in an inset gap — and insetting only
+                    // the focused pane made it a hair smaller than the others, so its
+                    // content reflowed each time focus moved. Insetting all of them
+                    // keeps every pane a constant size; the focused one paints its ring
+                    // accent, the rest leave a matching (background) gutter. Native
+                    // panes draw their border on top, so they need no inset.
+                    if split {
                         let b = FOCUS_BORDER;
                         rect = PaneRect {
                             x: rect.x + b,

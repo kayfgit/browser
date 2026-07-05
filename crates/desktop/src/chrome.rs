@@ -620,6 +620,10 @@ impl App {
                 ("[MOVE]".into(), accent),
                 ("  hjkl move window · Esc done".into(), draw::DIM),
             ],
+            ModeKind::PaneResize => vec![
+                ("[RESIZE PANE]".into(), accent),
+                ("  hjkl resize · Esc done".into(), draw::DIM),
+            ],
             ModeKind::Hint => vec![
                 (if self.hint_new_tab { "[HINT ↗]" } else { "[HINT]" }.into(), accent),
                 (format!(" {}", self.hint_input), fg),
