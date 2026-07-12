@@ -22,9 +22,18 @@ impl App {
             ModeKind::PaneMove => self.key_pane_move(key),
             ModeKind::Hint => self.key_hint(key),
             ModeKind::Caret => self.key_caret(key),
-            // The single typing mode. The content normally has focus (web page) or the
-            // shell forwards to it (terminal / AI), and the injected bridge + keyboard
-            // hook own the leave chords; these arms are the shell-side fallbacks.
+            // Light field typing (web only): the page has focus and the bridge + hook own
+            // the leave key; this is the shell-side fallback for the beat right after
+            // entering, before focus lands on the page. Esc leaves. Ctrl+V is left to the
+            // page as a normal paste — to enter passthrough, leave Insert first, then Ctrl+V.
+            ModeKind::Insert => {
+                if matches!(key.logical_key, Key::Escape) && !self.modifiers.shift_key() {
+                    self.exit_to_normal();
+                }
+            }
+            // Sticky typing mode. The content normally has focus (web page) or the shell
+            // forwards to it (terminal / AI), and the injected bridge + keyboard hook own
+            // the leave chords; these arms are the shell-side fallbacks.
             ModeKind::Passthrough => {
                 if self.active_is_ai() {
                     // AI tabs type straight into their native field (no webview); key_ai
@@ -48,10 +57,12 @@ impl App {
                     }
                     self.key_term(key);
                 } else {
-                    // Web page: Ctrl+S is the only leave chord. Esc is left for the page
-                    // (a web SSH/vim needs it), so passthrough is never exited by Esc.
-                    let leave =
-                        self.modifiers.control_key() && key.physical_key == KeyCode::KeyS;
+                    // Web page: sticky — leaves only on Ctrl+S or Shift+Esc. Plain Esc is
+                    // left for the page (a web SSH/vim needs it), so passthrough is never
+                    // exited by a bare Esc, a click, or navigation.
+                    let leave = (self.modifiers.control_key()
+                        && key.physical_key == KeyCode::KeyS)
+                        || (matches!(key.logical_key, Key::Escape) && self.modifiers.shift_key());
                     if leave {
                         self.exit_to_normal();
                     }
@@ -206,12 +217,15 @@ impl App {
                 "G" => self.scroll_edge(true),
                 "/" => self.enter_find(),
                 "i" => {
-                    // One typing mode: the AI field has its own entry (native, no
-                    // webview); terminals and web pages both go through enter_passthrough.
+                    // `i` types into the content. A web page enters the light Insert mode
+                    // (auto-leaves on click-away / navigation); a terminal or the AI field
+                    // have no lighter mode, so they go straight to the sticky passthrough.
                     if self.active_is_ai() {
                         self.enter_ai_passthrough();
-                    } else {
+                    } else if self.active_is_term() {
                         self.enter_passthrough();
+                    } else {
+                        self.enter_insert();
                     }
                 }
                 // Hint mode labels clickable things — but a terminal has none, and
@@ -220,21 +234,15 @@ impl App {
                 "f" if !self.active_is_term() => self.enter_hint(false),
                 // Shift+F: hints open the picked link in a NEW tab (like `:open -t`).
                 "F" if !self.active_is_term() => self.enter_hint(true),
-                // Caret/visual selection — highlight & yank text with vim motions.
-                // Read tabs use the native caret; web tabs (open/research) use the
-                // injected page caret. Terminal tabs are excluded.
-                "v" => {
+                // Caret mode — a vim cursor on the page; a second v/V starts the
+                // charwise/linewise selection to yank. Read tabs use the native
+                // caret; web tabs (open/research) use the injected page caret.
+                // Terminal tabs are excluded.
+                "v" | "V" => {
                     if self.active_is_read_native() {
-                        self.enter_read_caret(false);
+                        self.enter_read_caret();
                     } else if self.active_webview().is_some() && !self.active_is_term() {
-                        self.enter_web_caret(false);
-                    }
-                }
-                "V" => {
-                    if self.active_is_read_native() {
-                        self.enter_read_caret(true);
-                    } else if self.active_webview().is_some() && !self.active_is_term() {
-                        self.enter_web_caret(true);
+                        self.enter_web_caret();
                     }
                 }
                 "x" => self.close_active(),
@@ -503,10 +511,11 @@ impl App {
             .is_some_and(|n| n.caret.is_some())
     }
 
-    /// Enter read-mode caret/visual selection (`v` charwise, `V` linewise): build a
-    /// caret over the read view's visual lines, place it near the middle of the
-    /// viewport, and start a visual selection so motions immediately highlight text.
-    pub(crate) fn enter_read_caret(&mut self, linewise: bool) {
+    /// Enter read-mode caret browsing (`v`/`V`): build a caret over the read view's
+    /// visual lines and place it near the middle of the viewport — WITHOUT selecting.
+    /// A second `v`/`V` (handled by the vim buffer) starts the charwise/linewise
+    /// visual selection.
+    pub(crate) fn enter_read_caret(&mut self) {
         // Geometry first (immutable borrows of painter), before borrowing the tab.
         let (w, _) = self.inner();
         let cw = self.painter.measure("M").max(1);
@@ -530,10 +539,9 @@ impl App {
         let mut tb = vim::TextBuffer::new(lines.to_vec());
         tb.top = top_line;
         tb.place_cursor(mid_line, 0, rows, cols);
-        tb.key(if linewise { vim::Key::Char('V') } else { vim::Key::Char('v') }, rows, cols);
         nr.scroll = tb.top as i32 * lh;
         nr.caret = Some(tb);
-        self.set_status("[VISUAL]  motions select · y yank · Esc exit");
+        self.set_status("[CARET]  hjkl/w/b/0/$/gg/G move · v/V select · y yank · Esc exit");
         self.window.request_redraw();
     }
 
@@ -601,17 +609,15 @@ impl App {
         consumed || exit
     }
 
-    /// Enter caret/visual browsing on a WEB tab: tell the injected page caret to
-    /// place itself at the viewport center and start a visual selection. The shell
-    /// keeps keyboard focus (like hint mode) and forwards motions via `key_caret`.
-    pub(crate) fn enter_web_caret(&mut self, linewise: bool) {
+    /// Enter caret browsing on a WEB tab: tell the injected page caret to place
+    /// itself at the viewport center — without selecting; a second `v`/`V` starts
+    /// the visual selection. The shell keeps keyboard focus (like hint mode) and
+    /// forwards motions via `key_caret`.
+    pub(crate) fn enter_web_caret(&mut self) {
         let Some(wv) = self.active_webview() else { return };
-        let _ = wv.evaluate_script(&format!(
-            "window.__caretEnter&&window.__caretEnter({})",
-            if linewise { "true" } else { "false" }
-        ));
+        let _ = wv.evaluate_script("window.__caretEnter&&window.__caretEnter()");
         self.mode = ModeKind::Caret;
-        self.set_status("[CARET]  hjkl/w/b/0/$/gg/G move · v select · y yank · Esc exit");
+        self.set_status("[CARET]  hjkl/w/b/0/$/gg/G move · v/V select · y yank · Esc exit");
         self.window.request_redraw();
     }
 
@@ -1082,8 +1088,27 @@ impl App {
         true
     }
 
-    /// Enter passthrough for the active content: a web page (keys → page, anti-trap) or
-    /// a native terminal (keys → PTY, Ctrl+S leaves). The `:ai` field has its own entry,
+    /// Enter the light Insert mode on a web page: the page takes focus and types, but
+    /// Esc / clicking away / navigating returns to Normal. Ctrl+V pastes into the field
+    /// as usual (it does NOT promote to passthrough — leave Insert first for that).
+    /// Web tabs only.
+    pub(crate) fn enter_insert(&mut self) {
+        if self.active_webview().is_none() {
+            self.set_status("no page — open one first");
+            return;
+        }
+        self.mode = ModeKind::Insert;
+        self.set_page_mode("insert");
+        if let Some(wv) = self.active_webview() {
+            let _ = wv.focus();
+        }
+        // Insert un-hides the chrome while fullscreen (shows [INSERT]); relayout so the
+        // page refits to the reserved bar band. No-op when not fullscreen.
+        self.relayout_active();
+    }
+
+    /// Enter passthrough for the active content: a web page (keys → page, sticky) or a
+    /// native terminal (keys → PTY, Ctrl+S leaves). The `:ai` field has its own entry,
     /// [`enter_ai_passthrough`](App::enter_ai_passthrough).
     pub(crate) fn enter_passthrough(&mut self) {
         // Native terminal: the SHELL keeps keyboard focus (there's no webview) and
@@ -1113,6 +1138,10 @@ impl App {
         if let Some(wv) = self.active_webview() {
             let _ = wv.focus();
         }
+        // While fullscreen, passthrough un-hides the chrome (so the [PASS] tag shows);
+        // relayout so the page refits to the reserved bar band instead of the webview
+        // HWND covering — and hiding — the bar. A no-op re-fit when not fullscreen.
+        self.relayout_active();
     }
 
     /// Push the current mode name into the page so the injected bridge knows which
@@ -1146,6 +1175,9 @@ impl App {
             let _ = wv.focus_parent();
         }
         self.mode = ModeKind::Normal;
+        // Leaving passthrough re-hides the chrome while fullscreen; relayout so the page
+        // grows back over the freed bar band (immersive again). No-op when not fullscreen.
+        self.relayout_active();
         self.window.set_focus();
         // Directly SetFocus the parent HWND too: `set_focus` no-ops when we're already
         // the foreground app, which is exactly the "leave passthrough" case — keyboard

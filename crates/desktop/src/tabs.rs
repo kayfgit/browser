@@ -569,6 +569,10 @@ impl App {
                 "leave-passthrough" => {
                     let _ = ipc_proxy.send_event(UserEvent::ExitToNormal);
                 }
+                // Insert (light field typing): Esc / focus left the field → back to Normal.
+                "insert-escape" | "insert-blur" => {
+                    let _ = ipc_proxy.send_event(UserEvent::ExitToNormal);
+                }
                 "page-ready" => {
                     let _ = ipc_proxy.send_event(UserEvent::FocusShell);
                 }
@@ -714,8 +718,18 @@ impl App {
         );
         // The uBlock-style sub-resource network blocker: runs the full EasyList engine
         // over every script/iframe/XHR so ad/scam injectors never load (Windows only).
+        // ONLY in `Native` mode. Registering the `WebResourceRequested` filter routes every
+        // sub-resource through our UI-thread handler, and that alone — even a handler that
+        // blocks nothing — stalls the initial parse of streaming pages: a fresh YouTube watch
+        // page hangs at `readyState==loading`, so the video plays (inline player boot) but the
+        // description/comments never hydrate past their skeletons (reload masks it, serving the
+        // doc from cache). In `Ubo`/`Off` mode the handler no-ops anyway (its `adblock_on` gate
+        // is false), so installing it there was pure cost AND this bug. uBlock Origin Lite (the
+        // `Ubo` default) blocks sub-resources natively via declarativeNetRequest, no handler.
         #[cfg(windows)]
-        crate::netblock::install(&webview, net_blocker, net_adblock, cur_origin, cur_top);
+        if self.adblock_mode == AdblockMode::Native {
+            crate::netblock::install(&webview, net_blocker, net_adblock, cur_origin, cur_top);
+        }
         // wry loads bundled extensions ENABLED on every new webview; if we're not in uBlock
         // mode, disable them here so the current `:adblock` choice holds for this tab too.
         #[cfg(windows)]

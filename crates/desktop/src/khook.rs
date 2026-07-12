@@ -8,7 +8,7 @@
 //! keystrokes (tao's `KeyEvent` isn't constructible), so it only handles the small,
 //! fixed set of chords below and passes everything else straight through. It acts
 //! ONLY while our own window is the foreground window, so other apps are never
-//! touched, and only in the web Passthrough / yielded states — in ordinary
+//! touched, and only in the web Insert / Passthrough / yielded states — in ordinary
 //! Normal-mode browsing the hook is inert and the existing focus model is unchanged.
 
 /// Mode codes the hook reads (lock-free) to decide what to intercept. Kept in sync
@@ -18,8 +18,12 @@ pub(crate) const MODE_OTHER: u8 = 0;
 /// Normal mode, but the page kept keyboard focus after a click on a control (so its
 /// menus/popovers stay open). Esc snaps the shell back into control.
 pub(crate) const MODE_NORMAL_YIELDED: u8 = 1;
-/// Web passthrough: the page (or a cross-origin iframe) holds OS focus, so the hook is
-/// what catches the anti-trap leave chords — Esc, or Ctrl+S — and returns to Normal.
+/// Web Insert (light field typing): the page holds OS focus; the hook catches Esc
+/// (leave), frame-proof. Ctrl+V is left to the page as a normal paste.
+pub(crate) const MODE_INSERT: u8 = 2;
+/// Web passthrough (sticky content control): the page (or a cross-origin iframe) holds
+/// OS focus, so the hook is what catches the leave chords — Ctrl+S or Shift+Esc — and
+/// returns to Normal. Plain Esc is deliberately left for the page (a web SSH/vim needs it).
 pub(crate) const MODE_PASSTHROUGH: u8 = 3;
 
 #[cfg(windows)]
@@ -39,7 +43,7 @@ mod imp {
 
     use std::sync::atomic::AtomicU32;
 
-    use super::{MODE_NORMAL_YIELDED, MODE_PASSTHROUGH};
+    use super::{MODE_INSERT, MODE_NORMAL_YIELDED, MODE_PASSTHROUGH};
     use crate::app::UserEvent;
 
     const VK_TAB: u32 = 0x09;
@@ -104,12 +108,17 @@ mod imp {
 
     /// Decide whether to swallow a key-down and which event to raise, given the
     /// current mode. `None` = let the key reach the page unchanged.
-    fn decide(mode: u8, vk: u32, ctrl: bool, _shift: bool) -> Option<UserEvent> {
+    fn decide(mode: u8, vk: u32, ctrl: bool, shift: bool) -> Option<UserEvent> {
         match mode {
-            // Web passthrough leaves ONLY on Ctrl+S — frame-proof, so a page can never
-            // hold that chord hostage. Esc is intentionally NOT a leave chord: it must
-            // reach the page so a web SSH/vim gets its Escape.
-            MODE_PASSTHROUGH if ctrl && vk == VK_S => Some(UserEvent::ExitToNormal),
+            // Sticky passthrough leaves ONLY on Ctrl+S or Shift+Esc — frame-proof, so a
+            // page can never hold those chords hostage. Plain Esc is intentionally NOT a
+            // leave chord: it must reach the page so a web SSH/vim gets its Escape.
+            MODE_PASSTHROUGH if (ctrl && vk == VK_S) || (shift && vk == VK_ESCAPE) => {
+                Some(UserEvent::ExitToNormal)
+            }
+            // Insert (light field typing): Esc leaves. Ctrl+V is NOT intercepted — it
+            // reaches the page as a normal paste.
+            MODE_INSERT if vk == VK_ESCAPE && !shift => Some(UserEvent::ExitToNormal),
             // Yielded: the page holds focus so its menu stays open; Esc reclaims the
             // shell keyboard (and blurs the page, closing the menu as a side effect).
             MODE_NORMAL_YIELDED if vk == VK_ESCAPE => Some(UserEvent::ReclaimNormal),

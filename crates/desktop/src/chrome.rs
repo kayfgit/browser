@@ -647,8 +647,15 @@ impl App {
                 ("[CARET]".into(), accent),
                 ("  hjkl/w/b/0/$/gg/G move · v select · y yank · Esc exit".into(), draw::DIM),
             ],
-            // One unified typing mode — always reads as [PASS], whatever the content;
-            // only the trailing hint differs (how to leave / use this content).
+            // Light field-typing mode (web only): reads as [INSERT], with the field's
+            // page URL and the leave/promote hint.
+            ModeKind::Insert => vec![
+                ("[INSERT]".into(), accent),
+                (self.active_url().unwrap_or("").to_string(), fg),
+                ("   type into the field · Esc or click away to leave".into(), draw::DIM),
+            ],
+            // Sticky typing mode — always reads as [PASS], whatever the content; only the
+            // trailing hint differs (how to leave / use this content).
             ModeKind::Passthrough => {
                 if self.active_is_ai() {
                     let hint = if self.groq_key.is_none() {
@@ -668,7 +675,7 @@ impl App {
                 vec![
                     ("[PASS]".into(), accent),
                     (url, fg),
-                    ("   Esc or click away to leave · Ctrl+S anytime".into(), draw::DIM),
+                    ("   every key to the page · Ctrl+S or Shift+Esc to leave".into(), draw::DIM),
                 ]
             }
             ModeKind::Normal => {

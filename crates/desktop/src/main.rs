@@ -9,9 +9,11 @@
 //! Modes (qutebrowser-style):
 //!   * Normal      — shell has focus; command bar works; j/k/space scroll the page.
 //!   * Command     — typing a `:`-command (entered with `:` or `o`).
-//!   * Passthrough — `i` hands keys to the content (page / terminal / `:ai` field).
-//!     For a web page it's anti-trap: Esc, or clicking out of a field, returns; a
-//!     terminal keeps Esc for the shell and leaves on Ctrl+S.
+//!   * Insert      — `i` / clicking a field types into a page input; Esc, clicking away,
+//!     or navigating returns to Normal. Ctrl+V pastes into the field (no promote).
+//!   * Passthrough — `Ctrl+V` (or `i` on a terminal / `:ai`) hands every key to the
+//!     content; sticky, so it survives clicks/focus/fullscreen/navigation and leaves
+//!     only on Ctrl+S or Shift+Esc (a terminal keeps Esc for the shell).
 
 #![windows_subsystem = "windows"]
 
@@ -130,19 +132,32 @@ const BRIDGE_JS: &str = r#"
   }
   window.__shellEditable = editable;
   document.addEventListener('keydown', function (e) {
-    if (window.__mode !== 'passthrough') return;
-    // Ctrl+S is the only leave chord; Esc is deliberately left for the page (a web
-    // SSH/vim needs it), so passthrough is never exited by Esc.
-    if (e.ctrlKey && (e.key === 's' || e.key === 'S')) {
-      e.preventDefault(); e.stopPropagation(); post('leave-passthrough');
+    var m = window.__mode;
+    if (m === 'insert') {
+      // Light field typing: Esc leaves. Ctrl+V is left alone so it pastes into the field
+      // (to enter passthrough, leave Insert first, then Ctrl+V).
+      if (e.key === 'Escape' && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); post('insert-escape'); }
+    } else if (m === 'passthrough') {
+      // Sticky: only Ctrl+S or Shift+Esc leaves. Plain Esc is left for the page (a web
+      // SSH/vim needs it), so passthrough survives clicks, focus changes and bare Esc.
+      if ((e.ctrlKey && (e.key === 's' || e.key === 'S')) || (e.key === 'Escape' && e.shiftKey)) {
+        e.preventDefault(); e.stopPropagation(); post('leave-passthrough');
+      }
     }
   }, true);
+  // Insert auto-leaves when focus leaves the field (clicking / tabbing away). A
+  // fullscreen transition also shuffles focus (e.g. onto a video element), so suppress
+  // the auto-leave while an element is fullscreen and for a short beat around every
+  // fullscreen change — otherwise a page that fullscreens right after you focus a field
+  // would drop Insert spuriously. `__fsChangeAt` is stamped by `fsPost` below. (Sticky
+  // passthrough never auto-leaves — only Ctrl+S / Shift+Esc — so it's unaffected here.)
+  var __fsChangeAt = 0;
   document.addEventListener('focusout', function () {
-    if (window.__mode !== 'passthrough') return;
-    // Clicking/tabbing out of an editable element returns to Normal automatically.
+    if (window.__mode !== 'insert') return;
     setTimeout(function () {
+      if (document.fullscreenElement || Date.now() - __fsChangeAt < 700) return;
       var a = document.activeElement;
-      if (!a || !editable(a)) post('leave-passthrough');
+      if (!a || !editable(a)) post('insert-blur');
     }, 0);
   }, true);
   // In Normal mode the shell owns the keyboard. A click — or a script calling
@@ -161,7 +176,7 @@ const BRIDGE_JS: &str = r#"
   }
   // Decide what a Normal-mode click should do with keyboard focus, on `click` (the
   // END of the gesture, so the page's own handlers run first):
-  //   * a text field  → 'page-edit', the shell enters passthrough so you can type;
+  //   * a text field  → 'page-edit', the shell enters Insert so you can type;
   //   * a control/menu/link → 'page-hold', let the PAGE keep focus so its popover
   //     stays open (the old blanket grab-back blurred YouTube menus shut on click);
   //   * empty page area → grabBack(), reclaim the shell keyboard as before.
@@ -224,7 +239,7 @@ const BRIDGE_JS: &str = r#"
   // shell: it fullscreens the window so the page fills the screen and the bars
   // hide. wry exposes no native fullscreen-element event on Windows, so we detect
   // it here. (`webkit`-prefixed for older players that fire only that.)
-  function fsPost() { post(document.fullscreenElement ? 'fs-enter' : 'fs-exit'); }
+  function fsPost() { __fsChangeAt = Date.now(); post(document.fullscreenElement ? 'fs-enter' : 'fs-exit'); }
   document.addEventListener('fullscreenchange', fsPost);
   document.addEventListener('webkitfullscreenchange', fsPost);
   // Right-click menu: WebView2's default menu is full of options that don't work
@@ -918,13 +933,15 @@ const FEATURES_JS: &str = r#"
 })();
 "#;
 
-// Page-side caret/visual browsing (TODO: vim selection on live web pages). The
-// shell forwards motions here; we drive a real DOM Selection via `Selection.modify`
-// (Chromium supports character/word/line/lineboundary/documentboundary), draw a thin
-// caret bar at the focus end, and post the yanked text back over IPC. `__caretEnter`
-// places the caret at the viewport center and starts visual; `__caretKey` moves or
-// extends (visual toggles which); `__caretYank` copies; `__caretEsc` collapses then
-// exits (posting `caret-exit` so the shell leaves caret mode).
+// Page-side caret/visual browsing (vim selection on live web pages). The shell
+// forwards motions here; we drive a real DOM Selection via `Selection.modify`
+// (Chromium supports character/word/line/lineboundary/documentboundary), draw a
+// vim-style block cursor over the character at the focus end, and post the yanked
+// text back over IPC. `__caretEnter` places the caret at the viewport center
+// WITHOUT selecting — press `v`/`V` again for charwise/linewise visual; `__caretKey`
+// moves or extends and scrolls the window when the cursor nears a viewport edge
+// (vim scrolloff); `__caretYank` copies; `__caretEsc` collapses then exits (posting
+// `caret-exit` so the shell leaves caret mode).
 const CARET_JS: &str = r#"
 (function () {
   if (window.__caretInit) return;
@@ -934,23 +951,46 @@ const CARET_JS: &str = r#"
   function ensureBar() {
     if (bar && bar.isConnected) return bar;
     bar = document.createElement('div');
-    bar.style.cssText = 'position:fixed;z-index:2147483647;width:2px;background:#6cb6ff;' +
-      'box-shadow:0 0 3px #6cb6ff;pointer-events:none;display:none';
+    bar.style.cssText = 'position:fixed;z-index:2147483647;background:rgba(108,182,255,.45);' +
+      'outline:1px solid #6cb6ff;pointer-events:none;display:none';
     (document.body || document.documentElement).appendChild(bar);
     return bar;
   }
+  // The rect of the character AT the focus end — what the block cursor sits on.
+  // Probing a single character keeps the cursor one line tall no matter how big
+  // the selection is (collapsing the focus + falling back to the parent element's
+  // whole box is what made the old bar grow with the selection). width 0 means
+  // the caret sits past the last character of a line (block gets a default width).
   function focusRect() {
     var s = sel();
     if (s.rangeCount === 0 || !s.focusNode) return null;
+    var n = s.focusNode, o = s.focusOffset, r = document.createRange(), rc;
     try {
-      var r = document.createRange();
-      r.setStart(s.focusNode, s.focusOffset);
-      r.collapse(true);
-      var rc = r.getClientRects()[0] || r.getBoundingClientRect();
-      if (rc && (rc.height || rc.width)) return rc;
-      // Fall back to the parent element's box (e.g. focus on an element boundary).
-      var el = s.focusNode.nodeType === 1 ? s.focusNode : s.focusNode.parentElement;
-      return el ? el.getBoundingClientRect() : null;
+      if (n.nodeType === 3) {
+        if (o < n.nodeValue.length) {
+          r.setStart(n, o); r.setEnd(n, o + 1);
+          rc = r.getBoundingClientRect();
+          if (rc && rc.height) return rc;
+        }
+        if (o > 0) {
+          r.setStart(n, o - 1); r.setEnd(n, o);
+          rc = r.getBoundingClientRect();
+          if (rc && rc.height) return { left: rc.right, top: rc.top, width: 0, height: rc.height };
+        }
+      }
+      // Focus on an element boundary: use the selection edge's own line box, not
+      // the element's whole rect (a paragraph-sized cursor otherwise).
+      var rr = s.getRangeAt(0), rects = rr.getClientRects();
+      if (rects.length) {
+        var atEnd = n === rr.endContainer && o === rr.endOffset;
+        rc = rects[atEnd ? rects.length - 1 : 0];
+        return { left: atEnd ? rc.right : rc.left, top: rc.top, width: 0, height: rc.height };
+      }
+      var el = n.nodeType === 1 ? n : n.parentElement;
+      if (!el) return null;
+      rc = el.getBoundingClientRect();
+      var lh = parseFloat(getComputedStyle(el).lineHeight) || 16;
+      return { left: rc.left, top: rc.top, width: 0, height: Math.min(rc.height || lh, lh) };
     } catch (e) { return null; }
   }
   function updateBar() {
@@ -958,10 +998,24 @@ const CARET_JS: &str = r#"
     if (!on) { b.style.display = 'none'; return; }
     var rc = focusRect();
     if (!rc) { b.style.display = 'none'; return; }
+    var h = rc.height || 16;
     b.style.display = 'block';
-    b.style.left = Math.max(0, rc.left) + 'px';
-    b.style.top = Math.max(0, rc.top) + 'px';
-    b.style.height = (rc.height || 16) + 'px';
+    b.style.left = rc.left + 'px';
+    b.style.top = rc.top + 'px';
+    b.style.width = Math.max(rc.width || 0, h * 0.55) + 'px';
+    b.style.height = h + 'px';
+  }
+  // Vim scrolloff: when a motion pushes the cursor within ~2 lines of the top or
+  // bottom edge, scroll the window so the text around it stays visible (h/l past
+  // the sides likewise). The scroll listener repaints the block afterwards.
+  function keepInView() {
+    var rc = focusRect();
+    if (!rc) return;
+    var h = rc.height || 16, pad = h * 2, bot = rc.top + h;
+    if (bot > innerHeight - pad) scrollBy(0, Math.ceil(bot - (innerHeight - pad)));
+    else if (rc.top < pad) scrollBy(0, Math.floor(rc.top - pad));
+    if (rc.left > innerWidth) scrollBy(Math.ceil(rc.left - innerWidth + 40), 0);
+    else if (rc.left < 0) scrollBy(Math.floor(rc.left - 40), 0);
   }
   function rangeAt(x, y) {
     if (document.caretRangeFromPoint) return document.caretRangeFromPoint(x, y);
@@ -992,10 +1046,9 @@ const CARET_JS: &str = r#"
     r.collapse(true);
     var s = sel(); s.removeAllRanges(); s.addRange(r);
   }
-  window.__caretEnter = function (linewise) {
-    on = true; visual = true; pend = '';
+  window.__caretEnter = function () {
+    on = true; visual = false; pend = '';
     caretAtCenter();
-    if (linewise) { var s = sel(); s.modify('move','left','lineboundary'); s.modify('extend','right','lineboundary'); }
     updateBar();
   };
   window.__caretExit = function () {
@@ -1016,7 +1069,7 @@ const CARET_JS: &str = r#"
   window.__caretKey = function (k) {
     if (!on) return;
     var s = sel(), alter = visual ? 'extend' : 'move';
-    if (pend === 'g') { pend = ''; if (k === 'g') { s.modify(alter,'backward','documentboundary'); updateBar(); return; } }
+    if (pend === 'g') { pend = ''; if (k === 'g') { s.modify(alter,'backward','documentboundary'); keepInView(); updateBar(); return; } }
     switch (k) {
       case 'h': s.modify(alter,'left','character'); break;
       case 'l': s.modify(alter,'right','character'); break;
@@ -1029,9 +1082,19 @@ const CARET_JS: &str = r#"
       case '$': s.modify(alter,'right','lineboundary'); break;
       case 'G': s.modify(alter,'forward','documentboundary'); break;
       case 'g': pend = 'g'; break;
-      case 'v': case 'V': visual = !visual; if (!visual) s.collapseToEnd(); break;
+      case 'v':
+        visual = !visual; if (!visual) s.collapseToEnd();
+        break;
+      case 'V':
+        // Linewise visual: anchor at the line start, focus at its end; j/k then
+        // extend by whole lines. Pressed while already selecting, it collapses.
+        visual = !visual;
+        if (visual) { s.modify('move','left','lineboundary'); s.modify('extend','right','lineboundary'); }
+        else s.collapseToEnd();
+        break;
       default: break;
     }
+    keepInView();
     updateBar();
   };
   window.addEventListener('scroll', function () { if (on) updateBar(); }, true);
@@ -1439,9 +1502,9 @@ fn main() -> Result<()> {
                             let _ = wv.focus();
                         }
                     }
-                    // Caret is tied to the old page's DOM; a navigation ends it (the
-                    // injected caret is gone on the new document).
-                    ModeKind::Caret => {
+                    // Insert and Caret are tied to the old page's DOM; a navigation ends
+                    // them (the field/caret is gone on the new document).
+                    ModeKind::Insert | ModeKind::Caret => {
                         app.mode = ModeKind::Normal;
                         app.reclaim_shell_focus();
                         app.window.request_redraw();
@@ -1482,11 +1545,12 @@ fn main() -> Result<()> {
                     app.window.request_redraw();
                 }
             }
-            // A click landed in a text field: enter passthrough so typing goes to the page.
+            // A click landed in a text field: enter Insert so typing goes to the page
+            // (and clicking away later drops back to Normal on its own).
             Event::UserEvent(UserEvent::PageEdit) => {
                 if app.mode == ModeKind::Normal {
                     app.page_focus_yielded = false;
-                    app.enter_passthrough();
+                    app.enter_insert();
                     app.window.request_redraw();
                 }
             }
@@ -1523,10 +1587,10 @@ fn main() -> Result<()> {
                 app.window.request_redraw();
             }
             Event::UserEvent(UserEvent::HintEdit) => {
-                // The hint selected a text field: enter passthrough (type into the page),
+                // The hint selected a text field: enter Insert (type into the page),
                 // then focus the field itself within the page.
                 app.hint_input.clear();
-                app.enter_passthrough();
+                app.enter_insert();
                 if let Some(wv) = app.active_webview() {
                     let _ = wv.evaluate_script(
                         "window.__hintTarget&&(window.__hintTarget.focus(),window.__hintTarget=null)",

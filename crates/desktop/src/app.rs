@@ -39,7 +39,7 @@ pub(crate) const PANE_RESIZE_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// Events posted from webview IPC back into the event loop.
 pub(crate) enum UserEvent {
-    /// Leave passthrough: move focus from the page back to the shell.
+    /// Leave insert/passthrough: move focus from the page back to the shell.
     ExitToNormal,
     /// Reclaim keyboard focus for the shell (e.g. after a page finishes loading
     /// and WebView2 has grabbed focus), unless the page should keep focus.
@@ -49,7 +49,7 @@ pub(crate) enum UserEvent {
     GrabFocus,
     /// A hint was activated (or the page asked to end hint mode).
     ExitHint,
-    /// A hint selected an editable element: focus it and enter passthrough.
+    /// A hint selected an editable element: focus it and enter Insert.
     HintEdit,
     /// A hint was activated in new-tab mode (`F`): open this URL in a new tab.
     HintOpen(String),
@@ -115,7 +115,7 @@ pub(crate) enum UserEvent {
     /// A Normal-mode click hit a page control (button/menu/link): let the page keep
     /// keyboard focus so its popover stays open (don't bounce focus back).
     PageHold,
-    /// A Normal-mode click hit a text field: enter passthrough so keys type into the page.
+    /// A Normal-mode click hit a text field: enter Insert so keys type into the page.
     PageEdit,
     /// The page pointer moved onto (or off) a link: show its href on the right of the
     /// command bar. Carries the URL, or empty when the pointer left the link.
@@ -136,12 +136,21 @@ pub(crate) enum UserEvent {
 pub(crate) enum ModeKind {
     Normal,
     Command,
-    /// The single "type into the content" mode, whatever the content is: a web page
-    /// (keys go to the page), a native terminal (keys go to the PTY), or the `:ai`
-    /// field. Entered with `i` (or `Ctrl+V`, a hint on an editable element, or a click
-    /// in a text field). Leaving: for a web page it's anti-trap — Esc, or clicking out
-    /// of a field, returns to Normal (Ctrl+S also works anytime); a terminal keeps Esc
-    /// for the shell and leaves on Ctrl+S; the AI field leaves on Esc.
+    /// Light "type into a page field" mode. The page has focus and types, but this is
+    /// self-limiting: Esc leaves, and it auto-exits the moment focus leaves the field
+    /// (clicking/tabbing away) or the page navigates — it's for filling in inputs and
+    /// search boxes. Ctrl+V pastes into the field as normal; to reach the sticky
+    /// [`Passthrough`](ModeKind::Passthrough) you leave Insert first, then press Ctrl+V.
+    /// Entered with `i`, a click in a text field, or a hint on an editable element.
+    /// Web tabs only (a terminal / the `:ai` field have no lighter mode — `i` there goes
+    /// straight to Passthrough).
+    Insert,
+    /// Sticky "every keystroke goes to the content" mode: a web page (keys → page), a
+    /// native terminal (keys → PTY), or the `:ai` field. Unlike [`Insert`](ModeKind::Insert)
+    /// it persists through clicks, focus changes, fullscreen and navigation — the point
+    /// is full app control (e.g. a YouTube player). It leaves ONLY on Ctrl+S or Shift+Esc
+    /// (a terminal also keeps plain Esc for the shell; the AI field leaves on Esc).
+    /// Entered with `Ctrl+V` (or `i` on a terminal / the `:ai` field).
     Passthrough,
     /// hjkl resize the window; Esc exits. Entered with `:resize`.
     Resize,
@@ -474,11 +483,15 @@ impl App {
         self.window.fullscreen().is_some()
     }
 
-    /// Whether the native chrome (tab bar + command/status bar) is hidden right now:
-    /// true in fullscreen for an immersive page, EXCEPT while typing a command, so
-    /// pressing `:` (or `/`) brings the bars back to interact, then they hide again.
+    /// Whether the native chrome (tab bar + command/status bar) is hidden right now.
+    /// We only go fully immersive (no bars) in fullscreen while in plain Normal mode —
+    /// idly watching a video. ANY other mode keeps the chrome so its state stays
+    /// visible: typing a command (`:`/`/`), and crucially Passthrough — so on a
+    /// fullscreen YouTube video the `[PASS]` tag still shows and you can tell keys are
+    /// going to the page. Press `:` to summon the bar from Normal, or Ctrl+S to leave
+    /// passthrough and go immersive; leaving the mode hides the bars again.
     pub(crate) fn chrome_hidden(&self) -> bool {
-        self.is_fullscreen() && !matches!(self.mode, ModeKind::Command | ModeKind::Find)
+        self.is_fullscreen() && self.mode == ModeKind::Normal
     }
 
     /// Command/status bar height at the current zoom (0 when chrome is hidden).
@@ -712,14 +725,16 @@ impl App {
     #[cfg(not(windows))]
     pub(crate) fn reclaim_focus_tick(&self) {}
 
-    /// The mode code the keyboard hook should run under (see [`crate::khook`]). Only
-    /// WEB passthrough (the page holds OS focus, so the hook catches the anti-trap leave
-    /// chords even inside cross-origin iframes) and a click-yielded Normal need
+    /// The mode code the keyboard hook should run under (see [`crate::khook`]). Only the
+    /// web Insert/Passthrough states (the page holds OS focus, so the hook catches the
+    /// leave chords even inside cross-origin iframes) and a click-yielded Normal need
     /// interception; terminal/AI passthrough keep shell focus, and everything else maps
     /// to `OTHER` (inert).
     pub(crate) fn hook_mode_code(&self) -> u8 {
         use crate::khook::*;
         match self.mode {
+            // Insert is web-only, so the page always holds focus here.
+            ModeKind::Insert => MODE_INSERT,
             ModeKind::Passthrough if self.active_webview().is_some() => MODE_PASSTHROUGH,
             ModeKind::Normal if self.page_focus_yielded && self.active_webview().is_some() => {
                 MODE_NORMAL_YIELDED

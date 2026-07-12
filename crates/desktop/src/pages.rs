@@ -429,7 +429,7 @@ pub(crate) fn commands_document() -> String {
         ("n / N", "next / previous match (while a search is active); Esc clears"),
         ("i", "insert mode (passthrough on a terminal tab)"),
         ("f / F", "hint mode — label every link, type the label to follow (F: open in a new tab)"),
-        ("v / V", "caret/visual select on read & web tabs — hjkl/w/b move, y yank, Esc exits"),
+        ("v / V", "caret mode on read & web tabs — hjkl/w/b move, v/V select, y yank, Esc exits"),
         ("x", "close the current tab"),
         ("u / Ctrl+Shift+T", "reopen the last closed tab"),
         ("r", "reload the page"),
