@@ -310,17 +310,40 @@ impl App {
 /// Maximum number of past errors kept in the session log (oldest dropped first).
 pub(crate) const ERROR_LOG_CAP: usize = 200;
 
-/// Stylesheet for the internal `:commands` / `:version` pages.
-const HELP_CSS: &str = "html{background:#1e1e1e;color:#d0d0d0}body{margin:0}\
-main{max-width:820px;margin:40px auto;padding:0 22px;\
-font:16px/1.6 -apple-system,Segoe UI,Roboto,sans-serif}\
-h1{color:#fff;font-size:1.7em;margin:0 0 .2em}h2{color:#6cb6ff;font-size:1.1em;\
-margin:1.6em 0 .4em;border-bottom:1px solid #333;padding-bottom:.2em}\
-p.sub{color:#888;margin:0 0 1em}table{border-collapse:collapse;width:100%}\
-td{padding:3px 10px 3px 0;vertical-align:top}td.k{white-space:nowrap;color:#e6a55e;\
-font-family:Consolas,monospace;width:1%}kbd{background:#2a2a2a;border:1px solid #444;\
-border-radius:4px;padding:1px 6px;font-family:Consolas,monospace;font-size:.9em;color:#f0f0f0}\
-td.d{color:#cfcfcf}";
+/// Stylesheet for the internal `:commands` page.
+const HELP_CSS: &str = "\
+html{background:#1e1e1e;color:#d0d0d0;scroll-behavior:smooth}body{margin:0}\
+main{max-width:880px;margin:34px auto 90px;padding:0 26px;\
+font:15px/1.55 'Segoe UI',system-ui,-apple-system,Roboto,sans-serif}\
+h1{color:#fff;font-size:1.6em;margin:0 0 4px;letter-spacing:.2px}\
+p.sub{color:#8a8a8a;margin:0 0 4px}\
+nav{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 4px}\
+nav a{color:#9ec7ee;background:#262b31;border:1px solid #343a42;border-radius:999px;\
+padding:3px 13px;text-decoration:none;font-size:.85em;white-space:nowrap}\
+nav a:hover{background:#313c4b;border-color:#4a5866;color:#fff}\
+section{margin-top:36px}\
+h2{color:#6cb6ff;font-size:.95em;text-transform:uppercase;letter-spacing:1.4px;\
+margin:0 0 8px;padding-bottom:7px;border-bottom:1px solid #2d2d2d}\
+[id]{scroll-margin-top:16px}\
+table{border-collapse:collapse;width:100%}\
+td{padding:7px 14px 7px 8px;vertical-align:top}\
+tr+tr>td{border-top:1px solid #262626}\
+tr:hover>td{background:#232629}\
+td.k{white-space:nowrap;color:#e6a55e;font-family:Consolas,monospace;font-size:.92em;\
+width:1%;padding-right:28px}\
+td.d{color:#c6c6c6}\
+.act{padding:10px 12px;margin:0 -12px;border-radius:8px}\
+.act+.act{border-top:1px solid #262626}\
+.act:hover{background:#232629}\
+.act .sig{font-family:Consolas,monospace;font-size:.95em;color:#e6a55e}\
+.act .sig .p{display:inline-block;color:#8fb3d9;background:#25292e;border:1px solid #31363d;\
+border-radius:5px;padding:0 6px;margin:2px 0 2px 6px;font-size:.88em}\
+.act p{margin:6px 0 0;color:#b3b3b3}\
+tr.jump>td,.act.jump{background:#243650}\
+tr.jump>td{border-top-color:#243650}\
+kbd,code{background:#2a2a2a;border:1px solid #3d3d3d;border-radius:4px;padding:1px 6px;\
+font-family:Consolas,monospace;font-size:.9em;color:#eee}\
+code{border:none;padding:1px 5px;color:#9ec7ee}";
 
 /// Minimal HTML-escaping for text interpolated into the internal pages.
 pub(crate) fn html_escape(s: &str) -> String {
@@ -417,8 +440,132 @@ pub(crate) fn now_stamp() -> String {
     format!("{:04}-{:02}-{:02} {:02}:{:02}", y, m, d, tod / 3600, (tod % 3600) / 60)
 }
 
-/// The `:commands` page: every keybind and command (not customizable yet).
-pub(crate) fn commands_document() -> String {
+/// The `:commands` command table as (anchor key, signature, description) — the
+/// anchor key doubles as what `:help <topic>` matches first (any word of the
+/// signature matches too, so `:help t` finds ":tabopen · :t").
+const CMD_ROWS: &[(&str, &str, &str)] = &[
+    ("open", ":open <url|query> · :o", "open in THIS tab (non-URL → search engine); add -t for a new tab"),
+    ("tabopen", ":tabopen · :t", "open in a new tab (same as :open -t)"),
+    ("reopen", ":reopen · :undo", "reopen the last closed tab (also U / Ctrl+Shift+T)"),
+    ("research", ":research <url|query> · :rs", "lighter browse: JS on, images kept, media/embeds stripped (-t = new tab)"),
+    ("edit", ":edit · :e", "edit the current URL (re-opens in the tab's own mode)"),
+    ("yank", ":y · :yank", "copy the current URL to the clipboard"),
+    ("read", ":read <url|query>", "engine-free reader (no WebView2) in this tab; -t = new tab; non-URL → search"),
+    ("search", ":search [name|template]", "show/set the search engine — a name (ddg/google/wiki…) or a %s URL"),
+    ("ai", ":ai [question]", "AI tab (Groq): i to ask; Normal mode is a vim buffer (v/y select, / find); H/L step through past chats (persisted)"),
+    ("aihist", ":aihist · :aihistory", "saved-chat picker in a vim tab: each row shows created time · size · name (first prompt); Enter opens that chat, d deletes the row/selection"),
+    ("model", ":model [id]", "show/set the :ai model; in the command bar, Tab cycles the model list; persisted"),
+    ("te", ":te", "native terminal (Ctrl+V pastes · Ctrl+S → vim copy-mode: hjkl/w/b/f-find navigate, v/y yank, i resumes)"),
+    ("terun", ":te <command>", "run a local command, result in the command bar"),
+    ("shell", ":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
+    ("theme", ":theme [key value]", "appearance: no args opens config.toml in an editor (closing it applies); a key + value sets one field (bar_bg, bar_fg, accent, bg, bar_height_pct, term_font, term_font_px, term_scheme, term_bg, term_fg — 'default' resets); :theme install <scheme> downloads a terminal scheme; :theme reload / show"),
+    ("extensions", ":extensions", "browser-extension picker in a vim tab (Enter toggles one on/off)"),
+    ("js", ":js", "toggle JavaScript (reloads this tab; applies to new tabs)"),
+    ("nojs", ":nojs <url>", "open a single page with JavaScript disabled"),
+    ("adblock", ":ads · :adblock", "toggle the blocker: ads, trackers, forced redirects + popunders (on by default)"),
+    ("downloads", ":downloads · :dl", "allow executable/installer downloads (.exe/.msi…; blocked by default)"),
+    ("mute", ":mute · :audio", "toggle muting all page audio/video (live, all tabs)"),
+    ("css", ":css", "toggle page styling off/on (live, all tabs)"),
+    ("video", ":video [url]", "no url: toggle stripping video/players off pages (live, all tabs); with a url: play it in mpv/vlc"),
+    ("close", ":close · :bd", "close the current tab"),
+    ("split", ":vsplit · :split", "split into tmux-style panes (Ctrl+W h/j/k/l to move between them)"),
+    ("reload", ":reload · :r", "reload"),
+    ("tabnext", ":tabnext · :tn · :tabprev · :tp", "switch tabs"),
+    ("back", ":back · :forward", "history navigation"),
+    ("fullscreen", ":f · :fullscreen", "toggle fullscreen (hides the bars; `:` brings them back). YouTube's fullscreen button does this too"),
+    ("resize", ":resize · :move", "window-control modes (then hjkl, Esc)"),
+    ("error", ":error · :err", "latest error in a read-only vim tab (v/y to select & copy)"),
+    ("errors", ":errors · :errs", "every error this session (newest first), same vim tab"),
+    ("resources", ":res · :resources", "live memory/CPU/disk across the whole browser tree (freezes while you select)"),
+    ("freeze", ":freeze · :unfreeze", "suspend every web tab to minimize RAM while staying open; :unfreeze resumes them"),
+    ("history", ":history · :hist", "visited URLs in a vim tab (Enter opens, ⇧Enter new tab, v/y select, d deletes the line/selection); :history clear wipes it"),
+    ("clear", ":clear <what> [period]", "erase data: history/cookies/cache/all, optionally a window (15m/1h/24h/7d); cookies/cache need a page open"),
+    ("alias", ":alias [name] [cmd] · :unalias", "list / set / remove command aliases (e.g. :alias gh open github.com → :gh)"),
+    ("restore", ":restore", "reset all customization to defaults — also Ctrl+Alt+Shift+R, which works in any mode"),
+    ("help", ":commands · :help [topic]", "this page; a topic jumps to its section (e.g. :help theme, :help caret)"),
+    ("version", ":version", "version and build information"),
+    ("write", ":w · :write", "save the current session (open tabs + UI state) to disk"),
+    ("wq", ":wq · :x", "save the session, then quit"),
+    ("quit", ":quit · :q", "quit WITHOUT saving (the last :w'd session is kept)"),
+];
+
+/// Help sections: element id, TOC label, and the extra `:help` aliases that reach
+/// them (beyond words already caught by a command row or action name).
+const HELP_SECTIONS: &[(&str, &str, &[&str])] = &[
+    ("sec-normal", "Normal mode", &["normal", "keys", "keybinds", "keybindings", "bindings", "keyboard", "caret", "hints", "panes"]),
+    ("sec-cmdline", "Command line", &["cmdline", "commandline", "editing", "bar", "commandbar"]),
+    ("sec-modes", "Modes", &["modes", "mode", "passthrough", "hint", "insert"]),
+    ("sec-pager", "Vim pager", &["pager", "vim", "vimpager", "visual", "motions"]),
+    ("sec-commands", "Commands", &["commands", "command"]),
+    ("sec-actions", "AI actions", &["actions", "action"]),
+    ("sec-bangs", "Bangs", &["bangs", "bang"]),
+    ("sec-maths", "Quick maths", &["maths", "math", "calc", "calculator"]),
+];
+
+/// Resolve a `:help <topic>` to the element id it should jump to: a command row
+/// first (by anchor key, then any word of its signature), then an AI action name,
+/// then a section name/alias. `None` means "no such topic" (the caller shows the
+/// whole page and says so).
+pub(crate) fn help_anchor(topic: &str) -> Option<String> {
+    let t = topic.trim().trim_start_matches(':').to_ascii_lowercase();
+    if t.is_empty() {
+        return None;
+    }
+    for (id, sig, _) in CMD_ROWS {
+        let word_hit = sig
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|w| !w.is_empty() && w.eq_ignore_ascii_case(&t));
+        if *id == t || word_hit {
+            return Some(format!("cmd-{id}"));
+        }
+    }
+    if crate::actions::ACTIONS.iter().any(|a| a.name == t) {
+        return Some(format!("act-{t}"));
+    }
+    HELP_SECTIONS
+        .iter()
+        .find(|(_, _, names)| names.contains(&t.as_str()))
+        .map(|(id, _, _)| id.to_string())
+}
+
+/// Render [`CMD_ROWS`] as the commands table, each row carrying its `:help` anchor.
+fn cmd_table() -> String {
+    let mut s = String::from("<table>");
+    for (id, k, d) in CMD_ROWS {
+        s.push_str(&format!(
+            "<tr id=\"cmd-{id}\"><td class=\"k\">{}</td><td class=\"d\">{}</td></tr>",
+            html_escape(k),
+            html_escape(d)
+        ));
+    }
+    s.push_str("</table>");
+    s
+}
+
+/// Render the action registry as cards: the signature line (name + one wrapping
+/// chip per param) with the summary below — long signatures like `theme`'s wrap
+/// instead of blowing the table layout apart.
+fn action_cards() -> String {
+    let mut s = String::new();
+    for a in crate::actions::ACTIONS {
+        let mut sig = html_escape(a.name);
+        for p in a.params {
+            let slot = if p.values.is_empty() { p.name.to_string() } else { p.values.join("|") };
+            let slot = if p.required { format!("&lt;{}&gt;", html_escape(&slot)) } else { format!("[{}]", html_escape(&slot)) };
+            sig.push_str(&format!("<span class=\"p\">{slot}</span>"));
+        }
+        s.push_str(&format!(
+            "<div class=\"act\" id=\"act-{}\"><div class=\"sig\">{sig}</div><p>{}</p></div>",
+            a.name,
+            html_escape(a.summary)
+        ));
+    }
+    s
+}
+
+/// The `:commands` page: every keybind and command (not customizable yet). `jump`
+/// is an element id to scroll to and highlight on load (`:help <topic>`).
+pub(crate) fn commands_document(jump: Option<&str>) -> String {
     let normal = help_table(&[
         (":", "open the command bar"),
         ("o / O", "open a page in THIS tab / in a new tab (prefills “open ” / “open -t ”)"),
@@ -474,87 +621,61 @@ pub(crate) fn commands_document() -> String {
         ("y", "yank: the selection, or with a motion (yy, yw, y$, yf), yt;)"),
         ("yiw · yi( · ya\"", "yank inner/around a text object (word, (), {}, [], <>, quotes)"),
     ]);
-    let cmds = help_table(&[
-        (":open <url|query> · :o", "open in THIS tab (non-URL → search engine); add -t for a new tab"),
-        (":tabopen · :t", "open in a new tab (same as :open -t)"),
-        (":reopen · :undo", "reopen the last closed tab (also U / Ctrl+Shift+T)"),
-        (":research <url|query> · :rs", "lighter browse: JS on, images kept, media/embeds stripped (-t = new tab)"),
-        (":edit · :e", "edit the current URL (re-opens in the tab's own mode)"),
-        (":y · :yank", "copy the current URL to the clipboard"),
-        (":read <url|query>", "engine-free reader (no WebView2) in this tab; -t = new tab; non-URL → search"),
-        (":search [name|template]", "show/set the search engine — a name (ddg/google/wiki…) or a %s URL"),
-        (":ai [question]", "AI tab (Groq): i to ask; Normal mode is a vim buffer (v/y select, / find); H/L step through past chats (persisted)"),
-        (":aihist · :aihistory", "saved-chat picker in a vim tab: each row shows created time · size · name (first prompt); Enter opens that chat, d deletes the row/selection"),
-        (":model [id]", "show/set the :ai model; in the command bar, Tab cycles the model list; persisted"),
-        (":te", "native terminal (Ctrl+V pastes · Ctrl+S → vim copy-mode: hjkl/w/b/f-find navigate, v/y yank, i resumes)"),
-        (":te <command>", "run a local command, result in the command bar"),
-        (":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
-        (":js", "toggle JavaScript (reloads this tab; applies to new tabs)"),
-        (":nojs <url>", "open a single page with JavaScript disabled"),
-        (":ads · :adblock", "toggle the blocker: ads, trackers, forced redirects + popunders (on by default)"),
-        (":downloads · :dl", "allow executable/installer downloads (.exe/.msi…; blocked by default)"),
-        (":mute · :audio", "toggle muting all page audio/video (live, all tabs)"),
-        (":css", "toggle page styling off/on (live, all tabs)"),
-        (":video [url]", "no url: toggle stripping video/players off pages (live, all tabs); with a url: play it in mpv/vlc"),
-        (":close · :bd", "close the current tab"),
-        (":vsplit · :split", "split into tmux-style panes (Ctrl+W h/j/k/l to move between them)"),
-        (":reload · :r", "reload"),
-        (":tabnext · :tn · :tabprev · :tp", "switch tabs"),
-        (":back · :forward", "history navigation"),
-        (":f · :fullscreen", "toggle fullscreen (hides the bars; `:` brings them back). YouTube's fullscreen button does this too"),
-        (":resize · :move", "window-control modes (then hjkl, Esc)"),
-        (":error · :err", "latest error in a read-only vim tab (v/y to select & copy)"),
-        (":errors · :errs", "every error this session (newest first), same vim tab"),
-        (":res · :resources", "live memory/CPU/disk across the whole browser tree (freezes while you select)"),
-        (":freeze · :unfreeze", "suspend every web tab to minimize RAM while staying open; :unfreeze resumes them"),
-        (":history · :hist", "visited URLs in a vim tab (Enter opens, ⇧Enter new tab, v/y select, d deletes the line/selection); :history clear wipes it"),
-        (":clear <what> [period]", "erase data: history/cookies/cache/all, optionally a window (15m/1h/24h/7d); cookies/cache need a page open"),
-        (":alias [name] [cmd] · :unalias", "list / set / remove command aliases (e.g. :alias gh open github.com → :gh)"),
-        (":restore", "reset all customization to defaults — also Ctrl+Alt+Shift+R, which works in any mode"),
-        (":commands · :help", "this page"),
-        (":version", "version and build information"),
-        (":w · :write", "save the current session (open tabs + UI state) to disk"),
-        (":wq · :x", "save the session, then quit"),
-        (":quit · :q", "quit WITHOUT saving (the last :w'd session is kept)"),
-    ]);
-    // Actions: the unified action layer (`actions.rs`) — the same described,
-    // invokable operations the `:ai` assistant will drive. Rendered from the one
-    // registry so help and AI never drift.
-    let action_rows = crate::actions::help_rows();
-    let actions =
-        help_table(&action_rows.iter().map(|(k, d)| (k.as_str(), d.as_str())).collect::<Vec<_>>());
+    // Commands come from CMD_ROWS (anchored rows); actions render as cards straight
+    // from the one action registry, so help and AI never drift.
+    let cmds = cmd_table();
+    let actions = action_cards();
     // Bangs: build `!key → description` rows from the core table.
     let bang_rows: Vec<(String, &str)> =
         browser_core::bang_list().into_iter().map(|(k, d)| (format!("!{k} <query>"), d)).collect();
     let bangs = help_table(
         &bang_rows.iter().map(|(k, d)| (k.as_str(), *d)).collect::<Vec<_>>(),
     );
+    let toc: String = HELP_SECTIONS
+        .iter()
+        .map(|(id, label, _)| format!("<a href=\"#{id}\">{label}</a>"))
+        .collect();
+    // `:help <topic>`: scroll to the target and highlight it. The ids are our own
+    // generated slugs (never user text), so embedding one in the script is safe.
+    let jump_script = jump
+        .map(|id| {
+            format!(
+                "<script>(function(){{var el=document.getElementById('{}');if(!el)return;\
+                 requestAnimationFrame(function(){{el.scrollIntoView();el.classList.add('jump');}});\
+                 }})();</script>",
+                id.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "")
+            )
+        })
+        .unwrap_or_default();
     format!(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
          <title>commands</title><style>{HELP_CSS}</style></head><body><main>\
          <h1>Commands &amp; keybindings</h1>\
-         <p class=\"sub\">Not customizable yet — these are the built-in bindings.</p>\
-         <h2>Normal mode</h2>{normal}\
-         <h2>Command-line editing</h2>{cmdline}\
-         <h2>Other modes</h2>{modes}\
-         <h2>Vim pager (:error · :errors · :res · :version · read-mode v/V)</h2>{vimpager}\
-         <h2>Commands</h2>{cmds}\
-         <h2>AI actions</h2>\
+         <p class=\"sub\">Not customizable yet — these are the built-in bindings. \
+         <code>:help &lt;topic&gt;</code> jumps straight to a command, action, or section — \
+         e.g. <code>:help theme</code>, <code>:help caret</code>, <code>:help bangs</code>.</p>\
+         <nav>{toc}</nav>\
+         <section id=\"sec-normal\"><h2>Normal mode</h2>{normal}</section>\
+         <section id=\"sec-cmdline\"><h2>Command-line editing</h2>{cmdline}</section>\
+         <section id=\"sec-modes\"><h2>Other modes</h2>{modes}</section>\
+         <section id=\"sec-pager\"><h2>Vim pager (:error · :errors · :res · :version · read-mode v/V)</h2>{vimpager}</section>\
+         <section id=\"sec-commands\"><h2>Commands</h2>{cmds}</section>\
+         <section id=\"sec-actions\"><h2>AI actions</h2>\
          <p class=\"sub\">Operations the <code>:ai</code> assistant can perform on request — \
          e.g. \u{201C}open github and gmail side by side\u{201D}, \u{201C}wipe my cookies\u{201D}, \
          \u{201C}make ‘gh’ open github\u{201D}. Several map to the commands above; \
-         <code>:restore</code> (or Ctrl+Alt+Shift+R) resets all customization.</p>{actions}\
-         <h2>Bangs</h2>\
+         <code>:restore</code> (or Ctrl+Alt+Shift+R) resets all customization.</p>{actions}</section>\
+         <section id=\"sec-bangs\"><h2>Bangs</h2>\
          <p class=\"sub\">A <code>!key</code> token in any open/search target jumps to that \
          site's search (no query → the site's home). Trailing form works too: \
-         <code>dragon scimitar !osrs</code>.</p>{bangs}\
-         <h2>Quick maths</h2>\
+         <code>dragon scimitar !osrs</code>.</p>{bangs}</section>\
+         <section id=\"sec-maths\"><h2>Quick maths</h2>\
          <p class=\"sub\">Type an arithmetic expression in the command bar \
          (<code>+ - * / %  ^</code>, parentheses) to see the result live, e.g. \
          <code>:20*8</code> → <code>= 160</code>. Press Enter to replace the line with the \
-         result so you can copy it or keep calculating (<code>160+10</code>).</p>\
-         </main></body></html>"
+         result so you can copy it or keep calculating (<code>160+10</code>).</p></section>\
+         </main>{jump_script}</body></html>"
     )
 }
 
@@ -688,6 +809,42 @@ pub(crate) fn version_lines() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_anchor_resolves_commands_actions_and_sections() {
+        // A command row wins first: by its anchor key or any word of the signature.
+        assert_eq!(help_anchor("theme").as_deref(), Some("cmd-theme"));
+        assert_eq!(help_anchor(":open").as_deref(), Some("cmd-open"));
+        assert_eq!(help_anchor("t").as_deref(), Some("cmd-tabopen")); // ":tabopen · :t"
+        // Actions not shadowed by a command resolve to their card.
+        assert_eq!(help_anchor("install_scheme").as_deref(), Some("act-install_scheme"));
+        // Section names and aliases.
+        assert_eq!(help_anchor("caret").as_deref(), Some("sec-normal"));
+        assert_eq!(help_anchor("bangs").as_deref(), Some("sec-bangs"));
+        assert_eq!(help_anchor("math").as_deref(), Some("sec-maths"));
+        // Unknown topics are None (the caller shows the full page and says so).
+        assert_eq!(help_anchor("zzzz"), None);
+        assert_eq!(help_anchor(""), None);
+    }
+
+    #[test]
+    fn commands_document_carries_anchors_and_jump_script() {
+        let plain = commands_document(None);
+        // Every section, command row, and action card is addressable.
+        for (id, _, _) in HELP_SECTIONS {
+            assert!(plain.contains(&format!("id=\"{id}\"")), "missing section {id}");
+        }
+        assert!(plain.contains("id=\"cmd-theme\""));
+        assert!(plain.contains("id=\"act-theme\""));
+        // Action params render as individual chips (required <…> vs optional […]),
+        // so the long `theme` signature wraps instead of stretching a table column.
+        assert!(plain.contains("<span class=\"p\">&lt;history|cookies|cache|all&gt;</span>"));
+        assert!(plain.contains("<span class=\"p\">[term_scheme]</span>"));
+        assert!(!plain.contains("<script>"), "no jump script without a topic");
+        // With a topic, the jump script targets exactly that id.
+        let jumped = commands_document(Some("cmd-theme"));
+        assert!(jumped.contains("getElementById('cmd-theme')"), "jump script missing");
+    }
 
     fn entry(time: &str, command: Option<&str>, message: &str) -> ErrorEntry {
         ErrorEntry {

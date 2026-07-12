@@ -266,29 +266,6 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
     },
 ];
 
-/// Render the registry as `(signature, summary)` rows for the `:commands` help —
-/// the same list that becomes the assistant's tool menu, so help and AI never drift.
-/// Shown as action signatures (no `:` prefix — several map to differently-named
-/// commands): required args as `<a|b>`, optional as `[a|b]`.
-pub(crate) fn help_rows() -> Vec<(String, String)> {
-    ACTIONS
-        .iter()
-        .map(|a| {
-            let mut inv = a.name.to_string();
-            for p in a.params {
-                // Free-text params (no fixed `values`) show their name as a placeholder.
-                let slot = if p.values.is_empty() { p.name.to_string() } else { p.values.join("|") };
-                if p.required {
-                    inv.push_str(&format!(" <{slot}>"));
-                } else {
-                    inv.push_str(&format!(" [{slot}]"));
-                }
-            }
-            (inv, a.summary.to_string())
-        })
-        .collect()
-}
-
 /// The registry as an OpenAI-style `tools` array for the Groq request: each action
 /// becomes a `function` with an object schema whose properties are its params
 /// (string + `enum` of accepted values). The assistant picks one and supplies args,
@@ -939,19 +916,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn help_rows_show_required_and_optional_args() {
-        let rows = help_rows();
-        assert_eq!(rows.len(), ACTIONS.len());
-        let row = |name: &str| {
-            rows.iter().find(|(inv, _)| inv.starts_with(name)).map(|(i, _)| i.clone()).unwrap()
-        };
-        // Fixed-value params render as enums; free-text params show their name.
-        assert_eq!(row("clear"), "clear <history|cookies|cache|all> [15m|1h|24h|7d|all]");
-        assert_eq!(row("alias "), "alias <name> <expansion>");
-        assert_eq!(row("unalias"), "unalias <name>");
-        assert_eq!(row("restore"), "restore");
-        assert_eq!(row("open"), "open <target> [current|new]");
-        assert_eq!(row("split"), "split [vertical|horizontal]");
+    fn action_specs_expose_params_for_rendering() {
+        // The `:commands` cards and the Groq tool schema both render straight from
+        // ACTIONS; sanity-check the param shapes they rely on.
+        let spec = |name: &str| ACTIONS.iter().find(|a| a.name == name).unwrap();
+        let clear = spec("clear");
+        assert!(clear.params[0].required && clear.params[0].values == ["history", "cookies", "cache", "all"]);
+        assert!(!clear.params[1].required);
+        // Free-text params have no fixed values; their NAME is the placeholder.
+        assert!(spec("alias").params.iter().all(|p| p.values.is_empty() && p.required));
+        assert!(spec("restore").params.is_empty());
     }
 
     #[test]

@@ -301,7 +301,16 @@ impl App {
                 }
             }
             "restore" => self.run_action("restore", serde_json::json!({})),
-            "commands" | "help" => self.open_local_page("commands", commands_document()),
+            // `:help` opens the full page; `:help <topic>` jumps straight to that
+            // command/action/section (e.g. :help theme, :help caret, :help bangs).
+            "commands" | "help" => {
+                let topic = rest.trim();
+                let anchor = crate::pages::help_anchor(topic);
+                self.open_local_page("commands", commands_document(anchor.as_deref()));
+                if !topic.is_empty() && anchor.is_none() {
+                    self.set_status(format!("no help topic '{topic}' — showing the full page"));
+                }
+            }
             "version" => self.open_version_page(),
             // Total the browser's real footprint across its whole process tree
             // (browser.exe + WebView2 engine procs + pty-hosts), which Task Manager

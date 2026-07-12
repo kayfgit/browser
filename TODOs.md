@@ -24,16 +24,21 @@ issues:
        handle YT ads. NOTE: a separate, worse variant (netblock stalling ALL YT videos in default mode)
        was already fixed -- netblock is now gated to :adblock native only.
 [] - recent history with H/L isnt working
-[*] - shorten the block cursor just a little bit, its a bit chonky to the right
+[*] - shorten the caret block cursor just a little bit, its a bit chonky to the right
+[*] - change caret block color to gray and blinking
+[*] - camera should reset to the bottom if a terminal is opened and i press ctrl+s and scroll the screen up (like normal)
+[*] - tabs should have a specific width, becoming smaller with the more tabs there is
+[*] - if there are more than 10 tabs, find a way to switch to these tabs (maybe shift+1, to move to the eleventh tab and so on up to 20, if there are more than 20 tabs then tough luck buddy)
+[*] - sometimes the cursor gets stuck in a place and doesnt return until i reset the browser mode
+[*] - terminal text gets very broken if i change the zoom, it should readjust itself after zooming
+[*] - toggle for the webview2 scrollbar with ":scrollbar"
+[*] - the visual of the caret block cursor on caret mode is very weird, on some parts of the text pressing "j" goes up instead of down, but its only a visual issue, the "go down" action still registers, so pressing "j" again goes down again and updates the position
 
 feats:
 [*] - :save/saved or :favorite/favorites for saving a page for later
-[x] - allow :te customization, like fonts, colors, etc
 [*] - ctrl+arrowkeys should move thee cursor through entire words, currently moves only one character at a time
-[*] - allow ":help" to open exact commands, like ":help theme" it opens up right at the theme section and so on.
-[*] - fix :commands, it currently looks pretty bad, needs a major rework on the visuals
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
-[] - maybe add a :engine command to change browser engine? might be overkill and dont know if its possible
-[] - ctrl+: enters command bar in vim mode, allows vim motions.
+[*] - maybe add a :engine command to change browser engine? might be overkill and dont know if its possible
+[/] - ctrl+: enters command bar in vim mode, allows vim motions.
