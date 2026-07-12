@@ -126,6 +126,11 @@ pub(crate) enum UserEvent {
     /// confirmation goes into that chat, and the status bar is used only when that tab
     /// isn't the one on screen.
     DataCleared { label: String, ai_id: Option<u64> },
+    /// A background terminal-scheme download (`install_scheme` / `:theme install`)
+    /// finished: `Ok` carries the installed scheme's display name (the shell applies
+    /// it), `Err` a human-readable reason — possibly a "did you mean …" candidate
+    /// list. `ai_id` routes the outcome into the initiating `:ai` chat.
+    SchemeInstalled { ai_id: Option<u64>, result: Result<String, String> },
     /// The `Ctrl+Alt+Shift+R` keyboard-hook chord (the brick-proof panic button):
     /// reset all customization to defaults, regardless of mode or how keys are bound.
     RestoreDefaults,
@@ -413,6 +418,14 @@ pub(crate) struct App {
     /// Scrollback lines kept per terminal (memory scales with it; see
     /// [`pty_term::DEFAULT_SCROLLBACK`]).
     pub(crate) term_scrollback: usize,
+    /// The live `:te` terminal style (fg/bg + ANSI palette), resolved from
+    /// `config.term` by [`rebuild_term_style`](Self::rebuild_term_style).
+    pub(crate) term_style: crate::pty_term::TermStyle,
+    /// A dedicated painter for terminal grids when `config.term` sets a custom font
+    /// and/or size; `None` = terminals render with the UI painter as before. Its px
+    /// tracks the browser zoom (see [`set_zoom`](Self::set_zoom)). Use
+    /// [`term_paint`](Self::term_paint) to read whichever applies.
+    pub(crate) term_painter: Option<crate::draw::Painter>,
     /// Set while an `H`/`L` history replay is reopening a page in place, so the
     /// synchronous navigation paths ([`place_tab`](Self::place_tab)) don't re-record
     /// the page being left (the stacks were already adjusted by [`history`]). The
@@ -422,6 +435,14 @@ pub(crate) struct App {
     /// waiting for the target character after `f`/`F`/`t`/`T`. The next key is the
     /// target; cleared once consumed (or on Esc). See [`key_term_vi`](App::key_term_vi).
     pub(crate) term_find_pending: Option<(bool, bool)>,
+    /// The terminal id of the editor tab a bare `:theme` opened on config.toml, if
+    /// one is live: when that terminal closes, the config is re-read and applied
+    /// (the edit → save → quit loop). See [`edit_theme_config`](App::edit_theme_config).
+    pub(crate) config_edit_term: Option<u64>,
+    /// The query of a scheme download currently in flight, so a repeated
+    /// `install_scheme` (e.g. the AI calling twice in one turn) is rejected instead
+    /// of double-downloading. Cleared by [`finish_scheme_install`](App::finish_scheme_install).
+    pub(crate) installing_scheme: Option<String>,
     /// The last terminal find-char (`target, forward, till`) so `;`/`,` can repeat it
     /// (in the same / opposite direction), like vim.
     pub(crate) term_last_find: Option<(char, bool, bool)>,
@@ -530,6 +551,44 @@ impl App {
         self.theme = t;
     }
 
+    /// The base (zoom-1.0) px size for the terminal font: the configured override,
+    /// or the UI font size so terminals match the chrome by default.
+    pub(crate) fn term_base_px(&self) -> f32 {
+        self.config.term.font_px.unwrap_or(BASE_PX).clamp(6.0, 72.0)
+    }
+
+    /// Re-resolve the `:te` terminal style (colours + optional custom font/size) from
+    /// `config.term` — called at startup and after `theme`/`:restore`. Like
+    /// [`rebuild_theme`](Self::rebuild_theme), every bad field degrades to its default
+    /// (an uninstalled font falls back to the built-in face at the configured size)
+    /// so a stale config never breaks the terminal. Ends by re-fitting every visible
+    /// terminal grid, since the cell size may have changed.
+    pub(crate) fn rebuild_term_style(&mut self) {
+        let tc = &self.config.term;
+        // Built-in schemes first, then the downloaded ones (`install_scheme`).
+        let mut st = tc
+            .scheme
+            .as_deref()
+            .and_then(|n| crate::pty_term::scheme(n).or_else(|| crate::config::load_custom_scheme(n)))
+            .unwrap_or_default();
+        if let Some(c) = tc.bg.as_deref().and_then(crate::draw::parse_color) {
+            st.bg = c;
+        }
+        if let Some(c) = tc.fg.as_deref().and_then(crate::draw::parse_color) {
+            st.fg = c;
+        }
+        self.term_style = st;
+        self.term_painter = if tc.font.is_none() && tc.font_px.is_none() {
+            None // no override: terminals share the UI painter (and its zoom) as before
+        } else {
+            let path = tc.font.as_deref().and_then(crate::draw::find_font);
+            let px = self.term_base_px() * self.zoom as f32;
+            crate::draw::Painter::with_primary(path.as_deref(), px).ok()
+        };
+        self.sync_active_term_size();
+        self.window.request_redraw();
+    }
+
     /// Tab-bar height: present only while at least one *visible* tab is open and chrome
     /// is shown. The background `:ai` singleton doesn't appear in the strip, so a lone
     /// hidden AI tab leaves the bar at zero height (welcome screen stays clean).
@@ -635,6 +694,11 @@ impl App {
         let z = ((factor.clamp(ZOOM_MIN, ZOOM_MAX)) * 100.0).round() / 100.0;
         self.zoom = z;
         self.painter.set_px(BASE_PX * z as f32);
+        // The custom terminal painter (if any) tracks the same zoom on its own base size.
+        let term_px = self.term_base_px() * z as f32;
+        if let Some(tp) = &mut self.term_painter {
+            tp.set_px(term_px);
+        }
         // Tab/command bars changed height → refit every visible pane. This must go
         // through `refresh_visibility` (not a single `set_bounds` on the active
         // webview to the whole content band): under a split the active webview only

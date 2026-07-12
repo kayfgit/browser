@@ -31,6 +31,11 @@ pub(crate) struct Config {
     /// [`Theme`](crate::draw::Theme) by [`rebuild_theme`](crate::App::rebuild_theme).
     #[serde(default)]
     pub(crate) theme: ThemeConfig,
+    /// `:te` terminal appearance overrides (font + colours). Resolved into the live
+    /// [`TermStyle`](crate::pty_term::TermStyle) / terminal painter by
+    /// [`rebuild_term_style`](crate::App::rebuild_term_style).
+    #[serde(default)]
+    pub(crate) term: TermConfig,
 }
 
 /// Appearance overrides for the shell chrome — the command/status bar height and the
@@ -58,9 +63,101 @@ pub(crate) struct ThemeConfig {
     pub(crate) bg: Option<String>,
 }
 
+/// Appearance overrides for `:te` terminal tabs. Like [`ThemeConfig`], every field is
+/// optional (unset keeps the built-in default) and stored as given — the font name and
+/// colours are resolved/validated at apply time, never at load time, so a font that was
+/// uninstalled or a stale scheme name degrades gracefully instead of breaking startup.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub(crate) struct TermConfig {
+    /// Terminal font: an installed font's name (matched against the system/user font
+    /// directories) or an explicit .ttf/.otf path. Unset = the UI's monospace font.
+    #[serde(default)]
+    pub(crate) font: Option<String>,
+    /// Terminal font size in px at zoom 1.0 (browser zoom multiplies it). Unset = the
+    /// UI font size, so the terminal matches the chrome like before.
+    #[serde(default)]
+    pub(crate) font_px: Option<f32>,
+    /// Named ANSI colour scheme (see [`pty_term::scheme`](crate::pty_term::scheme)):
+    /// dracula, gruvbox, nord, … Unset = campbell (the Windows Terminal default).
+    #[serde(default)]
+    pub(crate) scheme: Option<String>,
+    /// Terminal background (name or hex) — overrides the scheme's.
+    #[serde(default)]
+    pub(crate) bg: Option<String>,
+    /// Terminal default text colour (name or hex) — overrides the scheme's.
+    #[serde(default)]
+    pub(crate) fg: Option<String>,
+}
+
 /// Location of the config file (plain TOML in the app data dir, beside the session).
-fn config_path() -> Option<PathBuf> {
+/// `pub(crate)` so `:theme` can open it in an editor for direct editing.
+pub(crate) fn config_path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "browser").map(|d| d.data_dir().join("config.toml"))
+}
+
+/// Directory holding downloaded terminal colour schemes (one TOML per scheme),
+/// beside the config. Created on first install.
+fn schemes_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "browser").map(|d| d.data_dir().join("schemes"))
+}
+
+/// A downloaded terminal colour scheme as stored on disk: display name + default
+/// fg/bg + the 16 ANSI colours, all as `#rrggbb` strings (human-editable TOML).
+#[derive(Serialize, Deserialize)]
+pub(crate) struct SchemeFile {
+    pub(crate) name: String,
+    pub(crate) fg: String,
+    pub(crate) bg: String,
+    pub(crate) ansi: Vec<String>,
+}
+
+/// The canonical on-disk key for a scheme name: lowercase alphanumerics only, so
+/// "IBM 3270", "3270-Dark" and "3270 dark" all address the same file.
+pub(crate) fn scheme_key(name: &str) -> String {
+    name.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase()
+}
+
+/// Load an installed (downloaded) scheme by name, resolving colours to a live
+/// [`TermStyle`](crate::pty_term::TermStyle). `None` if it isn't installed or the
+/// file is garbled — the caller falls back to the default style.
+pub(crate) fn load_custom_scheme(name: &str) -> Option<crate::pty_term::TermStyle> {
+    let path = schemes_dir()?.join(format!("{}.toml", scheme_key(name)));
+    let file: SchemeFile = toml::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let mut st = crate::pty_term::TermStyle::default();
+    st.fg = crate::draw::parse_color(&file.fg)?;
+    st.bg = crate::draw::parse_color(&file.bg)?;
+    if file.ansi.len() != 16 {
+        return None;
+    }
+    for (slot, s) in st.ansi.iter_mut().zip(&file.ansi) {
+        *slot = crate::draw::parse_color(s)?;
+    }
+    Some(st)
+}
+
+/// Persist a downloaded scheme under its canonical key. Returns the display name.
+pub(crate) fn save_custom_scheme(file: &SchemeFile) -> Result<String, String> {
+    let dir = schemes_dir().ok_or("no data directory available")?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    let path = dir.join(format!("{}.toml", scheme_key(&file.name)));
+    let s = toml::to_string_pretty(file).map_err(|e| e.to_string())?;
+    std::fs::write(&path, s).map_err(|e| format!("writing {}: {e}", path.display()))?;
+    Ok(file.name.clone())
+}
+
+/// Display names of every installed (downloaded) scheme, sorted.
+pub(crate) fn custom_scheme_names() -> Vec<String> {
+    let Some(dir) = schemes_dir() else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let s = std::fs::read_to_string(e.path()).ok()?;
+            toml::from_str::<SchemeFile>(&s).ok().map(|f| f.name)
+        })
+        .collect();
+    names.sort();
+    names
 }
 
 /// Load the saved config, or defaults if there's none / it can't be read or parsed.

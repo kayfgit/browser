@@ -24,14 +24,14 @@ issues:
        handle YT ads. NOTE: a separate, worse variant (netblock stalling ALL YT videos in default mode)
        was already fixed -- netblock is now gated to :adblock native only.
 [] - recent history with H/L isnt working
-[x] - make caret mode be a block cursor instead of a caret (ironic i know)
-[x] - currently entering caret mode starts selecting instantly, it should only enable caret mode, if i want to select something they press "v" again.
-[x] - theres a bug where the caret grows really long the more i select
-[x] - if the cursor on caret mode reaches the bottom of the screen, it doesnt bring the screen down with it, so i cant see anything below (it needs to act like vim's cursor where if the cursor reaches the bottom it scrolls down to see more content)
+[*] - shorten the block cursor just a little bit, its a bit chonky to the right
 
 feats:
 [*] - :save/saved or :favorite/favorites for saving a page for later
-[*] - allow :te customization
+[x] - allow :te customization, like fonts, colors, etc
+[*] - ctrl+arrowkeys should move thee cursor through entire words, currently moves only one character at a time
+[*] - allow ":help" to open exact commands, like ":help theme" it opens up right at the theme section and so on.
+[*] - fix :commands, it currently looks pretty bad, needs a major rework on the visuals
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"

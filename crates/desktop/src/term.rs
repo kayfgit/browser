@@ -120,9 +120,18 @@ impl App {
             .unwrap_or(false)
     }
 
+    /// The painter terminal grids render with: the dedicated one when `:theme` set a
+    /// custom terminal font/size, else the shared UI painter. Every terminal cell
+    /// metric must come from THIS painter so the grid, PTY size, and mouse hit-tests
+    /// agree.
+    pub(crate) fn term_paint(&self) -> &crate::draw::Painter {
+        self.term_painter.as_ref().unwrap_or(&self.painter)
+    }
+
     /// Monospace cell size (width, height) in px at the current zoom.
     pub(crate) fn term_cell(&self) -> (i32, i32) {
-        (self.painter.measure("M").max(1) as i32, self.painter.line_height().max(1) as i32)
+        let p = self.term_paint();
+        (p.measure("M").max(1) as i32, p.line_height().max(1) as i32)
     }
 
     /// The terminal grid size (cols, rows) that fits the focused pane.
@@ -149,10 +158,17 @@ impl App {
         } else {
             self.term_command.clone()
         };
+        self.open_terminal_cmd(shell);
+    }
 
+    /// [`open_terminal`](Self::open_terminal) with an explicit argv to run in place
+    /// of the configured shell (e.g. the `:theme` config editor). Returns the new
+    /// terminal's id (`None` if the pty-host couldn't start) so a caller can react
+    /// to that specific terminal closing.
+    pub(crate) fn open_terminal_cmd(&mut self, shell: Vec<String>) -> Option<u64> {
         let Some(host) = pty_host_path() else {
             self.set_error("could not locate browser-pty-host");
-            return;
+            return None;
         };
 
         let (cols, rows) = self.term_grid_size();
@@ -171,7 +187,7 @@ impl App {
             Ok(c) => c,
             Err(e) => {
                 self.set_error(format!("failed to start pty-host: {e}"));
-                return;
+                return None;
             }
         };
 
@@ -234,6 +250,7 @@ impl App {
         self.window.set_focus();
         self.set_status("terminal — Ctrl+S returns to the shell");
         self.window.request_redraw();
+        Some(id)
     }
 
     pub(crate) fn term_session_mut(&mut self, id: u64) -> Option<&mut TermSession> {
@@ -472,8 +489,18 @@ impl App {
     /// Close the tab whose terminal has the given id (its shell exited). Behaves
     /// like `x`, but only disturbs focus/mode if that tab was the active one.
     pub(crate) fn close_term_tab(&mut self, id: u64) {
+        // The `:theme` config editor exited: re-read the config and apply it (the
+        // edit → save → quit loop). Checked before the tab lookup so it still fires
+        // when the tab was already closed by hand (`x`) before the PTY EOF arrived.
+        let was_config_edit = self.config_edit_term == Some(id);
+        if was_config_edit {
+            self.config_edit_term = None;
+        }
         let Some(i) = self.tabs.iter().position(|t| t.term().map(|s| s.id) == Some(id))
         else {
+            if was_config_edit {
+                self.reload_config();
+            }
             return;
         };
         let was_active = self.active == Some(i);
@@ -492,6 +519,9 @@ impl App {
             self.window.set_focus();
         }
         self.refresh_visibility();
+        if was_config_edit {
+            self.reload_config();
+        }
     }
 
     /// Forward a wheel notch to a terminal program that turned on mouse reporting,

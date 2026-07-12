@@ -48,6 +48,65 @@ const FG: Rgb = (0xcc, 0xcc, 0xcc);
 /// Terminal background — also the content-area fill behind the grid.
 pub const BG: Rgb = (0x1a, 0x1a, 0x1a);
 
+/// The resolved terminal render style: default fg/bg plus the 16-color ANSI palette.
+/// Built from the persisted [`TermConfig`](crate::config::TermConfig) by
+/// [`rebuild_term_style`](crate::App::rebuild_term_style) — a named scheme first,
+/// then explicit fg/bg overrides on top. Default = Campbell on the UI grey.
+#[derive(Clone, Copy)]
+pub struct TermStyle {
+    pub fg: Rgb,
+    pub bg: Rgb,
+    pub ansi: [Rgb; 16],
+}
+
+impl Default for TermStyle {
+    fn default() -> Self {
+        TermStyle { fg: FG, bg: BG, ansi: ANSI }
+    }
+}
+
+/// Scheme names accepted by [`scheme`], in the order shown to the user/AI.
+pub const SCHEMES: &[&str] =
+    &["campbell", "dracula", "gruvbox", "nord", "solarized", "onedark", "monokai"];
+
+/// Look up a built-in colour scheme by name (case-insensitive). Palettes are the
+/// widely-published values for each theme; `campbell` is the built-in default.
+pub fn scheme(name: &str) -> Option<TermStyle> {
+    // (fg, bg, [16 ANSI colors 0..=7 normal, 8..=15 bright])
+    let hex = |n: u32| -> Rgb { (((n >> 16) & 0xff) as u8, ((n >> 8) & 0xff) as u8, (n & 0xff) as u8) };
+    let build = |fg: u32, bg: u32, pal: [u32; 16]| -> TermStyle {
+        TermStyle { fg: hex(fg), bg: hex(bg), ansi: pal.map(hex) }
+    };
+    Some(match name.to_ascii_lowercase().as_str() {
+        "campbell" | "default" => TermStyle::default(),
+        "dracula" => build(0xf8f8f2, 0x282a36, [
+            0x21222c, 0xff5555, 0x50fa7b, 0xf1fa8c, 0xbd93f9, 0xff79c6, 0x8be9fd, 0xf8f8f2,
+            0x6272a4, 0xff6e6e, 0x69ff94, 0xffffa5, 0xd6acff, 0xff92df, 0xa4ffff, 0xffffff,
+        ]),
+        "gruvbox" => build(0xebdbb2, 0x282828, [
+            0x282828, 0xcc241d, 0x98971a, 0xd79921, 0x458588, 0xb16286, 0x689d6a, 0xa89984,
+            0x928374, 0xfb4934, 0xb8bb26, 0xfabd2f, 0x83a598, 0xd3869b, 0x8ec07c, 0xebdbb2,
+        ]),
+        "nord" => build(0xd8dee9, 0x2e3440, [
+            0x3b4252, 0xbf616a, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead, 0x88c0d0, 0xe5e9f0,
+            0x4c566a, 0xbf616a, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead, 0x8fbcbb, 0xeceff4,
+        ]),
+        "solarized" => build(0x839496, 0x002b36, [
+            0x073642, 0xdc322f, 0x859900, 0xb58900, 0x268bd2, 0xd33682, 0x2aa198, 0xeee8d5,
+            0x002b36, 0xcb4b16, 0x586e75, 0x657b83, 0x839496, 0x6c71c4, 0x93a1a1, 0xfdf6e3,
+        ]),
+        "onedark" => build(0xabb2bf, 0x282c34, [
+            0x282c34, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xabb2bf,
+            0x5c6370, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xffffff,
+        ]),
+        "monokai" => build(0xf8f8f2, 0x272822, [
+            0x272822, 0xf92672, 0xa6e22e, 0xf4bf75, 0x66d9ef, 0xae81ff, 0xa1efe4, 0xf8f8f2,
+            0x75715e, 0xf92672, 0xa6e22e, 0xf4bf75, 0x66d9ef, 0xae81ff, 0xa1efe4, 0xf9f8f5,
+        ]),
+        _ => return None,
+    })
+}
+
 /// Event sink for the VT engine. The only events we must act on are `PtyWrite`s —
 /// replies the engine generates to device queries (notably the `ESC[6n` cursor-
 /// position report the shell sends on startup and STALLS waiting for). We queue
@@ -268,34 +327,34 @@ fn to_rgb(c: VtRgb) -> Rgb {
     (c.r, c.g, c.b)
 }
 
-fn named_default(n: NamedColor) -> Rgb {
+fn named_default(n: NamedColor, st: &TermStyle) -> Rgb {
     use NamedColor::*;
     match n {
-        Black | DimBlack => ANSI[0],
-        Red | DimRed => ANSI[1],
-        Green | DimGreen => ANSI[2],
-        Yellow | DimYellow => ANSI[3],
-        Blue | DimBlue => ANSI[4],
-        Magenta | DimMagenta => ANSI[5],
-        Cyan | DimCyan => ANSI[6],
-        White | DimWhite => ANSI[7],
-        BrightBlack => ANSI[8],
-        BrightRed => ANSI[9],
-        BrightGreen => ANSI[10],
-        BrightYellow => ANSI[11],
-        BrightBlue => ANSI[12],
-        BrightMagenta => ANSI[13],
-        BrightCyan => ANSI[14],
-        BrightWhite => ANSI[15],
-        Foreground | BrightForeground | DimForeground | Cursor => FG,
-        Background => BG,
+        Black | DimBlack => st.ansi[0],
+        Red | DimRed => st.ansi[1],
+        Green | DimGreen => st.ansi[2],
+        Yellow | DimYellow => st.ansi[3],
+        Blue | DimBlue => st.ansi[4],
+        Magenta | DimMagenta => st.ansi[5],
+        Cyan | DimCyan => st.ansi[6],
+        White | DimWhite => st.ansi[7],
+        BrightBlack => st.ansi[8],
+        BrightRed => st.ansi[9],
+        BrightGreen => st.ansi[10],
+        BrightYellow => st.ansi[11],
+        BrightBlue => st.ansi[12],
+        BrightMagenta => st.ansi[13],
+        BrightCyan => st.ansi[14],
+        BrightWhite => st.ansi[15],
+        Foreground | BrightForeground | DimForeground | Cursor => st.fg,
+        Background => st.bg,
     }
 }
 
 /// xterm 256-color default for an index the program hasn't overridden.
-fn indexed_default(i: u8) -> Rgb {
+fn indexed_default(i: u8, st: &TermStyle) -> Rgb {
     match i {
-        0..=15 => ANSI[i as usize],
+        0..=15 => st.ansi[i as usize],
         16..=231 => {
             let i = i - 16;
             let step = |x: u8| if x == 0 { 0 } else { 55 + x * 40 };
@@ -399,17 +458,20 @@ fn draw_special(
 }
 
 /// Resolve a cell color to RGB: a program-set palette entry wins, else our default.
-fn resolve(c: Color, colors: &Colors) -> Rgb {
+fn resolve(c: Color, colors: &Colors, st: &TermStyle) -> Rgb {
     match c {
         Color::Spec(rgb) => to_rgb(rgb),
-        Color::Named(n) => colors[n].map(to_rgb).unwrap_or_else(|| named_default(n)),
-        Color::Indexed(i) => colors[i as usize].map(to_rgb).unwrap_or_else(|| indexed_default(i)),
+        Color::Named(n) => colors[n].map(to_rgb).unwrap_or_else(|| named_default(n, st)),
+        Color::Indexed(i) => {
+            colors[i as usize].map(to_rgb).unwrap_or_else(|| indexed_default(i, st))
+        }
     }
 }
 
 /// Paint the terminal grid into `buf`. The grid's top-left cell is at (`x0`, `y0`);
 /// `cell_w`/`cell_h` are the monospace cell size. Cells past the bottom of the
 /// content band (`>= clip_bottom`) are skipped; the caller paints the bars on top.
+/// `st` supplies the default fg/bg + ANSI palette (the `:theme term_*` overrides).
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     pty: &PtyTerm,
@@ -422,6 +484,7 @@ pub fn render(
     cell_w: i32,
     cell_h: i32,
     clip_bottom: i32,
+    st: &TermStyle,
 ) {
     let content = pty.vt.renderable_content();
     let colors = content.colors;
@@ -457,8 +520,8 @@ pub fn render(
         if cy < y0 || cy + cell_h > clip_bottom {
             continue;
         }
-        let mut fg = resolve(cell.fg, colors);
-        let mut bg = resolve(cell.bg, colors);
+        let mut fg = resolve(cell.fg, colors, st);
+        let mut bg = resolve(cell.bg, colors, st);
         if cell.flags.contains(Flags::INVERSE) {
             std::mem::swap(&mut fg, &mut bg);
         }
@@ -467,7 +530,7 @@ pub fn render(
             bg = draw::SEL;
         }
         let cw = if cell.flags.contains(Flags::WIDE_CHAR) { cell_w * 2 } else { cell_w };
-        if bg != BG {
+        if bg != st.bg {
             draw::fill_rect(
                 buf, w, h, cx.max(0) as usize, cy.max(0) as usize,
                 (cx + cw).max(0) as usize, (cy + cell_h).max(0) as usize, bg,
@@ -488,12 +551,12 @@ pub fn render(
         if cy >= y0 && cy + cell_h <= clip_bottom {
             draw::fill_rect(
                 buf, w, h, cx.max(0) as usize, cy.max(0) as usize,
-                (cx + cell_w).max(0) as usize, (cy + cell_h).max(0) as usize, FG,
+                (cx + cell_w).max(0) as usize, (cy + cell_h).max(0) as usize, st.fg,
             );
             if cursor_char != ' ' && cursor_char != '\0'
-                && !draw_special(buf, w, h, cx, cy, cell_w, cell_h, cursor_char, BG, FG)
+                && !draw_special(buf, w, h, cx, cy, cell_w, cell_h, cursor_char, st.bg, st.fg)
             {
-                p.text(buf, w, h, cx.max(0) as usize, (cy + baseline_off) as usize, &cursor_char.to_string(), BG);
+                p.text(buf, w, h, cx.max(0) as usize, (cy + baseline_off) as usize, &cursor_char.to_string(), st.bg);
             }
         }
     }

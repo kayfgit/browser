@@ -1059,9 +1059,12 @@ impl App {
             Err(e) => return self.ai_finish(id, Some(AiMessage { role: AiRole::Err, text: e })),
             Ok(AiStep::Calls { calls, assistant_msg }) => (calls, assistant_msg),
         };
-        // The AI tab must never be the target of a browser action (open/split would
-        // clobber the chat); move to a content tab/pane first.
-        self.ensure_content_focus();
+        // The AI tab must never be the target of a CONTENT action (open/split would
+        // clobber the chat); move to a content tab/pane first. Settings/data actions
+        // (theme, install_scheme, alias, …) don't need — or want — the focus dance.
+        if calls.iter().any(|c| crate::actions::targets_content(&c.name)) {
+            self.ensure_content_focus();
+        }
         // Mark this tab as the actor so an async action (a data wipe) routes its
         // "Done — …" confirmation back to this chat.
         self.acting_ai = Some(id);
@@ -1155,10 +1158,18 @@ impl App {
     /// re-persist it. Returns whether that tab is the one currently on screen — the
     /// caller skips the status bar in that case, since the chat already shows it.
     pub(crate) fn ai_action_done(&mut self, id: u64, label: &str) -> bool {
+        self.ai_note(id, &format!("Done — cleared {label}."))
+    }
+
+    /// Append a natural-language note to the `:ai` chat `id` — the real outcome of
+    /// an async action (a data wipe, a scheme install) arriving after the round that
+    /// started it — and re-persist the chat. Returns whether that tab is on screen
+    /// (the caller can skip the status bar then).
+    pub(crate) fn ai_note(&mut self, id: u64, text: &str) -> bool {
         let active =
             self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.ai()).is_some_and(|a| a.id == id);
         if let Some(ai) = self.tabs.iter_mut().find_map(|t| t.ai_mut().filter(|a| a.id == id)) {
-            ai.messages.push(AiMessage { role: AiRole::Ai, text: format!("Done — cleared {label}.") });
+            ai.messages.push(AiMessage { role: AiRole::Ai, text: text.to_string() });
             ai.follow = true;
         }
         self.commit_ai(id);

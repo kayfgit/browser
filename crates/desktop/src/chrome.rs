@@ -22,6 +22,8 @@ use crate::{pty_term, read_view, App, ModeKind, Tab, TERM_PAD};
 pub(crate) fn paint_pane(
     t: &Tab,
     p: &Painter,
+    term_p: &Painter,
+    term_style: &pty_term::TermStyle,
     find: &FindState,
     mode: ModeKind,
     native_hints: &[NativeHint],
@@ -188,9 +190,11 @@ pub(crate) fn paint_pane(
         }
 
         if let Some(s) = t.term() {
-            let (cw, ch) = (p.measure("M").max(1) as i32, p.line_height() as i32);
-            fill(buf, rect.x, top, right, bottom, pty_term::BG);
-            pty_term::render(&s.pty, p, buf, wz, hz, rect.x + TERM_PAD, top, cw, ch, bottom);
+            let (cw, ch) = (term_p.measure("M").max(1) as i32, term_p.line_height() as i32);
+            fill(buf, rect.x, top, right, bottom, term_style.bg);
+            pty_term::render(
+                &s.pty, term_p, buf, wz, hz, rect.x + TERM_PAD, top, cw, ch, bottom, term_style,
+            );
             return;
         }
 
@@ -402,6 +406,9 @@ impl App {
 
         // `p` is a disjoint field borrow from `self.surface`, so it coexists with `buf`.
         let p = &self.painter;
+        // Terminal panes render with their own painter/style when customized.
+        let term_p = self.term_painter.as_ref().unwrap_or(&self.painter);
+        let term_style = &self.term_style;
         let (wz, hz) = (w as usize, h as usize);
         let bar_top = hz.saturating_sub(bar_h);
 
@@ -484,9 +491,9 @@ impl App {
                 let is_web = self.tabs.get(*t).is_some_and(|tb| tb.webview().is_some());
                 if !is_web {
                     paint_pane(
-                        &self.tabs[*t], p, &self.find, self.mode, &self.native_hints,
-                        &self.hint_input, self.hint_new_tab, Some(*t) == self.active, *r,
-                        &mut buf, wz, hz,
+                        &self.tabs[*t], p, term_p, term_style, &self.find, self.mode,
+                        &self.native_hints, &self.hint_input, self.hint_new_tab,
+                        Some(*t) == self.active, *r, &mut buf, wz, hz,
                     );
                 } else if self.frozen {
                     paint_frozen_pane(p, &mut buf, wz, hz, *r);

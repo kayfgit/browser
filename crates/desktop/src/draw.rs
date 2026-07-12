@@ -99,8 +99,26 @@ impl Painter {
     /// Load the monospace primary (Consolas → Segoe UI → Arial) plus best-effort
     /// symbol fallbacks for broad glyph coverage. CJK faces are deferred (see `cjk`).
     pub fn new(px: f32) -> Result<Self> {
-        let mut fonts = vec![Font::from_bytes(load_system_font()?, FontSettings::default())
-            .map_err(|e| anyhow!("parsing font: {e}"))?];
+        Self::with_primary(None, px)
+    }
+
+    /// Like [`new`](Self::new), but with an explicit primary font FILE in front (the
+    /// terminal's custom font). The system monospace + symbol fallbacks still load
+    /// behind it, so glyphs the custom face lacks don't render as tofu.
+    pub fn with_primary(primary: Option<&std::path::Path>, px: f32) -> Result<Self> {
+        let mut fonts = Vec::new();
+        if let Some(path) = primary {
+            let bytes = std::fs::read(path)
+                .map_err(|e| anyhow!("reading font {}: {e}", path.display()))?;
+            fonts.push(
+                Font::from_bytes(bytes, FontSettings::default())
+                    .map_err(|e| anyhow!("parsing font {}: {e}", path.display()))?,
+            );
+        }
+        fonts.push(
+            Font::from_bytes(load_system_font()?, FontSettings::default())
+                .map_err(|e| anyhow!("parsing font: {e}"))?,
+        );
         // Optional fallbacks — skipped silently if a face isn't installed.
         for path in [r"C:\Windows\Fonts\seguisym.ttf", r"C:\Windows\Fonts\arial.ttf"] {
             if let Ok(bytes) = std::fs::read(path) {
@@ -335,6 +353,59 @@ fn load_system_font() -> Result<Vec<u8>> {
         }
     }
     Err(anyhow!("no system font found (looked for Consolas/Segoe UI/Arial)"))
+}
+
+/// Resolve a font NAME (e.g. "Cascadia Code", "jetbrains mono") or explicit file
+/// path to a font file. Names are matched case/space-insensitively against the
+/// filenames in the system (`C:\Windows\Fonts`) and per-user font directories;
+/// among matches the best score wins (exact > prefix > contains), ties broken by
+/// the shortest name — so "cascadia code" picks CascadiaCode.ttf over
+/// CascadiaCodeItalic.ttf. `None` when nothing matches (the caller reports it).
+pub fn find_font(query: &str) -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    // An explicit path (or a bare filename with an extension) is used as-is.
+    if query.contains(['/', '\\']) || query.contains('.') {
+        let p = PathBuf::from(query);
+        return p.is_file().then_some(p);
+    }
+    let norm = |s: &str| -> String {
+        s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase()
+    };
+    let q = norm(query);
+    if q.is_empty() {
+        return None;
+    }
+    let mut dirs = vec![PathBuf::from(r"C:\Windows\Fonts")];
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        // Per-user installed fonts (the default for "Install for me" on Windows 10+).
+        dirs.push(PathBuf::from(local).join(r"Microsoft\Windows\Fonts"));
+    }
+    let mut best: Option<(u32, usize, PathBuf)> = None;
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let ext = path.extension().and_then(|s| s.to_str()).map(str::to_ascii_lowercase);
+            if !matches!(ext.as_deref(), Some("ttf" | "otf" | "ttc")) {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+            let ns = norm(stem);
+            let score = if ns == q {
+                0
+            } else if ns.starts_with(&q) {
+                1
+            } else if ns.contains(&q) || q.contains(&ns) {
+                2
+            } else {
+                continue;
+            };
+            if best.as_ref().is_none_or(|(s, l, _)| (score, ns.len()) < (*s, *l)) {
+                best = Some((score, ns.len(), path));
+            }
+        }
+    }
+    best.map(|(_, _, p)| p)
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ use crate::{clipboard_set, commands_document, parse_tab_flag, program_exists, Ap
 pub(crate) const COMMANDS: &[&str] = &[
     "open", "tabopen", "edit", "yank", "read", "research", "reload", "resize", "res", "resources", "reopen", "ai",
     "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock", "extensions", "downloads",
-    "mute", "audio", "css", "video", "model", "history", "aihist", "aihistory", "clear", "alias", "unalias", "restore",
+    "mute", "audio", "css", "video", "model", "history", "aihist", "aihistory", "clear", "alias", "unalias", "theme", "restore",
     "next", "tabnext", "tabprev",
     "prev", "back", "forward", "freeze", "unfreeze", "fullscreen", "move", "commands", "help", "version", "close",
     "vsplit", "split", "write", "wq", "quit",
@@ -262,6 +262,44 @@ impl App {
                 }
             }
             "unalias" => self.run_action("unalias", serde_json::json!({ "name": rest.trim() })),
+            // Appearance. Bare `:theme` opens config.toml in an editor terminal
+            // (closing it applies the changes); `:theme <key> <value…>` sets one
+            // field of the same action the AI drives — e.g. `:theme accent orange`,
+            // `:theme term_font Cascadia Code`, `:theme term_font default`. Also:
+            // `:theme install <scheme>` downloads a terminal scheme, `:theme reload`
+            // re-applies a hand-edited config, `:theme show` lists the overrides.
+            "theme" => {
+                let r = rest.trim();
+                if r.is_empty() {
+                    self.edit_theme_config();
+                } else if r == "reload" {
+                    self.reload_config();
+                } else if r == "show" {
+                    self.set_status(self.theme_summary());
+                } else if let Some(name) = r.strip_prefix("install") {
+                    let name = name.trim();
+                    if name.is_empty() {
+                        self.set_error("usage: :theme install <scheme name>  (e.g. :theme install 3270-Dark)");
+                    } else {
+                        self.run_action("install_scheme", serde_json::json!({ "name": name }));
+                    }
+                } else {
+                    let (key, val) = match r.split_once(char::is_whitespace) {
+                        Some((k, v)) => (k, v.trim()),
+                        None => (r, ""),
+                    };
+                    if val.is_empty() {
+                        self.set_error(
+                            "usage: :theme (edit config) · :theme <key> <value> · :theme \
+                             install <scheme> · :theme reload · :theme show — keys: \
+                             bar_height_pct, bar_bg, bar_fg, accent, bg, term_font, \
+                             term_font_px, term_scheme, term_bg, term_fg ('default' resets)",
+                        );
+                    } else {
+                        self.run_action("theme", serde_json::json!({ key: val }));
+                    }
+                }
+            }
             "restore" => self.run_action("restore", serde_json::json!({})),
             "commands" | "help" => self.open_local_page("commands", commands_document()),
             "version" => self.open_version_page(),

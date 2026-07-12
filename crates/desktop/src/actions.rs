@@ -103,12 +103,14 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "theme",
-        summary: "Customize the browser's appearance: the command/status bar HEIGHT and \
-                  the interface COLOURS (the bar background and text, the accent/highlight \
-                  colour, and the page background). Use for requests like 'make the command \
-                  bar 25% taller', 'set the bar background to green', 'change the accent to \
-                  orange', 'dark green background'. Only set the fields the user mentions; \
-                  leave the rest out to keep them unchanged.",
+        summary: "Customize the browser's appearance: the command/status bar HEIGHT, the \
+                  interface COLOURS (the bar background and text, the accent/highlight \
+                  colour, and the page background), and the `:te` TERMINAL's font, font \
+                  size, and colours. Use for requests like 'make the command bar 25% \
+                  taller', 'set the bar background to green', 'change the terminal font \
+                  to Cascadia Code', 'use the dracula terminal colours'. Only set the \
+                  fields the user mentions; leave the rest out to keep them unchanged. \
+                  The value 'default' resets a field to its built-in default.",
         params: &[
             ParamSpec {
                 name: "bar_height_pct",
@@ -143,7 +145,63 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
                 required: false,
                 desc: "Page and welcome-screen background colour (name or hex).",
             },
+            ParamSpec {
+                name: "term_font",
+                values: &[],
+                required: false,
+                desc: "Terminal (`:te`) font: an installed font's name (e.g. 'Cascadia \
+                       Code', 'JetBrains Mono') or a .ttf/.otf path. 'default' returns \
+                       to the built-in monospace.",
+            },
+            ParamSpec {
+                name: "term_font_px",
+                values: &[],
+                required: false,
+                desc: "Terminal font size in px at zoom 1.0 (e.g. 14). Range 6-72; \
+                       'default' matches the interface font size again.",
+            },
+            ParamSpec {
+                name: "term_scheme",
+                values: &[],
+                required: false,
+                desc: "Terminal colour scheme (the 16 ANSI colours + default fg/bg). \
+                       Built in: campbell (the default), dracula, gruvbox, nord, \
+                       solarized, onedark, monokai. Any scheme installed with \
+                       install_scheme works too.",
+            },
+            ParamSpec {
+                name: "term_bg",
+                values: &[],
+                required: false,
+                desc: "Terminal background colour (name or hex) — overrides the scheme's.",
+            },
+            ParamSpec {
+                name: "term_fg",
+                values: &[],
+                required: false,
+                desc: "Terminal default text colour (name or hex) — overrides the scheme's.",
+            },
         ],
+    },
+    ActionSpec {
+        name: "install_scheme",
+        summary: "Download and install a `:te` terminal colour scheme by name from the \
+                  published iTerm2-Color-Schemes and Gogh collections (hundreds of \
+                  schemes — e.g. IBM 3270, Catppuccin Mocha, Tokyo Night, Rosé Pine), \
+                  then apply it. Use when the user wants a terminal scheme that is \
+                  neither built in nor installed — but ALWAYS ask the user to confirm \
+                  first (it downloads from the internet); only call this after they \
+                  agree. The download finishes in the background: a follow-up message \
+                  reports the real outcome, so never claim success yourself. If the \
+                  name matches several schemes, the result lists them: ask the user \
+                  which one they want.",
+        params: &[ParamSpec {
+            name: "name",
+            values: &[],
+            required: true,
+            desc: "The scheme to search the collection for, e.g. 'ibm 3270' or \
+                   'catppuccin mocha'.",
+        }],
     },
     ActionSpec {
         name: "open",
@@ -274,6 +332,14 @@ pub(crate) fn is_action(name: &str) -> bool {
     ACTIONS.iter().any(|a| a.name == name)
 }
 
+/// Whether an action targets the focused CONTENT tab/pane — so the AI dispatch must
+/// move focus off the chat before running it (an `open`/`split` on the AI tab would
+/// clobber the chat). Settings/data actions (theme, alias, clear, install_scheme, …)
+/// don't touch the pane layout and must NOT trigger that blank-tab dance.
+pub(crate) fn targets_content(name: &str) -> bool {
+    matches!(name, "open" | "split" | "close" | "reopen" | "tab" | "navigate")
+}
+
 /// Build an args object by zipping whitespace tokens in `rest` onto `names`, so a
 /// command line like `:clear cache 15m` (`names = ["what","period"]`) becomes
 /// `{"what":"cache","period":"15m"}` — the same shape the assistant's tool-calls use.
@@ -311,6 +377,24 @@ impl App {
             "unalias" => self.remove_alias(str_arg("name")),
             "restore" => Ok(self.restore_defaults()),
             "theme" => self.set_theme(args),
+            "install_scheme" => {
+                let name = str_arg("name");
+                if name.is_empty() {
+                    return Err("which scheme? give a name, e.g. 3270-Dark".into());
+                }
+                if let Some(cur) = &self.installing_scheme {
+                    return Err(format!("already downloading '{cur}' — wait for its result"));
+                }
+                self.installing_scheme = Some(name.to_string());
+                crate::schemes::spawn_install(name.to_string(), self.acting_ai, self.proxy.clone());
+                // Shown verbatim in the chat AND fed to the model as the tool result,
+                // so keep it user-appropriate; the "don't claim success, don't call
+                // again" guidance lives in the action's summary instead.
+                Ok(format!(
+                    "downloading terminal scheme '{name}' — the result will be posted in \
+                     this chat shortly"
+                ))
+            }
             "open" => {
                 let target = str_arg("target");
                 if target.is_empty() {
@@ -399,78 +483,286 @@ impl App {
         self.config = crate::config::Config::default();
         crate::config::save(&self.config);
         self.rebuild_theme();
+        self.rebuild_term_style();
         self.refresh_visibility(); // bar height may have changed → reflow content/webviews
         self.window.request_redraw();
         "restored default settings".to_string()
     }
 
-    /// `theme {bar_height_pct, bar_bg, bar_fg, accent, bg}` — apply the appearance
-    /// overrides the user named (others untouched), persist them, and re-resolve the
-    /// live theme. Colours are validated up front (a typo is reported, with nothing
-    /// partially applied) and a height change reflows the content band. The
-    /// `Ctrl+Alt+Shift+R` chord / `:restore` undo it if a choice turns out unreadable.
+    /// `theme {bar_height_pct, bar_bg, bar_fg, accent, bg, term_font, term_font_px,
+    /// term_scheme, term_bg, term_fg}` — apply the appearance overrides the user named
+    /// (others untouched), persist them, and re-resolve the live theme / terminal
+    /// style. Everything is validated up front (a typo is reported, with nothing
+    /// partially applied); the value `default` resets a field. A height change reflows
+    /// the content band. The `Ctrl+Alt+Shift+R` chord / `:restore` undo it all if a
+    /// choice turns out unreadable.
     pub(crate) fn set_theme(&mut self, args: &Value) -> Result<String, String> {
-        let color_arg = |k: &str| {
+        let arg = |k: &str| {
             args.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty())
         };
-        // Validate all provided colours BEFORE mutating, so a bad one aborts cleanly.
-        for key in ["bar_bg", "bar_fg", "accent", "bg"] {
-            if let Some(s) = color_arg(key) {
-                if crate::draw::parse_color(s).is_none() {
+        let is_default =
+            |s: &str| matches!(s.to_ascii_lowercase().as_str(), "default" | "reset" | "none");
+        // Validate everything BEFORE mutating, so a bad value aborts cleanly.
+        for key in ["bar_bg", "bar_fg", "accent", "bg", "term_bg", "term_fg"] {
+            if let Some(s) = arg(key) {
+                if !is_default(s) && crate::draw::parse_color(s).is_none() {
                     return Err(format!(
                         "'{s}' isn't a colour I recognise — use a name like green or a hex like #0a2a0a"
                     ));
                 }
             }
         }
-        let mut changed: Vec<String> = Vec::new();
-        let mut height_changed = false;
-        if let Some(v) = args.get("bar_height_pct") {
-            // Accept a JSON number or a string like "125" / "125%".
-            let pct = v.as_u64().map(|n| n as u32).or_else(|| {
-                v.as_str().map(|s| s.trim().trim_end_matches('%').trim()).and_then(|s| s.parse().ok())
-            });
-            match pct {
-                Some(p) => {
-                    let p = p.clamp(50, 300);
-                    self.config.theme.bar_height_pct = Some(p);
-                    changed.push(format!("bar height to {p}%"));
-                    height_changed = true;
-                }
-                None => {
-                    return Err("bar_height_pct must be a number like 125 (percent of default)".into())
+        if let Some(s) = arg("term_scheme") {
+            if !is_default(s)
+                && crate::pty_term::scheme(s).is_none()
+                && crate::config::load_custom_scheme(s).is_none()
+            {
+                let installed = crate::config::custom_scheme_names();
+                let installed = if installed.is_empty() {
+                    String::new()
+                } else {
+                    format!(" Installed: {}.", installed.join(", "))
+                };
+                return Err(format!(
+                    "the terminal scheme '{s}' isn't installed. Built in: {}.{installed} \
+                     install_scheme (`:theme install <name>`) can download it from the \
+                     published scheme collections — ask the user before installing.",
+                    crate::pty_term::SCHEMES.join(", ")
+                ));
+            }
+        }
+        let mut term_font_file = String::new();
+        if let Some(s) = arg("term_font") {
+            if !is_default(s) {
+                match crate::draw::find_font(s) {
+                    Some(p) => {
+                        term_font_file =
+                            p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                    }
+                    None => {
+                        return Err(format!(
+                            "no installed font matches '{s}' — use the font's name (as in \
+                             Settings > Fonts) or a .ttf/.otf path"
+                        ))
+                    }
                 }
             }
         }
-        if let Some(s) = color_arg("bar_bg") {
-            self.config.theme.bar_bg = Some(s.to_string());
+        // Sets an Option<String> field: `default` clears the override.
+        fn set_opt(slot: &mut Option<String>, s: &str, clear: bool) {
+            *slot = if clear { None } else { Some(s.to_string()) };
+        }
+        let mut changed: Vec<String> = Vec::new();
+        let mut height_changed = false;
+        let mut term_changed = false;
+        if let Some(v) = args.get("bar_height_pct") {
+            // Accept a JSON number, a string like "125" / "125%", or `default`.
+            let s = v.as_str().map(str::trim).unwrap_or("");
+            let pct = v.as_u64().map(|n| n as u32).or_else(|| {
+                s.trim_end_matches('%').trim().parse().ok()
+            });
+            if !s.is_empty() && is_default(s) {
+                self.config.theme.bar_height_pct = None;
+                changed.push("bar height to default".into());
+                height_changed = true;
+            } else if let Some(p) = pct {
+                let p = p.clamp(50, 300);
+                self.config.theme.bar_height_pct = Some(p);
+                changed.push(format!("bar height to {p}%"));
+                height_changed = true;
+            } else {
+                return Err("bar_height_pct must be a number like 125 (percent of default)".into());
+            }
+        }
+        if let Some(s) = arg("bar_bg") {
+            set_opt(&mut self.config.theme.bar_bg, s, is_default(s));
             changed.push(format!("bar background to {s}"));
         }
-        if let Some(s) = color_arg("bar_fg") {
-            self.config.theme.bar_fg = Some(s.to_string());
+        if let Some(s) = arg("bar_fg") {
+            set_opt(&mut self.config.theme.bar_fg, s, is_default(s));
             changed.push(format!("bar text to {s}"));
         }
-        if let Some(s) = color_arg("accent") {
-            self.config.theme.accent = Some(s.to_string());
+        if let Some(s) = arg("accent") {
+            set_opt(&mut self.config.theme.accent, s, is_default(s));
             changed.push(format!("accent to {s}"));
         }
-        if let Some(s) = color_arg("bg") {
-            self.config.theme.bg = Some(s.to_string());
+        if let Some(s) = arg("bg") {
+            set_opt(&mut self.config.theme.bg, s, is_default(s));
             changed.push(format!("background to {s}"));
         }
+        if let Some(s) = arg("term_font") {
+            set_opt(&mut self.config.term.font, s, is_default(s));
+            if term_font_file.is_empty() {
+                changed.push("terminal font to default".into());
+            } else {
+                changed.push(format!("terminal font to {s} ({term_font_file})"));
+            }
+            term_changed = true;
+        }
+        if let Some(v) = args.get("term_font_px") {
+            // Accept a JSON number, a numeric string, or `default` to clear.
+            let s = v.as_str().map(str::trim).unwrap_or("");
+            if !s.is_empty() && is_default(s) {
+                self.config.term.font_px = None;
+                changed.push("terminal font size to default".into());
+            } else {
+                match v.as_f64().or_else(|| s.trim_end_matches("px").trim().parse().ok()) {
+                    Some(px) => {
+                        let px = (px as f32).clamp(6.0, 72.0);
+                        self.config.term.font_px = Some(px);
+                        changed.push(format!("terminal font size to {px}px"));
+                    }
+                    None => return Err("term_font_px must be a number like 14".into()),
+                }
+            }
+            term_changed = true;
+        }
+        if let Some(s) = arg("term_scheme") {
+            let name = s.to_ascii_lowercase();
+            set_opt(&mut self.config.term.scheme, &name, is_default(s) || name == "campbell");
+            changed.push(format!("terminal scheme to {name}"));
+            term_changed = true;
+        }
+        if let Some(s) = arg("term_bg") {
+            set_opt(&mut self.config.term.bg, s, is_default(s));
+            changed.push(format!("terminal background to {s}"));
+            term_changed = true;
+        }
+        if let Some(s) = arg("term_fg") {
+            set_opt(&mut self.config.term.fg, s, is_default(s));
+            changed.push(format!("terminal text to {s}"));
+            term_changed = true;
+        }
         if changed.is_empty() {
-            return Err(
-                "tell me what to change — bar height, bar background/text, accent, or background"
-                    .into(),
-            );
+            return Err("tell me what to change — bar height, bar background/text, accent, \
+                        background, or the terminal's font/font size/scheme/colours"
+                .into());
         }
         crate::config::save(&self.config);
         self.rebuild_theme();
+        if term_changed {
+            self.rebuild_term_style(); // re-fits terminal grids if the cell size moved
+        }
         if height_changed {
             self.refresh_visibility(); // content band moved → reposition webviews/panes
         }
         self.window.request_redraw();
         Ok(format!("set {}", changed.join(", ")))
+    }
+
+    /// Bare `:theme`: open config.toml in a terminal editor tab for direct editing.
+    /// The file is (re)written first so it exists and shows the live state. When the
+    /// editor terminal closes, the config is re-read and applied — edit → save →
+    /// quit is the whole loop. `$EDITOR`/`$VISUAL` wins; else the first terminal
+    /// editor found on PATH; with none installed it falls back to notepad (detached)
+    /// plus `:theme reload` to apply by hand.
+    pub(crate) fn edit_theme_config(&mut self) {
+        crate::config::save(&self.config);
+        let Some(path) = crate::config::config_path() else {
+            self.set_error("no config directory available");
+            return;
+        };
+        let path = path.to_string_lossy().into_owned();
+        let editor = std::env::var("EDITOR")
+            .or_else(|_| std::env::var("VISUAL"))
+            .ok()
+            .map(|e| e.split_whitespace().map(String::from).collect::<Vec<_>>())
+            .filter(|v| !v.is_empty() && crate::program_exists(&v[0]))
+            .or_else(|| {
+                ["nvim", "vim", "hx", "helix", "nano", "vi"]
+                    .iter()
+                    .find(|e| crate::program_exists(e))
+                    .map(|e| vec![e.to_string()])
+            });
+        match editor {
+            Some(mut cmd) => {
+                cmd.push(path);
+                if let Some(id) = self.open_terminal_cmd(cmd) {
+                    self.config_edit_term = Some(id);
+                    self.set_status("editing config.toml — save & quit the editor to apply");
+                }
+            }
+            None => {
+                let _ = std::process::Command::new("notepad").arg(&path).spawn();
+                self.set_status("opened config.toml in notepad — save, then :theme reload to apply");
+            }
+        }
+        self.window.request_redraw();
+    }
+
+    /// Re-read config.toml from disk and apply it live — `:theme reload`, and the
+    /// automatic apply when the `:theme` editor terminal closes.
+    pub(crate) fn reload_config(&mut self) {
+        self.config = crate::config::load();
+        self.rebuild_theme();
+        self.rebuild_term_style();
+        self.refresh_visibility(); // the bar height may have changed → reflow panes
+        self.set_status("config reloaded");
+        self.window.request_redraw();
+    }
+
+    /// A background scheme download finished ([`UserEvent::SchemeInstalled`]): apply
+    /// it on success, report either way — into the initiating `:ai` chat when there
+    /// was one (falling back to the status bar when that chat isn't on screen).
+    pub(crate) fn finish_scheme_install(
+        &mut self,
+        ai_id: Option<u64>,
+        result: Result<String, String>,
+    ) {
+        self.installing_scheme = None;
+        match result {
+            Ok(name) => {
+                self.config.term.scheme = Some(crate::config::scheme_key(&name));
+                crate::config::save(&self.config);
+                self.rebuild_term_style();
+                let in_chat = ai_id
+                    .is_some_and(|id| self.ai_note(id, &format!("Done — installed the {name} terminal scheme and applied it.")));
+                if !in_chat {
+                    self.set_status(format!("installed terminal scheme {name} and applied it"));
+                }
+            }
+            Err(e) => {
+                let in_chat =
+                    ai_id.is_some_and(|id| self.ai_note(id, &format!("Scheme install failed: {e}")));
+                if !in_chat {
+                    self.set_error(format!("scheme install: {e}"));
+                }
+            }
+        }
+        self.window.request_redraw();
+    }
+
+    /// One-line summary of the current appearance overrides, for `:theme show` —
+    /// each customized field as `key=value`, or a hint when everything is default.
+    pub(crate) fn theme_summary(&self) -> String {
+        let t = &self.config.theme;
+        let tc = &self.config.term;
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(p) = t.bar_height_pct {
+            parts.push(format!("bar_height_pct={p}"));
+        }
+        for (k, v) in [
+            ("bar_bg", &t.bar_bg),
+            ("bar_fg", &t.bar_fg),
+            ("accent", &t.accent),
+            ("bg", &t.bg),
+            ("term_font", &tc.font),
+            ("term_scheme", &tc.scheme),
+            ("term_bg", &tc.bg),
+            ("term_fg", &tc.fg),
+        ] {
+            if let Some(v) = v {
+                parts.push(format!("{k}={v}"));
+            }
+        }
+        if let Some(px) = tc.font_px {
+            parts.push(format!("term_font_px={px}"));
+        }
+        if parts.is_empty() {
+            "theme: all defaults — :theme <key> <value> to customize".into()
+        } else {
+            format!("theme: {}", parts.join("  "))
+        }
     }
 
     /// Expand a leading command alias, up to a small depth so chained aliases work

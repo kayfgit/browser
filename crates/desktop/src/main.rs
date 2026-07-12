@@ -49,6 +49,7 @@ mod panes;
 mod procmon;
 mod pty_term;
 mod read_view;
+mod schemes;
 mod session;
 mod tabs;
 mod term;
@@ -1290,13 +1291,19 @@ fn main() -> Result<()> {
         active_pane_is_webview: false,
         background_webview_visible: false,
         term_scrollback: pty_term::DEFAULT_SCROLLBACK,
+        term_style: pty_term::TermStyle::default(),
+        term_painter: None,
         nav_replaying: false,
         term_find_pending: None,
+        config_edit_term: None,
+        installing_scheme: None,
         term_last_find: None,
         frozen: false,
     };
-    // Resolve the persisted appearance overrides into the live chrome theme.
+    // Resolve the persisted appearance overrides into the live chrome theme and
+    // terminal style (colours + optional custom terminal font).
     app.rebuild_theme();
+    app.rebuild_term_style();
 
     // Compile the ad/redirect blocklist engine off-thread; it goes live a beat after
     // launch (BlocklistReady), and navigations use the timing heuristic until then.
@@ -1675,6 +1682,9 @@ fn main() -> Result<()> {
                         app.window.request_redraw();
                     }
                 }
+            }
+            Event::UserEvent(UserEvent::SchemeInstalled { ai_id, result }) => {
+                app.finish_scheme_install(ai_id, result);
             }
             Event::UserEvent(UserEvent::RestoreDefaults) => {
                 // The Ctrl+Alt+Shift+R panic chord (caught by the keyboard hook below
