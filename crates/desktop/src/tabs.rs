@@ -1093,27 +1093,19 @@ impl App {
     }
 
     /// Map an x pixel on the tab bar to a zero-based tab-strip window position (what
-    /// [`jump_to`](App::jump_to) takes), for click-to-switch. Mirrors `draw_tab_bar`'s
-    /// layout and numbering, which also skip the background AI tab.
+    /// [`jump_to`](App::jump_to) takes), for click-to-switch. Uses the same
+    /// [`tab_cells`](crate::chrome::tab_cells) layout `draw_tab_bar` paints, so the
+    /// click zones always agree with the pixels.
     pub(crate) fn tab_at_pixel(&self, px: f64) -> Option<usize> {
-        let p = &self.painter;
         let labels = self.tab_labels();
         let limit = self.inner().0 as usize;
         let px = px.max(0.0) as usize;
-        let mut x = 8usize;
-        for (pos, (label, active, _)) in labels.iter().enumerate() {
-            let text = if *active {
-                format!("[{}:{}]", pos + 1, label)
-            } else {
-                format!(" {}:{} ", pos + 1, label)
-            };
-            let end = x + p.measure(&text) + 6;
-            if px >= x && px < end {
+        for (pos, (_, x, cw)) in crate::chrome::tab_cells(&self.painter, limit, &labels)
+            .iter()
+            .enumerate()
+        {
+            if px >= *x && px < x + cw {
                 return Some(pos);
-            }
-            x = end;
-            if x > limit.saturating_sub(40) {
-                break;
             }
         }
         None

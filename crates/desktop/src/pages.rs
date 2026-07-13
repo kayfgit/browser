@@ -592,6 +592,7 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
         ("H / L", "history back / forward"),
         ("n / p", "next / previous tab"),
         ("1 – 9", "jump straight to tab N"),
+        ("Shift+1 – 9", "jump to tab 10+N (the 11th – 19th)"),
         ("< / >", "move the current tab left / right"),
         ("Ctrl+W then h/j/k/l", "move focus between split panes"),
         ("Ctrl+W then H/J/K/L", "resize the focused pane in that direction"),

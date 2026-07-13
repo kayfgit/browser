@@ -919,6 +919,110 @@ pub(crate) fn truncate_label(s: &str) -> String {
 
 /// Draw the top tab bar: `[1:host]` for the active tab, ` 2:host ` for others.
 /// Read-mode tabs are tinted green.
+/// Truncate `s` with a trailing `…` so it renders within `max_px` (unchanged when
+/// it already fits; empty when not even the ellipsis fits).
+fn fit_px(p: &Painter, s: &str, max_px: usize) -> String {
+    if p.measure(s) <= max_px {
+        return s.to_string();
+    }
+    let mut out = s.to_string();
+    while !out.is_empty() {
+        out.pop();
+        let cand = format!("{out}…");
+        if p.measure(&cand) <= max_px {
+            return cand;
+        }
+    }
+    String::new()
+}
+
+/// Lay out the tab strip as FIXED-width cells that shrink as tabs are added
+/// (browser-style): every entry gets the same slot — `bar width / n`, clamped so a
+/// lone tab doesn't stretch across the window and a crowd can't shrink to nothing —
+/// and its label is truncated with `…` to fit. Predictable slots keep every tab's
+/// number visible instead of one long URL crowding the rest off the bar. Returns
+/// `(text, x, cell_width)` per entry that fits; entries past the right edge are
+/// dropped (the bar shows a trailing `…`). Shared by [`draw_tab_bar`] and
+/// [`App::tab_at_pixel`] so clicks always agree with what's painted.
+pub(crate) fn tab_cells(
+    p: &Painter,
+    w: usize,
+    labels: &[(String, bool, draw::Rgb)],
+) -> Vec<(String, usize, usize)> {
+    if labels.is_empty() {
+        return Vec::new();
+    }
+    let em = p.measure("m").max(1);
+    let avail = w.saturating_sub(16); // 8px margin each side
+    let cell = (avail / labels.len()).clamp(em * 5, em * 14);
+    let mut out = Vec::new();
+    let mut x = 8usize;
+    for (i, (label, active, _)) in labels.iter().enumerate() {
+        if x + cell > w.saturating_sub(8) && !out.is_empty() {
+            break; // no room for this cell — the strip overflows with `…`
+        }
+        // The `N:` prefix (and the active brackets) always stay visible; only the
+        // label part is truncated to what's left of the cell (6px inter-cell gap).
+        let (open, close) = if *active { ("[", "]") } else { (" ", " ") };
+        let frame = format!("{open}{}:{close}", i + 1);
+        let label_px = cell.saturating_sub(6).saturating_sub(p.measure(&frame));
+        let fitted = fit_px(p, label, label_px);
+        let text = format!("{open}{}:{fitted}{close}", i + 1);
+        out.push((text, x, cell));
+        x += cell;
+    }
+    out
+}
+
+#[cfg(test)]
+mod tab_cell_tests {
+    use super::*;
+
+    fn labels(n: usize) -> Vec<(String, bool, draw::Rgb)> {
+        (0..n)
+            .map(|i| (format!("really-long-label-{i}.example.com/path"), i == 0, draw::DIM))
+            .collect()
+    }
+
+    #[test]
+    fn cells_are_uniform_and_shrink_with_count() {
+        let p = Painter::new(15.0).unwrap();
+        let few = tab_cells(&p, 1200, &labels(3));
+        let many = tab_cells(&p, 1200, &labels(12));
+        // Every cell in a strip has the same width; more tabs → narrower cells.
+        assert!(few.iter().all(|(_, _, cw)| *cw == few[0].2));
+        assert!(many.iter().all(|(_, _, cw)| *cw == many[0].2));
+        assert!(many[0].2 < few[0].2, "12 tabs should get narrower cells than 3");
+        // Cells tile left-to-right with no gaps or overlaps.
+        for w in few.windows(2) {
+            assert_eq!(w[0].1 + w[0].2, w[1].1);
+        }
+        // Each entry's text actually fits its cell.
+        for (text, _, cw) in &many {
+            assert!(p.measure(text) <= *cw, "{text:?} wider than its cell");
+        }
+    }
+
+    #[test]
+    fn long_labels_truncate_with_ellipsis_and_keep_their_number() {
+        let p = Painter::new(15.0).unwrap();
+        let cells = tab_cells(&p, 900, &labels(10));
+        // The 10th entry still shows its number prefix even at minimum width.
+        assert!(cells.last().unwrap().0.contains("10:"), "number prefix lost: {cells:?}");
+        assert!(cells.iter().any(|(t, _, _)| t.contains('…')), "nothing truncated");
+    }
+
+    #[test]
+    fn overflow_drops_trailing_entries_but_never_the_first() {
+        let p = Painter::new(15.0).unwrap();
+        // A tiny window can't fit 30 minimum-width cells: the layout keeps as many
+        // as fit (at least the first) and reports fewer cells than labels.
+        let cells = tab_cells(&p, 300, &labels(30));
+        assert!(!cells.is_empty());
+        assert!(cells.len() < 30);
+    }
+}
+
 pub(crate) fn draw_tab_bar(p: &Painter, buf: &mut [u32], w: usize, h: usize, labels: &[(String, bool, draw::Rgb)]) {
     // Hidden (fullscreen) or no visible tabs → zero height; drawing would paint the
     // labels as a clipped sliver at the very top edge, so skip it.
@@ -926,19 +1030,14 @@ pub(crate) fn draw_tab_bar(p: &Painter, buf: &mut [u32], w: usize, h: usize, lab
         return;
     }
     let baseline = h * 2 / 3;
-    let mut x = 8;
-    for (i, (label, active, color)) in labels.iter().enumerate() {
-        let color = *color;
-        let text = if *active {
-            format!("[{}:{}]", i + 1, label)
-        } else {
-            format!(" {}:{} ", i + 1, label)
-        };
-        x = p.text(buf, w, h, x, baseline, &text, color) + 6;
-        if x > w.saturating_sub(40) {
-            p.text(buf, w, h, x, baseline, "…", draw::DIM);
-            break;
-        }
+    let cells = tab_cells(p, w, labels);
+    for ((text, x, _), (_, _, color)) in cells.iter().zip(labels.iter()) {
+        p.text(buf, w, h, *x, baseline, text, *color);
+    }
+    // More entries than fit even at minimum cell width → mark the overflow.
+    if cells.len() < labels.len() {
+        let x = cells.last().map(|(_, x, cw)| x + cw).unwrap_or(8);
+        p.text(buf, w, h, x, baseline, "…", draw::DIM);
     }
 }
 

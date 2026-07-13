@@ -217,6 +217,21 @@ impl App {
             }
             return;
         }
+        // Shift+digit: the tab strip past 9 — Shift+1 → the 11th entry … Shift+9 →
+        // the 19th (plain 1-9 jump to 1-9 below; Shift+0 stays `)` = zoom reset).
+        // Matched on the PHYSICAL key because the logical character is layout-
+        // dependent punctuation (!@#…) — but only when the logical key is NOT itself
+        // a digit, so layouts where digits already need Shift (AZERTY) keep their
+        // plain 1-9 jumps instead of landing in the second bank.
+        if self.modifiers.shift_key()
+            && !matches!(&key.logical_key,
+                Key::Character(s) if s.len() == 1 && s.as_bytes()[0].is_ascii_digit())
+        {
+            if let Some(n) = digit_index(key.physical_key) {
+                self.jump_to(10 + n);
+                return;
+            }
+        }
         match &key.logical_key {
             Key::Character(s) => match *s {
                 ":" => self.enter_command(""),

@@ -24,13 +24,11 @@ issues:
        handle YT ads. NOTE: a separate, worse variant (netblock stalling ALL YT videos in default mode)
        was already fixed -- netblock is now gated to :adblock native only.
 [*] - if im on a terminal tab with long contents and i press ctrl+s to scroll up and then press escape to go into term mode, the camera isnt brought down to the latest line, instead the camera gets stuck where it was, i have to press ctrl+s and keep pressing "j" to bring the camera down and then press esc to return to normal
-[*] - tabs should have a specific width, becoming smaller with the more tabs there is
-[*] - if there are more than 10 tabs, find a way to switch to these tabs (maybe shift+1, to move to the eleventh tab and so on up to 20, if there are more than 20 tabs then tough luck buddy)
-[x] - if i have splits and i write ":open -o" to open a new tab, it puts that tab into the currently highlighted split, it should only open in the split without the "-o" flag
+[x] - tabs should have a specific width, becoming smaller with the more tabs there is
+[x] - if there are more than 10 tabs, find a way to switch to these tabs (maybe shift+1, to move to the eleventh tab and so on up to 20, if there are more than 20 tabs then tough luck buddy)
 
 feats:
 [*] - :save/saved or :favorite/favorites for saving a page for later
-[x] - "-n" flag for private/anonymous tabs, should be able to combine them like ":open -tn"
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
