@@ -947,40 +947,109 @@ const CARET_JS: &str = r#"
 (function () {
   if (window.__caretInit) return;
   window.__caretInit = true;
-  var on = false, visual = false, pend = '', bar = null;
+  var on = false, visual = false, pend = '', bar = null, lineBar = null;
+  // Affinity of the LAST motion. At a soft-wrap boundary the same (node, offset)
+  // renders on two lines; without this a `j` that logically moved down can paint
+  // the block at the end of the line ABOVE (the "j went up" visual glitch).
+  var dirBack = false;
+  var BLINK = '__caretBlink 1.06s step-end infinite';
   function sel() { return window.getSelection(); }
   function ensureBar() {
-    if (bar && bar.isConnected) return bar;
+    if (bar && bar.isConnected && lineBar && lineBar.isConnected) return bar;
+    var host = document.body || document.documentElement;
+    if (!document.getElementById('__caret-css')) {
+      var st = document.createElement('style');
+      st.id = '__caret-css';
+      st.textContent = '@keyframes __caretBlink{0%,52%{opacity:1}53%,100%{opacity:.08}}';
+      (document.head || host).appendChild(st);
+    }
+    if (lineBar) lineBar.remove();
+    if (bar) bar.remove();
+    // Vim 'cursorline': a faint full-width tint on the cursor's line (translucent
+    // gray so it reads on both light and dark pages). Steady — only the block blinks.
+    lineBar = document.createElement('div');
+    lineBar.style.cssText = 'position:fixed;left:0;width:100vw;z-index:2147483646;' +
+      'background:rgba(128,128,128,.16);pointer-events:none;display:none';
+    host.appendChild(lineBar);
     bar = document.createElement('div');
     bar.style.cssText = 'position:fixed;z-index:2147483647;background:rgba(108,182,255,.45);' +
-      'outline:1px solid #6cb6ff;pointer-events:none;display:none';
-    (document.body || document.documentElement).appendChild(bar);
+      'outline:1px solid #6cb6ff;pointer-events:none;display:none;animation:' + BLINK;
+    host.appendChild(bar);
     return bar;
+  }
+  // Rect of the single character [i, i+1) of text node n. A range that spans a
+  // soft wrap yields one fragment per line — `last` picks the lower one (forward
+  // affinity), else the upper. Returns null for characters that render nowhere
+  // (collapsed whitespace), so callers skip them instead of drawing a block at
+  // some stale end-of-line position.
+  function charRect(n, i, last) {
+    var r = document.createRange();
+    r.setStart(n, i); r.setEnd(n, i + 1);
+    var cs = r.getClientRects();
+    var rc = cs.length ? cs[last ? cs.length - 1 : 0] : r.getBoundingClientRect();
+    return rc && rc.height && rc.width ? rc : null;
+  }
+  // Resolve an element-boundary focus (nodeType 1 + child offset) down to a real
+  // text position. Without this the fallback drew the block at the parent
+  // element's bounding-box TOP — a paragraph-sized upward jump mid-motion.
+  function textPosIn(el, off) {
+    function edgeText(node, first) {
+      var tw = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null), t, hit = null;
+      while ((t = tw.nextNode())) {
+        if (!t.nodeValue.length) continue;
+        hit = t;
+        if (first) break;
+      }
+      return hit;
+    }
+    var kids = el.childNodes, i, t;
+    for (i = off; i < kids.length; i++) {
+      t = kids[i].nodeType === 3 ? (kids[i].nodeValue.length ? kids[i] : null) : edgeText(kids[i], true);
+      if (t) return { n: t, o: 0 };
+    }
+    for (i = Math.min(off, kids.length) - 1; i >= 0; i--) {
+      t = kids[i].nodeType === 3 ? (kids[i].nodeValue.length ? kids[i] : null) : edgeText(kids[i], false);
+      if (t) return { n: t, o: t.nodeValue.length };
+    }
+    return null;
   }
   // The rect of the character AT the focus end — what the block cursor sits on.
   // Probing a single character keeps the cursor one line tall no matter how big
-  // the selection is (collapsing the focus + falling back to the parent element's
-  // whole box is what made the old bar grow with the selection). width 0 means
-  // the caret sits past the last character of a line (block gets a default width).
+  // the selection is. width 0 means the caret sits past the last character of a
+  // line (block gets a default width). Wrap-ambiguous positions resolve along
+  // `dirBack` so the block always lands on the line the motion moved to.
   function focusRect() {
     var s = sel();
     if (s.rangeCount === 0 || !s.focusNode) return null;
-    var n = s.focusNode, o = s.focusOffset, r = document.createRange(), rc;
+    var n = s.focusNode, o = s.focusOffset, rc;
     try {
-      if (n.nodeType === 3) {
-        if (o < n.nodeValue.length) {
-          r.setStart(n, o); r.setEnd(n, o + 1);
-          rc = r.getBoundingClientRect();
-          if (rc && rc.height) return rc;
-        }
-        if (o > 0) {
-          r.setStart(n, o - 1); r.setEnd(n, o);
-          rc = r.getBoundingClientRect();
-          if (rc && rc.height) return { left: rc.right, top: rc.top, width: 0, height: rc.height };
-        }
+      if (n.nodeType === 1) {
+        var p = textPosIn(n, o);
+        if (p) { n = p.n; o = p.o; }
       }
-      // Focus on an element boundary: use the selection edge's own line box, not
-      // the element's whole rect (a paragraph-sized cursor otherwise).
+      if (n.nodeType === 3) {
+        var len = n.nodeValue.length;
+        var after = o < len ? charRect(n, o, true) : null;
+        var before = o > 0 ? charRect(n, o - 1, false) : null;
+        // The neighbours render nowhere (caret inside a run of collapsed
+        // whitespace): walk toward the nearest visible character in the motion's
+        // direction and sit the block there.
+        if (!after && !before) {
+          var i;
+          if (dirBack) { for (i = o - 1; i > 0 && !before; i--) before = charRect(n, i - 1, false); }
+          else { for (i = o + 1; i < len && !after; i++) after = charRect(n, i, true); }
+        }
+        // Both neighbours visible but on different lines — the caret sits exactly
+        // on a wrap. Forward motions show it at the start of the lower line,
+        // backward ones at the end of the upper.
+        if (after && before && after.top - before.top > 1) {
+          if (dirBack) after = null; else before = null;
+        }
+        if (after) return after;
+        if (before) return { left: before.right, top: before.top, width: 0, height: before.height };
+      }
+      // Focus on an element boundary with no text anywhere near: use the selection
+      // edge's own line box, not the element's whole rect.
       var rr = s.getRangeAt(0), rects = rr.getClientRects();
       if (rects.length) {
         var atEnd = n === rr.endContainer && o === rr.endOffset;
@@ -996,15 +1065,24 @@ const CARET_JS: &str = r#"
   }
   function updateBar() {
     var b = ensureBar();
-    if (!on) { b.style.display = 'none'; return; }
+    if (!on) { b.style.display = 'none'; lineBar.style.display = 'none'; return; }
     var rc = focusRect();
-    if (!rc) { b.style.display = 'none'; return; }
+    if (!rc) { b.style.display = 'none'; lineBar.style.display = 'none'; return; }
     var h = rc.height || 16;
     b.style.display = 'block';
     b.style.left = rc.left + 'px';
     b.style.top = rc.top + 'px';
-    b.style.width = Math.max(rc.width || 0, h * 0.55) + 'px';
+    // Exactly the glyph's width (the old 0.55·line-height floor overhung narrow
+    // glyphs to the right); width 0 = the empty end-of-line slot, half a cell.
+    b.style.width = (rc.width > 0 ? rc.width : h * 0.45) + 'px';
     b.style.height = h + 'px';
+    // Restart the blink so the block is solid right after a motion (vim-style).
+    b.style.animation = 'none';
+    void b.offsetWidth;
+    b.style.animation = BLINK;
+    lineBar.style.display = 'block';
+    lineBar.style.top = rc.top + 'px';
+    lineBar.style.height = h + 'px';
   }
   // Vim scrolloff: when a motion pushes the cursor within ~2 lines of the top or
   // bottom edge, scroll the window so the text around it stays visible (h/l past
@@ -1048,7 +1126,7 @@ const CARET_JS: &str = r#"
     var s = sel(); s.removeAllRanges(); s.addRange(r);
   }
   window.__caretEnter = function () {
-    on = true; visual = false; pend = '';
+    on = true; visual = false; pend = ''; dirBack = false;
     caretAtCenter();
     updateBar();
   };
@@ -1056,6 +1134,7 @@ const CARET_JS: &str = r#"
     on = false; visual = false; pend = '';
     try { sel().removeAllRanges(); } catch (e) {}
     if (bar) bar.style.display = 'none';
+    if (lineBar) lineBar.style.display = 'none';
   };
   window.__caretEsc = function () {
     if (!on) return;
@@ -1070,7 +1149,11 @@ const CARET_JS: &str = r#"
   window.__caretKey = function (k) {
     if (!on) return;
     var s = sel(), alter = visual ? 'extend' : 'move';
-    if (pend === 'g') { pend = ''; if (k === 'g') { s.modify(alter,'backward','documentboundary'); keepInView(); updateBar(); return; } }
+    // Remember the motion's direction — focusRect uses it to resolve positions
+    // that render on two lines (soft wraps).
+    if ('hkb0'.indexOf(k) >= 0) dirBack = true;
+    else if ('ljweG$'.indexOf(k) >= 0) dirBack = false;
+    if (pend === 'g') { pend = ''; if (k === 'g') { dirBack = true; s.modify(alter,'backward','documentboundary'); keepInView(); updateBar(); return; } }
     switch (k) {
       case 'h': s.modify(alter,'left','character'); break;
       case 'l': s.modify(alter,'right','character'); break;
@@ -1374,6 +1457,11 @@ fn main() -> Result<()> {
                     app.cursor_on = !app.cursor_on;
                     app.window.request_redraw();
                 } else if app.mode == ModeKind::Normal {
+                    // Read-mode caret: blink its block cursor.
+                    if app.read_caret_active() {
+                        app.cursor_on = !app.cursor_on;
+                        app.window.request_redraw();
+                    }
                     // Focus backstop: reclaim keyboard focus if a click handed it to
                     // the webview (see reclaim_focus_tick).
                     app.reclaim_focus_tick();
@@ -1733,6 +1821,9 @@ fn main() -> Result<()> {
         if !matches!(*control_flow, ControlFlow::Exit | ControlFlow::ExitWithCode(_)) {
             if matches!(app.mode, ModeKind::Command | ModeKind::Find) {
                 // Blink the command-bar cursor.
+                *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(530));
+            } else if app.mode == ModeKind::Normal && app.read_caret_active() {
+                // Blink the read-mode caret's block cursor.
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(530));
             } else if app.mode == ModeKind::Normal && app.active_pane_is_webview {
                 // Poll to keep keyboard focus on the shell while the FOCUSED pane is a

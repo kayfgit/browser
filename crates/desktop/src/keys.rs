@@ -541,6 +541,7 @@ impl App {
         tb.place_cursor(mid_line, 0, rows, cols);
         nr.scroll = tb.top as i32 * lh;
         nr.caret = Some(tb);
+        self.cursor_on = true; // start the blink on the solid phase
         self.set_status("[CARET]  hjkl/w/b/0/$/gg/G move · v/V select · y yank · Esc exit");
         self.window.request_redraw();
     }
@@ -565,6 +566,7 @@ impl App {
         tb.place_cursor(line, col, rows, cols);
         nr.scroll = tb.top as i32 * lh;
         nr.caret = Some(tb);
+        self.cursor_on = true;
     }
 
     /// Feed a key to the read-mode caret. Returns `true` if it was consumed. `Esc`
@@ -604,6 +606,7 @@ impl App {
             self.clear_status();
         }
         if consumed || exit {
+            self.cursor_on = true; // a motion resets the blink to solid
             self.window.request_redraw();
         }
         consumed || exit

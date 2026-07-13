@@ -30,6 +30,7 @@ pub(crate) fn paint_pane(
     hint_input: &str,
     hint_new_tab: bool,
     focused: bool,
+    cursor_on: bool,
     rect: PaneRect,
     buf: &mut [u32],
     wz: usize,
@@ -63,6 +64,11 @@ pub(crate) fn paint_pane(
                     continue;
                 }
                 let baseline = y_top + line_h * 3 / 4;
+                // Vim `cursorline`: tint the caret's whole row (under the find/selection
+                // highlights and the text). Steady — only the block itself blinks.
+                if focused && nr.caret.as_ref().is_some_and(|c| c.cy == li) {
+                    fill(buf, left, y_top, right - MARGIN, y_top + line_h, draw::CURSORLINE);
+                }
                 if find_on {
                     let chars: Vec<char> = line.runs.iter().flat_map(|r| r.text.chars()).collect();
                     let base = left + line.indent;
@@ -93,13 +99,21 @@ pub(crate) fn paint_pane(
                         bottom,
                     );
                 }
-                if focused {
+                if focused && cursor_on {
                     if let Some(caret) = &nr.caret {
                         if li == caret.cy {
                             let chars: Vec<char> =
                                 line.runs.iter().flat_map(|r| r.text.chars()).collect();
                             let cx0 = line_col_x(&line.runs, caret.cx, left + line.indent, p);
-                            let cwid = p.measure("M").max(1) as i32;
+                            // Block exactly as wide as the glyph under it (a fixed
+                            // M-width overhangs narrow glyphs to the right); the
+                            // empty end-of-line slot keeps one M cell.
+                            let cwid = if chars.get(caret.cx).is_some() {
+                                (line_col_x(&line.runs, caret.cx + 1, left + line.indent, p) - cx0)
+                                    .max(1)
+                            } else {
+                                p.measure("M").max(1) as i32
+                            };
                             fill(buf, cx0, y_top, cx0 + cwid, y_top + line_h, draw::ACCENT);
                             if let Some(ch) = chars.get(caret.cx) {
                                 p.text_rect(
@@ -493,7 +507,7 @@ impl App {
                     paint_pane(
                         &self.tabs[*t], p, term_p, term_style, &self.find, self.mode,
                         &self.native_hints, &self.hint_input, self.hint_new_tab,
-                        Some(*t) == self.active, *r, &mut buf, wz, hz,
+                        Some(*t) == self.active, self.cursor_on, *r, &mut buf, wz, hz,
                     );
                 } else if self.frozen {
                     paint_frozen_pane(p, &mut buf, wz, hz, *r);

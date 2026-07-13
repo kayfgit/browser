@@ -26,6 +26,9 @@ pub const AI: Rgb = (0xc6, 0x9c, 0xf6);
 pub const ERR: Rgb = (0xe0, 0x6c, 0x6c);
 /// Command-bar text-selection highlight.
 pub const SEL: Rgb = (0x2d, 0x4f, 0x7a);
+/// Read-mode caret: the row the cursor is on (vim's `cursorline` — a touch
+/// lighter than [`BG`] so text stays readable through it).
+pub const CURSORLINE: Rgb = (0x2c, 0x2c, 0x2c);
 /// Find-in-page: all matches (dim) and the current match (bright).
 pub const FIND: Rgb = (0x5a, 0x52, 0x14);
 pub const FIND_CUR: Rgb = (0xc8, 0x64, 0x1e);
