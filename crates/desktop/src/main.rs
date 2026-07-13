@@ -58,7 +58,7 @@ use draw::Painter;
 use app::{clipboard_get, clipboard_set, AdblockMode, App, ExtInfo, ModeKind, UserEvent};
 use commands::COMMANDS;
 use find::FindState;
-use tabs::{js_string, parse_tab_flag, Source, Tab};
+use tabs::{js_string, parse_open_flags, parse_tab_flag, Source, Tab};
 use pages::commands_document;
 use term::program_exists;
 

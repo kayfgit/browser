@@ -234,6 +234,7 @@ impl App {
                 nojs: false,
                 read: false,
                 research: false,
+                private: false,
                 nav: TabNav::default(),
                 content: TabContent::Term(TermSession {
                     id,

@@ -2,7 +2,10 @@
 //! (bangs / queries / URLs), and the `:search` template resolver.
 
 use crate::panes::SplitDir;
-use crate::{clipboard_set, commands_document, parse_tab_flag, program_exists, App, ModeKind};
+use crate::{
+    clipboard_set, commands_document, parse_open_flags, parse_tab_flag, program_exists, App,
+    ModeKind,
+};
 
 /// Command verbs offered by command-bar autocomplete (`:ver`→`:version`). Longest-
 /// useful canonical spellings; ordered so the first prefix match is the best one.
@@ -31,12 +34,16 @@ impl App {
         };
         match verb {
             // `:open`/`:o` open in THIS tab (replacing it); a leading `-t` opens a new
-            // tab instead. `:tabopen`/`:t` always open a new tab (that's their meaning).
+            // tab instead and `-n` a private (InPrivate, no-trace) one — combinable as
+            // `-tn`. `:tabopen`/`:t` always open a new tab (that's their meaning).
             "open" | "o" => {
-                let (new_tab, rest) = parse_tab_flag(rest);
-                self.open_tab(rest, self.nojs, new_tab);
+                let (new_tab, private, rest) = parse_open_flags(rest);
+                self.open_tab_private(rest, self.nojs, new_tab, private);
             }
-            "tabopen" | "t" => self.open_tab(rest, self.nojs, true),
+            "tabopen" | "t" => {
+                let (_, private, rest) = parse_open_flags(rest);
+                self.open_tab_private(rest, self.nojs, true, private);
+            }
             // Edit the current URL: drop into the command bar pre-filled with
             // `<verb> <current url>` so you can tweak and re-open it — `<verb>` is the
             // mode the tab was opened in (open/research/read/nojs) so e.g. editing a
@@ -73,8 +80,8 @@ impl App {
             // Like :open (URL or → search engine) but lighter: JS on, images kept,
             // heavy media/embeds stripped. For "how do I…" / "best way to…" lookups.
             "research" | "rs" => {
-                let (new_tab, rest) = parse_tab_flag(rest);
-                self.open_research(rest, new_tab);
+                let (new_tab, private, rest) = parse_open_flags(rest);
+                self.open_research(rest, new_tab, private);
             }
             "te" | "term" => {
                 if rest.is_empty() {
@@ -136,8 +143,8 @@ impl App {
                 if rest.is_empty() {
                     self.toggle_js();
                 } else {
-                    let (new_tab, rest) = parse_tab_flag(rest);
-                    self.open_tab(rest, true, new_tab);
+                    let (new_tab, private, rest) = parse_open_flags(rest);
+                    self.open_tab_private(rest, true, new_tab, private);
                 }
             }
             // Reopen the most recently closed tab (also `u` / Ctrl+Shift+T).

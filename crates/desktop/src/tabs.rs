@@ -67,6 +67,10 @@ pub(crate) struct Tab {
     /// Whether this is a "research" tab: a normal page (JS on, images kept) with
     /// heavy media/embeds stripped on the fly for a lighter browse.
     pub(crate) research: bool,
+    /// Private (`:open -n`): the webview runs InPrivate (no cookies/storage persist),
+    /// and the shell keeps no trace either — the URL is never recorded into visited
+    /// history, the closed-tab stack, or the saved session.
+    pub(crate) private: bool,
     /// This tab slot's back/forward navigation history (`H` / `L`). Shell-managed
     /// rather than delegated to WebView2's own session history, which only spans a
     /// single webview instance — every `:open`/`o`/search rebuilds the webview, so
@@ -85,11 +89,13 @@ pub(crate) enum NavKind {
 }
 
 /// One re-openable location in a tab's [`history`](TabNav): the URL plus the tab
-/// kind needed to recreate it (`:open` / no-js / research / read).
+/// kind needed to recreate it (`:open` / no-js / research / read), and whether the
+/// page was private (so an `H`/`L` replay reopens it InPrivate, not as a normal tab).
 #[derive(Clone)]
 pub(crate) struct NavEntry {
     pub(crate) url: String,
     pub(crate) kind: NavKind,
+    pub(crate) private: bool,
 }
 
 /// A tab slot's back/forward stacks (`H` pops `back`, `L` pops `fwd`).
@@ -129,7 +135,7 @@ pub(crate) fn nav_entry(tab: &Tab) -> Option<NavEntry> {
     } else {
         return None;
     };
-    Some(NavEntry { url: tab.url.clone(), kind })
+    Some(NavEntry { url: tab.url.clone(), kind, private: tab.private })
 }
 
 /// Push `entry` onto a back/forward stack, dropping the oldest if it would exceed
@@ -152,6 +158,7 @@ impl Tab {
             nojs: false,
             read: false,
             research: false,
+            private: false,
             nav: TabNav::default(),
         }
     }
@@ -272,6 +279,32 @@ pub(crate) fn parse_tab_flag(rest: &str) -> (bool, &str) {
     (false, rest)
 }
 
+/// Strip the leading `:open`-family flags from a command argument, returning
+/// `(open_in_new_tab, private, remaining_target)`. Short flags combine vim-style
+/// (`-tn` ≡ `-t -n` ≡ `-nt`); the long spellings `--tab` / `--private` work too.
+/// Only whole LEADING tokens are consumed, so a target like `-test` or a search
+/// query containing `-t` is left untouched.
+pub(crate) fn parse_open_flags(rest: &str) -> (bool, bool, &str) {
+    let (mut new_tab, mut private) = (false, false);
+    let mut rest = rest;
+    loop {
+        rest = rest.trim_start();
+        let token = rest.split_whitespace().next().unwrap_or("");
+        let short = match token {
+            "--tab" => "t",
+            "--private" => "n",
+            _ => match token.strip_prefix('-') {
+                Some(f) if !f.is_empty() && f.chars().all(|c| matches!(c, 't' | 'n')) => f,
+                _ => break,
+            },
+        };
+        new_tab |= short.contains('t');
+        private |= short.contains('n');
+        rest = rest[token.len()..].trim_start();
+    }
+    (new_tab, private, rest)
+}
+
 /// Build an engine-free native tab rendering `doc` (read mode when `read`). The
 /// layout is left empty/dirty so it's laid out on the next draw at the live width.
 pub(crate) fn native_read_tab(doc: browser_core::Document, url: String, read: bool) -> Tab {
@@ -280,6 +313,7 @@ pub(crate) fn native_read_tab(doc: browser_core::Document, url: String, read: bo
         nojs: false,
         read,
         research: false,
+        private: false,
         nav: TabNav::default(),
         content: TabContent::Read(NativeRead {
             doc,
@@ -301,8 +335,22 @@ pub(crate) fn native_read_tab(doc: browser_core::Document, url: String, read: bo
 impl App {
     /// Open a page from a target (URL or query). `new_tab` opens it as a new tab;
     /// otherwise it replaces the active tab in place (`:open` default, `o`). With no
-    /// active tab the two are equivalent (a fresh tab is created).
+    /// active tab the two are equivalent (a fresh tab is created). See
+    /// [`open_tab_private`](Self::open_tab_private) for the private (`-n`) variant.
     pub(crate) fn open_tab(&mut self, target: &str, disable_js: bool, new_tab: bool) {
+        self.open_tab_private(target, disable_js, new_tab, false);
+    }
+
+    /// [`open_tab`](Self::open_tab) with control over privacy: `private` runs the
+    /// webview InPrivate and keeps the URL out of visited history, the closed-tab
+    /// stack and the saved session (see [`Tab::private`](Tab)).
+    pub(crate) fn open_tab_private(
+        &mut self,
+        target: &str,
+        disable_js: bool,
+        new_tab: bool,
+        private: bool,
+    ) {
         // Frozen: refuse to spin up a new web engine — the whole point is to NOT
         // process web content. Native pages (:read/:te/:res/…) stay available.
         if self.frozen {
@@ -310,8 +358,10 @@ impl App {
             return;
         }
         let url = self.resolve_target(target);
-        self.record_history(&url);
-        match self.build_content_webview(Source::Url(url.clone()), disable_js, "") {
+        if !private {
+            self.record_history(&url);
+        }
+        match self.build_content_webview_private(Source::Url(url.clone()), disable_js, "", private) {
             Ok(webview) => {
                 let tab = Tab {
                     content: TabContent::Web(webview),
@@ -319,15 +369,21 @@ impl App {
                     nojs: disable_js,
                     read: false,
                     research: false,
+                    private,
                     // The first live-URL refresh after this open is the page's own
                     // landing, not a navigation worth a back-stack entry.
                     nav: TabNav { settling: true, ..TabNav::default() },
                 };
-                self.place_tab(tab, new_tab);
+                self.place_tab_escaping_split(tab, new_tab);
                 // Keep the keyboard on the shell; the page-load handler re-asserts
                 // this once navigation finishes (which is when focus tends to move).
                 self.window.set_focus();
-                self.set_status(if disable_js { "(no-js)" } else { "" });
+                self.set_status(match (private, disable_js) {
+                    (true, true) => "(private, no-js)",
+                    (true, false) => "(private)",
+                    (false, true) => "(no-js)",
+                    (false, false) => "",
+                });
             }
             Err(e) => self.set_error(format!("failed to open: {e:#}")),
         }
@@ -335,15 +391,19 @@ impl App {
 
     /// Open a "research" tab: like `:open` (URL or → search engine), but JS-on with
     /// the [`RESEARCH_JS`] pruner injected so video/audio/embeds are stripped while
-    /// images and text stay. A lighter browse for "how do I…" lookups. `new_tab` as
-    /// in [`open_tab`].
-    pub(crate) fn open_research(&mut self, target: &str, new_tab: bool) {
+    /// images and text stay. A lighter browse for "how do I…" lookups. `new_tab` and
+    /// `private` as in [`open_tab_private`](Self::open_tab_private).
+    pub(crate) fn open_research(&mut self, target: &str, new_tab: bool, private: bool) {
         if self.frozen {
             self.set_status("browser is frozen — :unfreeze first");
             return;
         }
         let url = self.resolve_target(target);
-        match self.build_content_webview(Source::Url(url.clone()), false, RESEARCH_JS) {
+        if !private {
+            self.record_history(&url);
+        }
+        match self.build_content_webview_private(Source::Url(url.clone()), false, RESEARCH_JS, private)
+        {
             Ok(webview) => {
                 let tab = Tab {
                     content: TabContent::Web(webview),
@@ -351,11 +411,16 @@ impl App {
                     nojs: false,
                     read: false,
                     research: true,
+                    private,
                     nav: TabNav { settling: true, ..TabNav::default() },
                 };
-                self.place_tab(tab, new_tab);
+                self.place_tab_escaping_split(tab, new_tab);
                 self.window.set_focus();
-                self.set_status("(research — media stripped)");
+                self.set_status(if private {
+                    "(research, private — media stripped)"
+                } else {
+                    "(research — media stripped)"
+                });
             }
             Err(e) => self.set_error(format!("failed to open: {e:#}")),
         }
@@ -366,10 +431,27 @@ impl App {
     /// evicts is recorded on the closed-tab stack (so `U` can bring it back) and its
     /// terminal, if any, is shut down deterministically first.
     ///
-    /// Under a split, new content ALWAYS lands in the focused pane (in place), since
-    /// a background tab would have no pane to show it — `new_tab` is ignored there.
+    /// Under a split, new content lands in the focused pane (in place) — that's how a
+    /// fresh blank pane gets filled by `:te`/`:read`/internal pages, so `new_tab` is
+    /// ignored here. An EXPLICIT new-tab request (`:open -t`, `:tabopen`, an `F` hint,
+    /// a popup) escapes the split instead — see
+    /// [`place_tab_escaping_split`](Self::place_tab_escaping_split).
     pub(crate) fn place_tab(&mut self, tab: Tab, new_tab: bool) {
         let replace = (!new_tab || self.is_split()) && self.active.is_some();
+        self.place_tab_replacing(tab, replace);
+    }
+
+    /// [`place_tab`](Self::place_tab) for explicit new-tab requests: under a split,
+    /// `new_tab` opens the page as its OWN tab-strip window (the split window stays
+    /// intact behind it) rather than clobbering the focused pane — the ":open -t put
+    /// the tab into my split" bug. Without a split (or without `new_tab`) it behaves
+    /// exactly like `place_tab`.
+    pub(crate) fn place_tab_escaping_split(&mut self, tab: Tab, new_tab: bool) {
+        let replace = !new_tab && self.active.is_some();
+        self.place_tab_replacing(tab, replace);
+    }
+
+    fn place_tab_replacing(&mut self, tab: Tab, replace: bool) {
         match self.active {
             Some(i) if replace && i < self.tabs.len() => {
                 self.record_closed(i);
@@ -421,10 +503,11 @@ impl App {
 
     /// Record tab `i` on the closed-tab stack so `U` / Ctrl+Shift+T can reopen it.
     /// Mirrors the session's restorable-tab rules: live `browser://…` pages and the
-    /// error/res vim pagers are session-specific and skipped.
+    /// error/res vim pagers are session-specific and skipped — and so are private
+    /// tabs, which must leave no reopenable trace once closed.
     pub(crate) fn record_closed(&mut self, i: usize) {
         let Some(t) = self.tabs.get(i) else { return };
-        if t.url.starts_with("browser://") || t.vim().is_some() {
+        if t.url.starts_with("browser://") || t.vim().is_some() || t.private {
             return;
         }
         let kind = if t.term().is_some() {
@@ -454,7 +537,7 @@ impl App {
         match c.kind.as_str() {
             "term" => self.open_terminal(),
             "read" => self.start_read(&c.url, false, true),
-            "research" => self.open_research(&c.url, true),
+            "research" => self.open_research(&c.url, true, false),
             "nojs" => self.open_tab(&c.url, true, true),
             _ => self.open_tab(&c.url, false, true),
         }
@@ -467,6 +550,21 @@ impl App {
         source: Source,
         disable_js: bool,
         extra_init: &str,
+    ) -> Result<WebView> {
+        self.build_content_webview_private(source, disable_js, extra_init, false)
+    }
+
+    /// [`build_content_webview`](Self::build_content_webview) with control over
+    /// privacy: `private` runs the webview InPrivate (WebView2's in-private profile —
+    /// no cookies/storage persist past the tab). Only the CONTROLLER option differs;
+    /// the environment options (browser args, extensions) must stay identical to
+    /// every other webview or WebView2 creation fails with 0x8007139F.
+    pub(crate) fn build_content_webview_private(
+        &self,
+        source: Source,
+        disable_js: bool,
+        extra_init: &str,
+        private: bool,
     ) -> Result<WebView> {
         let ipc_proxy = self.proxy.clone();
         let load_proxy = self.proxy.clone();
@@ -517,6 +615,9 @@ impl App {
         builder = builder
             .with_bounds(self.content_rect())
             .with_focused(false)
+            // Private (`-n`): WebView2's InPrivate profile — cookies/storage live only
+            // as long as the tab. A controller option, so it can differ per webview.
+            .with_incognito(private)
             // Disable Chromium's built-in accelerators (Shift+Esc task manager,
             // Ctrl+F/P, F12, …) so our own keybindings own the keyboard. Standard
             // editing keys (Ctrl+C/V/X) are unaffected.
@@ -1222,17 +1323,17 @@ impl App {
         match entry.kind {
             NavKind::Web => {
                 self.nav_replaying = true;
-                self.open_tab(&entry.url, false, false);
+                self.open_tab_private(&entry.url, false, false, entry.private);
                 self.nav_replaying = false;
             }
             NavKind::Nojs => {
                 self.nav_replaying = true;
-                self.open_tab(&entry.url, true, false);
+                self.open_tab_private(&entry.url, true, false, entry.private);
                 self.nav_replaying = false;
             }
             NavKind::Research => {
                 self.nav_replaying = true;
-                self.open_research(&entry.url, false);
+                self.open_research(&entry.url, false, entry.private);
                 self.nav_replaying = false;
             }
             NavKind::Read => self.start_read(&entry.url, true, false),
@@ -1321,8 +1422,10 @@ impl App {
         }
         let url = t.url.clone();
         let research = t.research;
+        let private = t.private;
         let extra = if research { RESEARCH_JS } else { "" };
-        match self.build_content_webview(Source::Url(url.clone()), self.nojs, extra) {
+        match self.build_content_webview_private(Source::Url(url.clone()), self.nojs, extra, private)
+        {
             Ok(webview) => {
                 let nojs = self.nojs;
                 if let Some(session) = self.tabs[i].take_term() {
@@ -1338,6 +1441,7 @@ impl App {
                     nojs,
                     read: false,
                     research,
+                    private,
                     nav,
                 };
                 self.refresh_visibility();
@@ -1529,7 +1633,10 @@ mod tests {
     fn nav_push_caps_the_stack_dropping_the_oldest() {
         let mut stack = Vec::new();
         for i in 0..NAV_CAP + 5 {
-            nav_push(&mut stack, NavEntry { url: format!("https://e/{i}"), kind: NavKind::Web });
+            nav_push(
+                &mut stack,
+                NavEntry { url: format!("https://e/{i}"), kind: NavKind::Web, private: false },
+            );
         }
         // Capped at NAV_CAP, and it's the OLDEST entries that fell off the front.
         assert_eq!(stack.len(), NAV_CAP);
@@ -1548,6 +1655,28 @@ mod tests {
         // A target that merely starts with `-t` is NOT the flag.
         assert_eq!(parse_tab_flag("-test query"), (false, "-test query"));
         assert_eq!(parse_tab_flag("rust -t async"), (false, "rust -t async"));
+    }
+
+    #[test]
+    fn parse_open_flags_handles_combined_and_separate_flags() {
+        use super::parse_open_flags;
+        // Single flags.
+        assert_eq!(parse_open_flags("-t youtube.com"), (true, false, "youtube.com"));
+        assert_eq!(parse_open_flags("-n youtube.com"), (false, true, "youtube.com"));
+        // Combined (either order) and separate tokens.
+        assert_eq!(parse_open_flags("-tn youtube.com"), (true, true, "youtube.com"));
+        assert_eq!(parse_open_flags("-nt youtube.com"), (true, true, "youtube.com"));
+        assert_eq!(parse_open_flags("-t -n youtube.com"), (true, true, "youtube.com"));
+        // Long spellings.
+        assert_eq!(parse_open_flags("--tab --private x.com"), (true, true, "x.com"));
+        // Bare flag → empty target.
+        assert_eq!(parse_open_flags("-tn"), (true, true, ""));
+        // No flag → target untouched.
+        assert_eq!(parse_open_flags("youtube.com"), (false, false, "youtube.com"));
+        // Only whole LEADING tokens count.
+        assert_eq!(parse_open_flags("-test query"), (false, false, "-test query"));
+        assert_eq!(parse_open_flags("rust -t async"), (false, false, "rust -t async"));
+        assert_eq!(parse_open_flags("-north pole"), (false, false, "-north pole"));
     }
 
     #[test]

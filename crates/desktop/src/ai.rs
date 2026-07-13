@@ -659,6 +659,7 @@ impl App {
             nojs: false,
             read: false,
             research: false,
+            private: false,
             nav: TabNav::default(),
             content: TabContent::Ai(AiState::new(id, pending_prompt)),
         }
@@ -976,6 +977,7 @@ impl App {
                 nojs: false,
                 read: false,
                 research: false,
+                private: false,
                 nav: TabNav::default(),
                 content: TabContent::Pager(vim::TextBuffer::new(lines)),
             },

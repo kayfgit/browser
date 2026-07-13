@@ -956,7 +956,11 @@ impl App {
                         tab.nav.settling = false;
                     }
                     tab.url = u.clone();
-                    visited = Some(u);
+                    // Private tabs keep the visited list untouched (no autocomplete
+                    // or `:history` trace) — the URL sync above still happens.
+                    if !tab.private {
+                        visited = Some(u);
+                    }
                 }
             }
         }
@@ -1207,7 +1211,8 @@ impl App {
         // layout in saved-index terms so it survives the restore's re-indexing.
         let mut live_to_saved = vec![None; self.tabs.len()];
         for (i, tab) in self.tabs.iter().enumerate() {
-            if tab.url.starts_with("browser://") || tab.vim().is_some() {
+            // Internal pages are session-specific; private tabs must leave no trace.
+            if tab.url.starts_with("browser://") || tab.vim().is_some() || tab.private {
                 continue;
             }
             let kind = if tab.term().is_some() {
@@ -1307,7 +1312,7 @@ impl App {
             match tab.kind.as_str() {
                 "term" => self.open_terminal(),
                 "read" => self.start_read(&tab.url, false, true),
-                "research" => self.open_research(&tab.url, true),
+                "research" => self.open_research(&tab.url, true, false),
                 "nojs" => self.open_tab(&tab.url, true, true),
                 _ => self.open_tab(&tab.url, false, true),
             }

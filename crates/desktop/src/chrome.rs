@@ -575,6 +575,8 @@ impl App {
                     draw::TERM
                 } else if t.vim().is_some() {
                     draw::ERR
+                } else if t.private {
+                    draw::PRIVATE
                 } else if t.read {
                     draw::READ
                 } else if t.research {
@@ -596,6 +598,10 @@ impl App {
                         .map(|title| term_label(&title))
                         .unwrap_or_else(|| short_label(&t.url))
                 };
+                // Private tabs are marked in the strip (colour alone is easy to miss).
+                if t.private {
+                    label.insert_str(0, "[p] ");
+                }
                 // A split window shows how many panes it holds, tmux-style.
                 if panes > 1 {
                     label.push_str(&format!(" ⁝{panes}"));
@@ -618,9 +624,12 @@ impl App {
     /// The command verb that re-opens the active tab in its own mode, for `:edit`.
     pub(crate) fn active_reopen_verb(&self) -> &'static str {
         match self.active.and_then(|i| self.tabs.get(i)) {
+            Some(t) if t.research && t.private => "research -n",
             Some(t) if t.research => "research",
             Some(t) if t.read => "read",
+            Some(t) if t.nojs && t.private => "nojs -n",
             Some(t) if t.nojs => "nojs",
+            Some(t) if t.private => "open -n",
             _ => "open",
         }
     }
