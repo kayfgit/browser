@@ -298,11 +298,13 @@ pub(crate) struct App {
     pub(crate) blocker: crate::blocklist::SharedBlocker,
     /// Live page-feature toggles ([`FEATURES_JS`]), applied to every web tab without
     /// a reload. `mute` keeps all media muted; `no_css` disables every stylesheet;
-    /// `no_video` strips `<video>`/player embeds (like `:research`, but toggleable).
+    /// `no_video` strips `<video>`/player embeds (like `:research`, but toggleable);
+    /// `no_scrollbar` hides the pages' scrollbars (`:scrollbar`).
     /// Session-only (reset to off each launch). (Pop-up blocking moved under `:ads`.)
     pub(crate) mute: bool,
     pub(crate) no_css: bool,
     pub(crate) no_video: bool,
+    pub(crate) no_scrollbar: bool,
     /// Shell command for `:te` (program + args), set via `:config`.
     pub(crate) term_command: Vec<String>,
     /// Search-engine URL template (`%s` = query) for a non-URL `:open`. Defaults

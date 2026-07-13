@@ -853,7 +853,7 @@ const FEATURES_JS: &str = r#"
   if (window.__featuresInit) return;
   window.__featuresInit = true;
   var d = window.__featureDefaults || {};
-  var muted = !!d.mute, noCss = !!d.css, noVideo = !!d.video;
+  var muted = !!d.mute, noCss = !!d.css, noVideo = !!d.video, noSb = !!d.scrollbar;
 
   // audio: force every media element's muted flag to match the toggle.
   function applyMute(root, val) {
@@ -879,6 +879,24 @@ const FEATURES_JS: &str = r#"
       var r = (root && root.querySelectorAll) ? root : document;
       var hits = r.querySelectorAll(VID_SEL);
       for (var i = 0; i < hits.length; i++) { if (!vidKeep(hits[i])) hits[i].remove(); }
+    } catch (e) {}
+  }
+
+  // scrollbar: hide/show the page's scrollbars via an injected stylesheet
+  // (WebView2 is Chromium, so ::-webkit-scrollbar covers native scrollbars; the
+  // scrollbar-width rule catches pages that opted into the standard property).
+  function applyScrollbar() {
+    try {
+      var st = document.getElementById('__no-scrollbar');
+      if (!noSb) { if (st) st.remove(); return; }
+      if (st) return;
+      var root = document.head || document.documentElement;
+      if (!root) { document.addEventListener('DOMContentLoaded', applyScrollbar); return; }
+      st = document.createElement('style');
+      st.id = '__no-scrollbar';
+      st.textContent = '::-webkit-scrollbar{display:none!important;width:0!important;height:0!important}' +
+        'html,body{scrollbar-width:none!important}';
+      root.appendChild(st);
     } catch (e) {}
   }
 
@@ -918,10 +936,12 @@ const FEATURES_JS: &str = r#"
   observe();
   applyCss();
   applyVideo(document);
+  applyScrollbar();
   document.addEventListener('DOMContentLoaded', function () {
     applyCss();
     if (muted) applyMute(document, true);
     applyVideo(document);
+    applyScrollbar();
   });
   setInterval(function () { if (muted) applyMute(document, true); }, 1000);
 
@@ -930,6 +950,7 @@ const FEATURES_JS: &str = r#"
     if (name === 'mute') { muted = val; applyMute(document, val); }
     else if (name === 'css') { noCss = val; applyCss(); }
     else if (name === 'video') { noVideo = val; applyVideo(document); }
+    else if (name === 'scrollbar') { noSb = val; applyScrollbar(); }
   };
 })();
 "#;
@@ -1142,9 +1163,29 @@ const CARET_JS: &str = r#"
     else { window.__caretExit(); window.__post('caret-exit'); }
   };
   window.__caretYank = function () {
-    var t = sel().toString();
+    var s = sel(), t = '';
+    try {
+      if (visual && s.rangeCount) {
+        // Vim-inclusive selection: the char under the block cursor belongs to the
+        // yank, but DOM selections end BEFORE their focus/anchor boundary (l→t on
+        // "localhost" yanked "localhos"). Normalize the range forward (addRange
+        // makes anchor=start) and extend its end one character; this also makes a
+        // bare v+y yank the single char under the block, like vim.
+        var r = s.getRangeAt(0).cloneRange();
+        s.removeAllRanges();
+        s.addRange(r);
+        s.modify('extend', 'right', 'character');
+        t = s.toString();
+        // Vim leaves the cursor at the selection's start after a yank.
+        s.collapseToStart();
+        dirBack = false;
+      } else {
+        t = s.toString();
+        s.collapseToEnd();
+      }
+    } catch (e) { t = s.toString(); }
     window.__post('caret-yank:' + t);
-    sel().collapseToEnd(); visual = false; updateBar();
+    visual = false; updateBar();
   };
   window.__caretKey = function (k) {
     if (!on) return;
@@ -1338,6 +1379,7 @@ fn main() -> Result<()> {
         mute: false,
         no_css: false,
         no_video: false,
+        no_scrollbar: false,
         term_command: vec!["nu".to_string()],
         search_template: browser_core::DEFAULT_SEARCH_URL.to_string(),
         next_term_id: 0,

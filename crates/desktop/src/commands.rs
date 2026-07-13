@@ -9,7 +9,7 @@ use crate::{clipboard_set, commands_document, parse_tab_flag, program_exists, Ap
 pub(crate) const COMMANDS: &[&str] = &[
     "open", "tabopen", "edit", "yank", "read", "research", "reload", "resize", "res", "resources", "reopen", "ai",
     "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock", "extensions", "downloads",
-    "mute", "audio", "css", "video", "model", "history", "aihist", "aihistory", "clear", "alias", "unalias", "theme", "restore",
+    "mute", "audio", "css", "video", "scrollbar", "model", "history", "aihist", "aihistory", "clear", "alias", "unalias", "theme", "restore",
     "next", "tabnext", "tabprev",
     "prev", "back", "forward", "freeze", "unfreeze", "fullscreen", "move", "commands", "help", "version", "close",
     "vsplit", "split", "write", "wq", "quit",
@@ -173,6 +173,17 @@ impl App {
                 self.no_css = !self.no_css;
                 self.broadcast_toggle("css", self.no_css);
                 self.set_status(if self.no_css { "CSS off" } else { "CSS on" });
+                self.window.request_redraw();
+            }
+            // Hide/show the pages' (WebView2) scrollbars, live on every web tab.
+            "scrollbar" | "scrollbars" | "sb" => {
+                self.no_scrollbar = !self.no_scrollbar;
+                self.broadcast_toggle("scrollbar", self.no_scrollbar);
+                self.set_status(if self.no_scrollbar {
+                    "scrollbars hidden"
+                } else {
+                    "scrollbars shown"
+                });
                 self.window.request_redraw();
             }
             // `:video` (no args) toggles video stripping live on every web tab (like

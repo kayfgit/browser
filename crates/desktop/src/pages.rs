@@ -466,6 +466,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("downloads", ":downloads · :dl", "allow executable/installer downloads (.exe/.msi…; blocked by default)"),
     ("mute", ":mute · :audio", "toggle muting all page audio/video (live, all tabs)"),
     ("css", ":css", "toggle page styling off/on (live, all tabs)"),
+    ("scrollbar", ":scrollbar · :sb", "toggle hiding the pages' scrollbars (live, all tabs)"),
     ("video", ":video [url]", "no url: toggle stripping video/players off pages (live, all tabs); with a url: play it in mpv/vlc"),
     ("close", ":close · :bd", "close the current tab"),
     ("split", ":vsplit · :split", "split into tmux-style panes (Ctrl+W h/j/k/l to move between them)"),

@@ -546,10 +546,10 @@ impl App {
             // while a toggle is active is already in that state. `extra_init` (e.g.
             // research-mode DOM pruning) is appended last.
             .with_initialization_script({
-                let (m, c, v) = (self.mute, self.no_css, self.no_video);
+                let (m, c, v, sb) = (self.mute, self.no_css, self.no_video, self.no_scrollbar);
                 let mut init = format!(
                     "{IPC_PRELUDE}\n{BRIDGE_JS}\n{FIND_JS}\n{CARET_JS}\n\
-                     window.__featureDefaults={{mute:{m},css:{c},video:{v}}};\n{FEATURES_JS}"
+                     window.__featureDefaults={{mute:{m},css:{c},video:{v},scrollbar:{sb}}};\n{FEATURES_JS}"
                 );
                 if !extra_init.is_empty() {
                     init.push('\n');
@@ -1245,7 +1245,7 @@ impl App {
     }
 
     /// Flip a live page-feature toggle ([`FEATURES_JS`]) on every open web tab via
-    /// `__setToggle` (no reload). `name` is `mute` | `css` | `video`.
+    /// `__setToggle` (no reload). `name` is `mute` | `css` | `video` | `scrollbar`.
     pub(crate) fn broadcast_toggle(&self, name: &str, on: bool) {
         for tab in &self.tabs {
             if let Some(wv) = tab.webview() {

@@ -29,8 +29,9 @@ issues:
 [*] - if there are more than 10 tabs, find a way to switch to these tabs (maybe shift+1, to move to the eleventh tab and so on up to 20, if there are more than 20 tabs then tough luck buddy)
 [x] - on the terminal, sometimes the normal mode cursor gets stuck in a place and doesnt return until i reset the mode (press ctrl+s and esc)
 [x] - terminal text gets very broken if i change the zoom, it should readjust itself after zooming
-[*] - toggle for the webview2 scrollbar with ":scrollbar"
+[x] - toggle for the webview2 scrollbar with ":scrollbar"
 [] - improve :wq, takes a while to close and i can see the default page for 1 second (it should close instantly)
+[*] - alt+tabbing into the browser leaks the "Tab" onto the browser (very annoying)
 
 feats:
 [*] - :save/saved or :favorite/favorites for saving a page for later

@@ -709,10 +709,26 @@ fn encode_mouse_wheel(sgr: bool, button: u8, col: i32, row: i32) -> Vec<u8> {
 /// Backspace/Esc, and the cursor/navigation keys (honoring DECCKM app-cursor mode).
 /// `None` for keys with no terminal meaning. Alt prefixes the sequence with ESC.
 fn encode_term_key(key: &Key, ctrl: bool, alt: bool, shift: bool, app_cursor: bool) -> Option<Vec<u8>> {
+    // xterm modifier digit: 1 + shift(1) + alt(2) + ctrl(4). When any modifier is
+    // held, arrows/nav keys use the modified CSI forms (`ESC[1;5C` = Ctrl+Right) —
+    // that's what makes Ctrl+arrows jump WORDS in the shell instead of one char
+    // (ConPTY turns them back into key events with the ctrl flag set).
+    let modf = 1 + shift as u8 + ((alt as u8) << 1) + ((ctrl as u8) << 2);
     let cursor = |c: u8| -> Vec<u8> {
-        let mut v = if app_cursor { vec![0x1b, b'O'] } else { vec![0x1b, b'['] };
-        v.push(c);
-        v
+        if modf > 1 {
+            format!("\x1b[1;{modf}{}", c as char).into_bytes()
+        } else if app_cursor {
+            vec![0x1b, b'O', c]
+        } else {
+            vec![0x1b, b'[', c]
+        }
+    };
+    let tilde = |n: u8| -> Vec<u8> {
+        if modf > 1 {
+            format!("\x1b[{n};{modf}~").into_bytes()
+        } else {
+            format!("\x1b[{n}~").into_bytes()
+        }
     };
     let mut out: Vec<u8> = match key {
         Key::Character(s) => {
@@ -741,10 +757,10 @@ fn encode_term_key(key: &Key, ctrl: bool, alt: bool, shift: bool, app_cursor: bo
         Key::ArrowLeft => cursor(b'D'),
         Key::Home => cursor(b'H'),
         Key::End => cursor(b'F'),
-        Key::PageUp => b"\x1b[5~".to_vec(),
-        Key::PageDown => b"\x1b[6~".to_vec(),
-        Key::Delete => b"\x1b[3~".to_vec(),
-        Key::Insert => b"\x1b[2~".to_vec(),
+        Key::PageUp => tilde(5),
+        Key::PageDown => tilde(6),
+        Key::Delete => tilde(3),
+        Key::Insert => tilde(2),
         _ => return None,
     };
     // Alt = Meta: prefix with ESC (unless the sequence already starts with one).
@@ -769,5 +785,31 @@ fn ctrl_byte(c: char) -> Option<u8> {
         Some(0)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Modified arrows/nav keys must use the xterm CSI forms (`ESC[1;5C` =
+    /// Ctrl+Right) — plain sequences made Ctrl+arrows move one char in the shell
+    /// instead of jumping words.
+    #[test]
+    fn modified_keys_use_xterm_csi() {
+        let enc = |key, ctrl, alt, shift, app| encode_term_key(&key, ctrl, alt, shift, app).unwrap();
+        assert_eq!(enc(Key::ArrowRight, false, false, false, false), b"\x1b[C");
+        assert_eq!(enc(Key::ArrowRight, true, false, false, false), b"\x1b[1;5C");
+        assert_eq!(enc(Key::ArrowLeft, true, false, false, false), b"\x1b[1;5D");
+        assert_eq!(enc(Key::ArrowRight, false, false, true, false), b"\x1b[1;2C");
+        assert_eq!(enc(Key::ArrowRight, false, true, false, false), b"\x1b[1;3C");
+        assert_eq!(enc(Key::ArrowRight, true, false, true, false), b"\x1b[1;6C");
+        // Application-cursor mode (DECCKM) only changes the UNmodified form.
+        assert_eq!(enc(Key::ArrowRight, false, false, false, true), b"\x1bOC");
+        assert_eq!(enc(Key::ArrowRight, true, false, false, true), b"\x1b[1;5C");
+        // Modified editing keys keep their number with the modifier appended.
+        assert_eq!(enc(Key::Delete, false, false, false, false), b"\x1b[3~");
+        assert_eq!(enc(Key::Delete, true, false, false, false), b"\x1b[3;5~");
+        assert_eq!(enc(Key::Home, true, false, false, false), b"\x1b[1;5H");
     }
 }
