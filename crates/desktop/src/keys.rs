@@ -11,6 +11,17 @@ use crate::{clipboard_get, clipboard_set, vim, App, ModeKind, COMMANDS};
 
 impl App {
     pub(crate) fn handle_key(&mut self, key: &KeyEvent) {
+        // Alt+Tab straggler: switching INTO the browser can (re)deliver the Tab that
+        // completed the switch — sometimes with Alt still reported held. Nothing in
+        // the shell wants a Tab that soon after an app switch (or one with Alt down),
+        // so swallow it in EVERY mode. Pages that hold OS focus don't come through
+        // here; those are guarded in `khook`.
+        if matches!(key.logical_key, Key::Tab)
+            && (self.modifiers.alt_key()
+                || self.last_focus_gain.elapsed() < std::time::Duration::from_millis(300))
+        {
+            return;
+        }
         // Receiving a key here means the shell holds the keyboard, so any prior
         // page-focus yield is over (the hook only forwards Esc as ReclaimNormal).
         self.page_focus_yielded = false;
@@ -214,6 +225,9 @@ impl App {
                 "O" => self.enter_command("open -t "),
                 "j" => self.scroll(80),
                 "k" => self.scroll(-80),
+                // Horizontal page scroll (H/L are history back/forward).
+                "h" => self.scroll_x(-80),
+                "l" => self.scroll_x(80),
                 // Reopen the last closed tab (vim-style undo; also Ctrl+Shift+T).
                 "u" => self.reopen_closed(),
                 "g" => self.scroll_edge(false),
@@ -286,6 +300,8 @@ impl App {
             },
             Key::ArrowDown => self.scroll(80),
             Key::ArrowUp => self.scroll(-80),
+            Key::ArrowLeft => self.scroll_x(-80),
+            Key::ArrowRight => self.scroll_x(80),
             // Enter on a `:history` line opens that entry (Shift+Enter → new tab);
             // on a `:aihist` line it opens that saved chat; a no-op anywhere else.
             Key::Enter => match self.active_url() {

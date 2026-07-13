@@ -300,7 +300,8 @@ pub(crate) struct App {
     /// a reload. `mute` keeps all media muted; `no_css` disables every stylesheet;
     /// `no_video` strips `<video>`/player embeds (like `:research`, but toggleable);
     /// `no_scrollbar` hides the pages' scrollbars (`:scrollbar`).
-    /// Session-only (reset to off each launch). (Pop-up blocking moved under `:ads`.)
+    /// Session-only (reset to off each launch) — except `no_scrollbar`, a lasting
+    /// preference persisted with `:w`. (Pop-up blocking moved under `:ads`.)
     pub(crate) mute: bool,
     pub(crate) no_css: bool,
     pub(crate) no_video: bool,
@@ -1218,6 +1219,7 @@ impl App {
             zoom: self.zoom,
             content_zoom: self.content_zoom,
             nojs: self.nojs,
+            no_scrollbar: self.no_scrollbar,
             adblock: self.adblock,
             adblock_mode: match self.adblock_mode {
                 AdblockMode::Ubo => "ubo",
@@ -1252,6 +1254,9 @@ impl App {
         self.history_at = s.history_at;
         self.history_at.resize(self.history.len(), 0);
         self.nojs = s.nojs;
+        // Set BEFORE the tabs are opened below, so each restored webview bakes the
+        // hidden-scrollbar state into its `__featureDefaults` init script.
+        self.no_scrollbar = s.no_scrollbar;
         // Adopt the saved ad-blocker mode (default uBlock). Tabs restored below enforce the
         // per-mode extension state as they're built; here we just set the mode + native flag
         // (no webviews exist yet, so the full `set_adblock_mode` sweep would be a no-op).

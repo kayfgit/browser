@@ -571,6 +571,7 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
         (":", "open the command bar"),
         ("o / O", "open a page in THIS tab / in a new tab (prefills “open ” / “open -t ”)"),
         ("j / k", "scroll down / up"),
+        ("h / l", "scroll left / right (web pages)"),
         ("Ctrl+D / Ctrl+U", "scroll half a page down / up"),
         ("g / G", "jump to top / bottom"),
         ("/", "find in page — type to search live; works on web, read & error tabs"),

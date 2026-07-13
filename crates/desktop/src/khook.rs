@@ -55,17 +55,23 @@ mod imp {
     const VK_MENU: i32 = 0x12; // Alt
 
     /// How long after regaining focus a lone `Tab` is treated as the Alt+Tab straggler
-    /// and swallowed rather than typed into the page. Matches the terminal guard in
-    /// [`crate::term::App::key_term`].
-    const TAB_SWALLOW_MS: u32 = 150;
+    /// and swallowed rather than typed into the page. Matches the shell-side guard in
+    /// `App::handle_key`.
+    const TAB_SWALLOW_MS: u32 = 300;
 
     static MODE: AtomicU8 = AtomicU8::new(super::MODE_OTHER);
     static HWND_VAL: AtomicIsize = AtomicIsize::new(0);
     /// `GetTickCount` at the moment our window last gained focus, stamped from the event
-    /// loop via [`note_focus_gain`]. Read by the hook (lock-free) to swallow the stray
-    /// `Tab` that Alt+Tab delivers to a focused web page right after the switch. `0` = no
-    /// focus gain recorded yet.
+    /// loop via [`note_focus_gain`] AND self-stamped by the hook the first time it sees
+    /// a key with us foreground after we weren't (the straggler `Tab` can arrive BEFORE
+    /// the event loop has processed `Focused(true)` — the self-stamp closes that hole).
+    /// Read by the hook (lock-free) to swallow the stray `Tab` that Alt+Tab delivers
+    /// right after the switch. `0` = no focus gain recorded yet.
     static LAST_FOCUS_TICK: AtomicU32 = AtomicU32::new(0);
+    /// Whether our window was foreground when the hook last fired — the edge detector
+    /// behind the self-stamp above (alt+tabbing away always fires hooked keys with a
+    /// foreign foreground window, so this flips false while the user is elsewhere).
+    static WAS_FG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     // The proxy lives on (and is only used from) the main thread — the LL hook proc
     // runs in the context of the thread that installed it, which is our event-loop
@@ -159,7 +165,16 @@ mod imp {
         if code >= 0 {
             // Only ever act when WE are foreground — never intercept keys for other apps.
             let fg = GetForegroundWindow();
-            if fg_is_ours(fg) {
+            let ours = fg_is_ours(fg);
+            // Focus-gain edge: first hooked key with us foreground after we weren't.
+            // Stamp the tick HERE too — this very key may be the Alt+Tab straggler,
+            // arriving before the event loop has run `note_focus_gain`.
+            if ours && !WAS_FG.swap(true, Ordering::Relaxed) {
+                LAST_FOCUS_TICK.store(GetTickCount().max(1), Ordering::Relaxed);
+            } else if !ours {
+                WAS_FG.store(false, Ordering::Relaxed);
+            }
+            if ours {
                 let msg = wparam.0 as u32;
                 if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
                     let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
@@ -184,14 +199,15 @@ mod imp {
                         return LRESULT(1);
                     }
                     let mode = MODE.load(Ordering::Relaxed);
-                    // Swallow the lone `Tab` that Alt+Tab leaves behind on a focused web
-                    // page: right after the switch it would otherwise move form focus /
-                    // type a tab. Only a bare Tab (no live modifier — Alt is already
-                    // released by the time this straggler lands) within the guard window,
-                    // and only in web passthrough where the page holds OS focus (the
-                    // terminal has its own guard in `key_term`). We never touch the Tab
-                    // while Alt is held, so the OS Alt+Tab switcher itself is unaffected.
-                    if mode == MODE_PASSTHROUGH && kb.vkCode == VK_TAB && !alt && !ctrl {
+                    // Swallow the lone `Tab` that Alt+Tab leaves behind right after the
+                    // switch — in ANY mode: on a focused web page it would move form
+                    // focus / type a tab; with the shell focused it lands in whatever
+                    // mode is active. Only a bare Tab (no live modifier — Alt is already
+                    // released by the time this straggler lands) within the guard window.
+                    // We never touch the Tab while Alt is held, so the OS Alt+Tab
+                    // switcher itself is unaffected. (`handle_key` has a matching guard
+                    // for shell-delivered keys.)
+                    if kb.vkCode == VK_TAB && !alt && !ctrl {
                         let last = LAST_FOCUS_TICK.load(Ordering::Relaxed);
                         if last != 0 && GetTickCount().wrapping_sub(last) < TAB_SWALLOW_MS {
                             return LRESULT(1); // swallow: the page must not see it

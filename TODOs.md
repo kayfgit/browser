@@ -23,20 +23,17 @@ issues:
        ublock-filters.js $scriptletHostnames$ -- index-preserving) and let native ADBLOCK_JS json-prune
        handle YT ads. NOTE: a separate, worse variant (netblock stalling ALL YT videos in default mode)
        was already fixed -- netblock is now gated to :adblock native only.
-[] - recent history with H/L isnt working
+[*] - recent history with H/L isnt working
 [*] - if im on a terminal tab with long contents and i press ctrl+s to scroll up and then press escape to go into term mode, the camera isnt brought down to the latest line, instead the camera gets stuck where it was, i have to press ctrl+s and keep pressing "j" to bring the camera down and then press esc to return to normal
 [*] - tabs should have a specific width, becoming smaller with the more tabs there is
 [*] - if there are more than 10 tabs, find a way to switch to these tabs (maybe shift+1, to move to the eleventh tab and so on up to 20, if there are more than 20 tabs then tough luck buddy)
-[x] - on the terminal, sometimes the normal mode cursor gets stuck in a place and doesnt return until i reset the mode (press ctrl+s and esc)
-[x] - terminal text gets very broken if i change the zoom, it should readjust itself after zooming
-[x] - toggle for the webview2 scrollbar with ":scrollbar"
-[] - improve :wq, takes a while to close and i can see the default page for 1 second (it should close instantly)
-[*] - alt+tabbing into the browser leaks the "Tab" onto the browser (very annoying)
+[*] - improve :wq, takes a while to close and i can see the default page for 1 second (it should close instantly)
+[x] - alt+tabbing into the browser leaks the "Tab" onto the browser (very annoying)
 
 feats:
 [*] - :save/saved or :favorite/favorites for saving a page for later
-[*] - ctrl+arrowkeys should move thee cursor through entire words, currently moves only one character at a time
 [] - improve :wq, currently it only brings back webview2 tabs accurately, terminal tabs just get restarted (if possible, should maintain the folder it was before with the content inside exactly as it was before)
+[x] - "h" and "l" (H and L are for backwards/forwards history) should move the webview2 content horizontally
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"

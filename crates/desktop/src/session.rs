@@ -19,6 +19,12 @@ pub struct Session {
     #[serde(default = "default_content_zoom")]
     pub content_zoom: f64,
     pub nojs: bool,
+    /// Whether the pages' scrollbars are hidden (`:scrollbar`). Unlike the other
+    /// page-feature toggles (mute/css/video — deliberately session-only), hiding
+    /// scrollbars is a lasting preference, so it survives `:wq`. `default` (shown)
+    /// for sessions written before it existed.
+    #[serde(default)]
+    pub no_scrollbar: bool,
     /// Legacy field: whether the (native) ad blocker was on. Superseded by
     /// [`adblock_mode`](Self::adblock_mode); still written/read for older builds.
     #[serde(default = "default_adblock")]
@@ -125,6 +131,7 @@ mod tests {
             zoom: 1.2,
             content_zoom: 1.1,
             nojs: true,
+            no_scrollbar: true,
             adblock: true,
             adblock_mode: "ubo".into(),
             search_template: "https://example.com/?q=%s".into(),
@@ -141,6 +148,7 @@ mod tests {
         };
         let text = toml::to_string(&s).expect("serialize");
         let back: Session = toml::from_str(&text).expect("deserialize");
+        assert!(back.no_scrollbar);
         assert_eq!(back.tabs.len(), 2);
         assert_eq!(back.active, 1);
         let g = back.window.expect("window geom");

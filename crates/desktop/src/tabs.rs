@@ -1095,6 +1095,15 @@ impl App {
         }
     }
 
+    /// Scroll the active pane horizontally (`h`/`l`). Web tabs only: the native read
+    /// layout wraps to the pane width and terminals have no horizontal overflow, so
+    /// there's nothing to pan elsewhere.
+    pub(crate) fn scroll_x(&mut self, dx: i32) {
+        if let Some(wv) = self.active_webview() {
+            let _ = wv.evaluate_script(&format!("window.scrollBy({dx},0);"));
+        }
+    }
+
     /// Jump to the top (`g`) or bottom (`G`) of the active page/document.
     pub(crate) fn scroll_edge(&mut self, bottom: bool) {
         let view = self.content_view_h();
