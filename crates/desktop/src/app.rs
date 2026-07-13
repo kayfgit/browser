@@ -126,6 +126,11 @@ pub(crate) enum UserEvent {
     /// The page pointer moved onto (or off) a link: show its href on the right of the
     /// command bar. Carries the URL, or empty when the pointer left the link.
     LinkHover(String),
+    /// The page's URL changed WITHOUT a document load — an SPA navigation
+    /// (`history.pushState`, back/forward `popstate`, hash jump). Sync the shell's
+    /// stored URL; `record` pushes the page being left onto the back stack so `H`
+    /// returns to it (false for `replaceState`, which adds no history entry).
+    UrlChanged { record: bool },
     /// A WebView2 browsing-data clear finished (`:clear cookies`/`cache`/`all`).
     /// `label` is the human description of what was cleared (empty = a silent bonus
     /// clear, ignored). `ai_id` is the `:ai` tab that initiated it, if any: the
@@ -915,6 +920,13 @@ impl App {
     /// so the status bar tracks navigation. Skips terminal/internal/html tabs
     /// (their live URL is a data:/about: URL, not a real address).
     pub(crate) fn refresh_active_url(&mut self) {
+        self.refresh_active_url_record(true);
+    }
+
+    /// [`refresh_active_url`](Self::refresh_active_url) with control over back-stack
+    /// recording: `record = false` only syncs the shown URL (a `replaceState` rewrite
+    /// isn't a page worth returning to).
+    pub(crate) fn refresh_active_url_record(&mut self, record: bool) {
         let mut visited = None;
         if let Some(tab) = self.active.and_then(|i| self.tabs.get_mut(i)) {
             if tab.term().is_some() {
@@ -930,10 +942,18 @@ impl App {
                     if u != tab.url {
                         if tab.nav.settling {
                             tab.nav.settling = false;
-                        } else if let Some(entry) = crate::tabs::nav_entry(tab) {
-                            crate::tabs::nav_push(&mut tab.nav.back, entry);
-                            tab.nav.fwd.clear();
+                        } else if record {
+                            if let Some(entry) = crate::tabs::nav_entry(tab) {
+                                crate::tabs::nav_push(&mut tab.nav.back, entry);
+                                tab.nav.fwd.clear();
+                            }
                         }
+                    } else if tab.nav.settling {
+                        // The load landed EXACTLY on the stored URL — the settle is
+                        // over. Without this the still-set flag would swallow the
+                        // NEXT real navigation instead of recording it (the "H says
+                        // no back history after one click" hole).
+                        tab.nav.settling = false;
                     }
                     tab.url = u.clone();
                     visited = Some(u);
@@ -1155,6 +1175,11 @@ impl App {
             return;
         }
         self.torn_down = true;
+        // Vanish NOW: dropping the webviews and joining PTY readers below can take
+        // a beat, and destroying the webview children mid-way exposes the parent's
+        // painted background (the "default page flashes for a second on :wq" bug).
+        // Hidden, the rest of the shutdown is invisible and the close feels instant.
+        self.window.set_visible(false);
         for tab in &mut self.tabs {
             if let Some(session) = tab.take_term() {
                 session.shutdown();

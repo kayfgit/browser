@@ -576,6 +576,16 @@ impl App {
                 "page-ready" => {
                     let _ = ipc_proxy.send_event(UserEvent::FocusShell);
                 }
+                // SPA URL changes (pushState/popstate/hashchange) — no document load
+                // fires, so this is the only signal the shell gets. 'url-changed'
+                // records a back/forward step; 'url-replaced' (replaceState) only
+                // syncs the shown URL.
+                "url-changed" => {
+                    let _ = ipc_proxy.send_event(UserEvent::UrlChanged { record: true });
+                }
+                "url-replaced" => {
+                    let _ = ipc_proxy.send_event(UserEvent::UrlChanged { record: false });
+                }
                 "grab-focus" => {
                     let _ = ipc_proxy.send_event(UserEvent::GrabFocus);
                 }
@@ -1135,7 +1145,35 @@ impl App {
             if forward { tab.nav.fwd.is_empty() } else { tab.nav.back.is_empty() }
         };
         if empty {
-            self.set_status(if forward { "no forward history" } else { "no back history" });
+            // The shell's stack is empty, but the ENGINE's own session history may
+            // still hold steps the shell never saw (SPA navigations from before the
+            // pushState hook, or in-page jumps that slipped past it). Let it make
+            // the step rather than refusing: the page being left goes onto the
+            // opposite shell stack so the reverse key returns, and `settling`
+            // suppresses recording the landing as a fresh forward step.
+            let engine_can = self
+                .tabs
+                .get(i)
+                .and_then(|t| t.webview())
+                .is_some_and(|wv| crate::navguard::can_go(wv, forward));
+            if !engine_can {
+                self.set_status(if forward { "no forward history" } else { "no back history" });
+                return;
+            }
+            let tab = self.tabs.get_mut(i).unwrap();
+            if let Some(cur) = nav_entry(tab) {
+                if forward {
+                    nav_push(&mut tab.nav.back, cur);
+                } else {
+                    nav_push(&mut tab.nav.fwd, cur);
+                }
+            }
+            tab.nav.settling = true;
+            crate::navguard::mark(&self.nav_intent);
+            if let Some(wv) = self.tabs.get(i).and_then(|t| t.webview()) {
+                crate::navguard::go(wv, forward);
+            }
+            self.window.request_redraw();
             return;
         }
         // Fast path: if this is a web tab and the ENGINE's own session history can make

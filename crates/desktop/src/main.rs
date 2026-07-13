@@ -282,6 +282,22 @@ const BRIDGE_JS: &str = r#"
   }, true);
   document.addEventListener('scroll', ctxClose, true);
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') ctxClose(); }, true);
+  // SPA navigations (history.pushState / back-forward / hash jumps) never fire a
+  // page-load event, so without this the shell never sees the URL change and H/L
+  // has no back-stack to walk (YouTube video → video, for one). Report them over
+  // IPC: 'url-changed' records a back/forward step, 'url-replaced' only syncs the
+  // shown URL (replaceState adds no history entry — recording it would spam the
+  // stack with scroll/query rewrites and drift from the engine's own history).
+  var __pushState = history.pushState.bind(history);
+  var __replaceState = history.replaceState.bind(history);
+  history.pushState = function () {
+    var r = __pushState.apply(null, arguments); post('url-changed'); return r;
+  };
+  history.replaceState = function () {
+    var r = __replaceState.apply(null, arguments); post('url-replaced'); return r;
+  };
+  window.addEventListener('popstate', function () { post('url-changed'); });
+  window.addEventListener('hashchange', function () { post('url-changed'); });
 })();
 "#;
 
@@ -1849,6 +1865,12 @@ fn main() -> Result<()> {
                 app.ai_reply(id, convo, round, result)
             }
             Event::UserEvent(UserEvent::PageFullscreen(on)) => app.set_page_fullscreen(on),
+            // An SPA navigation changed the page URL without a document load: sync the
+            // stored URL (and, for real steps, the H/L back stack) + repaint the bar.
+            Event::UserEvent(UserEvent::UrlChanged { record }) => {
+                app.refresh_active_url_record(record);
+                app.window.request_redraw();
+            }
             Event::UserEvent(UserEvent::TermClosed { id }) => app.close_term_tab(id),
             Event::UserEvent(UserEvent::Quit) => {
                 app.teardown();
