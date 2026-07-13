@@ -1159,6 +1159,10 @@ impl App {
                 if s.pty.is_vi() {
                     s.pty.toggle_vi();
                 }
+                // Resuming the live shell brings the camera back to the prompt:
+                // copy-mode (or wheel) scrolling left the display parked in
+                // scrollback, and only fresh PTY output would ever snap it back.
+                s.pty.scroll_to_bottom();
             }
             self.mode = ModeKind::Passthrough;
             self.window.set_focus();

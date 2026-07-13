@@ -23,9 +23,7 @@ issues:
        ublock-filters.js $scriptletHostnames$ -- index-preserving) and let native ADBLOCK_JS json-prune
        handle YT ads. NOTE: a separate, worse variant (netblock stalling ALL YT videos in default mode)
        was already fixed -- netblock is now gated to :adblock native only.
-[*] - if im on a terminal tab with long contents and i press ctrl+s to scroll up and then press escape to go into term mode, the camera isnt brought down to the latest line, instead the camera gets stuck where it was, i have to press ctrl+s and keep pressing "j" to bring the camera down and then press esc to return to normal
-[x] - tabs should have a specific width, becoming smaller with the more tabs there is
-[x] - if there are more than 10 tabs, find a way to switch to these tabs (maybe shift+1, to move to the eleventh tab and so on up to 20, if there are more than 20 tabs then tough luck buddy)
+[x] - if im on a terminal tab with long contents and i press ctrl+s to scroll up and then press escape to go into term mode, the camera isnt brought down to the latest line, instead the camera gets stuck where it was, i have to press ctrl+s and keep pressing "j" to bring the camera down and then press esc to return to normal
 
 feats:
 [*] - :save/saved or :favorite/favorites for saving a page for later

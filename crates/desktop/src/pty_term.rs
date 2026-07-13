@@ -255,6 +255,15 @@ impl PtyTerm {
         self.vt.grid_mut().scroll_display(Scroll::Delta(lines));
     }
 
+    /// Snap the viewport back to the live (bottom) line. Copy/vi-mode motions park
+    /// the display in scrollback and NOTHING else resets it on exit — Alacritty's
+    /// `toggle_vi_mode` only moves the cursor, and quiet shells produce no output
+    /// to snap the view — so resuming the shell calls this (the "camera stuck
+    /// after Esc" bug).
+    pub fn scroll_to_bottom(&mut self) {
+        self.vt.grid_mut().scroll_display(Scroll::Bottom);
+    }
+
     /// Start a selection at the vi cursor (`lines` = linewise `V` vs charwise `v`).
     pub fn start_selection(&mut self, lines: bool) {
         let ty = if lines { SelectionType::Lines } else { SelectionType::Simple };
@@ -641,5 +650,24 @@ mod tests {
         assert!(pty.vt.grid().display_offset() > 0);
         let vp_row = pty.vt.vi_mode_cursor.point.line.0 + pty.vt.grid().display_offset() as i32;
         assert!((0..pty.rows as i32).contains(&vp_row), "cursor row {vp_row} on-screen after gg");
+    }
+
+    #[test]
+    fn resuming_the_shell_snaps_the_camera_back_to_the_prompt() {
+        let mut pty = PtyTerm::new(20, 5, DEFAULT_SCROLLBACK);
+        for i in 0..20 {
+            pty.feed(format!("line{i}\r\n").as_bytes());
+        }
+        // Ctrl+S → copy mode, scroll up into scrollback.
+        pty.toggle_vi();
+        for _ in 0..15 {
+            pty.vi_motion(ViMotion::Up);
+        }
+        assert!(pty.vt.grid().display_offset() > 0, "should be parked in scrollback");
+        // Esc/i resumes: leaving vi mode alone does NOT reset the viewport (the
+        // "camera stuck after Esc" bug) — the resume path must snap it down.
+        pty.toggle_vi();
+        pty.scroll_to_bottom();
+        assert_eq!(pty.vt.grid().display_offset(), 0, "camera should be back at the live line");
     }
 }
