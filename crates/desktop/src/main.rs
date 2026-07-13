@@ -1348,6 +1348,8 @@ fn main() -> Result<()> {
         zoom: 1.0,
         content_zoom: 1.0,
         cursor_on: true,
+        term_resize_want: Vec::new(),
+        term_resize_want_at: None,
         quit: false,
         torn_down: false,
         res_prev: std::collections::HashMap::new(),
@@ -1444,6 +1446,11 @@ fn main() -> Result<()> {
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
                 // A transient status flash (e.g. a finished background `:ai`) times out.
                 app.expire_status_flash();
+                // A held-back terminal resize (zoom/drag burst settling): repaint —
+                // the draw's sync_active_term_size applies it once the target settles.
+                if app.term_resize_want_at.is_some() {
+                    app.window.request_redraw();
+                }
                 // Repeatable pane-resize auto-leaves after a spell of no resize key, so a
                 // later j/k (meant to scroll) doesn't silently resize.
                 if app.mode == ModeKind::PaneResize
@@ -1849,6 +1856,15 @@ fn main() -> Result<()> {
                 let next = match *control_flow {
                     ControlFlow::WaitUntil(t) => t.min(clear_at),
                     _ => clear_at,
+                };
+                *control_flow = ControlFlow::WaitUntil(next);
+            }
+            // A held-back terminal resize: wake when its settle window closes.
+            if let Some(at) = app.term_resize_want_at {
+                let deadline = at + crate::app::TERM_RESIZE_DEBOUNCE;
+                let next = match *control_flow {
+                    ControlFlow::WaitUntil(t) => t.min(deadline),
+                    _ => deadline,
                 };
                 *control_flow = ControlFlow::WaitUntil(next);
             }

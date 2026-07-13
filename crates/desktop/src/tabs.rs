@@ -971,6 +971,9 @@ impl App {
     /// windowless target (the `:ai` singleton) simply overlays the band.
     pub(crate) fn show_tab(&mut self, target: usize) {
         self.active = Some(target);
+        // Switching onto a terminal while in Normal mode = copy/vi mode; make sure
+        // the engine agrees so the cursor isn't frozen (no-op outside Normal).
+        self.ensure_term_vi();
         self.find_reset();
         // The previous tab's hovered-link readout doesn't belong to the new tab.
         self.hover_link = None;

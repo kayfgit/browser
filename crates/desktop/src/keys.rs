@@ -135,6 +135,9 @@ impl App {
         // Terminal copy/vi mode (Shift+Esc): vi motions move a cursor over the live
         // grid, v/V select, y yanks, i/Enter resumes. Unhandled keys (`:`/x/n/p) fall
         // through to the normal browser bindings.
+        if self.active_is_term() {
+            self.ensure_term_vi(); // a tab/pane switch can leave vi mode off (stuck cursor)
+        }
         if self.active_term_vi() && self.key_term_vi(key) {
             return;
         }

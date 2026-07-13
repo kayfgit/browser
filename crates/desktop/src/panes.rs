@@ -284,6 +284,9 @@ impl App {
         }
         self.active = Some(tab);
         self.mode = ModeKind::Normal;
+        // Landing on a terminal in Normal mode = copy/vi mode; seed its cursor now so
+        // the block is live immediately (not frozen until the first key heals it).
+        self.ensure_term_vi();
         self.find_reset();
         self.refresh_visibility();
         self.window.set_focus();
