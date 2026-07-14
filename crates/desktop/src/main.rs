@@ -117,8 +117,18 @@ window.__post = window.__post || function (m) {
 /// so the shell can drop back to normal when you click away.
 const BRIDGE_JS: &str = r#"
 (function () {
-  if (window.__shellBridge) return;
-  window.__shellBridge = true;
+  // Re-run per DOCUMENT, not once per window. wry injects init scripts on "document
+  // created", which can fire first against the INITIAL EMPTY (about:blank) document —
+  // and Chromium then REUSES that window for the first real page. A window-keyed
+  // once-guard left every `document.addEventListener` below attached to that dead
+  // initial document (and the old history wrapper bound to its stale History, whose
+  // pushState then throws SecurityError — the "YouTube SPA navigation dies at the
+  // progress bar" bug). Keying the guard on the document re-wires the listeners for
+  // the real page; window-level work (window listeners, the History.prototype patch)
+  // still runs once per window via `firstRun`.
+  if (window.__shellBridge === document) return;
+  var firstRun = !window.__shellBridge;
+  window.__shellBridge = document;
   if (typeof window.__mode === 'undefined') window.__mode = 'normal';
   function post(m) { window.__post(m); }
   function editable(el) {
@@ -233,10 +243,10 @@ const BRIDGE_JS: &str = r#"
     var a = (to && to.closest) ? to.closest('a[href]') : null;
     if (!a) reportHover('');
   }, true);
-  window.addEventListener('blur', function () { reportHover(''); });
+  if (firstRun) window.addEventListener('blur', function () { reportHover(''); });
   // Tell the shell once the page is up so it can reclaim keyboard focus — works
   // for both URL and with_html content, independent of native load events.
-  window.addEventListener('load', function () { post('page-ready'); });
+  if (firstRun) window.addEventListener('load', function () { post('page-ready'); });
   // Mirror HTML fullscreen (e.g. clicking YouTube's fullscreen button) to the
   // shell: it fullscreens the window so the page fills the screen and the bars
   // hide. wry exposes no native fullscreen-element event on Windows, so we detect
@@ -289,16 +299,26 @@ const BRIDGE_JS: &str = r#"
   // IPC: 'url-changed' records a back/forward step, 'url-replaced' only syncs the
   // shown URL (replaceState adds no history entry — recording it would spam the
   // stack with scroll/query rewrites and drift from the engine's own history).
-  var __pushState = history.pushState.bind(history);
-  var __replaceState = history.replaceState.bind(history);
-  history.pushState = function () {
-    var r = __pushState.apply(null, arguments); post('url-changed'); return r;
-  };
-  history.replaceState = function () {
-    var r = __replaceState.apply(null, arguments); post('url-replaced'); return r;
-  };
-  window.addEventListener('popstate', function () { post('url-changed'); });
-  window.addEventListener('hashchange', function () { post('url-changed'); });
+  //
+  // Patch History.PROTOTYPE with a dynamic `this` — NEVER `history.pushState
+  // .bind(history)`. An instance-bound wrapper captured on the initial empty
+  // document keeps validating URLs against that stale `about:blank` document after
+  // Chromium reuses the window for the real page, so the page's own pushState
+  // throws SecurityError and its SPA router dies mid-navigation (YouTube: red bar
+  // stuck at ~75%, URL never updates, page half-hydrated). The prototype method
+  // with the caller's own `this` always resolves against the live document.
+  if (firstRun) {
+    var __pushState = History.prototype.pushState;
+    var __replaceState = History.prototype.replaceState;
+    History.prototype.pushState = function () {
+      var r = __pushState.apply(this, arguments); post('url-changed'); return r;
+    };
+    History.prototype.replaceState = function () {
+      var r = __replaceState.apply(this, arguments); post('url-replaced'); return r;
+    };
+    window.addEventListener('popstate', function () { post('url-changed'); });
+    window.addEventListener('hashchange', function () { post('url-changed'); });
+  }
 })();
 "#;
 
@@ -867,8 +887,13 @@ const ADBLOCK_JS: &str = r#"
 /// Mirrors the `:ads` pattern so `:mute`/`:css` apply instantly to all tabs.
 const FEATURES_JS: &str = r#"
 (function () {
-  if (window.__featuresInit) return;
-  window.__featuresInit = true;
+  // Document-keyed guard, like BRIDGE_JS: the init script can first run against the
+  // initial empty document whose window Chromium reuses for the real page — a
+  // window-keyed guard left the observer + applied styles on that dead document.
+  // Window-level work (the safety interval) still runs once per window.
+  if (window.__featuresInit === document) return;
+  var firstRun = !window.__featuresInit;
+  window.__featuresInit = document;
   var d = window.__featureDefaults || {};
   var muted = !!d.mute, noCss = !!d.css, noVideo = !!d.video, noSb = !!d.scrollbar;
 
@@ -960,7 +985,7 @@ const FEATURES_JS: &str = r#"
     applyVideo(document);
     applyScrollbar();
   });
-  setInterval(function () { if (muted) applyMute(document, true); }, 1000);
+  if (firstRun) setInterval(function () { if (muted) applyMute(document, true); }, 1000);
 
   window.__setToggle = function (name, val) {
     val = !!val;

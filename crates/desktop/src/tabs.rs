@@ -29,6 +29,56 @@ pub(crate) enum Source {
 /// layout that `install.ps1` lays down), falling back to the in-repo
 /// `crates/desktop/extensions` for `cargo run`. `None` if neither exists — then no
 /// extensions load and the browser still runs.
+/// TEMPORARY diagnostic probe for the YouTube half-load bug — injected only when
+/// `BROWSER_YT_DEBUG=1` (see the init-script assembly below). Remove when solved.
+const YT_PROBE_JS: &str = r#"
+(function () {
+  if (location.hostname.indexOf('youtube.com') === -1) return;
+  function log(m) { try { window.__post('dbg:' + Date.now() + ' ' + m); } catch (e) {} }
+  log('INIT ' + location.href);
+  window.addEventListener('error', function (e) {
+    log('JSERR ' + e.message + ' @ ' + (e.filename || '?') + ':' + (e.lineno || 0));
+  }, true);
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = ''; try { r = e.reason && (e.reason.stack || e.reason.message || String(e.reason)); } catch (_) {}
+    log('REJECT ' + String(r).slice(0, 300));
+  });
+  ['yt-navigate-start', 'yt-navigate-finish', 'yt-navigate-error', 'yt-page-data-updated']
+    .forEach(function (ev) {
+      document.addEventListener(ev, function () {
+        log('EVT ' + ev + ' url=' + location.href + ' rs=' + document.readyState);
+      });
+    });
+  var _f = window.fetch;
+  window.fetch = function (input) {
+    var url = (typeof input === 'string') ? input : (input && input.url) || '';
+    var hot = url.indexOf('youtubei') !== -1 || url.indexOf('reel') !== -1;
+    if (hot) log('FETCH> ' + url.slice(0, 150));
+    var p = _f.apply(this, arguments);
+    if (hot) p.then(function (r) { log('FETCH< ' + r.status + ' ' + url.slice(0, 110)); },
+                    function (e) { log('FETCHX ' + e + ' ' + url.slice(0, 110)); });
+    return p;
+  };
+  var _ps = history.pushState.bind(history);
+  history.pushState = function () { log('PUSHSTATE ' + (arguments[2] || '')); return _ps.apply(null, arguments); };
+  window.addEventListener('load', function () {
+    log('LOAD rs=' + document.readyState + ' sw=' + !!(navigator.serviceWorker && navigator.serviceWorker.controller));
+  });
+  setTimeout(function () {
+    var a = document.querySelector('a[href^="/shorts/"]');
+    if (!a) { log('NO-SHORTS-LINK url=' + location.href + ' rs=' + document.readyState); return; }
+    log('CLICK ' + a.getAttribute('href'));
+    a.click();
+    [5, 15].forEach(function (s) {
+      setTimeout(function () {
+        log('T+' + s + 's url=' + location.href + ' rs=' + document.readyState +
+            ' reels=' + document.querySelectorAll('ytd-reel-video-renderer,ytd-shorts').length);
+      }, s * 1000);
+    });
+  }, 8000);
+})();
+"#;
+
 fn ublock_extensions_dir() -> Option<std::path::PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         let beside = exe.with_file_name("extensions");
@@ -608,11 +658,24 @@ impl App {
         // Load uBlock Origin (any unpacked extension in the dir) into WebView2's own
         // Chromium engine. The extension does network + cosmetic + scriptlet ad-blocking
         // natively — far more capable than a hand-rolled blocker, and it doesn't depend on
-        // the WebResourceRequested path. Extensions are per-profile and off by default;
-        // every content webview shares the default profile and enables them the same way
-        // (wry requires that consistency). Absent dir → simply no extensions.
+        // the WebResourceRequested path. Two distinct knobs here:
+        //   * `with_browser_extensions_enabled` is an ENVIRONMENT option, and WebView2
+        //     requires every webview sharing the user-data folder to be created with the
+        //     same options (like BROWSER_ARGS) — so it's set the same way in every mode.
+        //   * `with_extensions_path` makes wry call `AddBrowserExtension` on the shared
+        //     profile, and (re-)adding RESETS the extension to ENABLED. Doing that on
+        //     every build is what kept uBlock alive in `native`/`off` mode: the
+        //     post-build `set_all_enabled(false)` below is async, so the tab's first
+        //     page had already loaded with uBlock's content scripts injected — and those
+        //     hooks survive the late disable for the page's whole lifetime (the
+        //     "YouTube shorts hang with adblock off" bug). Only (re-)add in `Ubo` mode,
+        //     where enabled is the desired state; other modes leave the profile's
+        //     persisted copy alone (swept disabled below). Absent dir → no extensions.
         if let Some(ext_dir) = ublock_extensions_dir() {
-            builder = builder.with_browser_extensions_enabled(true).with_extensions_path(ext_dir);
+            builder = builder.with_browser_extensions_enabled(true);
+            if self.adblock_mode == AdblockMode::Ubo {
+                builder = builder.with_extensions_path(ext_dir);
+            }
         }
         builder = builder
             .with_bounds(self.content_rect())
@@ -657,6 +720,13 @@ impl App {
                 if !extra_init.is_empty() {
                     init.push('\n');
                     init.push_str(extra_init);
+                }
+                // TEMPORARY diagnostic probe (BROWSER_YT_DEBUG=1): logs YouTube SPA
+                // navigation events, JS errors and youtubei fetch completions to
+                // %TEMP%\ytprobe.log, and auto-clicks the first shorts thumbnail.
+                if std::env::var("BROWSER_YT_DEBUG").is_ok() {
+                    init.push('\n');
+                    init.push_str(YT_PROBE_JS);
                 }
                 init
             })
@@ -729,6 +799,17 @@ impl App {
                     // The pointer moved onto/off a link: `link-hover:<href>` (empty = off).
                     } else if let Some(href) = body.strip_prefix("link-hover:") {
                         let _ = ipc_proxy.send_event(UserEvent::LinkHover(href.to_string()));
+                    // TEMPORARY: YT_PROBE_JS diagnostics (BROWSER_YT_DEBUG=1) — append to
+                    // %TEMP%\ytprobe.log. Remove with the probe when the bug is solved.
+                    } else if let Some(m) = body.strip_prefix("dbg:") {
+                        use std::io::Write;
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(std::env::temp_dir().join("ytprobe.log"))
+                        {
+                            let _ = writeln!(f, "{m}");
+                        }
                     }
                 }
             })
@@ -843,8 +924,12 @@ impl App {
         if self.adblock_mode == AdblockMode::Native {
             crate::netblock::install(&webview, net_blocker, net_adblock, cur_origin, cur_top);
         }
-        // wry loads bundled extensions ENABLED on every new webview; if we're not in uBlock
-        // mode, disable them here so the current `:adblock` choice holds for this tab too.
+        // Outside uBlock mode nothing re-adds the extension anymore (see the builder above),
+        // but the profile's PERSISTED copy can still be enabled — left by an old session, a
+        // crash before a disable landed, or builds from before the add was gated. Sweep it
+        // off so the persisted state converges to disabled. Async, so a stale-enabled
+        // extension can still poison this webview's very first load — but only until this
+        // lands once; with the re-add gone, nothing flips it back afterwards.
         #[cfg(windows)]
         if self.adblock_mode != AdblockMode::Ubo {
             crate::extensions::set_all_enabled(&webview, false);
@@ -1357,6 +1442,18 @@ impl App {
         let native_on = mode == AdblockMode::Native;
         let ext_on = mode == AdblockMode::Ubo;
         self.set_adblock(native_on); // keeps the native guards' shared flag in lock-step
+        // Entering Ubo from a session whose webviews were all built in another mode:
+        // none of those builds added the bundled extension, and a fresh profile may
+        // never have had it installed — so add it (profile-wide, idempotent) before
+        // the enable sweep below. Any one webview reaches the shared profile.
+        #[cfg(windows)]
+        if ext_on {
+            if let (Some(dir), Some(wv)) =
+                (ublock_extensions_dir(), self.tabs.iter().find_map(|t| t.webview()))
+            {
+                crate::extensions::install_dir(wv, &dir);
+            }
+        }
         for tab in &self.tabs {
             if let Some(wv) = tab.webview() {
                 let _ =
@@ -1366,9 +1463,9 @@ impl App {
             }
         }
         self.set_status(match mode {
-            AdblockMode::Ubo => "adblock: uBlock Origin (extension) — native blocker off",
-            AdblockMode::Native => "adblock: native blocker — uBlock extension off",
-            AdblockMode::Off => "adblock OFF — no blocking",
+            AdblockMode::Ubo => "ublock origin lite = on",
+            AdblockMode::Native => "native adblock = on",
+            AdblockMode::Off => "adblocking = off",
         });
         self.window.request_redraw();
     }

@@ -18,7 +18,8 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2_13,
 };
 use webview2_com::{
-    take_pwstr, BrowserExtensionEnableCompletedHandler, ProfileGetBrowserExtensionsCompletedHandler,
+    take_pwstr, BrowserExtensionEnableCompletedHandler, ProfileAddBrowserExtensionCompletedHandler,
+    ProfileGetBrowserExtensionsCompletedHandler,
 };
 use windows_core::{Interface, BOOL, PWSTR};
 use wry::{WebView, WebViewExtWindows};
@@ -88,6 +89,23 @@ pub(crate) fn set_enabled(webview: &WebView, id: String, enabled: bool) {
 /// one engine active at a time (disable uBlock while native blocking runs, and back).
 pub(crate) fn set_all_enabled(webview: &WebView, enabled: bool) {
     apply(webview, |_, _| true, enabled);
+}
+
+/// Add every unpacked extension under `dir` to the shared profile (async, best-effort) —
+/// a mirror of wry's own builder-time loading, for the one case that path no longer
+/// covers: switching to `Ubo` mode in a session whose webviews were all built in
+/// `native`/`off` mode (which deliberately never (re-)add the bundled dir), on a profile
+/// that never had the extension installed. Re-adding an already-installed extension
+/// doesn't duplicate it — WebView2 keeps one copy and resets it to ENABLED, which is
+/// exactly the state the Ubo switch wants anyway.
+pub(crate) fn install_dir(webview: &WebView, dir: &std::path::Path) {
+    let Some(profile) = profile7(webview) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = windows_core::HSTRING::from(entry.path().as_os_str());
+        let handler = ProfileAddBrowserExtensionCompletedHandler::create(Box::new(|_, _| Ok(())));
+        let _ = unsafe { profile.AddBrowserExtension(&path, &handler) };
+    }
 }
 
 /// Shared body of the enable/disable calls: fetch the list, then `Enable(enabled)` every
