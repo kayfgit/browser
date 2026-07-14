@@ -462,7 +462,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("ai", ":ai [question]", "AI tab (Groq): i to ask; Normal mode is a vim buffer (v/y select, / find); H/L step through past chats (persisted)"),
     ("aihist", ":aihist · :aihistory", "saved-chat picker in a vim tab: each row shows created time · size · name (first prompt); Enter opens that chat, d deletes the row/selection"),
     ("model", ":model [id]", "show/set the :ai model; in the command bar, Tab cycles the model list; persisted"),
-    ("te", ":te", "native terminal (Ctrl+V pastes · Ctrl+S → vim copy-mode: hjkl/w/b/f-find navigate, v/y yank, i resumes)"),
+    ("te", ":te", "native terminal (Ctrl+V pastes · Ctrl+S → vim copy-mode: hjkl/w/b/f-find navigate, v/y yank, i resumes) · :w/:wq remembers the cwd and restores it — cmd/nushell automatic; pwsh and WSL need a one-line prompt hook (see detailedREADME 'Terminal working-directory restore', or ask :ai)"),
     ("terun", ":te <command>", "run a local command, result in the command bar"),
     ("shell", ":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
     ("theme", ":theme [key value]", "appearance: no args opens config.toml in an editor (closing it applies); a key + value sets one field (bar_bg, bar_fg, accent, bg, bar_height_pct, term_font, term_font_px, term_scheme, term_bg, term_fg — 'default' resets); :theme install <scheme> downloads a terminal scheme; :theme reload / show"),

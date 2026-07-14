@@ -7,7 +7,9 @@
 //! needs to shut the ConPTY down gracefully.
 //!
 //! Protocol:
-//!   * argv: `<cols> <rows> <program> [args...]`
+//!   * argv: `<cols> <rows> [--cwd <dir>] <program> [args...]`
+//!     (`--cwd` starts the shell in `<dir>` — session restore lands terminals
+//!     back in their saved working directory)
 //!   * browser → our stdin: frames `[type:u8][len:u32 LE][payload]`;
 //!     type 0 = input bytes to write to the PTY; type 1 = resize with payload
 //!     `[cols:u16 LE][rows:u16 LE]`.
@@ -35,8 +37,16 @@ fn main() {
     }
     let cols: u16 = args[1].parse().unwrap_or(80);
     let rows: u16 = args[2].parse().unwrap_or(24);
-    let program = &args[3];
-    let prog_args = &args[4..];
+    // Optional `--cwd <dir>` before the program: start the shell there (session
+    // restore). A missing/invalid dir falls back to inheriting our own cwd.
+    let mut at = 3;
+    let mut cwd: Option<&String> = None;
+    if args[at] == "--cwd" && args.len() > at + 2 {
+        cwd = Some(&args[at + 1]);
+        at += 2;
+    }
+    let program = &args[at];
+    let prog_args = &args[at + 1..];
 
     let pair = native_pty_system()
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
@@ -45,6 +55,11 @@ fn main() {
     let mut cmd = CommandBuilder::new(program);
     for a in prog_args {
         cmd.arg(a);
+    }
+    if let Some(dir) = cwd {
+        if std::path::Path::new(dir).is_dir() {
+            cmd.cwd(dir);
+        }
     }
     let mut child = pair.slave.spawn_command(cmd).expect("spawn shell");
     drop(pair.slave); // close our copy of the slave so EOF propagates correctly

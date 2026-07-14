@@ -78,6 +78,11 @@ pub struct SavedTab {
     pub kind: String,
     #[serde(default)]
     pub url: String,
+    /// `term` only: the shell's last known working directory (via shell-integration
+    /// OSC 9;9 / OSC 7 — a WSL path re-enters WSL on restore). Empty = unknown,
+    /// the shell reopens in its default directory.
+    #[serde(default)]
+    pub cwd: String,
 }
 
 /// Serde default for [`Session::content_zoom`]: 100% (no page scaling) for
@@ -142,8 +147,12 @@ mod tests {
             windows: vec!["R0.5000(0|1)".into()],
             window: Some(WindowGeom { x: 40, y: 60, w: 1280, h: 800 }),
             tabs: vec![
-                SavedTab { kind: "open".into(), url: "https://a.test/".into() },
-                SavedTab { kind: "term".into(), url: String::new() },
+                SavedTab { kind: "open".into(), url: "https://a.test/".into(), cwd: String::new() },
+                SavedTab {
+                    kind: "term".into(),
+                    url: String::new(),
+                    cwd: "C:\\projects\\browser".into(),
+                },
             ],
         };
         let text = toml::to_string(&s).expect("serialize");
@@ -155,6 +164,14 @@ mod tests {
         assert_eq!((g.x, g.y, g.w, g.h), (40, 60, 1280, 800));
         assert_eq!(back.tabs[0].url, "https://a.test/");
         assert_eq!(back.tabs[1].kind, "term");
+        assert_eq!(back.tabs[1].cwd, "C:\\projects\\browser");
         assert_eq!(back.windows, vec!["R0.5000(0|1)".to_string()]);
+    }
+
+    #[test]
+    fn saved_tab_cwd_defaults_for_old_sessions() {
+        // Sessions written before terminal-cwd tracking have no `cwd` key.
+        let tab: SavedTab = toml::from_str("kind = \"term\"").expect("deserialize");
+        assert_eq!(tab.cwd, "");
     }
 }

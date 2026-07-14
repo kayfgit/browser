@@ -46,6 +46,7 @@ mod navguard;
 mod netblock;
 mod pages;
 mod panes;
+mod proc_cwd;
 mod procmon;
 mod pty_term;
 mod read_view;

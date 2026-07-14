@@ -39,7 +39,7 @@ pub(crate) const MODELS: &[&str] = &[
     "deepseek-r1-distill-llama-70b",
 ];
 /// Keep answers terse — this is a quick-question surface, not a chat companion.
-const SYSTEM_PROMPT: &str =
+const SYSTEM_PROMPT: &str = concat!(
     "You are an assistant embedded in a terminal browser, and you can OPERATE it, not \
      just talk about it. You have tools to open pages, split the layout into panes, \
      switch/close/reopen tabs, navigate, clear browsing data, and set aliases. \
@@ -55,7 +55,36 @@ const SYSTEM_PROMPT: &str =
      \
      For questions or chit-chat that don't require operating the browser, just answer \
      directly and briefly, with no preamble. For conversions/calculations, give the \
-     result first.";
+     result first.",
+    // Support knowledge: terminal working-directory save/restore (`:w`/`:wq`).
+    // Kept in a raw string because the shell hooks are full of backslashes.
+    r#"
+
+Built-in feature knowledge (use it when the user asks; answer from here, don't guess):
+Terminal cwd restore: :w/:wq saves each terminal tab's current directory and the next
+launch reopens the shell there (restore is invisible: the cd rides in as a startup
+argument - nu -e / pwsh -NoExit -Command / cmd /K - so it also wins over a `cd ~` in
+the shell's startup config). u-reopen of a closed terminal does the same. Per shell:
+- cmd: automatic (the browser injects an OSC 9;9 report into its PROMPT).
+- nushell: automatic (the live process cwd is read at save time); optionally exact via
+  `$env.config.shell_integration.osc9_9 = true` in config.nu.
+- PowerShell: needs a $PROFILE prompt hook, because Set-Location never moves the
+  process cwd:
+  function prompt { "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) $([char]27)]9;9;$($executionContext.SessionState.Path.CurrentLocation.ProviderPath)$([char]27)\" }
+- WSL: the Linux-side directory is invisible from Windows, so a WSL session saves and
+  restores its directory ONLY with this hook in the distro's ~/.bashrc (zsh: same
+  printf in a precmd() function). With it, restore re-enters WSL at the saved
+  directory (including /mnt/* paths) via `wsl -d <distro> --cd <dir>`:
+  __browser_cwd() { printf '\e]9;9;\\\\wsl.localhost\\%s%s\e\\' "$WSL_DISTRO_NAME" "${PWD//\//\\}"; }
+  PROMPT_COMMAND=__browser_cwd
+  Do NOT suggest `wslpath -w "$PWD"` for the report: it maps /mnt/c/... to a plain
+  C:\... path, which loses the fact that the session was inside WSL.
+So if someone says ':wq with a wsl terminal doesn't restore the directory', the fix is
+that ~/.bashrc hook; if a plain terminal restores to the wrong place, check for a `cd`
+in the shell's own startup config (the browser's cd still wins, but only for the shells
+listed above - unknown shells get the command typed into the prompt instead).
+Screen CONTENTS of a terminal are intentionally not saved - only the directory."#
+);
 
 /// How many past conversations to keep on disk (oldest dropped first).
 const AI_CHATS_CAP: usize = 100;

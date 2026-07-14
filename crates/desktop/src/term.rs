@@ -41,6 +41,20 @@ impl TermSession {
         let _ = self.stdin.flush();
     }
 
+    /// The shell's working directory, best-effort, for `:w`/close recording. The
+    /// shell-integration report (OSC 9;9 / OSC 7) wins when one has arrived — it's
+    /// exact and the ONLY view inside WSL. Otherwise fall back to reading the live
+    /// process cwd of the innermost process under the pty-host, which covers
+    /// nushell and cmd (they sync their physical cwd on `cd`) with no setup at
+    /// all. (pwsh syncs neither, so without its prompt hook it yields the launch
+    /// dir — same place a fresh shell would open anyway.)
+    pub(crate) fn cwd(&self) -> Option<String> {
+        if let Some(dir) = self.pty.cwd() {
+            return Some(dir.to_string());
+        }
+        crate::proc_cwd::shell_cwd(self.child.id())
+    }
+
     /// Tear down: closing the job force-kills the pty-host + its conhost + shell;
     /// the reader then EOFs on the (normal) pipe. None of this can hang our process.
     pub(crate) fn shutdown(mut self) {
@@ -153,12 +167,79 @@ impl App {
     /// our own renderer. Enters Passthrough (shell keeps keyboard focus and forwards
     /// every key to the PTY; Ctrl+S returns to Normal).
     pub(crate) fn open_terminal(&mut self) {
-        let shell = if self.term_command.is_empty() {
+        self.open_terminal_at(None);
+    }
+
+    /// [`open_terminal`](Self::open_terminal) restored to a saved working directory
+    /// (from session restore / `U` reopen; `None`/unknown opens as usual). A Windows
+    /// path starts the shell there directly; a WSL path (`\\wsl$\…`,
+    /// `\\wsl.localhost\…`, or a bare Linux `/path` from OSC 7) re-enters WSL —
+    /// the nesting you had (shell → wsl) is recreated rather than replacing the
+    /// shell with wsl.exe, so `exit` still drops back to the shell instead of
+    /// closing the tab.
+    ///
+    /// The restore command is INVISIBLE for the known shells (nu/pwsh/cmd): it
+    /// rides in as a startup argument (`nu -e`, `pwsh -NoExit -Command`,
+    /// `cmd /K`), which runs AFTER the shell's own startup config — so it both
+    /// leaves no typed line on screen (tmux-style) and survives a config that
+    /// chdirs on startup (a `cd ~` in config.nu silently overrides the
+    /// process-level `--cwd` start directory). Unknown shells fall back to
+    /// typing the command into the PTY, which ConPTY buffers until the prompt.
+    pub(crate) fn open_terminal_at(&mut self, cwd: Option<&str>) {
+        let mut shell = if self.term_command.is_empty() {
             vec!["cmd".to_string()]
         } else {
             self.term_command.clone()
         };
-        self.open_terminal_cmd(shell);
+        let (spawn_dir, wsl) = match cwd {
+            Some(dir) => match wsl_target(dir) {
+                Some(t) => (None, Some(t)),
+                None => (Some(dir.to_string()), None),
+            },
+            None => (None, None),
+        };
+        // The restore command, in a syntax every target shell accepts: SINGLE
+        // quotes (nushell treats backslashes inside double quotes as escapes, so
+        // `cd "C:\Windows"` is a parse error there; single quotes are literal in
+        // nu, pwsh and bash alike). A path containing one is left to `--cwd` only.
+        let script = match (&wsl, &spawn_dir) {
+            (Some((Some(d), path)), _) if !path.contains('\'') => {
+                Some(format!("wsl -d '{d}' --cd '{path}'"))
+            }
+            (Some((None, path)), _) if !path.contains('\'') => Some(format!("wsl --cd '{path}'")),
+            (None, Some(dir)) if !dir.contains('\'') => Some(format!("cd '{dir}'")),
+            _ => None,
+        };
+        let kind = shell_kind(&shell[0]);
+        let mut typed: Option<String> = None;
+        if let Some(script) = script {
+            match kind {
+                // nu: run the command, then stay interactive.
+                ShellKind::Nu => shell.extend(["-e".into(), script]),
+                ShellKind::Pwsh => {
+                    shell.extend(["-NoExit".into(), "-Command".into(), script]);
+                }
+                // cmd: only the WSL re-entry needs a command (`--cwd` already
+                // handles plain dirs, and cmd's `cd` can't cross drives anyway);
+                // /K runs it and keeps the shell open. cmd wants double quotes.
+                ShellKind::Cmd => {
+                    if let Some((distro, path)) = &wsl {
+                        let line = match distro {
+                            Some(d) => format!("wsl -d \"{d}\" --cd \"{path}\""),
+                            None => format!("wsl --cd \"{path}\""),
+                        };
+                        shell.extend(["/K".into(), line]);
+                    }
+                }
+                ShellKind::Other => typed = Some(format!("{script}\r")),
+            }
+        }
+        let Some(id) = self.open_terminal_cmd_at(shell, spawn_dir.as_deref()) else { return };
+        if let Some(line) = typed {
+            if let Some(s) = self.term_session_mut(id) {
+                s.send(0, line.as_bytes());
+            }
+        }
     }
 
     /// [`open_terminal`](Self::open_terminal) with an explicit argv to run in place
@@ -166,6 +247,17 @@ impl App {
     /// terminal's id (`None` if the pty-host couldn't start) so a caller can react
     /// to that specific terminal closing.
     pub(crate) fn open_terminal_cmd(&mut self, shell: Vec<String>) -> Option<u64> {
+        self.open_terminal_cmd_at(shell, None)
+    }
+
+    /// [`open_terminal_cmd`](Self::open_terminal_cmd) with an optional starting
+    /// directory, forwarded to the pty-host as `--cwd` (invalid dirs are ignored
+    /// there, falling back to the default).
+    pub(crate) fn open_terminal_cmd_at(
+        &mut self,
+        shell: Vec<String>,
+        cwd: Option<&str>,
+    ) -> Option<u64> {
         let Some(host) = pty_host_path() else {
             self.set_error("could not locate browser-pty-host");
             return None;
@@ -173,9 +265,20 @@ impl App {
 
         let (cols, rows) = self.term_grid_size();
         let mut command = Command::new(&host);
+        command.arg(cols.to_string()).arg(rows.to_string());
+        if let Some(dir) = cwd {
+            command.arg("--cwd").arg(dir);
+        }
+        // cmd reads its prompt from the PROMPT env var, so cwd reporting can be
+        // injected with no user setup: prefix the prompt with `OSC 9;9;<cwd> ST`
+        // ($E = ESC, $P = cwd — the Windows Terminal shell-integration pattern).
+        // Other shells (pwsh, bash/WSL) need their own one-line prompt hook; see
+        // `:help te`.
+        if shell_kind(&shell[0]) == ShellKind::Cmd {
+            let prompt = std::env::var("PROMPT").unwrap_or_else(|_| "$P$G".to_string());
+            command.env("PROMPT", format!("$E]9;9;$P$E\\{prompt}"));
+        }
         command
-            .arg(cols.to_string())
-            .arg(rows.to_string())
             .args(&shell)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -678,6 +781,47 @@ pub(crate) fn program_exists(program: &str) -> bool {
     })
 }
 
+/// The shells whose restore command can ride in invisibly as a startup argument
+/// (see [`App::open_terminal_at`]); `Other` falls back to typing into the PTY.
+#[derive(PartialEq)]
+enum ShellKind {
+    Nu,
+    Pwsh,
+    Cmd,
+    Other,
+}
+
+/// Classify a shell argv[0] (possibly a full path, possibly `.exe`-suffixed).
+fn shell_kind(argv0: &str) -> ShellKind {
+    let base = argv0.rsplit(['\\', '/']).next().unwrap_or(argv0);
+    match base.to_ascii_lowercase().trim_end_matches(".exe") {
+        "nu" | "nushell" => ShellKind::Nu,
+        "pwsh" | "powershell" => ShellKind::Pwsh,
+        "cmd" => ShellKind::Cmd,
+        _ => ShellKind::Other,
+    }
+}
+
+/// Interpret a saved terminal cwd as a WSL location, returning
+/// `(distro, linux_path)` when it is one — `None` means it's an ordinary Windows
+/// directory. Two forms mean WSL: the UNC view of a distro's filesystem
+/// (`\\wsl$\Ubuntu\home\x` / `\\wsl.localhost\Ubuntu\home\x`, as reported by an
+/// OSC 9;9 built with `wslpath -w`), and a bare absolute Linux path (`/home/x`,
+/// as reported by a plain OSC 7 — no distro recoverable, so the default is used).
+fn wsl_target(dir: &str) -> Option<(Option<String>, String)> {
+    if dir.starts_with('/') {
+        return Some((None, dir.to_string()));
+    }
+    let rest = ["\\\\wsl$\\", "\\\\wsl.localhost\\"]
+        .iter()
+        .find_map(|p| dir.strip_prefix(p))?;
+    let (distro, path) = match rest.split_once('\\') {
+        Some((d, p)) => (d, format!("/{}", p.replace('\\', "/"))),
+        None => (rest, "/".to_string()),
+    };
+    (!distro.is_empty()).then(|| (Some(distro.to_string()), path))
+}
+
 /// Locate the companion `browser-pty-host` binary next to our own executable.
 fn pty_host_path() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
@@ -792,6 +936,26 @@ fn ctrl_byte(c: char) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wsl_target_classifies_saved_cwds() {
+        // UNC views of a distro filesystem → (distro, linux path).
+        assert_eq!(
+            wsl_target("\\\\wsl$\\Ubuntu\\home\\kayf\\proj"),
+            Some((Some("Ubuntu".into()), "/home/kayf/proj".into()))
+        );
+        assert_eq!(
+            wsl_target("\\\\wsl.localhost\\Ubuntu-22.04\\home\\x"),
+            Some((Some("Ubuntu-22.04".into()), "/home/x".into()))
+        );
+        // Distro root with no path → "/".
+        assert_eq!(wsl_target("\\\\wsl$\\Debian"), Some((Some("Debian".into()), "/".into())));
+        // A bare Linux path (OSC 7 from inside WSL) → default distro.
+        assert_eq!(wsl_target("/home/kayf"), Some((None, "/home/kayf".into())));
+        // Ordinary Windows dirs are not WSL.
+        assert_eq!(wsl_target("C:\\projects\\browser"), None);
+        assert_eq!(wsl_target("\\\\server\\share\\dir"), None);
+    }
 
     /// Modified arrows/nav keys must use the xterm CSI forms (`ESC[1;5C` =
     /// Ctrl+Right) — plain sequences made Ctrl+arrows move one char in the shell

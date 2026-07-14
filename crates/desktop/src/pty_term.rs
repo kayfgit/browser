@@ -144,6 +144,118 @@ pub struct PtyTerm {
     pub rows: usize,
     out: Arc<Mutex<Vec<u8>>>,
     title: Arc<Mutex<Option<String>>>,
+    /// Incremental scanner for the shell-integration cwd escapes (see [`CwdScan`]).
+    cwd_scan: CwdScan,
+    /// The shell's current working directory, as last reported over OSC 9;9 / OSC 7.
+    /// A Windows path (`C:\…`, `\\wsl.localhost\…`) or a Linux one (`/home/…` from
+    /// inside WSL). `None` until a shell-integration prompt first reports it.
+    cwd: Option<String>,
+}
+
+/// Incremental scanner for the two cwd escape sequences shells emit each prompt
+/// when shell integration is on: `OSC 9;9;<path> ST/BEL` (the ConEmu / Windows
+/// Terminal convention — cmd gets it injected automatically via `PROMPT`, pwsh
+/// via a one-line `$PROFILE` hook) and `OSC 7;file://<host><path> ST/BEL` (the
+/// Unix convention — bash/zsh inside WSL). Alacritty's VT engine drops OSCs it
+/// doesn't know, so these are scanned from the RAW byte stream — statefully,
+/// because a sequence can split across PTY read chunks.
+#[derive(Default)]
+struct CwdScan {
+    /// 0 = ground, 1 = saw ESC, 2 = inside OSC, 3 = saw ESC inside OSC (ST?).
+    state: u8,
+    buf: Vec<u8>,
+}
+
+/// Longest OSC payload kept; anything bigger (e.g. a base64 clipboard write) is
+/// discarded rather than buffered.
+const OSC_CAP: usize = 4096;
+
+impl CwdScan {
+    /// Advance by one raw byte; returns a completed OSC payload when one ends.
+    fn push(&mut self, b: u8) -> Option<Vec<u8>> {
+        match self.state {
+            0 => {
+                if b == 0x1b {
+                    self.state = 1;
+                }
+            }
+            1 => {
+                if b == b']' {
+                    self.state = 2;
+                    self.buf.clear();
+                } else {
+                    self.state = if b == 0x1b { 1 } else { 0 };
+                }
+            }
+            2 => match b {
+                0x07 => {
+                    self.state = 0;
+                    return Some(std::mem::take(&mut self.buf));
+                }
+                0x1b => self.state = 3,
+                _ => {
+                    if self.buf.len() < OSC_CAP {
+                        self.buf.push(b);
+                    }
+                }
+            },
+            _ => {
+                self.state = if b == 0x1b { 1 } else { 0 };
+                if b == b'\\' {
+                    return Some(std::mem::take(&mut self.buf));
+                }
+                self.buf.clear();
+            }
+        }
+        None
+    }
+}
+
+/// Decode `%XX` percent-escapes (an OSC 7 `file://` URI is percent-encoded).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let decoded = (bytes[i] == b'%' && i + 2 < bytes.len())
+            .then(|| u8::from_str_radix(&s[i + 1..i + 3], 16).ok())
+            .flatten();
+        match decoded {
+            Some(b) => {
+                out.push(b);
+                i += 3;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The cwd carried by a completed OSC payload, if it is one of the two cwd
+/// sequences. `9;9;<path>` → the path verbatim (surrounding quotes stripped —
+/// some prompts emit `"%cd%"` quoted); `7;file://<host><path>` → `C:\…` for a
+/// Windows `file:///C:/…` URI, else the percent-decoded Linux path.
+fn osc_cwd(payload: &[u8]) -> Option<String> {
+    let s = String::from_utf8_lossy(payload);
+    if let Some(path) = s.strip_prefix("9;9;") {
+        let path = path.trim().trim_matches('"');
+        return (!path.is_empty()).then(|| path.to_string());
+    }
+    let uri = s.strip_prefix("7;")?;
+    let rest = uri.strip_prefix("file://")?;
+    let path = percent_decode(&rest[rest.find('/').unwrap_or(rest.len())..]);
+    if path.is_empty() || path == "/" {
+        return None;
+    }
+    // `/C:/Users/x` → `C:\Users\x`; anything else is a Linux path, kept as-is.
+    let b = path.as_bytes();
+    if b.len() >= 3 && b[2] == b':' && b[1].is_ascii_alphabetic() {
+        return Some(path[1..].replace('/', "\\"));
+    }
+    Some(path)
 }
 
 /// Default scrollback kept per terminal, in lines. Each kept line costs grid
@@ -159,7 +271,22 @@ impl PtyTerm {
         // Keep scrollback so copy-mode (Shift+Esc) can page back through history.
         let config = Config { scrolling_history: scrollback, ..Config::default() };
         let vt = Term::new(config, &TermSize::new(cols, rows), listener);
-        PtyTerm { vt, parser: Processor::new(), cols, rows, out, title }
+        PtyTerm {
+            vt,
+            parser: Processor::new(),
+            cols,
+            rows,
+            out,
+            title,
+            cwd_scan: CwdScan::default(),
+            cwd: None,
+        }
+    }
+
+    /// The shell's current working directory, as last reported by shell
+    /// integration (OSC 9;9 / OSC 7). `None` when no prompt has reported one.
+    pub fn cwd(&self) -> Option<&str> {
+        self.cwd.as_deref()
     }
 
     /// The terminal's current OSC title, if the running program set one.
@@ -281,8 +408,16 @@ impl PtyTerm {
         text
     }
 
-    /// Feed raw PTY output bytes through the VT parser into the grid.
+    /// Feed raw PTY output bytes through the VT parser into the grid — and through
+    /// the cwd scanner, since the VT engine drops the OSC 9;9 / OSC 7 sequences.
     pub fn feed(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            if let Some(payload) = self.cwd_scan.push(b) {
+                if let Some(dir) = osc_cwd(&payload) {
+                    self.cwd = Some(dir);
+                }
+            }
+        }
         self.parser.advance(&mut self.vt, bytes);
     }
 
@@ -650,6 +785,41 @@ mod tests {
         assert!(pty.vt.grid().display_offset() > 0);
         let vp_row = pty.vt.vi_mode_cursor.point.line.0 + pty.vt.grid().display_offset() as i32;
         assert!((0..pty.rows as i32).contains(&vp_row), "cursor row {vp_row} on-screen after gg");
+    }
+
+    #[test]
+    fn osc_9_9_reports_cwd_even_split_across_feed_chunks() {
+        let mut pty = PtyTerm::new(80, 24, DEFAULT_SCROLLBACK);
+        assert_eq!(pty.cwd(), None);
+        // BEL-terminated, split mid-sequence across two PTY reads (the real
+        // failure mode a per-chunk regex would miss).
+        pty.feed(b"prompt> \x1b]9;9;C:\\proj");
+        pty.feed(b"ects\\browser\x07more output");
+        assert_eq!(pty.cwd(), Some("C:\\projects\\browser"));
+        // ST-terminated (ESC \) and quoted (some prompts emit "%cd%" quoted);
+        // a later report replaces the earlier one.
+        pty.feed(b"\x1b]9;9;\"D:\\stuff\"\x1b\\");
+        assert_eq!(pty.cwd(), Some("D:\\stuff"));
+        // A WSL path via wslpath -w survives verbatim.
+        pty.feed(b"\x1b]9;9;\\\\wsl.localhost\\Ubuntu\\home\\kayf\x07");
+        assert_eq!(pty.cwd(), Some("\\\\wsl.localhost\\Ubuntu\\home\\kayf"));
+        // Unrelated OSCs (title etc.) don't disturb the last-known cwd.
+        pty.feed(b"\x1b]0;some title\x07");
+        assert_eq!(pty.cwd(), Some("\\\\wsl.localhost\\Ubuntu\\home\\kayf"));
+    }
+
+    #[test]
+    fn osc_7_file_uri_reports_linux_and_windows_paths() {
+        let mut pty = PtyTerm::new(80, 24, DEFAULT_SCROLLBACK);
+        // bash-in-WSL convention: file://<hostname><path>, percent-encoded.
+        pty.feed(b"\x1b]7;file://mybox/home/kayf/my%20dir\x07");
+        assert_eq!(pty.cwd(), Some("/home/kayf/my dir"));
+        // A Windows-style file URI decodes to a drive path.
+        pty.feed(b"\x1b]7;file:///C:/Users/kayf\x07");
+        assert_eq!(pty.cwd(), Some("C:\\Users\\kayf"));
+        // An empty/rootless URI is ignored, keeping the last good report.
+        pty.feed(b"\x1b]7;file://\x07");
+        assert_eq!(pty.cwd(), Some("C:\\Users\\kayf"));
     }
 
     #[test]

@@ -1230,7 +1230,10 @@ impl App {
                 active = tabs.len();
             }
             live_to_saved[i] = Some(tabs.len());
-            tabs.push(session::SavedTab { kind: kind.to_string(), url: tab.url.clone() });
+            // A terminal remembers its shell's working directory (OSC report or
+            // live process read — see TermSession::cwd) so restore reopens it there.
+            let cwd = tab.term().and_then(|s| s.cwd()).unwrap_or_default();
+            tabs.push(session::SavedTab { kind: kind.to_string(), url: tab.url.clone(), cwd });
         }
         // Encode each window's split tree (dropping windows whose tabs were all skipped),
         // so `:wq` remembers the layout and reopening restores it.
@@ -1310,7 +1313,7 @@ impl App {
             let before = self.tabs.len();
             // Each restored tab is a NEW tab (push), so they don't replace each other.
             match tab.kind.as_str() {
-                "term" => self.open_terminal(),
+                "term" => self.open_terminal_at((!tab.cwd.is_empty()).then_some(&tab.cwd)),
                 "read" => self.start_read(&tab.url, false, true),
                 "research" => self.open_research(&tab.url, true, false),
                 "nojs" => self.open_tab(&tab.url, true, true),

@@ -146,6 +146,32 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   output with vim motions** (`hjkl`/`w`/`v`/`y`/…, just like `:error`/`:res`); `i` or `Enter` resumes the
   live shell. Box-drawing and block characters are drawn procedurally so TUI tables/borders and block art
   render crisply; colors use the Windows "Campbell" palette.
+- **Terminal working-directory restore** — `:w`/`:wq` saves each terminal tab's current directory and
+  the next launch reopens the shell **in that directory** (injected invisibly via `nu -e` /
+  `pwsh -NoExit -Command` / `cmd /K`, so nothing is typed on screen and it wins over a `cd` in your
+  shell's startup config). `u`-reopen of a closed terminal does the same. How the directory is known,
+  per shell:
+  - **cmd** — automatic (the browser injects an `OSC 9;9` report into its `PROMPT`).
+  - **nushell** — automatic (the shell's live process cwd is read at save time). For exact reports
+    even while a long-running program is open, optionally add to `config.nu`:
+    `$env.config.shell_integration.osc9_9 = true`
+  - **PowerShell** — `Set-Location` doesn't move the process cwd, so it needs a prompt hook in
+    `$PROFILE`:
+    ```powershell
+    function prompt { "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) $([char]27)]9;9;$($executionContext.SessionState.Path.CurrentLocation.ProviderPath)$([char]27)\" }
+    ```
+  - **WSL** — the Linux-side directory is invisible from Windows (`wsl.exe` is just a relay), so
+    without a hook a WSL session saves only the Windows directory it was launched from. Add this to
+    the distro's `~/.bashrc` (zsh: put the `printf` in a `precmd()` function instead) and restore
+    will **re-enter WSL at the saved directory** (`/mnt/*` paths included), by auto-running
+    `wsl -d <distro> --cd <dir>`:
+    ```bash
+    __browser_cwd() { printf '\e]9;9;\\\\wsl.localhost\\%s%s\e\\' "$WSL_DISTRO_NAME" "${PWD//\//\\}"; }
+    PROMPT_COMMAND=__browser_cwd
+    ```
+    (It reports the cwd as a `\\wsl.localhost\<distro>\...` UNC path each prompt. Don't use
+    `wslpath -w "$PWD"` here: it turns `/mnt/c/...` into a plain `C:\...` path, which loses the
+    fact that you were inside WSL.)
 - **Read mode** — `:read <url>` (or `:read <query>`, which reads the search-results page) extracts the article with the `dom_smoothie` readability pipeline
   and renders it **engine-free**: the cleaned `Document` is painted by the shell's own softbuffer
   text renderer, so a read tab spawns **zero WebView2 processes** (verified: 0 child engine procs vs.

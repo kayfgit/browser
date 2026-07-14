@@ -521,7 +521,9 @@ impl App {
         } else {
             "open"
         };
-        self.closed_tabs.push(session::SavedTab { kind: kind.to_string(), url: t.url.clone() });
+        // A closed terminal keeps its last known cwd so `U` reopens it there.
+        let cwd = t.term().and_then(|s| s.cwd()).unwrap_or_default();
+        self.closed_tabs.push(session::SavedTab { kind: kind.to_string(), url: t.url.clone(), cwd });
         if self.closed_tabs.len() > CLOSED_CAP {
             self.closed_tabs.remove(0);
         }
@@ -535,7 +537,7 @@ impl App {
             return;
         };
         match c.kind.as_str() {
-            "term" => self.open_terminal(),
+            "term" => self.open_terminal_at((!c.cwd.is_empty()).then_some(&c.cwd)),
             "read" => self.start_read(&c.url, false, true),
             "research" => self.open_research(&c.url, true, false),
             "nojs" => self.open_tab(&c.url, true, true),
