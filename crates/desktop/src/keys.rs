@@ -762,8 +762,9 @@ impl App {
                 self.find_confirm();
                 return;
             }
-            // Tab accepts the autocomplete suggestion (a no-op if there isn't one);
-            // Shift+Tab steps the `:model` cycle backward.
+            // Tab accepts the autocomplete suggestion, or cycles a fixed-choice
+            // argument (`:model`, `:adblock`, `:clear`, … — see
+            // `commands::arg_candidates`); Shift+Tab steps the cycle backward.
             Key::Tab => {
                 self.accept_suggestion(!shift);
             }
@@ -1059,17 +1060,18 @@ impl App {
                 .map(|c| (*c).to_string()),
             // Argument completion.
             Some((verb, rest)) => {
-                let rest = rest.trim();
-                // `:model` completes/cycles the model list (Tab advances — see
-                // `accept_suggestion`); show the first matching id as the ghost.
-                if verb == "model" {
-                    let m = if rest.is_empty() {
-                        Some(crate::ai::MODELS[0])
-                    } else {
-                        crate::ai::MODELS.iter().find(|m| m.starts_with(rest)).copied()
-                    };
-                    return m.map(|m| format!("model {m}"));
+                // Fixed-choice arguments (`:model`, `:adblock`, `:clear`, `:theme`, … —
+                // see `commands::arg_candidates`): ghost the first choice matching the
+                // token being typed; Tab then cycles the whole set (`accept_suggestion`).
+                if let Some((v, prior, prefix)) = completion_parts(cmd) {
+                    if let Some(cands) = crate::commands::arg_candidates(self, v, &prior) {
+                        return cands
+                            .iter()
+                            .find(|c| c.starts_with(prefix))
+                            .map(|c| format!("{cmd}{}", &c[prefix.len()..]));
+                    }
                 }
+                let rest = rest.trim();
                 // Otherwise, history completion for open-like verbs only.
                 if rest.is_empty()
                     || !matches!(
@@ -1090,32 +1092,39 @@ impl App {
     }
 
     /// Accept the current autocomplete suggestion into the command line (caret to
-    /// end). Returns whether there was one to accept. `forward` is the cycle
-    /// direction for the `:model` list — Tab advances, Shift+Tab steps back.
+    /// end). Returns whether there was one to accept. For commands whose argument
+    /// is one of a fixed set (`:model`, `:adblock`, `:clear`, `:theme`, … — see
+    /// `commands::arg_candidates`), Tab instead cycles the token being typed
+    /// through the choices, shell-completion style: each press steps to the
+    /// next/previous one (wrapping, `forward` = Tab vs Shift+Tab), so you can
+    /// flick through the options in either direction and Enter the one you want.
     pub(crate) fn accept_suggestion(&mut self, forward: bool) -> bool {
-        // `:model` Tab-cycles through the model list, shell-completion style: each
-        // press steps to the next/previous id (wrapping), so you can flick through
-        // the options in either direction and Enter the one you want.
-        let model_arg = match self.command.as_str() {
-            "model" => Some(""),
-            s => s.strip_prefix("model ").map(str::trim),
-        };
-        if let Some(arg) = model_arg {
-            let models = crate::ai::MODELS;
-            let len = models.len();
-            let next = if let Some(i) = models.iter().position(|m| *m == arg) {
-                if forward { (i + 1) % len } else { (i + len - 1) % len }
-            } else if forward {
-                models.iter().position(|m| m.starts_with(arg)).unwrap_or(0)
-            } else {
-                // Step back from the first matching id (or the end of the list).
-                models.iter().position(|m| m.starts_with(arg)).map_or(len - 1, |i| (i + len - 1) % len)
-            };
-            self.command = format!("model {}", models[next]);
-            self.command_cursor = self.command.len();
-            self.command_anchor = None;
-            self.cursor_on = true;
-            return true;
+        if let Some((verb, prior, prefix)) = completion_parts(&self.command) {
+            if let Some(cands) = crate::commands::arg_candidates(self, verb, &prior) {
+                let len = cands.len();
+                let next = if let Some(i) = cands.iter().position(|c| c == prefix) {
+                    if forward { (i + 1) % len } else { (i + len - 1) % len }
+                } else if forward {
+                    cands.iter().position(|c| c.starts_with(prefix)).unwrap_or(0)
+                } else {
+                    // Step back from the first matching choice (or the end of the list).
+                    cands
+                        .iter()
+                        .position(|c| c.starts_with(prefix))
+                        .map_or(len - 1, |i| (i + len - 1) % len)
+                };
+                // Swap just the token being completed, keeping the line as typed
+                // before it (inserting the separating space after a bare verb).
+                let mut base = self.command[..self.command.len() - prefix.len()].to_string();
+                if !base.ends_with(char::is_whitespace) {
+                    base.push(' ');
+                }
+                self.command = base + &cands[next];
+                self.command_cursor = self.command.len();
+                self.command_anchor = None;
+                self.cursor_on = true;
+                return true;
+            }
         }
         let Some(sug) = self.command_suggestion() else { return false };
         self.command = sug;
@@ -1307,6 +1316,30 @@ impl App {
     }
 }
 
+/// Split a command line for argument completion: `(verb, args fully typed before
+/// the caret's token, the token being completed)`. A trailing space means the
+/// caret starts a NEW argument (`"clear cache "` → `("clear", ["cache"], "")`);
+/// a bare verb completes its first argument (`"model"` → `("model", [], "")`) —
+/// whether that verb HAS fixed choices is `commands::arg_candidates`'s call.
+/// `None` for an empty line.
+fn completion_parts(line: &str) -> Option<(&str, Vec<&str>, &str)> {
+    if line.trim().is_empty() {
+        return None;
+    }
+    match line.split_once(char::is_whitespace) {
+        None => Some((line, Vec::new(), "")),
+        Some((verb, rest)) => {
+            let mut args: Vec<&str> = rest.split_whitespace().collect();
+            let prefix = if line.ends_with(char::is_whitespace) {
+                ""
+            } else {
+                args.pop().unwrap_or("")
+            };
+            Some((verb, args, prefix))
+        }
+    }
+}
+
 /// Map a top-row digit key `1`–`9` to a zero-based index (`Digit1` → 0). Used by the
 /// `Ctrl+W <n>` move-pane grab, where the digit is a tab-bar entry number.
 fn digit_index(code: KeyCode) -> Option<usize> {
@@ -1356,7 +1389,21 @@ pub(crate) fn next_word_boundary(s: &str, pos: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{next_word_boundary, prev_word_boundary};
+    use super::{completion_parts, next_word_boundary, prev_word_boundary};
+
+    #[test]
+    fn completion_parts_splits_verb_args_and_completed_token() {
+        // A bare verb offers its first argument (empty prefix, space inserted later).
+        assert_eq!(completion_parts("model"), Some(("model", vec![], "")));
+        // Mid-token: the last token is what's being completed.
+        assert_eq!(completion_parts("clear hi"), Some(("clear", vec![], "hi")));
+        // A trailing space moves completion to the NEXT argument position.
+        assert_eq!(completion_parts("clear cache "), Some(("clear", vec!["cache"], "")));
+        assert_eq!(completion_parts("history clear 1"), Some(("history", vec!["clear"], "1")));
+        // Empty / whitespace-only lines complete nothing.
+        assert_eq!(completion_parts(""), None);
+        assert_eq!(completion_parts("   "), None);
+    }
 
     #[test]
     fn ctrl_w_deletes_one_url_segment_at_a_time() {

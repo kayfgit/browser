@@ -461,7 +461,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("search", ":search [name|template]", "show/set the search engine — a name (ddg/google/wiki…) or a %s URL"),
     ("ai", ":ai [question]", "AI tab (Groq): i to ask; Normal mode is a vim buffer (v/y select, / find); H/L step through past chats (persisted)"),
     ("aihist", ":aihist · :aihistory", "saved-chat picker in a vim tab: each row shows created time · size · name (first prompt); Enter opens that chat, d deletes the row/selection"),
-    ("model", ":model [id]", "show/set the :ai model; in the command bar, Tab cycles the model list; persisted"),
+    ("model", ":model [id]", "show/set the :ai model (Tab cycles the model list); persisted"),
     ("te", ":te", "native terminal (Ctrl+V pastes · Ctrl+S → vim copy-mode: hjkl/w/b/f-find navigate, v/y yank, i resumes) · :w/:wq remembers the cwd and restores it — cmd/nushell automatic; pwsh and WSL need a one-line prompt hook (see detailedREADME 'Terminal working-directory restore', or ask :ai)"),
     ("terun", ":te <command>", "run a local command, result in the command bar"),
     ("shell", ":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
@@ -509,6 +509,26 @@ const HELP_SECTIONS: &[(&str, &str, &[&str])] = &[
     ("sec-bangs", "Bangs", &["bangs", "bang"]),
     ("sec-maths", "Quick maths", &["maths", "math", "calc", "calculator"]),
 ];
+
+/// Every `:help <topic>` value worth Tab-cycling in the command bar: command
+/// anchors first (the most common jump), then action names and each section's
+/// primary alias. All of them resolve through [`help_anchor`].
+pub(crate) fn help_topics() -> Vec<String> {
+    let mut v: Vec<String> = CMD_ROWS.iter().map(|(id, _, _)| (*id).to_string()).collect();
+    for a in crate::actions::ACTIONS {
+        if !v.iter().any(|x| x == a.name) {
+            v.push(a.name.to_string());
+        }
+    }
+    for (_, _, names) in HELP_SECTIONS {
+        if let Some(n) = names.first() {
+            if !v.iter().any(|x| x == n) {
+                v.push((*n).to_string());
+            }
+        }
+    }
+    v
+}
 
 /// Resolve a `:help <topic>` to the element id it should jump to: a command row
 /// first (by anchor key, then any word of its signature), then an AI action name,
@@ -607,7 +627,7 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
         ("Left / Right", "move the caret a character"),
         ("Ctrl+Left / Right", "move the caret a word"),
         ("Home / End", "jump to start / end of line"),
-        ("Tab / Ctrl+Right", "accept the autocomplete suggestion (verb, or :open URL from history)"),
+        ("Tab / Ctrl+Right", "accept the autocomplete suggestion (verb, or :open URL from history); on a fixed-choice argument (:model, :adblock, :clear, :theme, :search, :help, …) Tab / Shift+Tab cycle the choices"),
         ("Shift+ movement", "extend the selection (with arrows, Ctrl+arrows, Home/End)"),
         ("Ctrl+A", "select the whole line"),
         ("Ctrl+C / Ctrl+X / Ctrl+V", "copy / cut / paste"),
@@ -835,6 +855,15 @@ mod tests {
         // Unknown topics are None (the caller shows the full page and says so).
         assert_eq!(help_anchor("zzzz"), None);
         assert_eq!(help_anchor(""), None);
+    }
+
+    #[test]
+    fn every_tab_cycle_help_topic_resolves() {
+        // The `:help` Tab-cycle candidates must all be real jump targets, or the
+        // cycle would offer a topic that falls back to the full page.
+        for topic in help_topics() {
+            assert!(help_anchor(&topic).is_some(), "help topic '{topic}' doesn't resolve");
+        }
     }
 
     #[test]

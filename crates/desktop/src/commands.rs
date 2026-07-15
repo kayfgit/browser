@@ -380,6 +380,45 @@ impl App {
     }
 }
 
+/// The fixed argument choices Tab cycles through in the command bar (see
+/// `App::accept_suggestion`): the candidates for the argument at position
+/// `prior.len()` of `verb`, given the arguments already typed before it —
+/// `("clear", [])` offers what to clear, `("clear", ["cache"])` offers periods.
+/// `None` for free-text positions (URLs, queries, colour values, shell lines…);
+/// toggles never appear here at all — they take no arguments.
+pub(crate) fn arg_candidates(app: &App, verb: &str, prior: &[&str]) -> Option<Vec<String>> {
+    fn own(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_string()).collect()
+    }
+    const PERIODS: &[&str] = &["15m", "1h", "24h", "7d", "all"];
+    let cands = match (verb, prior) {
+        ("model", []) => own(crate::ai::MODELS),
+        ("ads" | "adblock", []) => own(&["ubo", "native", "off"]),
+        ("clear", []) => own(&["history", "cookies", "cache", "all"]),
+        ("clear", [_]) => own(PERIODS),
+        ("history" | "hist", []) => own(&["clear"]),
+        ("history" | "hist", ["clear"]) => own(PERIODS),
+        ("theme", []) => own(&[
+            "accent", "bar_bg", "bar_fg", "bar_height_pct", "bg", "term_bg", "term_fg",
+            "term_font", "term_font_px", "term_scheme", "install", "reload", "show",
+        ]),
+        // `:search` engine names come from the bang table's canonical keys, so the
+        // cycle always matches what `search_template_for` below actually accepts.
+        ("search", []) => {
+            browser_core::bang_list().into_iter().map(|(k, _)| k.to_string()).collect()
+        }
+        ("help" | "commands", []) => crate::pages::help_topics(),
+        // Alias names are the user's own — sorted so the cycle order is stable.
+        ("alias" | "unalias", []) => {
+            let mut v: Vec<String> = app.config.aliases.keys().cloned().collect();
+            v.sort();
+            v
+        }
+        _ => return None,
+    };
+    (!cands.is_empty()).then_some(cands)
+}
+
 /// Resolve a `:search` argument into a search-URL template: a bare engine name
 /// (looked up in the bang table — `ddg`, `google`, `wiki`, `yt`, …) maps to its
 /// template; anything containing `%s` or `://` is taken as a literal template.
