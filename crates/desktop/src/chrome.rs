@@ -528,7 +528,7 @@ impl App {
                 }
             }
             draw::fill_band(&mut buf, wz, hz, 0, tab_h, theme.bar_bg);
-            draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels);
+            draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels, theme.accent);
             draw_bar(&mut buf);
             buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
         } else {
@@ -536,7 +536,7 @@ impl App {
             // repaint the bars and present just those rects — never over the page.
             draw_bar(&mut buf);
             draw::fill_band(&mut buf, wz, hz, 0, tab_h, theme.bar_bg);
-            draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels);
+            draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels, theme.accent);
             let mut damage = Vec::new();
             if tab_h > 0 {
                 damage.push(softbuffer::Rect {
@@ -559,11 +559,11 @@ impl App {
         Ok(())
     }
 
-    /// (label, is_active, color) for each tab-strip entry (one per tmux-style window),
-    /// in order. A split window is labelled by its focused pane with a ` ⁝N` pane-count
-    /// suffix so it reads as one entry containing N panes. The `:ai` singleton has no
-    /// window, so it's omitted — see [`window_strip`](App::window_strip).
-    pub(crate) fn tab_labels(&self) -> Vec<(String, bool, draw::Rgb)> {
+    /// One [`TabEntry`] per tab-strip entry (one per tmux-style window), in order. A
+    /// split window is labelled by its focused pane with a ` ⁝N` pane-count suffix so it
+    /// reads as one entry containing N panes. The `:ai` singleton has no window, so it's
+    /// omitted — see [`window_strip`](App::window_strip).
+    pub(crate) fn tab_labels(&self) -> Vec<TabEntry> {
         let aw = self.active_window();
         self.window_strip()
             .into_iter()
@@ -606,9 +606,23 @@ impl App {
                 if panes > 1 {
                     label.push_str(&format!(" ⁝{panes}"));
                 }
-                Some((label, active, color))
+                let page = t.page_state();
+                Some(TabEntry {
+                    label,
+                    active,
+                    color,
+                    loading: page.and_then(|p| p.loading_for()),
+                    icon: page.and_then(|p| p.icon.lock().ok().and_then(|g| g.clone())),
+                    web: page.is_some(),
+                })
             })
             .collect()
+    }
+
+    /// Whether any tab is mid-load — the shell keeps waking to animate the strip's
+    /// progress sweep while this holds, and goes back to idle when it doesn't.
+    pub(crate) fn any_tab_loading(&self) -> bool {
+        self.tabs.iter().any(|t| t.page_state().is_some_and(|p| p.loading_for().is_some()))
     }
 
     /// Whether the active tab is a read-mode tab.
@@ -936,39 +950,82 @@ fn fit_px(p: &Painter, s: &str, max_px: usize) -> String {
     String::new()
 }
 
+/// One tab-strip entry, as [`App::tab_labels`] hands it to the layout/painter.
+pub(crate) struct TabEntry {
+    pub(crate) label: String,
+    pub(crate) active: bool,
+    pub(crate) color: draw::Rgb,
+    /// How long this tab's page has been loading, or `None` once it's settled — the
+    /// phase of its progress sweep (see [`draw_tab_bar`]).
+    pub(crate) loading: Option<std::time::Duration>,
+    /// The page's favicon, once WebView2 has decoded one for it.
+    pub(crate) icon: Option<std::sync::Arc<crate::favicon::Icon>>,
+    /// Whether this is a web tab. Web cells RESERVE the favicon slot even before the
+    /// icon arrives, so the label doesn't jump sideways when it lands; native tabs
+    /// (terminals, read, `:ai`) never get one and start their label at the cell edge.
+    pub(crate) web: bool,
+}
+
+/// One laid-out tab cell. The label is painted as two runs so the favicon can sit
+/// between the `N:` prefix and the label text.
+pub(crate) struct TabCell {
+    /// The `[1:` / ` 1:` frame prefix, painted at `x`.
+    pub(crate) prefix: String,
+    /// The truncated label plus its closing `]`/space, painted at `label_x`.
+    pub(crate) label: String,
+    pub(crate) x: usize,
+    pub(crate) w: usize,
+    pub(crate) label_x: usize,
+    /// Top-left x of the reserved favicon square, for entries that have one.
+    pub(crate) icon_x: Option<usize>,
+}
+
+/// Side of the favicon square. Sized off the font (which scales with zoom exactly as
+/// the bar does) at about half a line, so it sits inside the strip at roughly the
+/// height of the label's capitals rather than towering over them.
+fn icon_px(p: &Painter) -> usize {
+    (p.line_height() / 2).max(6)
+}
+
 /// Lay out the tab strip as FIXED-width cells that shrink as tabs are added
 /// (browser-style): every entry gets the same slot — `bar width / n`, clamped so a
 /// lone tab doesn't stretch across the window and a crowd can't shrink to nothing —
 /// and its label is truncated with `…` to fit. Predictable slots keep every tab's
-/// number visible instead of one long URL crowding the rest off the bar. Returns
-/// `(text, x, cell_width)` per entry that fits; entries past the right edge are
-/// dropped (the bar shows a trailing `…`). Shared by [`draw_tab_bar`] and
-/// [`App::tab_at_pixel`] so clicks always agree with what's painted.
-pub(crate) fn tab_cells(
-    p: &Painter,
-    w: usize,
-    labels: &[(String, bool, draw::Rgb)],
-) -> Vec<(String, usize, usize)> {
-    if labels.is_empty() {
+/// number visible instead of one long URL crowding the rest off the bar. Entries past
+/// the right edge are dropped (the bar shows a trailing `…`). Shared by
+/// [`draw_tab_bar`] and [`App::tab_at_pixel`] so clicks always agree with what's
+/// painted.
+pub(crate) fn tab_cells(p: &Painter, w: usize, entries: &[TabEntry]) -> Vec<TabCell> {
+    if entries.is_empty() {
         return Vec::new();
     }
     let em = p.measure("m").max(1);
+    let ic = icon_px(p);
     let avail = w.saturating_sub(16); // 8px margin each side
-    let cell = (avail / labels.len()).clamp(em * 5, em * 14);
+    let cell = (avail / entries.len()).clamp(em * 5, em * 14);
     let mut out = Vec::new();
     let mut x = 8usize;
-    for (i, (label, active, _)) in labels.iter().enumerate() {
+    for (i, e) in entries.iter().enumerate() {
         if x + cell > w.saturating_sub(8) && !out.is_empty() {
             break; // no room for this cell — the strip overflows with `…`
         }
         // The `N:` prefix (and the active brackets) always stay visible; only the
-        // label part is truncated to what's left of the cell (6px inter-cell gap).
-        let (open, close) = if *active { ("[", "]") } else { (" ", " ") };
-        let frame = format!("{open}{}:{close}", i + 1);
-        let label_px = cell.saturating_sub(6).saturating_sub(p.measure(&frame));
-        let fitted = fit_px(p, label, label_px);
-        let text = format!("{open}{}:{fitted}{close}", i + 1);
-        out.push((text, x, cell));
+        // label part is truncated to what's left of the cell (6px inter-cell gap),
+        // minus the favicon slot on web tabs.
+        let (open, close) = if e.active { ("[", "]") } else { (" ", " ") };
+        let prefix = format!("{open}{}:", i + 1);
+        let slot = if e.web { ic + 3 } else { 0 };
+        let frame = format!("{prefix}{close}");
+        let label_px = cell.saturating_sub(6).saturating_sub(slot).saturating_sub(p.measure(&frame));
+        let prefix_w = p.measure(&prefix);
+        out.push(TabCell {
+            label: format!("{}{close}", fit_px(p, &e.label, label_px)),
+            label_x: x + prefix_w + slot,
+            icon_x: e.web.then_some(x + prefix_w),
+            prefix,
+            x,
+            w: cell,
+        });
         x += cell;
     }
     out
@@ -978,38 +1035,50 @@ pub(crate) fn tab_cells(
 mod tab_cell_tests {
     use super::*;
 
-    fn labels(n: usize) -> Vec<(String, bool, draw::Rgb)> {
+    fn entries(n: usize) -> Vec<TabEntry> {
         (0..n)
-            .map(|i| (format!("really-long-label-{i}.example.com/path"), i == 0, draw::DIM))
+            .map(|i| TabEntry {
+                label: format!("really-long-label-{i}.example.com/path"),
+                active: i == 0,
+                color: draw::DIM,
+                loading: None,
+                icon: None,
+                web: true,
+            })
             .collect()
+    }
+
+    /// Total painted width of a cell: prefix + favicon slot + label.
+    fn used(p: &Painter, c: &TabCell) -> usize {
+        (c.label_x - c.x) + p.measure(&c.label)
     }
 
     #[test]
     fn cells_are_uniform_and_shrink_with_count() {
         let p = Painter::new(15.0).unwrap();
-        let few = tab_cells(&p, 1200, &labels(3));
-        let many = tab_cells(&p, 1200, &labels(12));
+        let few = tab_cells(&p, 1200, &entries(3));
+        let many = tab_cells(&p, 1200, &entries(12));
         // Every cell in a strip has the same width; more tabs → narrower cells.
-        assert!(few.iter().all(|(_, _, cw)| *cw == few[0].2));
-        assert!(many.iter().all(|(_, _, cw)| *cw == many[0].2));
-        assert!(many[0].2 < few[0].2, "12 tabs should get narrower cells than 3");
+        assert!(few.iter().all(|c| c.w == few[0].w));
+        assert!(many.iter().all(|c| c.w == many[0].w));
+        assert!(many[0].w < few[0].w, "12 tabs should get narrower cells than 3");
         // Cells tile left-to-right with no gaps or overlaps.
-        for w in few.windows(2) {
-            assert_eq!(w[0].1 + w[0].2, w[1].1);
+        for c in few.windows(2) {
+            assert_eq!(c[0].x + c[0].w, c[1].x);
         }
-        // Each entry's text actually fits its cell.
-        for (text, _, cw) in &many {
-            assert!(p.measure(text) <= *cw, "{text:?} wider than its cell");
+        // Each entry's contents actually fit its cell.
+        for c in &many {
+            assert!(used(&p, c) <= c.w, "{:?} wider than its cell", c.label);
         }
     }
 
     #[test]
     fn long_labels_truncate_with_ellipsis_and_keep_their_number() {
         let p = Painter::new(15.0).unwrap();
-        let cells = tab_cells(&p, 900, &labels(10));
+        let cells = tab_cells(&p, 900, &entries(10));
         // The 10th entry still shows its number prefix even at minimum width.
-        assert!(cells.last().unwrap().0.contains("10:"), "number prefix lost: {cells:?}");
-        assert!(cells.iter().any(|(t, _, _)| t.contains('…')), "nothing truncated");
+        assert!(cells.last().unwrap().prefix.contains("10:"), "number prefix lost");
+        assert!(cells.iter().any(|c| c.label.contains('…')), "nothing truncated");
     }
 
     #[test]
@@ -1017,28 +1086,90 @@ mod tab_cell_tests {
         let p = Painter::new(15.0).unwrap();
         // A tiny window can't fit 30 minimum-width cells: the layout keeps as many
         // as fit (at least the first) and reports fewer cells than labels.
-        let cells = tab_cells(&p, 300, &labels(30));
+        let cells = tab_cells(&p, 300, &entries(30));
         assert!(!cells.is_empty());
         assert!(cells.len() < 30);
     }
+
+    #[test]
+    fn only_web_tabs_reserve_a_favicon_slot() {
+        let p = Painter::new(15.0).unwrap();
+        let mut mixed = entries(2);
+        mixed[1].web = false; // a terminal / read tab
+        let cells = tab_cells(&p, 1200, &mixed);
+        assert!(cells[0].icon_x.is_some());
+        assert!(cells[1].icon_x.is_none());
+        // The native tab's label starts right after its prefix — no reserved gap.
+        assert_eq!(cells[1].label_x, cells[1].x + p.measure(&cells[1].prefix));
+        // The web tab's label is pushed right by the slot, and its icon sits in it.
+        assert!(cells[0].label_x > cells[0].icon_x.unwrap());
+    }
 }
 
-pub(crate) fn draw_tab_bar(p: &Painter, buf: &mut [u32], w: usize, h: usize, labels: &[(String, bool, draw::Rgb)]) {
+pub(crate) fn draw_tab_bar(
+    p: &Painter,
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    entries: &[TabEntry],
+    accent: draw::Rgb,
+) {
     // Hidden (fullscreen) or no visible tabs → zero height; drawing would paint the
     // labels as a clipped sliver at the very top edge, so skip it.
     if h == 0 {
         return;
     }
     let baseline = h * 2 / 3;
-    let cells = tab_cells(p, w, labels);
-    for ((text, x, _), (_, _, color)) in cells.iter().zip(labels.iter()) {
-        p.text(buf, w, h, *x, baseline, text, *color);
+    let ic = icon_px(p);
+    let cells = tab_cells(p, w, entries);
+    for (c, e) in cells.iter().zip(entries.iter()) {
+        p.text(buf, w, h, c.x, baseline, &c.prefix, e.color);
+        p.text(buf, w, h, c.label_x, baseline, &c.label, e.color);
+        if let (Some(ix), Some(icon)) = (c.icon_x, &e.icon) {
+            // Centre the square on the text's x-height so it reads as part of the row.
+            let iy = baseline.saturating_sub(ic * 5 / 6);
+            crate::favicon::blit(icon, buf, w, h, ix as i32, iy as i32, ic);
+        }
+        if let Some(age) = e.loading {
+            draw_load_sweep(buf, w, h, c, age, accent);
+        }
     }
     // More entries than fit even at minimum cell width → mark the overflow.
-    if cells.len() < labels.len() {
-        let x = cells.last().map(|(_, x, cw)| x + cw).unwrap_or(8);
+    if cells.len() < entries.len() {
+        let x = cells.last().map(|c| c.x + c.w).unwrap_or(8);
         p.text(buf, w, h, x, baseline, "…", draw::DIM);
     }
+}
+
+/// One cycle of the loading sweep, in ms. Slow enough to read as deliberate motion,
+/// fast enough that a quick page shows at least one pass.
+const SWEEP_MS: u128 = 900;
+
+/// Paint the indeterminate load bar for one cell: a short segment sliding left → right
+/// along the bottom edge of the tab, restarting until the page settles. Indeterminate
+/// because WebView2 reports no completion fraction — only "started" and "finished".
+fn draw_load_sweep(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    c: &TabCell,
+    age: std::time::Duration,
+    accent: draw::Rgb,
+) {
+    let thickness = (h / 12).clamp(2, 4);
+    if h <= thickness {
+        return;
+    }
+    let cell = c.w.saturating_sub(4);
+    let seg = (cell / 3).max(4);
+    // The segment enters from off the left edge and leaves past the right one, so the
+    // sweep reads as continuous travel rather than a bar that pops in and out.
+    let travel = (cell + seg) as u128;
+    let phase = (age.as_millis() % SWEEP_MS) * travel / SWEEP_MS;
+    let left = phase as i64 - seg as i64;
+    let x0 = (c.x as i64 + 2 + left.max(0)) as usize;
+    let x1 = (c.x as i64 + 2 + (left + seg as i64).min(cell as i64)).max(x0 as i64) as usize;
+    draw::fill_rect(buf, w, h, x0, h - thickness, x1, h, accent);
 }
 
 /// Paint the engine-free welcome screen: title + a key/command cheat-sheet.

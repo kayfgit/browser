@@ -293,10 +293,10 @@ impl App {
     /// Open an internal HTML page (e.g. `:commands`) in a new tab.
     pub(crate) fn open_local_page(&mut self, label: &str, html: String) {
         match self.build_content_webview(Source::Html(html), false, "") {
-            Ok(webview) => {
+            Ok((webview, page)) => {
                 self.place_tab(
                     Tab {
-                        content: TabContent::Web(webview),
+                        content: TabContent::Web(webview, page),
                         url: format!("browser://{label}"),
                         nojs: false,
                         read: false,

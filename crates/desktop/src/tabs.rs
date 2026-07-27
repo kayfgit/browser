@@ -90,11 +90,57 @@ fn ublock_extensions_dir() -> Option<std::path::PathBuf> {
     dev.is_dir().then_some(dev)
 }
 
+/// The live state a web tab's ENGINE reports back to the shell: whether a page load
+/// is in flight (drives the tab-strip progress sweep) and the page's favicon. Both are
+/// written from WebView2 callbacks — the load handler wry installs, and the favicon
+/// handler in [`favicon`](crate::favicon) — which don't have the `App`, so each is a
+/// shared handle the tab and the callbacks both hold. Cloning shares the state; a
+/// clone is what goes into the callbacks.
+#[derive(Clone, Default)]
+pub(crate) struct PageState {
+    /// When the in-flight load started, or `None` when the page is settled.
+    load_started: Arc<Mutex<Option<std::time::Instant>>>,
+    /// The decoded favicon, once WebView2 has one for this page.
+    pub(crate) icon: crate::favicon::SharedIcon,
+}
+
+/// Give up animating a load after this long. A page that never fires
+/// `NavigationCompleted` (a stalled socket, a download that replaced the navigation)
+/// would otherwise leave its tab sweeping forever.
+const LOAD_ANIM_CAP: std::time::Duration = std::time::Duration::from_secs(30);
+
+impl PageState {
+    /// Mark a page load as started (the shell calls this when it opens/navigates a
+    /// tab; WebView2's own `Started` event calls it again for in-page navigations).
+    pub(crate) fn begin_load(&self) {
+        if let Ok(mut g) = self.load_started.lock() {
+            *g = Some(std::time::Instant::now());
+        }
+    }
+
+    /// Mark the load finished (navigation completed, successfully or not).
+    pub(crate) fn end_load(&self) {
+        if let Ok(mut g) = self.load_started.lock() {
+            *g = None;
+        }
+    }
+
+    /// How long the current load has been running, or `None` when the tab is settled
+    /// (or has been "loading" past [`LOAD_ANIM_CAP`], which we treat as settled so a
+    /// stuck page doesn't animate for the rest of the session).
+    pub(crate) fn loading_for(&self) -> Option<std::time::Duration> {
+        let started = (*self.load_started.lock().ok()?)?;
+        let elapsed = started.elapsed();
+        (elapsed < LOAD_ANIM_CAP).then_some(elapsed)
+    }
+}
+
 /// What a tab shows. Exactly one of these — the invariants the old
 /// quadruple-Option encoding kept by comment are now kept by construction.
 pub(crate) enum TabContent {
-    /// A WebView2 page (windowed child HWND over the content band).
-    Web(WebView),
+    /// A WebView2 page (windowed child HWND over the content band) plus the load /
+    /// favicon state its engine callbacks report into.
+    Web(WebView, PageState),
     /// An engine-free read-mode document, painted by the shell.
     Read(NativeRead),
     /// A read-only vim-style pager (`:error(s)`, `:res`, `:version`).
@@ -220,7 +266,16 @@ impl Tab {
 
     pub(crate) fn webview(&self) -> Option<&WebView> {
         match &self.content {
-            TabContent::Web(w) => Some(w),
+            TabContent::Web(w, _) => Some(w),
+            _ => None,
+        }
+    }
+
+    /// This tab's engine-reported load/favicon state — `None` for native tabs, which
+    /// have no engine and so neither a page load to track nor a favicon to show.
+    pub(crate) fn page_state(&self) -> Option<&PageState> {
+        match &self.content {
+            TabContent::Web(_, s) => Some(s),
             _ => None,
         }
     }
@@ -412,9 +467,9 @@ impl App {
             self.record_history(&url);
         }
         match self.build_content_webview_private(Source::Url(url.clone()), disable_js, "", private) {
-            Ok(webview) => {
+            Ok((webview, page)) => {
                 let tab = Tab {
-                    content: TabContent::Web(webview),
+                    content: TabContent::Web(webview, page),
                     url,
                     nojs: disable_js,
                     read: false,
@@ -454,9 +509,9 @@ impl App {
         }
         match self.build_content_webview_private(Source::Url(url.clone()), false, RESEARCH_JS, private)
         {
-            Ok(webview) => {
+            Ok((webview, page)) => {
                 let tab = Tab {
-                    content: TabContent::Web(webview),
+                    content: TabContent::Web(webview, page),
                     url,
                     nojs: false,
                     read: false,
@@ -596,13 +651,15 @@ impl App {
     }
 
     /// Build a child webview from either a URL or an inline HTML document, with
-    /// the full shell bridge (keybindings, focus reclaim, hint mode).
+    /// the full shell bridge (keybindings, focus reclaim, hint mode). Returns the
+    /// webview together with the [`PageState`] its engine callbacks report into —
+    /// both belong in the same `TabContent::Web`.
     pub(crate) fn build_content_webview(
         &self,
         source: Source,
         disable_js: bool,
         extra_init: &str,
-    ) -> Result<WebView> {
+    ) -> Result<(WebView, PageState)> {
         self.build_content_webview_private(source, disable_js, extra_init, false)
     }
 
@@ -617,7 +674,14 @@ impl App {
         disable_js: bool,
         extra_init: &str,
         private: bool,
-    ) -> Result<WebView> {
+    ) -> Result<(WebView, PageState)> {
+        // Shared with the page-load handler below (and, once built, the favicon
+        // watcher) so the tab strip can show this tab's progress and icon. Seeded as
+        // loading: the webview is about to fetch its first page, and WebView2's own
+        // `Started` event only fires once the response is already coming back.
+        let page = PageState::default();
+        page.begin_load();
+        let load_state = page.clone();
         let ipc_proxy = self.proxy.clone();
         let load_proxy = self.proxy.clone();
         let nav_proxy = self.proxy.clone();
@@ -813,9 +877,15 @@ impl App {
                     }
                 }
             })
-            // Backup focus reclaim for non-JS tabs (page-ready covers JS tabs).
-            .with_on_page_load_handler(move |event, _url| {
-                if matches!(event, PageLoadEvent::Finished) {
+            // Backup focus reclaim for non-JS tabs (page-ready covers JS tabs), and the
+            // tab strip's load progress: `Started` is WebView2's ContentLoading (a
+            // navigation committed and content is arriving — this catches link clicks and
+            // in-page navigations, which the shell never sees), `Finished` is
+            // NavigationCompleted, which fires whether the page loaded or failed.
+            .with_on_page_load_handler(move |event, _url| match event {
+                PageLoadEvent::Started => load_state.begin_load(),
+                PageLoadEvent::Finished => {
+                    load_state.end_load();
                     let _ = load_proxy.send_event(UserEvent::FocusShell);
                 }
             })
@@ -934,7 +1004,10 @@ impl App {
         if self.adblock_mode != AdblockMode::Ubo {
             crate::extensions::set_all_enabled(&webview, false);
         }
-        Ok(webview)
+        // Watch WebView2's own favicon for this tab, so the strip can show it.
+        #[cfg(windows)]
+        crate::favicon::install(&webview, page.icon.clone(), self.proxy.clone());
+        Ok((webview, page))
     }
 
     /// Kick off a background readability extraction into the Document model; the
@@ -1187,11 +1260,9 @@ impl App {
         let labels = self.tab_labels();
         let limit = self.inner().0 as usize;
         let px = px.max(0.0) as usize;
-        for (pos, (_, x, cw)) in crate::chrome::tab_cells(&self.painter, limit, &labels)
-            .iter()
-            .enumerate()
+        for (pos, cell) in crate::chrome::tab_cells(&self.painter, limit, &labels).iter().enumerate()
         {
-            if px >= *x && px < x + cw {
+            if px >= cell.x && px < cell.x + cell.w {
                 return Some(pos);
             }
         }
@@ -1517,7 +1588,7 @@ impl App {
         let extra = if research { RESEARCH_JS } else { "" };
         match self.build_content_webview_private(Source::Url(url.clone()), self.nojs, extra, private)
         {
-            Ok(webview) => {
+            Ok((webview, page)) => {
                 let nojs = self.nojs;
                 if let Some(session) = self.tabs[i].take_term() {
                     session.shutdown();
@@ -1527,7 +1598,7 @@ impl App {
                 let mut nav = std::mem::take(&mut self.tabs[i].nav);
                 nav.settling = true;
                 self.tabs[i] = Tab {
-                    content: TabContent::Web(webview),
+                    content: TabContent::Web(webview, page),
                     url,
                     nojs,
                     read: false,

@@ -37,6 +37,13 @@ pub(crate) const WINDOW_PREFIX_TIMEOUT: Duration = Duration::from_millis(500);
 /// a later `j`/`k` (meant to scroll) doesn't silently resize instead.
 pub(crate) const PANE_RESIZE_TIMEOUT: Duration = Duration::from_millis(1000);
 
+/// How long the focus-reclaim poll stands down after the page reports a pointer press.
+/// Long enough to cover a deliberate press (people hold the button, especially when a
+/// control seems unresponsive) plus the click report that follows it; short enough that
+/// a page which traps focus without ever completing a click is only ours again a beat
+/// later. See [`App::reclaim_focus_tick`].
+pub(crate) const GESTURE_GRACE: Duration = Duration::from_millis(600);
+
 /// Coalesce terminal PTY resizes: a grid-size change only applies once the target size
 /// has been stable this long, and every further change restarts the clock (see
 /// `sync_active_term_size`) — so a whole zoom sequence or window drag costs exactly one
@@ -142,6 +149,9 @@ pub(crate) enum UserEvent {
     /// it), `Err` a human-readable reason — possibly a "did you mean …" candidate
     /// list. `ai_id` routes the outcome into the initiating `:ai` chat.
     SchemeInstalled { ai_id: Option<u64>, result: Result<String, String> },
+    /// Something painted outside the event loop changed (a favicon finished decoding):
+    /// repaint. Carries nothing — the state is already in the tab it belongs to.
+    Redraw,
     /// The `Ctrl+Alt+Shift+R` keyboard-hook chord (the brick-proof panic button):
     /// reset all customization to defaults, regardless of mode or how keys are bound.
     RestoreDefaults,
@@ -373,6 +383,9 @@ pub(crate) struct App {
     /// While set, the shell stops reclaiming focus and the keyboard hook watches for
     /// Esc to snap control back. Cleared the moment the shell next holds the keyboard.
     pub(crate) page_focus_yielded: bool,
+    /// When the page last reported a pointer press. For a short grace after it the
+    /// focus-reclaim poll stands down — see [`reclaim_focus_tick`](Self::reclaim_focus_tick).
+    pub(crate) page_gesture_at: Option<Instant>,
     /// The `:ai` tab id currently running a tool-call, so an async action's
     /// completion (e.g. a WebView2 data wipe) can route its confirmation back to that
     /// chat. Set only for the duration of [`ai_reply`](App::ai_reply)'s dispatch.
@@ -792,6 +805,15 @@ impl App {
         if self.page_focus_yielded {
             return;
         }
+        // A pointer press is in progress (or just was). Reclaiming focus in the middle
+        // of a gesture blurs the page under the user's finger, which cancels whatever
+        // popover the pressed control was opening. The bridge's click-time report
+        // decides who should hold the keyboard a few ms later, so just stand down until
+        // then — this poll is only the backstop for pages the bridge can't reach
+        // (cross-origin iframes, no-JS tabs), and those never report a gesture at all.
+        if self.page_gesture_at.is_some_and(|t| t.elapsed() < GESTURE_GRACE) {
+            return;
+        }
         let hwnd = HWND(self.window.hwnd() as *mut core::ffi::c_void);
         unsafe {
             // Don't fight for focus while the user has switched to another app.
@@ -832,6 +854,7 @@ impl App {
     /// the yield so every Normal-mode key works again.
     pub(crate) fn reclaim_from_page(&mut self) {
         self.page_focus_yielded = false;
+        self.page_gesture_at = None;
         self.set_page_mode("normal");
         self.reclaim_shell_focus();
         self.window.request_redraw();

@@ -88,7 +88,9 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   scroll and `g`/`G` jump to top/bottom; `f` hint mode; `n`/`p` switch tabs; `1`–`9` jump to a tab; `<`/`>` reorder the
   current tab; `x` close tab; `H`/`L` history; **`Ctrl +`/`Ctrl -`/`Ctrl 0`** zoom the
   whole UI (native chrome + web pages + terminal) in / out / reset. A native tab bar shows
-  all open tabs.
+  all open tabs, each with its site's favicon (taken from WebView2's own icon store, so no
+  third-party favicon service ever learns what you browse) and a progress sweep along the
+  bottom of the cell while its page is loading.
 - **Hint** — `f` labels every clickable element (qutebrowser-style); type the label to
   follow it, `Esc` cancels. Injected JS draws the badges and clicks the target, while the
   shell keeps the keyboard — so it works on CSP-strict sites (needs JS, so not on `:nojs` tabs).

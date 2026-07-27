@@ -23,9 +23,18 @@ issues:
        ublock-filters.js $scriptletHostnames$ -- index-preserving) and let native ADBLOCK_JS json-prune
        handle YT ads. NOTE: a separate, worse variant (netblock stalling ALL YT videos in default mode)
        was already fixed -- netblock is now gated to :adblock native only.
+[*] - if i zoom on a tab it changes the zoom for all the tabs, both the browser and content zoom. it should be individual (since browser zoom is related to terminal zoom, separating browser and terminal might be needed)
+[*] - :ads should only toggle the current adblocker, if i have native on and run :ads it will turn it off as intended, but running :ads again puts me in ubo and not native
+[*] - insert mode should also be exitable with ctrl+s or shift+escape
+[] - clicking with the mouse through the splits sometimes doesnt change cleanly, if i have chatgpt on the left and a terminal on the right and the current selected is chatgpt and the split is in insert mode, if i click on the terminal with the mouse the blue border highlights shift to the terminal, but the chatgpt tab continues the active one, so typing will go to the chatgpt tab
+[] - still has that annoying issue of the commandbar being frozen but only sometimes
+[*] - caret mode cursor is not placed correctly when selecting, its always one to the right. the word "apple" for example, if the cursor is on the "a" of the "apple" and i start selecting, the selection doesnt happen until i move the cursor somewhere (it should, just like vim), so if i select the word until the cursor is on "e" of the "apple" and i yank it, i only yank "appl" and not "apple"
+[] - saving a session with :w sometimes doesnt work, no idea why
 
 feats:
 [*] - :save/saved or :favorite/favorites for saving a page for later
+[*] - add copy to right mouse button click
+[] - make ";" toggle browser hud visibility
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"

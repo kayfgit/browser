@@ -19,6 +19,8 @@
 
 #![cfg(windows)]
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -30,7 +32,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_SCRIPT, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_STYLESHEET,
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_WEBSOCKET, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST,
 };
-use webview2_com::{take_pwstr, WebResourceRequestedEventHandler};
+use webview2_com::{take_pwstr, NavigationStartingEventHandler, WebResourceRequestedEventHandler};
 use windows_core::{w, Interface, PCWSTR, PWSTR};
 // `windows061` is the 0.61 `windows` build webview2-com is compiled against (see Cargo.toml):
 // its `IStream` is the exact type `CreateWebResourceResponse` wants, so a stream we mint with
@@ -75,6 +77,7 @@ pub(crate) fn install(
             return;
         }
     }
+    install_youtube_filter_gate(&core);
     let handler = WebResourceRequestedEventHandler::create(Box::new(
         move |_sender: Option<ICoreWebView2>, args| {
             let Some(args) = args else { return Ok(()) };
@@ -145,6 +148,75 @@ pub(crate) fn install(
     let mut token = 0i64;
     let _ = unsafe { core.add_WebResourceRequested(&handler, &mut token) };
 }
+
+/// Un-register the [`HYDRATION_CONTEXTS`] filters while the top frame is YouTube, and put
+/// them back on the way out.
+///
+/// The `is_youtube_host` carve-out in the handler above spares YouTube's own requests from
+/// being BLOCKED — but they're still INTERCEPTED, and interception alone is the problem.
+/// Routing a request through this UI-thread handler is enough to stall YouTube's lazy
+/// hydration: that's what left a fresh watch page stuck at `readyState==loading` with the
+/// player up but comments never filling in, and it's why the sub-resource blocker had to be
+/// gated to `:adblock native` in the first place. In native mode the same stall is still
+/// there, and it hits every part of the UI that fetches itself on demand — clicking the
+/// account avatar fires a `/youtubei/v1/account/account_menu` request and opens the menu
+/// when it answers, so a stalled fetch reads as a button that simply does nothing.
+///
+/// So on YouTube we stop intercepting exactly the request classes its UI hydrates through —
+/// fetch/XHR and sub-documents (the account menu's `accounts.google.com` / `ogs.google.com`
+/// frames) — and keep intercepting scripts, images, stylesheets, websockets and pings, which
+/// is where third-party ad/tracker blocking actually earns its keep. Little is given up:
+/// YouTube's own requests were exempt anyway, and its ads are killed by pruning the
+/// player-response JSON page-side (see `ADBLOCK_JS`), not here.
+///
+/// `NavigationStarting` on the core webview fires for TOP-frame navigations only, before any
+/// sub-resource is requested, so the filter set is always right for the page being loaded.
+/// SPA navigations within YouTube fire nothing — and need to, since the state is already
+/// correct. Best-effort throughout: a failed add/remove just leaves the filters as they were.
+fn install_youtube_filter_gate(core: &ICoreWebView2) {
+    // UI-thread only (NavigationStarting never fires anywhere else), so a plain `Cell`
+    // is enough to remember whether the hydration filters are currently registered.
+    let installed = Rc::new(Cell::new(true));
+    // The closure's own handle on the webview (the parameter stays free for the
+    // registration call below; the event's `sender` isn't guaranteed non-null).
+    let target = core.clone();
+    let handler = NavigationStartingEventHandler::create(Box::new(
+        move |_sender: Option<ICoreWebView2>, args| {
+            let Some(args) = args else { return Ok(()) };
+            let uri = unsafe {
+                let mut p = PWSTR::null();
+                args.Uri(&mut p)?;
+                take_pwstr(p)
+            };
+            let want = !is_youtube_host(&uri);
+            if want == installed.get() {
+                return Ok(());
+            }
+            for ctx in HYDRATION_CONTEXTS {
+                let _ = unsafe {
+                    if want {
+                        target.AddWebResourceRequestedFilter(w!("*"), ctx)
+                    } else {
+                        target.RemoveWebResourceRequestedFilter(w!("*"), ctx)
+                    }
+                };
+            }
+            installed.set(want);
+            Ok(())
+        },
+    ));
+    let mut token = 0i64;
+    let _ = unsafe { core.add_NavigationStarting(&handler, &mut token) };
+}
+
+/// The subset of [`FILTER_CONTEXTS`] a site fetches its own UI through, and so the subset
+/// whose interception can stall that UI. Dropped while the top frame is YouTube — see
+/// [`install_youtube_filter_gate`].
+const HYDRATION_CONTEXTS: [COREWEBVIEW2_WEB_RESOURCE_CONTEXT; 3] = [
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_XML_HTTP_REQUEST,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_FETCH,
+    COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT,
+];
 
 /// Build a 200-OK WebView2 response that serves `body` as `mime` — the neutered surrogate
 /// for a `$redirect` rule. The body is copied into a COM memory stream (`SHCreateMemStream`,

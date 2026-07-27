@@ -231,6 +231,33 @@ mod tests {
         }
     }
 
+    /// No bundled rule stands between a signed-in YouTube page and its account menu.
+    ///
+    /// When the avatar button stopped opening its menu under `:adblock native`, the first
+    /// suspect was a filter rule killing the request that populates it. It isn't: with all
+    /// five lists compiled, every request that menu depends on passes — the lazy
+    /// `/youtubei/v1/*` fetches, the avatar images, and the `accounts.google.com` /
+    /// `ogs.google.com` frames it embeds. (The cause was the INTERCEPTION itself; see the
+    /// YouTube filter gate in `netblock`.) This test exists so a future list refresh that
+    /// does start blocking one of these is caught here rather than as a dead button.
+    #[test]
+    fn nothing_bundled_blocks_the_youtube_account_menu() {
+        let b = engine_from(&[SUPPLEMENT, EASYLIST, EASYPRIVACY, YOYO, UBLOCK]);
+        let yt = "https://www.youtube.com/";
+        for (url, kind) in [
+            ("https://www.youtube.com/youtubei/v1/account/account_menu?prettyPrint=false", "xmlhttprequest"),
+            ("https://www.youtube.com/youtubei/v1/notification/get_notification_menu", "xmlhttprequest"),
+            ("https://www.youtube.com/youtubei/v1/guide?prettyPrint=false", "xmlhttprequest"),
+            ("https://yt3.ggpht.com/ytc/AOPolaQabc=s88-c-k-c0x00ffffff-no-rj", "image"),
+            ("https://lh3.googleusercontent.com/a/abc=s96-c", "image"),
+            ("https://accounts.google.com/RotateCookiesPage?og_pid=1", "subdocument"),
+            ("https://ogs.google.com/u/0/widget/app?origin=https://www.youtube.com", "subdocument"),
+            ("https://apis.google.com/js/api.js", "script"),
+        ] {
+            assert!(!blocks_request(&b, url, yt, kind), "the account menu needs [{kind}] {url}");
+        }
+    }
+
     #[test]
     fn easylist_blocks_known_redirect_domain() {
         // Proves the bundled EasyList is parsed and that a top-level "document"

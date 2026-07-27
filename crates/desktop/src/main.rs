@@ -37,6 +37,7 @@ mod config;
 mod data;
 mod draw;
 mod extensions;
+mod favicon;
 mod find;
 mod freeze;
 mod hints;
@@ -186,42 +187,60 @@ const BRIDGE_JS: &str = r#"
     // the time the shell calls SetFocus to take it back (avoids a focus race).
     setTimeout(function () { post('grab-focus'); }, 0);
   }
-  // Decide what a Normal-mode click should do with keyboard focus, on `click` (the
-  // END of the gesture, so the page's own handlers run first):
-  //   * a text field  → 'page-edit', the shell enters Insert so you can type;
-  //   * a control/menu/link → 'page-hold', let the PAGE keep focus so its popover
-  //     stays open (the old blanket grab-back blurred YouTube menus shut on click);
-  //   * empty page area → grabBack(), reclaim the shell keyboard as before.
-  // Esc (caught by the keyboard hook) snaps the shell back from a hold/edit. A script
-  // `.focus()` with no click is still caught by the shell's periodic reclaim tick.
-  function onClick(e) {
-    if (window.__mode && window.__mode !== 'normal') return;
-    var t = e.target;
-    var field = (t && t.closest) ? t.closest('input,textarea,[contenteditable]') : null;
-    if (field && editable(field)) { post('page-edit'); return; }
-    var ctrl = (t && t.closest) ? t.closest(
+  // What a Normal-mode click at `t` should do with keyboard focus:
+  //   'field' → the shell enters Insert so you can type;
+  //   'ctrl'  → a control/menu/link: let the PAGE keep focus so its popover stays
+  //             open (a blanket grab-back blurs component menus shut);
+  //   ''      → empty page area: the shell reclaims the keyboard.
+  function classify(t) {
+    if (!t || !t.closest) return '';
+    var field = t.closest('input,textarea,[contenteditable]');
+    if (field && editable(field)) return 'field';
+    var ctrl = t.closest(
       "a[href],button,select,summary,label,[role='button'],[role='link']," +
       "[role='menuitem'],[role='tab'],[role='checkbox'],[role='radio']," +
       "[role='option'],[role='switch'],[role='combobox']," +
-      "[onclick],[tabindex]:not([tabindex='-1'])") : null;
+      "[onclick],[tabindex]:not([tabindex='-1'])");
     // Component frameworks (YouTube, Gmail, …) wire clicks onto custom elements
     // with addEventListener and none of the above attributes, so the selector
-    // misses them and the old fall-through to grabBack() blurred the webview the
+    // misses them and a fall-through to grabBack() blurred the webview the
     // instant you clicked — snapping the control's just-opened menu/popover shut
     // (the "can't press YouTube buttons; a double-click opens then closes" bug).
     // Such controls almost always style themselves `cursor: pointer`, so treat
     // that as the catch-all clickability signal and let the PAGE keep focus.
-    if (!ctrl && t && t.nodeType === 1) {
+    if (!ctrl && t.nodeType === 1) {
       try { if (getComputedStyle(t).cursor === 'pointer') ctrl = t; } catch (_) {}
     }
-    if (ctrl) { post('page-hold'); return; }
+    return ctrl ? 'ctrl' : '';
+  }
+  // Act on the click (the END of the gesture, so the page's own handlers run first).
+  // Esc (caught by the keyboard hook) snaps the shell back from a hold/edit. A script
+  // `.focus()` with no click is still caught by the shell's periodic reclaim tick.
+  function onClick(e) {
+    if (window.__mode && window.__mode !== 'normal') return;
+    var kind = classify(e.target);
+    if (kind === 'field') { post('page-edit'); return; }
+    if (kind === 'ctrl') { post('page-hold'); return; }
     grabBack();
   }
   document.addEventListener('click', onClick, true);
   // A real pointer press anywhere in this page tells the shell to focus THIS pane
   // (when split). Fired on pointerdown — before any link navigation — so clicking a
   // non-focused web pane switches focus to it instead of stranding the keyboard.
-  document.addEventListener('pointerdown', function () { post('pane-click'); }, true);
+  // It ALSO opens the shell's mid-gesture focus grace (see `page_gesture_at`).
+  document.addEventListener('pointerdown', function (e) {
+    post('pane-click');
+    // Report a control press HERE, at the start of the gesture, not on the click that
+    // ends it. The webview takes OS keyboard focus on mousedown, and the shell's
+    // periodic reclaim poll pulls it straight back unless it has been told the page
+    // should keep it — so reporting only at `click` left the entire press as a window
+    // in which the page could be blurred mid-gesture. A press held even slightly (or
+    // a control whose menu opens asynchronously, like YouTube's account avatar, which
+    // fetches its menu before showing it) lost focus in that window and the popover
+    // never appeared: the button looked dead. Posting at pointerdown closes it.
+    if (window.__mode && window.__mode !== 'normal') return;
+    if (classify(e.target) === 'ctrl') post('page-hold');
+  }, true);
   // Link-hover readout: report the href under the pointer so the shell can show it
   // on the right of the command bar (like a browser status bar). Posted only when
   // the target link CHANGES (mouseover bubbles, so this is event-delegated and
@@ -1444,6 +1463,7 @@ fn main() -> Result<()> {
         bar_dragging: false,
         bar_cmd_scroll: 0,
         page_focus_yielded: false,
+        page_gesture_at: None,
         acting_ai: None,
         config: config::load(),
         theme: draw::Theme::default(),
@@ -1530,6 +1550,11 @@ fn main() -> Result<()> {
             Event::NewEvents(StartCause::ResumeTimeReached { .. }) => {
                 // A transient status flash (e.g. a finished background `:ai`) times out.
                 app.expire_status_flash();
+                // Advance the tab strip's loading sweep. Mode-independent: a page can
+                // load while you're typing a command or in passthrough.
+                if app.any_tab_loading() {
+                    app.window.request_redraw();
+                }
                 // A held-back terminal resize (zoom/drag burst settling): repaint —
                 // the draw's sync_active_term_size applies it once the target settles.
                 if app.term_resize_want_at.is_some() {
@@ -1721,6 +1746,9 @@ fn main() -> Result<()> {
                 // click ends any prior page-focus yield.
                 if app.mode == ModeKind::Normal {
                     app.page_focus_yielded = false;
+                    // The gesture resolved to "the shell keeps the keyboard": end the
+                    // grace so the poll guards this page again immediately.
+                    app.page_gesture_at = None;
                     app.reclaim_shell_focus();
                 }
             }
@@ -1751,6 +1779,10 @@ fn main() -> Result<()> {
             }
             Event::UserEvent(UserEvent::ReclaimNormal) => app.reclaim_from_page(),
             Event::UserEvent(UserEvent::PaneClick) => {
+                // A gesture is under way in the page: hold the focus-reclaim poll off
+                // until it has finished and the bridge has said who should keep the
+                // keyboard (see `reclaim_focus_tick`).
+                app.page_gesture_at = Some(Instant::now());
                 // Clicking inside a web pane focuses it (web panes consume the click in
                 // their HWND, so this is the only way they reach us). Use the OS cursor
                 // position, since CursorMoved isn't delivered over a child webview.
@@ -1897,6 +1929,7 @@ fn main() -> Result<()> {
                 app.refresh_active_url_record(record);
                 app.window.request_redraw();
             }
+            Event::UserEvent(UserEvent::Redraw) => app.window.request_redraw(),
             Event::UserEvent(UserEvent::TermClosed { id }) => app.close_term_tab(id),
             Event::UserEvent(UserEvent::Quit) => {
                 app.teardown();
@@ -1939,6 +1972,17 @@ fn main() -> Result<()> {
                 // Wake at the resize-mode idle deadline so it can auto-exit.
                 *control_flow =
                     ControlFlow::WaitUntil(app.pane_resize_at + crate::app::PANE_RESIZE_TIMEOUT);
+            }
+            // A page is loading: wake fast enough for the tab strip's progress sweep to
+            // read as motion. Merged (not chained onto the mode branches above) because
+            // a load can be in flight in any mode.
+            if app.any_tab_loading() {
+                let deadline = Instant::now() + Duration::from_millis(60);
+                let next = match *control_flow {
+                    ControlFlow::WaitUntil(t) => t.min(deadline),
+                    _ => deadline,
+                };
+                *control_flow = ControlFlow::WaitUntil(next);
             }
             // A pending status-flash auto-clear: wake at its deadline (or sooner, if
             // another timer above already wins).
