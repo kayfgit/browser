@@ -1175,6 +1175,11 @@ impl App {
             }
             self.mode = ModeKind::Passthrough;
             self.window.set_focus();
+            // Reaching a terminal from a focused PAGE (a pane click carrying passthrough
+            // across) leaves keyboard focus on the webview child, and `set_focus` no-ops
+            // while we're already foreground — take the keyboard back explicitly, or the
+            // page keeps swallowing the keys meant for the PTY.
+            self.reclaim_shell_focus();
             self.set_status("terminal — Ctrl+S returns to the shell");
             self.window.request_redraw();
             return;

@@ -1666,15 +1666,15 @@ fn main() -> Result<()> {
                         }
                     } else if app.is_split() {
                         // Click a (native) pane below the tab bar to focus it. Web
-                        // panes consume the click in their own HWND, so this only
-                        // fires for terminal/read/vim/blank panes — Ctrl+W covers the
-                        // rest. These have no child HWND (keys already route through the
-                        // shell), so focusing to Normal here is the expected behaviour;
-                        // the web two-click problem is handled on the PaneClick path.
+                        // panes consume the click in their own HWND, so this only fires
+                        // for terminal/read/vim/blank panes; the web half of the same
+                        // gesture arrives as `PaneClick`. Both go through
+                        // `focus_pane_click`, which carries passthrough across the move
+                        // and hands the keyboard to whichever pane now owns it.
                         if let Some((tab, _)) =
                             app.pane_at_pixel(app.cursor_pos.0, app.cursor_pos.1)
                         {
-                            app.set_active_pane(tab);
+                            app.focus_pane_click(tab);
                         }
                     }
                 }

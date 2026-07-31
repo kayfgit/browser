@@ -275,6 +275,34 @@ impl App {
             .unwrap_or_else(|| self.content_band())
     }
 
+    /// Whether pane `tab` can hold [`Passthrough`](ModeKind::Passthrough): a web page
+    /// (keys → page) or a native terminal (keys → PTY). A `:read`/vim/blank pane has
+    /// nothing to pass keys *to*, so passthrough must not follow focus onto one.
+    fn pane_takes_passthrough(&self, tab: usize) -> bool {
+        self.tabs.get(tab).is_some_and(|t| t.term().is_some() || t.webview().is_some())
+    }
+
+    /// Let go of the pane we're leaving before focus moves to another one. The old
+    /// page's bridge must stop intercepting for a mode that no longer applies (its
+    /// `__mode` is sticky JS state), and — when the shell is about to own the keyboard
+    /// (`take_keyboard`) — its child HWND has to release keyboard focus, or the *old*
+    /// pane keeps eating keystrokes while the border sits on the new one.
+    /// `take_keyboard` is false when moving to another WEB pane: that pane's own HWND
+    /// already took focus from the click, and yanking it to the parent here would undo
+    /// the click the user just made.
+    fn release_focused_pane(&mut self, take_keyboard: bool) {
+        self.page_focus_yielded = false;
+        // Called with `active` still on the OLD pane, so this reaches its webview.
+        self.set_page_mode("normal");
+        if take_keyboard {
+            if let Some(wv) = self.active_webview() {
+                let _ = wv.focus_parent();
+            }
+            self.page_gesture_at = None;
+            self.reclaim_shell_focus();
+        }
+    }
+
     /// Make `tab` the focused pane (the active tab), repositioning webviews and
     /// returning the shell to Normal so its keys work in the newly focused pane. Used
     /// by the Ctrl+W keyboard move, which deliberately pulls the keyboard to the shell.
@@ -282,6 +310,7 @@ impl App {
         if Some(tab) == self.active || tab >= self.tabs.len() {
             return;
         }
+        self.release_focused_pane(true);
         self.active = Some(tab);
         self.mode = ModeKind::Normal;
         // Landing on a terminal in Normal mode = copy/vi mode; seed its cursor now so
@@ -293,20 +322,45 @@ impl App {
         self.window.request_redraw();
     }
 
-    /// Mark `tab` the active pane because the user CLICKED inside it. Unlike
-    /// [`set_active_pane`](Self::set_active_pane) (the Ctrl+W keyboard move), this does
-    /// NOT wrestle keyboard focus back to the shell or reset the mode: the click is
-    /// already being handled by that pane's own content — the page bridge focuses a
-    /// field (→ passthrough), follows a link, or keeps a control's menu open — so the
-    /// focus border is a purely visual cue. Stealing focus here is what made a click on
-    /// a non-focused web pane merely "select" it, needing a second click to interact.
+    /// Make `tab` the active pane because the user CLICKED inside it — from the page
+    /// bridge for a web pane (which consumes the click in its own HWND), or straight
+    /// from the parent window's `MouseInput` for a native one.
+    ///
+    /// Two things separate this from [`set_active_pane`](Self::set_active_pane), the
+    /// Ctrl+W keyboard move:
+    ///
+    /// * **The mode follows the focus.** [`Passthrough`](ModeKind::Passthrough) is the
+    ///   sticky "every keystroke goes to the content" mode, so a click that moves panes
+    ///   re-enters it on the new pane instead of dumping you into Normal. Every other
+    ///   mode is either bound to the old pane's DOM (Insert/Caret) or a transient shell
+    ///   state (Command/Find/Hint/…), so those still land in Normal.
+    /// * **Focus follows the content.** For a WEB target the click is already being
+    ///   handled by that page — focusing a field, following a link, opening a menu — so
+    ///   we leave the keyboard where the page put it; stealing it here is what made a
+    ///   click on an unfocused web pane merely "select" it, needing a second click. For
+    ///   a NATIVE target (terminal/read/blank) there is no child HWND to type into, so
+    ///   the shell must take the keyboard back off whatever page held it.
     pub(crate) fn focus_pane_click(&mut self, tab: usize) {
         if Some(tab) == self.active || tab >= self.tabs.len() {
             return;
         }
+        let to_web = self.tabs.get(tab).is_some_and(|t| t.webview().is_some());
+        let keep_pass =
+            self.mode == ModeKind::Passthrough && self.pane_takes_passthrough(tab);
+        self.release_focused_pane(!to_web);
         self.active = Some(tab);
         self.find_reset();
+        // The previous pane's hovered-link readout doesn't belong to the new one.
+        self.hover_link = None;
         self.refresh_visibility();
+        if keep_pass {
+            // Re-assert passthrough on the pane we just landed on: push the mode into
+            // its page bridge (or resume its PTY's live grid) so keys actually go there.
+            self.enter_passthrough();
+        } else {
+            self.mode = ModeKind::Normal;
+            self.ensure_term_vi();
+        }
         self.window.request_redraw();
     }
 

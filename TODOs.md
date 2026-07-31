@@ -15,26 +15,24 @@ issues:
 [?/] - random not responding after exiting cs2 (might have to do with constant changes to resolution)
 [?] - sometimes crashes after taking a windows screenshot (prntscreen button)
 [/-] - opening youtube with ublock origin activated makes it open in a half-open half-not state.
-       CONFIRMED cause: uBOLite's `ublock-filters` main-world SCRIPTLET (its YouTube fetch-response
-       rewrite / #reloadxhr player-fetch trick), NOT its network/DNR blocking. Only fires on the
-       logged-in profile + certain videos; page hangs at readyState=loading so the player boots but
-       metadata/comments never hydrate. Reload works (served from cache). Fix when revisiting: make
-       uBOL skip YouTube (rename the youtube.com entries in rulesets/scripting/scriptlet/main/
-       ublock-filters.js $scriptletHostnames$ -- index-preserving) and let native ADBLOCK_JS json-prune
-       handle YT ads. NOTE: a separate, worse variant (netblock stalling ALL YT videos in default mode)
-       was already fixed -- netblock is now gated to :adblock native only.
 [*] - if i zoom on a tab it changes the zoom for all the tabs, both the browser and content zoom. it should be individual (since browser zoom is related to terminal zoom, separating browser and terminal might be needed)
 [*] - :ads should only toggle the current adblocker, if i have native on and run :ads it will turn it off as intended, but running :ads again puts me in ubo and not native
 [*] - insert mode should also be exitable with ctrl+s or shift+escape
-[] - clicking with the mouse through the splits sometimes doesnt change cleanly, if i have chatgpt on the left and a terminal on the right and the current selected is chatgpt and the split is in insert mode, if i click on the terminal with the mouse the blue border highlights shift to the terminal, but the chatgpt tab continues the active one, so typing will go to the chatgpt tab
+[x] - clicking with the mouse through the splits sometimes doesnt change cleanly, if i have chatgpt on the left and a terminal on the right and the current selected is chatgpt and the split is in insert mode, if i click on the terminal with the mouse the blue border highlights shift to the terminal, but the chatgpt tab continues the active one, so typing will go to the chatgpt tab
 [] - still has that annoying issue of the commandbar being frozen but only sometimes
 [*] - caret mode cursor is not placed correctly when selecting, its always one to the right. the word "apple" for example, if the cursor is on the "a" of the "apple" and i start selecting, the selection doesnt happen until i move the cursor somewhere (it should, just like vim), so if i select the word until the cursor is on "e" of the "apple" and i yank it, i only yank "appl" and not "apple"
 [] - saving a session with :w sometimes doesnt work, no idea why
+[] - random not responding after new update 26/07/2026 22:54
+[*] - pressing a copy button using the hint mode doesnt actually copy it (tested on the copy repository button on github)
+[] - this fucking out of focus mode freeze thing needs to be fixed, every time i have to alt tab to get control back and its fucking annoying
+[] - allow mouse selection in the terminal
+[x] - when using the mouse to switch between panels it should keep the mode and not switch, currently if its in passthrough mode and i switch panels it switches to normal mode
 
 feats:
 [*] - :save/saved or :favorite/favorites for saving a page for later
 [*] - add copy to right mouse button click
 [] - make ";" toggle browser hud visibility
+[*] - add profiles, like ":saveprofile work" which saves the layout, tabs, everything to a profile and can be brought back by ":profile work"
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
