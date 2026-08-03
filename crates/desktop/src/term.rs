@@ -15,6 +15,10 @@ use crate::pty_term;
 use crate::tabs::{TabContent, TabNav};
 use crate::{clipboard_get, clipboard_set, App, ModeKind, Tab, UserEvent, TERM_PAD};
 
+/// How close together two presses must be to count as a double/triple click when
+/// selecting with the mouse. Windows' own default is 500 ms.
+pub(crate) const MULTI_CLICK: Duration = Duration::from_millis(500);
+
 /// A terminal tab's link to its companion `browser-pty-host` process. The ConPTY
 /// lives entirely in that process; here we only hold a normal pipe + the process,
 /// none of which can deadlock our exit.
@@ -452,6 +456,11 @@ impl App {
         if let Some(bytes) = encode_term_key(&key.logical_key, ctrl, alt, shift, app_cursor) {
             if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut())
             {
+                // Typing dismisses a mouse selection's highlight, as terminals do —
+                // it was copied on release, and leaving it lit over shifting output
+                // would be stale. Copy mode's own `v`/`V` selection is untouched here
+                // (keys only reach the PTY in passthrough).
+                s.pty.clear_selection();
                 s.send(0, &bytes);
             }
         }
@@ -680,6 +689,96 @@ impl App {
         if was_config_edit {
             self.reload_config();
         }
+    }
+
+    /// Map a window pixel to the (col, row) cell of the terminal pane drawn at `rect`,
+    /// plus whether the pointer sits in the cell's right half. Coordinates are the
+    /// VIEWPORT's (row 0 = the pane's top line) and clamped to the grid, so dragging
+    /// past an edge selects to it. Mirrors the renderer's origin exactly: the grid
+    /// starts at `rect.x + TERM_PAD`, `rect.y` (see `chrome.rs`).
+    fn term_cell_at(&self, tab: usize, rect: PaneRect, x: f64, y: f64) -> Option<(usize, usize, bool)> {
+        let s = self.tabs.get(tab)?.term()?;
+        let (cw, ch) = self.term_cell();
+        let dx = (x as i32 - rect.x - TERM_PAD).max(0);
+        let dy = (y as i32 - rect.y).max(0);
+        let col = (dx / cw).clamp(0, s.pty.cols.saturating_sub(1) as i32) as usize;
+        let row = (dy / ch).clamp(0, s.pty.rows.saturating_sub(1) as i32) as usize;
+        Some((col, row, dx % cw >= cw / 2))
+    }
+
+    /// Left press inside a terminal pane: begin a mouse selection there. Consecutive
+    /// presses on the same spot widen it (2 = word, 3 = line), like every other
+    /// terminal. Returns `false` when the press isn't ours to take — not a terminal,
+    /// or the program itself is reading the mouse (vim `mouse=a`, less, tmux) and the
+    /// user isn't holding Shift to override it, the xterm convention.
+    pub(crate) fn term_select_start(&mut self, tab: usize, rect: PaneRect, x: f64, y: f64) -> bool {
+        let Some((col, row, right)) = self.term_cell_at(tab, rect, x, y) else {
+            return false;
+        };
+        let shift = self.modifiers.shift_key();
+        if self.tabs.get(tab).and_then(|t| t.term()).is_some_and(|s| s.pty.mouse_mode()) && !shift {
+            return false;
+        }
+        // A press within the streak window AND on the same cell continues the streak;
+        // anything else starts a fresh one. Cell-based (not pixel-exact) so a hand
+        // that drifts a pixel between clicks still counts as a double-click.
+        let now = std::time::Instant::now();
+        let streak = match self.term_clicks {
+            Some((at, px, py, n))
+                if now.duration_since(at) < MULTI_CLICK
+                    && self
+                        .term_cell_at(tab, rect, px, py)
+                        .is_some_and(|(c, r, _)| (c, r) == (col, row)) =>
+            {
+                n % 3 + 1
+            }
+            _ => 1,
+        };
+        self.term_clicks = Some((now, x, y, streak));
+        let kind = match streak {
+            2 => pty_term::SelectKind::Word,
+            3 => pty_term::SelectKind::Line,
+            _ => pty_term::SelectKind::Char,
+        };
+        if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
+            s.pty.mouse_select(col, row, right, kind);
+        }
+        self.term_drag = Some((tab, rect));
+        self.window.request_redraw();
+        true
+    }
+
+    /// Pointer moved with the button down: extend the selection to the cell under it.
+    pub(crate) fn term_select_drag(&mut self, x: f64, y: f64) {
+        let Some((tab, rect)) = self.term_drag else { return };
+        let Some((col, row, right)) = self.term_cell_at(tab, rect, x, y) else {
+            return;
+        };
+        if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
+            s.pty.mouse_select_to(col, row, right);
+        }
+        self.window.request_redraw();
+    }
+
+    /// Button released: end the drag and copy what was selected, the way terminals do
+    /// (the selection stays highlighted — `y` in copy mode still works too). A press
+    /// that selected nothing just clears, leaving the clipboard alone.
+    pub(crate) fn term_select_end(&mut self) {
+        let Some((tab, _)) = self.term_drag.take() else { return };
+        let text = self.tabs.get(tab).and_then(|t| t.term()).and_then(|s| s.pty.selection_text());
+        match text {
+            Some(text) => {
+                let chars = text.chars().count();
+                clipboard_set(&text);
+                self.set_status(format!("copied {chars} chars"));
+            }
+            None => {
+                if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
+                    s.pty.clear_selection();
+                }
+            }
+        }
+        self.window.request_redraw();
     }
 
     /// Forward a wheel notch to a terminal program that turned on mouse reporting,

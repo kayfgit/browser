@@ -1490,12 +1490,14 @@ impl App {
         }
     }
 
-    /// Bare `:ads`/`:adblock` — a quick on/off toggle: off when a blocker is active,
-    /// otherwise back to the default uBlock Origin engine. Use `:adblock native|ubo|off`
-    /// to pick a specific engine.
+    /// Bare `:ads`/`:adblock` — a quick on/off toggle for whichever engine you're
+    /// running: off when one is active, otherwise back on with the SAME engine
+    /// ([`adblock_prev`](App::adblock_prev)), so native → off → native rather than
+    /// silently landing on the uBlock default. Use `:adblock native|ubo|off` to switch
+    /// engines outright.
     pub(crate) fn toggle_adblock(&mut self) {
         let mode = if self.adblock_mode == AdblockMode::Off {
-            AdblockMode::Ubo
+            self.adblock_prev
         } else {
             AdblockMode::Off
         };
@@ -1509,6 +1511,12 @@ impl App {
     /// is enabled/disabled profile-wide via [`extensions`](crate::extensions). Persisted on
     /// the next session write; re-applied to newly built webviews (see `build_content_webview`).
     pub(crate) fn set_adblock_mode(&mut self, mode: AdblockMode) {
+        // Remember the engine we're leaving (never `Off`) so a later bare `:ads` turns
+        // THAT one back on. Recorded here rather than in `toggle_adblock` so an explicit
+        // `:adblock off` is remembered the same way a toggle-off is.
+        if self.adblock_mode != AdblockMode::Off {
+            self.adblock_prev = self.adblock_mode;
+        }
         self.adblock_mode = mode;
         let native_on = mode == AdblockMode::Native;
         let ext_on = mode == AdblockMode::Ubo;
@@ -1534,9 +1542,12 @@ impl App {
             }
         }
         self.set_status(match mode {
-            AdblockMode::Ubo => "ublock origin lite = on",
-            AdblockMode::Native => "native adblock = on",
-            AdblockMode::Off => "adblocking = off",
+            AdblockMode::Ubo => "ublock origin lite = on".to_string(),
+            AdblockMode::Native => "native adblock = on".to_string(),
+            // Name the engine `:ads` will bring back, so the toggle's memory is visible.
+            AdblockMode::Off => {
+                format!("adblocking = off  (:ads returns to {})", self.adblock_prev.name())
+            }
         });
         self.window.request_redraw();
     }

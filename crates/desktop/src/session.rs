@@ -33,6 +33,11 @@ pub struct Session {
     /// `"ubo"` so sessions written before this field existed adopt the new default engine.
     #[serde(default = "default_adblock_mode")]
     pub adblock_mode: String,
+    /// The engine a bare `:ads` switches back ON — the last one that was running before
+    /// blocking was turned off, so `native` → off → `native`. Same spellings as
+    /// [`adblock_mode`](Self::adblock_mode) minus `"off"`; defaults to `"ubo"`.
+    #[serde(default = "default_adblock_mode")]
+    pub adblock_prev: String,
     pub search_template: String,
     pub term_command: Vec<String>,
     /// Index of the focused tab within `tabs`.
@@ -139,6 +144,7 @@ mod tests {
             no_scrollbar: true,
             adblock: true,
             adblock_mode: "ubo".into(),
+            adblock_prev: "native".into(),
             search_template: "https://example.com/?q=%s".into(),
             term_command: vec!["nu".into()],
             active: 1,
@@ -158,6 +164,7 @@ mod tests {
         let text = toml::to_string(&s).expect("serialize");
         let back: Session = toml::from_str(&text).expect("deserialize");
         assert!(back.no_scrollbar);
+        assert_eq!(back.adblock_prev, "native");
         assert_eq!(back.tabs.len(), 2);
         assert_eq!(back.active, 1);
         let g = back.window.expect("window geom");

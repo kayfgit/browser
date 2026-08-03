@@ -17,7 +17,7 @@ use crate::draw::Painter;
 use crate::find::FindState;
 use crate::hints::NativeHint;
 use crate::pages::{now_hms, ErrorEntry, ERROR_LOG_CAP};
-use crate::panes::PaneNode;
+use crate::panes::{PaneNode, PaneRect};
 use crate::tabs::{NativeRead, Tab};
 use crate::{read_view, session, BAR_H, BASE_PX, HISTORY_CAP, TAB_BAR_H, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP};
 
@@ -215,6 +215,27 @@ pub(crate) enum AdblockMode {
     Off,
 }
 
+impl AdblockMode {
+    /// The `:adblock <mode>` spelling, also the session key.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            AdblockMode::Ubo => "ubo",
+            AdblockMode::Native => "native",
+            AdblockMode::Off => "off",
+        }
+    }
+
+    /// Parse a session key, defaulting to the `Ubo` engine for anything unknown
+    /// (including sessions written before the field existed).
+    pub(crate) fn parse(s: &str) -> Self {
+        match s {
+            "native" => AdblockMode::Native,
+            "off" => AdblockMode::Off,
+            _ => AdblockMode::Ubo,
+        }
+    }
+}
+
 /// One installed browser extension, as surfaced by `:extensions` (id/name/enabled). Plain
 /// data so it can travel in a [`UserEvent`] and be cached on [`App`] regardless of platform.
 #[derive(Clone, Debug)]
@@ -283,6 +304,10 @@ pub(crate) struct App {
     /// popup guards) with the extension disabled; `Off` disables both. Set via
     /// `:adblock <mode>`; persisted across sessions. See [`set_adblock_mode`](Self::set_adblock_mode).
     pub(crate) adblock_mode: AdblockMode,
+    /// The last ENGINE that was running (never `Off`) — what a bare `:ads` switches
+    /// back on. Without it the toggle always returned to the `Ubo` default, so a native
+    /// session that was toggled off came back as uBlock. Persisted across sessions.
+    pub(crate) adblock_prev: AdblockMode,
     /// The installed browser extensions from the last `GetBrowserExtensions` query, cached
     /// to render the `:extensions` picker and to flip an entry's enabled state optimistically
     /// when Enter toggles it.
@@ -479,6 +504,15 @@ pub(crate) struct App {
     /// The last terminal find-char (`target, forward, till`) so `;`/`,` can repeat it
     /// (in the same / opposite direction), like vim.
     pub(crate) term_last_find: Option<(char, bool, bool)>,
+    /// The terminal tab a left-drag is currently selecting in, with the pane rect the
+    /// drag started over. Held for the whole gesture so the selection keeps extending
+    /// when the pointer wanders outside that pane (or off the window).
+    /// See [`term_select_start`](App::term_select_start).
+    pub(crate) term_drag: Option<(usize, PaneRect)>,
+    /// Click-streak tracker for the terminal's double/triple-click selection:
+    /// `(when, x, y, count)` of the last press. A press near the same spot within
+    /// [`MULTI_CLICK`](crate::term::MULTI_CLICK) grows `count` (2 = word, 3 = line).
+    pub(crate) term_clicks: Option<(Instant, f64, f64, u8)>,
     /// True while the browser is frozen (`:freeze`): every web tab is hidden and
     /// suspended to minimize RAM; the content band shows a frozen notice instead of
     /// the (hidden) webviews. `:unfreeze` resumes them. See [`freeze`](crate::freeze).
@@ -1277,12 +1311,8 @@ impl App {
             nojs: self.nojs,
             no_scrollbar: self.no_scrollbar,
             adblock: self.adblock,
-            adblock_mode: match self.adblock_mode {
-                AdblockMode::Ubo => "ubo",
-                AdblockMode::Native => "native",
-                AdblockMode::Off => "off",
-            }
-            .to_string(),
+            adblock_mode: self.adblock_mode.name().to_string(),
+            adblock_prev: self.adblock_prev.name().to_string(),
             search_template: self.search_template.clone(),
             term_command: self.term_command.clone(),
             active,
@@ -1316,10 +1346,16 @@ impl App {
         // Adopt the saved ad-blocker mode (default uBlock). Tabs restored below enforce the
         // per-mode extension state as they're built; here we just set the mode + native flag
         // (no webviews exist yet, so the full `set_adblock_mode` sweep would be a no-op).
-        self.adblock_mode = match s.adblock_mode.as_str() {
-            "native" => AdblockMode::Native,
-            "off" => AdblockMode::Off,
-            _ => AdblockMode::Ubo,
+        self.adblock_mode = AdblockMode::parse(&s.adblock_mode);
+        // Which engine a bare `:ads` turns back on. `Off` is not an engine (it would
+        // make the toggle a no-op), so a session that recorded one falls back to the
+        // mode itself, then to the default.
+        self.adblock_prev = match AdblockMode::parse(&s.adblock_prev) {
+            AdblockMode::Off => match self.adblock_mode {
+                AdblockMode::Off => AdblockMode::Ubo,
+                engine => engine,
+            },
+            engine => engine,
         };
         self.set_adblock(self.adblock_mode == AdblockMode::Native);
         if s.zoom != 1.0 {

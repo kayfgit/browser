@@ -1431,6 +1431,9 @@ fn main() -> Result<()> {
         // Default to the uBlock Origin extension (native blocker off); session restore may
         // override the mode below. `adblock`/`adblock_on` mirror "native on" = false here.
         adblock_mode: AdblockMode::Ubo,
+        adblock_prev: AdblockMode::Ubo,
+        term_drag: None,
+        term_clicks: None,
         extensions: Vec::new(),
         adblock: false,
         adblock_on: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1612,6 +1615,8 @@ fn main() -> Result<()> {
                     app.cursor_pos = (position.x, position.y);
                     // Left-drag inside the command line extends the selection.
                     app.bar_drag(position.x);
+                    // Left-drag inside a terminal pane extends ITS selection.
+                    app.term_select_drag(position.x, position.y);
                     // Hovering the command bar reveals the full (vs. shortened) URL.
                     let (_, h) = app.inner();
                     let over_bar =
@@ -1630,6 +1635,11 @@ fn main() -> Result<()> {
                     // A release over the child webview can be missed by the parent, so
                     // also end any in-progress drag-select here.
                     app.bar_dragging = false;
+                    // Same for a terminal drag — but drop it WITHOUT copying: leaving
+                    // the client area (often just crossing onto a sibling web pane's
+                    // HWND) isn't a release, and shouldn't clobber the clipboard. What
+                    // was selected stays highlighted and yankable.
+                    app.term_drag = None;
                     if app.bar_hover {
                         app.bar_hover = false;
                         if app.mode == ModeKind::Normal {
@@ -1646,6 +1656,8 @@ fn main() -> Result<()> {
                     ..
                 } => {
                     app.bar_dragging = false;
+                    // Ends a terminal drag-select and copies what it covered.
+                    app.term_select_end();
                 }
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
@@ -1664,18 +1676,21 @@ fn main() -> Result<()> {
                         } else {
                             let _ = app.window.drag_window();
                         }
-                    } else if app.is_split() {
-                        // Click a (native) pane below the tab bar to focus it. Web
-                        // panes consume the click in their own HWND, so this only fires
-                        // for terminal/read/vim/blank panes; the web half of the same
+                    } else if let Some((tab, rect)) =
+                        app.pane_at_pixel(app.cursor_pos.0, app.cursor_pos.1)
+                    {
+                        // A press on a (native) pane below the tab bar. Web panes
+                        // consume the click in their own HWND, so this only fires for
+                        // terminal/read/vim/blank panes; the web half of the same
                         // gesture arrives as `PaneClick`. Both go through
                         // `focus_pane_click`, which carries passthrough across the move
                         // and hands the keyboard to whichever pane now owns it.
-                        if let Some((tab, _)) =
-                            app.pane_at_pixel(app.cursor_pos.0, app.cursor_pos.1)
-                        {
+                        if app.is_split() {
                             app.focus_pane_click(tab);
                         }
+                        // Then start a drag-selection if that pane is a terminal (also
+                        // when unsplit — one terminal filling the band still selects).
+                        app.term_select_start(tab, rect, app.cursor_pos.0, app.cursor_pos.1);
                     }
                 }
                 // Mouse wheel: scroll the native-drawn content under the cursor (the

@@ -19,6 +19,15 @@ use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Processor, R
 // Re-exported so the shell can drive vi-mode without importing alacritty directly.
 pub use alacritty_terminal::vi_mode::ViMotion;
 
+/// What one mouse press selects: a plain drag, the word under the pointer
+/// (double-click), or the whole line (triple-click).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SelectKind {
+    Char,
+    Word,
+    Line,
+}
+
 use crate::draw::{self, Painter, Rgb};
 
 /// Default 16-color ANSI palette — Windows Terminal's "Campbell" scheme, so colors
@@ -401,6 +410,63 @@ impl PtyTerm {
     pub fn clear_selection(&mut self) -> bool {
         self.vt.selection.take().is_some()
     }
+
+    // --- mouse selection ------------------------------------------------------
+    // Drag-select with the pointer, independent of vi/copy mode. Cells arrive as
+    // VIEWPORT coordinates (row 0 = the pane's top line, what the user sees), which
+    // scrollback makes different from the grid's absolute lines — see `to_absolute`.
+
+    /// Turn a visible (col, row) cell into the absolute buffer point the selection
+    /// and grid index use: scrolling back moves the viewport up over history, whose
+    /// lines are negative. The inverse of the `+ display_offset` the renderer does.
+    fn to_absolute(&self, col: usize, row: usize) -> Point {
+        let off = self.vt.grid().display_offset() as i32;
+        let line = Line(row.min(self.rows.saturating_sub(1)) as i32 - off);
+        Point::new(line, Column(col.min(self.cols.saturating_sub(1))))
+    }
+
+    /// Begin a mouse selection at a visible cell. `right_half` (the pointer sits past
+    /// the cell's midpoint) anchors on that side, so dragging right from mid-glyph
+    /// doesn't include the character you started after.
+    pub fn mouse_select(&mut self, col: usize, row: usize, right_half: bool, kind: SelectKind) {
+        let p = self.to_absolute(col, row);
+        let side = if right_half { Side::Right } else { Side::Left };
+        let ty = match kind {
+            SelectKind::Char => SelectionType::Simple,
+            // Word/line selections expand themselves when the range is resolved, so a
+            // bare double/triple click already covers the word or row under the cursor.
+            SelectKind::Word => SelectionType::Semantic,
+            SelectKind::Line => SelectionType::Lines,
+        };
+        self.vt.selection = Some(Selection::new(ty, p, side));
+        self.follow_vi_cursor(p);
+    }
+
+    /// Extend the in-progress mouse selection to a visible cell (pointer drag).
+    pub fn mouse_select_to(&mut self, col: usize, row: usize, right_half: bool) {
+        let p = self.to_absolute(col, row);
+        let side = if right_half { Side::Right } else { Side::Left };
+        if let Some(sel) = self.vt.selection.as_mut() {
+            sel.update(p, side);
+        }
+        self.follow_vi_cursor(p);
+    }
+
+    /// Park the copy-mode cursor on the cell the mouse is working, when copy mode is
+    /// on. Alacritty's vi motions extend whatever selection exists, so without this a
+    /// `j` after a drag would yank the selection's end back to wherever the keyboard
+    /// cursor had been left — instead, the keyboard picks up where the mouse stopped.
+    fn follow_vi_cursor(&mut self, p: Point) {
+        if self.is_vi() {
+            self.vt.vi_goto_point(p);
+        }
+    }
+
+    /// The selected text, leaving the selection in place (so a drag can be copied
+    /// while staying highlighted). `None` when nothing is selected.
+    pub fn selection_text(&self) -> Option<String> {
+        self.vt.selection_to_string().filter(|s| !s.is_empty())
+    }
     /// Yank the current selection's text (and clear it).
     pub fn yank(&mut self) -> Option<String> {
         let text = self.vt.selection_to_string();
@@ -669,7 +735,7 @@ pub fn render(
         if cell.flags.contains(Flags::INVERSE) {
             std::mem::swap(&mut fg, &mut bg);
         }
-        // Copy-mode selection highlight (vi mode).
+        // Selection highlight — copy mode's `v`/`V` and mouse drags share it.
         if selection.is_some_and(|s| s.contains(item.point)) {
             bg = draw::SEL;
         }
@@ -731,6 +797,44 @@ mod tests {
         // Yank clears the selection; leaving vi mode works.
         pty.toggle_vi();
         assert!(!pty.is_vi());
+    }
+
+    #[test]
+    fn mouse_drag_selects_across_the_row() {
+        let mut pty = PtyTerm::new(20, 5, DEFAULT_SCROLLBACK);
+        pty.feed(b"hello world\r\n");
+        // Press on the 'h' (row 0, col 0) and drag onto the 'd' (col 10). The right
+        // half of the last cell is what makes the drag INCLUSIVE of it.
+        pty.mouse_select(0, 0, false, SelectKind::Char);
+        pty.mouse_select_to(10, 0, true);
+        assert_eq!(pty.selection_text().as_deref(), Some("hello world"));
+        // Reading the text must not consume the selection (the highlight stays).
+        assert_eq!(pty.selection_text().as_deref(), Some("hello world"));
+        // A double-click anywhere in "world" takes the whole word, no drag needed.
+        pty.mouse_select(8, 0, false, SelectKind::Word);
+        assert_eq!(pty.selection_text().as_deref(), Some("world"));
+        // A triple-click takes the line — with its newline, so pasting a run of lines
+        // keeps them on separate lines (alacritty's linewise convention).
+        pty.mouse_select(8, 0, false, SelectKind::Line);
+        assert_eq!(pty.selection_text().as_deref(), Some("hello world\n"));
+        assert!(pty.clear_selection());
+        assert_eq!(pty.selection_text(), None);
+    }
+
+    #[test]
+    fn mouse_selection_follows_the_viewport_into_scrollback() {
+        // 3 visible rows and 5 written lines (the last \r\n opens the cursor's own
+        // empty line), so "one"/"two" are pushed up into scrollback.
+        let mut pty = PtyTerm::new(20, 3, DEFAULT_SCROLLBACK);
+        pty.feed(b"one\r\ntwo\r\nthree\r\nfour\r\n");
+        // At the bottom, visible row 0 is "three".
+        pty.mouse_select(0, 0, false, SelectKind::Line);
+        assert_eq!(pty.selection_text().as_deref(), Some("three\n"));
+        // Scroll one line back: the same PIXEL row now shows "two", and clicking it
+        // must select that, not the absolute line it used to be.
+        pty.scroll_display(1);
+        pty.mouse_select(0, 0, false, SelectKind::Line);
+        assert_eq!(pty.selection_text().as_deref(), Some("two\n"));
     }
 
     #[test]
