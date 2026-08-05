@@ -34,8 +34,28 @@ pub(crate) enum Source {
 const YT_PROBE_JS: &str = r#"
 (function () {
   if (location.hostname.indexOf('youtube.com') === -1) return;
+  var isTop = false; try { isTop = (window.top === window); } catch (e) {}
+  if (!isTop) return;
   function log(m) { try { window.__post('dbg:' + Date.now() + ' ' + m); } catch (e) {} }
-  log('INIT ' + location.href);
+  // Did ADBLOCK_JS's window-keyed guard already fire on THIS window? If the flag is
+  // set before any of its per-document work could have run here, the guard swallowed
+  // the whole script for this document.
+  // Decisive test of whether ADBLOCK_JS's per-document work ran on THIS document: its
+  // `isYT` block only installs the `ytInitialPlayerResponse` accessor when
+  // `location.hostname` is youtube.com — never on the initial about:blank. So a plain
+  // data property here means the window-keyed `__adblockInit` guard swallowed the
+  // script for the real page.
+  function abState() {
+    try {
+      var d = Object.getOwnPropertyDescriptor(window, 'ytInitialPlayerResponse');
+      return d ? (d.get ? 'accessor' : 'data') : 'none';
+    } catch (e) { return 'err'; }
+  }
+  log('INIT ' + location.href + ' adblockInit=' + !!window.__adblockInit +
+      ' iprProp=' + abState() +
+      ' navtype=' + (function () {
+        try { return performance.getEntriesByType('navigation')[0].type; } catch (e) { return '?'; }
+      })());
   window.addEventListener('error', function (e) {
     log('JSERR ' + e.message + ' @ ' + (e.filename || '?') + ':' + (e.lineno || 0));
   }, true);
@@ -43,39 +63,74 @@ const YT_PROBE_JS: &str = r#"
     var r = ''; try { r = e.reason && (e.reason.stack || e.reason.message || String(e.reason)); } catch (_) {}
     log('REJECT ' + String(r).slice(0, 300));
   });
-  ['yt-navigate-start', 'yt-navigate-finish', 'yt-navigate-error', 'yt-page-data-updated']
+  // Who is tearing the document down / driving us somewhere else?
+  window.addEventListener('beforeunload', function () {
+    log('BEFOREUNLOAD from=' + location.href + '\n  stack=' + new Error().stack);
+  }, true);
+  ['yt-navigate-start', 'yt-navigate-finish', 'yt-navigate-error', 'yt-player-error']
     .forEach(function (ev) {
       document.addEventListener(ev, function () {
         log('EVT ' + ev + ' url=' + location.href + ' rs=' + document.readyState);
       });
     });
-  var _f = window.fetch;
-  window.fetch = function (input) {
-    var url = (typeof input === 'string') ? input : (input && input.url) || '';
-    var hot = url.indexOf('youtubei') !== -1 || url.indexOf('reel') !== -1;
-    if (hot) log('FETCH> ' + url.slice(0, 150));
-    var p = _f.apply(this, arguments);
-    if (hot) p.then(function (r) { log('FETCH< ' + r.status + ' ' + url.slice(0, 110)); },
-                    function (e) { log('FETCHX ' + e + ' ' + url.slice(0, 110)); });
-    return p;
-  };
+  try {
+    var _reload = location.reload.bind(location);
+    location.reload = function () { log('RELOAD() ' + new Error().stack); return _reload.apply(null, arguments); };
+    var _assign = location.assign.bind(location);
+    location.assign = function (u) { log('ASSIGN ' + u + '\n  ' + new Error().stack); return _assign.apply(null, arguments); };
+  } catch (e) {}
   var _ps = history.pushState.bind(history);
   history.pushState = function () { log('PUSHSTATE ' + (arguments[2] || '')); return _ps.apply(null, arguments); };
-  window.addEventListener('load', function () {
-    log('LOAD rs=' + document.readyState + ' sw=' + !!(navigator.serviceWorker && navigator.serviceWorker.controller));
-  });
-  setTimeout(function () {
-    var a = document.querySelector('a[href^="/shorts/"]');
-    if (!a) { log('NO-SHORTS-LINK url=' + location.href + ' rs=' + document.readyState); return; }
-    log('CLICK ' + a.getAttribute('href'));
-    a.click();
-    [5, 15].forEach(function (s) {
-      setTimeout(function () {
-        log('T+' + s + 's url=' + location.href + ' rs=' + document.readyState +
-            ' reels=' + document.querySelectorAll('ytd-reel-video-renderer,ytd-shorts').length);
-      }, s * 1000);
-    });
-  }, 8000);
+  // The ad-skip hazard: ADBLOCK_JS seeks `video.html5-main-video` to its duration
+  // whenever the player carries `ad-showing`. If that class is ever seen while the
+  // MAIN video is loaded, the seek ends the real video — which on a playlist advances
+  // to the next one. Log every ad-showing transition and every ended/seek so a loop
+  // leaves a trace.
+  var wasAd = null, seen = null;
+  setInterval(function () {
+    try {
+      var p = document.querySelector('.html5-video-player');
+      var v = document.querySelector('video.html5-main-video');
+      if (!p) return;
+      var ad = p.classList.contains('ad-showing');
+      if (ad !== wasAd) {
+        wasAd = ad;
+        log('ADCLASS ' + (ad ? 'ON' : 'off') +
+            ' interrupting=' + p.classList.contains('ad-interrupting') +
+            ' dur=' + (v ? v.duration : '?') + ' t=' + (v ? v.currentTime.toFixed(1) : '?') +
+            ' muted=' + (v ? v.muted : '?') +
+            ' cls=[' + p.className + ']');
+      }
+      if (v && v !== seen) {
+        seen = v;
+        v.addEventListener('ended', function () {
+          log('ENDED t=' + v.currentTime.toFixed(1) + '/' + v.duration +
+              ' adclass=' + p.classList.contains('ad-showing') + ' muted=' + v.muted);
+        });
+      }
+    } catch (e) {}
+  }, 250);
+
+  // The player's own view of the world, sampled while the loop runs.
+  setInterval(function () {
+    try {
+      var v = document.querySelector('video.html5-main-video');
+      var p = document.querySelector('.html5-video-player');
+      var ipr = null;
+      try { ipr = window.ytInitialPlayerResponse; } catch (e) {}
+      log('STATE url=' + location.href.slice(0, 90) +
+          ' rs=' + document.readyState +
+          ' vid=' + (v ? ('t=' + v.currentTime.toFixed(1) + '/' + v.duration +
+                          ' ready=' + v.readyState + ' paused=' + v.paused +
+                          ' err=' + (v.error ? v.error.code : '-') +
+                          ' src=' + (v.src || v.currentSrc || '').slice(0, 40))
+                       : 'none') +
+          ' cls=' + (p ? p.className.slice(0, 120) : 'noplayer') +
+          ' play=' + (ipr && ipr.playabilityStatus ? ipr.playabilityStatus.status : '?') +
+          ' streams=' + !!(ipr && ipr.streamingData) +
+          ' enf=' + document.querySelectorAll('ytd-enforcement-message-view-model').length);
+    } catch (e) { log('STATEX ' + e); }
+  }, 2000);
 })();
 "#;
 
@@ -694,16 +749,11 @@ impl App {
         let popup_intent = self.nav_intent.clone();
         let popup_blocker = self.blocker.clone();
         // This tab's current top origin, so the blocklist's `$third-party` rules resolve
-        // against the right source on each navigation. `cur_top` is the full top-frame
-        // URL, used by the sub-resource blocker to avoid 403-ing the main document.
+        // against the right source on each navigation. `cur_top` is the full top-frame URL.
         let cur_origin = Arc::new(Mutex::new(String::new()));
         let nav_origin = cur_origin.clone();
         let cur_top = Arc::new(Mutex::new(String::new()));
         let nav_top = cur_top.clone();
-        // Dedicated clones for the sub-resource (WebResourceRequested) blocker, since the
-        // closures below consume their own.
-        let net_blocker = self.blocker.clone();
-        let net_adblock = self.adblock_on.clone();
         // Page-reported "a TRUSTED gesture landed on a real cross-site link/submit" — the
         // one signal that a cross-site top navigation is genuinely wanted. Stamped here,
         // directly (no event-loop hop), so it lands before the navigation it authorises
@@ -732,12 +782,12 @@ impl App {
         //     post-build `set_all_enabled(false)` below is async, so the tab's first
         //     page had already loaded with uBlock's content scripts injected — and those
         //     hooks survive the late disable for the page's whole lifetime (the
-        //     "YouTube shorts hang with adblock off" bug). Only (re-)add in `Ubo` mode,
-        //     where enabled is the desired state; other modes leave the profile's
+        //     "YouTube shorts hang with adblock off" bug). Only (re-)add while blocking is
+        //     ON, where enabled is the desired state; with it off, leave the profile's
         //     persisted copy alone (swept disabled below). Absent dir → no extensions.
         if let Some(ext_dir) = ublock_extensions_dir() {
             builder = builder.with_browser_extensions_enabled(true);
-            if self.adblock_mode == AdblockMode::Ubo {
+            if self.adblock_mode.extension() {
                 builder = builder.with_extensions_path(ext_dir);
             }
         }
@@ -758,9 +808,10 @@ impl App {
             // injected into EVERY frame (for_main_only = false), not just the top
             // document: scummy sites drive popunders from cross-origin player/ad iframes,
             // which a main-frame-only injection would leave unguarded. (Network blocking
-            // of the ad scripts themselves is native — see `netblock`.) It starts in the
-            // shell's current state (baked as `__adblockDefault`), so `:ads` flips it live
-            // in the top frame via `__setAdblock` (sub-frames adopt it on reload).
+            // of the ad scripts themselves is uBO Lite's.) It starts in the shell's current
+            // state (baked as `__adblockDefault`), which every document load then corrects
+            // to the LIVE state (see `UserEvent::SyncAdblock`); `:ads` flips it in the top
+            // frame via `__setAdblock` (sub-frames adopt it on reload).
             // `window.ipc` is absent in sub-frames, so the blocker's status reports are
             // main-frame-only (guarded), but the neutering itself is universal.
             .with_initialization_script_for_main_only(
@@ -883,7 +934,13 @@ impl App {
             // in-page navigations, which the shell never sees), `Finished` is
             // NavigationCompleted, which fires whether the page loaded or failed.
             .with_on_page_load_handler(move |event, _url| match event {
-                PageLoadEvent::Started => load_state.begin_load(),
+                PageLoadEvent::Started => {
+                    load_state.begin_load();
+                    // The new document seeded its blocker flag from the value baked in at
+                    // webview-build time; correct it to the shell's live state. See
+                    // [`UserEvent::SyncAdblock`].
+                    let _ = load_proxy.send_event(UserEvent::SyncAdblock);
+                }
                 PageLoadEvent::Finished => {
                     load_state.end_load();
                     let _ = load_proxy.send_event(UserEvent::FocusShell);
@@ -980,28 +1037,23 @@ impl App {
             self.nav_intent.clone(),
             self.proxy.clone(),
         );
-        // The uBlock-style sub-resource network blocker: runs the full EasyList engine
-        // over every script/iframe/XHR so ad/scam injectors never load (Windows only).
-        // ONLY in `Native` mode. Registering the `WebResourceRequested` filter routes every
-        // sub-resource through our UI-thread handler, and that alone — even a handler that
-        // blocks nothing — stalls the initial parse of streaming pages: a fresh YouTube watch
-        // page hangs at `readyState==loading`, so the video plays (inline player boot) but the
-        // description/comments never hydrate past their skeletons (reload masks it, serving the
-        // doc from cache). In `Ubo`/`Off` mode the handler no-ops anyway (its `adblock_on` gate
-        // is false), so installing it there was pure cost AND this bug. uBlock Origin Lite (the
-        // `Ubo` default) blocks sub-resources natively via declarativeNetRequest, no handler.
+        // NOTE: there is deliberately no `WebResourceRequested` sub-resource blocker here.
+        // One used to run the full EasyList engine over every script/iframe/XHR, but
+        // registering that filter routes every sub-resource through a handler on the HOST's
+        // UI thread, and that alone — even a handler that blocks nothing — stalls the
+        // initial parse of streaming pages: a fresh YouTube page hangs at
+        // `readyState==loading` and renders only its skeleton until you reload (which masks
+        // it by serving the doc from cache). It also duplicated uBlock Origin Lite, which
+        // does the same job declaratively inside Chromium's network stack at no cost to us.
+        // Network blocking is uBO Lite's; keep it that way.
+        //
+        // Outside `Ubo` the profile's PERSISTED extension copy can still be enabled — left
+        // by an old session, or a crash before a disable landed. Sweep it off so the
+        // persisted state converges. This is ASYNC, so a stale-enabled uBO Lite still
+        // filters this webview's very FIRST load — which is enough to hang a YouTube watch
+        // page (measured; see `AdblockMode`). It settles from the second load on.
         #[cfg(windows)]
-        if self.adblock_mode == AdblockMode::Native {
-            crate::netblock::install(&webview, net_blocker, net_adblock, cur_origin, cur_top);
-        }
-        // Outside uBlock mode nothing re-adds the extension anymore (see the builder above),
-        // but the profile's PERSISTED copy can still be enabled — left by an old session, a
-        // crash before a disable landed, or builds from before the add was gated. Sweep it
-        // off so the persisted state converges to disabled. Async, so a stale-enabled
-        // extension can still poison this webview's very first load — but only until this
-        // lands once; with the re-add gone, nothing flips it back afterwards.
-        #[cfg(windows)]
-        if self.adblock_mode != AdblockMode::Ubo {
+        if !self.adblock_mode.extension() {
             crate::extensions::set_all_enabled(&webview, false);
         }
         // Watch WebView2's own favicon for this tab, so the strip can show it.
@@ -1504,29 +1556,31 @@ impl App {
         self.set_adblock_mode(mode);
     }
 
-    /// Switch the active ad blocker, keeping the two engines mutually exclusive so only one
-    /// runs at a time. The native guards all honour the shared `adblock_on` flag, so flipping
-    /// it (plus the page-side `__setAdblock`) turns the whole native stack — `netblock`, the
-    /// redirect/popup guards, and `ADBLOCK_JS` — on or off in one move; the uBlock extension
-    /// is enabled/disabled profile-wide via [`extensions`](crate::extensions). Persisted on
-    /// the next session write; re-applied to newly built webviews (see `build_content_webview`).
+    /// Turn ad blocking on or off across every layer at once.
+    ///
+    /// There is no longer an engine to choose: uBlock Origin Lite (network) and the native
+    /// side (cosmetic, YouTube, redirect/popup guards) run TOGETHER, because each covers
+    /// what the other structurally can't — see [`AdblockMode`]. One flag drives all of it:
+    /// `adblock_on` for the native guards, `__setAdblock` for the page-side script, and the
+    /// extension's profile-wide enable. Persisted on the next session write; re-applied to
+    /// newly built webviews (see `build_content_webview`).
     pub(crate) fn set_adblock_mode(&mut self, mode: AdblockMode) {
-        // Remember the engine we're leaving (never `Off`) so a later bare `:ads` turns
-        // THAT one back on. Recorded here rather than in `toggle_adblock` so an explicit
-        // `:adblock off` is remembered the same way a toggle-off is.
+        // Remember what we're leaving (never `Off`) so a later bare `:ads` turns it back on.
+        // Recorded here rather than in `toggle_adblock` so an explicit `:adblock off` is
+        // remembered the same way a toggle-off is.
         if self.adblock_mode != AdblockMode::Off {
             self.adblock_prev = self.adblock_mode;
         }
         self.adblock_mode = mode;
-        let native_on = mode == AdblockMode::Native;
-        let ext_on = mode == AdblockMode::Ubo;
-        self.set_adblock(native_on); // keeps the native guards' shared flag in lock-step
-        // Entering Ubo from a session whose webviews were all built in another mode:
-        // none of those builds added the bundled extension, and a fresh profile may
-        // never have had it installed — so add it (profile-wide, idempotent) before
-        // the enable sweep below. Any one webview reaches the shared profile.
+        let on = mode.blocking();
+        let ext = mode.extension();
+        self.set_adblock(on); // keeps the native guards' shared flag in lock-step
+        // A session whose webviews were built in another mode never added the bundled
+        // extension, and a fresh profile may never have had it installed — so add it
+        // (profile-wide, idempotent) before the enable sweep below. Any one webview
+        // reaches the shared profile.
         #[cfg(windows)]
-        if ext_on {
+        if ext {
             if let (Some(dir), Some(wv)) =
                 (ublock_extensions_dir(), self.tabs.iter().find_map(|t| t.webview()))
             {
@@ -1535,21 +1589,36 @@ impl App {
         }
         for tab in &self.tabs {
             if let Some(wv) = tab.webview() {
-                let _ =
-                    wv.evaluate_script(&format!("window.__setAdblock&&window.__setAdblock({native_on})"));
+                let _ = wv
+                    .evaluate_script(&format!("window.__setAdblock&&window.__setAdblock({on})"));
                 #[cfg(windows)]
-                crate::extensions::set_all_enabled(wv, ext_on);
+                crate::extensions::set_all_enabled(wv, ext);
             }
         }
+        // The cosmetic/YouTube layer applies instantly. The extension's rules bind at
+        // request time and its content scripts at document start, so entering/leaving `Ubo`
+        // only fully takes hold on the next load — say so rather than implying otherwise.
         self.set_status(match mode {
-            AdblockMode::Ubo => "ublock origin lite = on".to_string(),
-            AdblockMode::Native => "native adblock = on".to_string(),
-            // Name the engine `:ads` will bring back, so the toggle's memory is visible.
-            AdblockMode::Off => {
-                format!("adblocking = off  (:ads returns to {})", self.adblock_prev.name())
-            }
+            AdblockMode::Ubo => "adblock on — uBO Lite (network) + native (cosmetic, youtube, redirects)",
+            AdblockMode::Native => "adblock on — native only (cosmetic, youtube, redirects); no extension",
+            AdblockMode::Off => "adblock off — reload to drop what this page already applied",
         });
         self.window.request_redraw();
+    }
+
+    /// Push the shell's current page-side blocker state into every web tab, overriding
+    /// whatever `window.__adblockDefault` each document seeded itself with. Called on
+    /// every document load ([`UserEvent::SyncAdblock`]) so a tab whose webview was built
+    /// in a different mode converges instead of staying frozen at its creation-time value.
+    pub(crate) fn broadcast_adblock(&self) {
+        let on = self.adblock_mode.blocking();
+        for tab in &self.tabs {
+            if let Some(wv) = tab.webview() {
+                let _ = wv.evaluate_script(&format!(
+                    "window.__setAdblock&&window.__setAdblock({on})"
+                ));
+            }
+        }
     }
 
     /// Toggle whether executable/installer downloads (`.exe`, `.msi`, …) are allowed.

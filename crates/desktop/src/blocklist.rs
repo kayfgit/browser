@@ -107,7 +107,15 @@ pub(crate) fn blocks_request(
     }
 }
 
-/// What the sub-resource blocker should do with a request, once the engine has weighed in.
+/// What a sub-resource blocker should do with a request, once the engine has weighed in.
+///
+/// CURRENTLY UNUSED. Its only consumer was the `WebResourceRequested` sub-resource blocker,
+/// removed because intercepting on the host UI thread stalled page loads (see
+/// `build_content_webview_private`); sub-resource blocking is uBlock Origin Lite's job now.
+/// Kept — with its tests — because it is the engine-side half of a `$redirect` surrogate,
+/// which is what a future declarativeNetRequest ruleset built from `SUPPLEMENT` would need.
+/// Delete it along with `RESOURCES` if that never happens.
+#[allow(dead_code)]
 pub(crate) enum BlockAction {
     /// No matching rule — let the request reach the network untouched.
     Pass,
@@ -124,6 +132,9 @@ pub(crate) enum BlockAction {
 /// surrogate body so the network blocker can hand a harmless stub to the page — uBlock
 /// Origin's trick for killing an ad/tracker script without breaking the code that expects
 /// its API. Returns [`BlockAction::Pass`] while the engine is still building.
+///
+/// Unused for now — see [`BlockAction`].
+#[allow(dead_code)]
 pub(crate) fn classify_request(
     blocker: &SharedBlocker,
     url: &str,
@@ -158,6 +169,7 @@ pub(crate) fn classify_request(
 
 /// Split a `data:<mime>;base64,<payload>` URL (the form adblock-rust returns for a redirect
 /// surrogate) into its MIME type and decoded bytes. `None` if it isn't a base64 data URL.
+#[allow(dead_code)] // only reachable from `classify_request` — see [`BlockAction`].
 fn decode_data_url(data_url: &str) -> Option<(String, Vec<u8>)> {
     let rest = data_url.strip_prefix("data:")?;
     let (mime, b64) = rest.split_once(";base64,")?;
@@ -255,6 +267,35 @@ mod tests {
             ("https://apis.google.com/js/api.js", "script"),
         ] {
             assert!(!blocks_request(&b, url, yt, kind), "the account menu needs [{kind}] {url}");
+        }
+    }
+
+    /// No bundled rule stands between a YouTube watch page and PLAYBACK.
+    ///
+    /// The account-menu test above covers the lazy UI fetches; this one covers the
+    /// resources the video itself needs. They matter more, and they're less obvious:
+    /// unlike `youtubei`, most of them are NOT on a `youtube.com` host, so the
+    /// `is_youtube_host` carve-out in `netblock` does not spare them — the player JS
+    /// comes from `s.ytimg.com` and the audio/video segments from `*.googlevideo.com`.
+    /// A rule that catches one of those reads as a black player with no sound.
+    #[test]
+    fn nothing_bundled_blocks_youtube_playback() {
+        let b = engine_from(&[SUPPLEMENT, EASYLIST, EASYPRIVACY, YOYO, UBLOCK]);
+        let yt = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+        for (url, kind) in [
+            // The player itself.
+            ("https://s.ytimg.com/yts/jsbin/player_ias-vfl/en_US/base.js", "script"),
+            ("https://www.youtube.com/s/player/abc123/player_ias.vflset/en_US/base.js", "script"),
+            ("https://s.ytimg.com/yts/cssbin/www-player.css", "stylesheet"),
+            // The media segments — fetched as XHR/fetch by the MSE player, NOT as media.
+            ("https://rr3---sn-4g5e6nsz.googlevideo.com/videoplayback?expire=1&itag=248", "xmlhttprequest"),
+            ("https://rr3---sn-4g5e6nsz.googlevideo.com/videoplayback?expire=1&itag=251", "xmlhttprequest"),
+            ("https://rr3---sn-4g5e6nsz.googlevideo.com/initplayback?source=youtube", "xmlhttprequest"),
+            // Thumbnails / storyboards the player and page render.
+            ("https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg", "image"),
+            ("https://i9.ytimg.com/sb/dQw4w9WgXcQ/storyboard3_L2/M0.jpg", "image"),
+        ] {
+            assert!(!blocks_request(&b, url, yt, kind), "playback needs [{kind}] {url}");
         }
     }
 

@@ -57,6 +57,16 @@ pub(crate) enum UserEvent {
     /// Reclaim keyboard focus for the shell (e.g. after a page finishes loading
     /// and WebView2 has grabbed focus), unless the page should keep focus.
     FocusShell,
+    /// A document started loading: push the shell's CURRENT blocker state into it.
+    ///
+    /// `ADBLOCK_JS` seeds its `on` flag from `window.__adblockDefault`, which is baked
+    /// into the initialization script when the WEBVIEW is built — but that script re-runs
+    /// on every document the webview ever loads, so the baked value outlives the state it
+    /// captured. `:adblock off` only reached the document that was open at the time
+    /// (`__setAdblock`), and the next reload resurrected the creation-time value: blocking
+    /// stayed on in that tab forever, and only a brand-new tab picked the change up.
+    /// Re-asserting here makes the toggle stick across reloads and navigations.
+    SyncAdblock,
     /// The page grabbed keyboard focus (a click or a script `.focus()`) while in
     /// Normal mode — bounce it back so shell keys keep working (SPA focus trap).
     GrabFocus,
@@ -202,16 +212,55 @@ pub(crate) enum ModeKind {
     Caret,
 }
 
-/// Which ad blocker is active. The two engines are mutually exclusive so only one runs at a
-/// time — the whole point of the `:adblock` switch is to not pay for both.
+/// Whether ad blocking is on.
+///
+/// This used to select between two rival ENGINES, mutually exclusive so only one ran. That
+/// framing was wrong: neither one is a whole ad blocker, and running either alone left a
+/// hole the other would have covered.
+///
+///   * uBlock Origin Lite filters at the NETWORK level, inside Chromium's own stack — fast,
+///     and free of any host-process cost. But under WebView2 it doesn't see its `<all_urls>`
+///     grant, so it demotes itself to "Basic" (`js/mode-manager.js`), which does no COSMETIC
+///     filtering at all. It cannot hide YouTube's own ad slots, and never will here.
+///   * The native side — `ADBLOCK_JS` plus the blocklist engine — is exactly the other half:
+///     cosmetic hiding, YouTube player-response pruning, popunder neutering, and the
+///     redirect guard. It runs as an initialization script, so it can't lose a race with an
+///     extension service worker, and it toggles live with no reload.
+///
+/// The two halves of ad blocking, and why they run TOGETHER rather than as rivals.
+///
+///   * uBlock Origin Lite filters at the NETWORK level, inside Chromium's own stack — fast,
+///     and free of any host-process cost. But under WebView2 it doesn't see its `<all_urls>`
+///     grant, so it demotes itself to "Basic" (`js/mode-manager.js`), which does no COSMETIC
+///     filtering at all. It cannot hide YouTube's own ad slots, and never will here.
+///   * `ADBLOCK_JS` plus the blocklist engine is exactly the other half: cosmetic hiding,
+///     YouTube player-response pruning, popunder neutering, and the redirect guard. It runs
+///     as an initialization script, so it can't lose a race with an extension service
+///     worker, and it toggles live with no reload.
+///
+/// Neither is a whole ad blocker alone, so "on" means both.
+///
+/// HISTORY, because two innocent suspects were convicted here before the real one was
+/// found. YouTube watch pages used to render as skeletons and videos used to sit black
+/// while the playlist auto-advanced. Blame fell first on the `WebResourceRequested`
+/// sub-resource blocker, then on uBO Lite. Both were wrong: the cause was `ADBLOCK_JS`
+/// monkey-patching `JSON.parse` and `Response.prototype.json`, which YouTube's integrity
+/// checks act on (see the note in `ADBLOCK_JS`). With those wrappers gone, uBO Lite and
+/// the native layers coexist fine — measured on the same watch URL, both modes reach
+/// `readyState == complete` and play with zero spurious navigations.
+///
+/// (The sub-resource blocker is still gone, on its own merits: it intercepted on the host
+/// UI thread, which Microsoft's own docs say pauses page loads. See git history.)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum AdblockMode {
-    /// uBlock Origin extension on, native blocker (and its guards) off. The default.
+    /// Both halves: uBlock Origin Lite for network filtering plus the native layers. The
+    /// default, and the best coverage available.
     Ubo,
-    /// Native blocker on (engine + `netblock` + `ADBLOCK_JS` + redirect/popup guards),
-    /// uBlock extension disabled.
+    /// Native layers only, extension disabled. Kept as an escape hatch — if a site
+    /// misbehaves, this rules the extension out in one command without losing cosmetic
+    /// filtering, YouTube handling or the redirect guard.
     Native,
-    /// Neither — no ad blocking.
+    /// No ad blocking: extension disabled, `ADBLOCK_JS` inert, guards stood down.
     Off,
 }
 
@@ -225,14 +274,27 @@ impl AdblockMode {
         }
     }
 
-    /// Parse a session key, defaulting to the `Ubo` engine for anything unknown
-    /// (including sessions written before the field existed).
+    /// Parse a session key, defaulting to `Ubo` (both halves) for anything unknown,
+    /// including sessions written before the field existed.
     pub(crate) fn parse(s: &str) -> Self {
         match s {
             "native" => AdblockMode::Native,
             "off" => AdblockMode::Off,
             _ => AdblockMode::Ubo,
         }
+    }
+
+    /// Whether ad blocking is on at all. The native layers — `ADBLOCK_JS` and the
+    /// redirect/popup guards — follow this, so they can't disagree about whether blocking
+    /// is active. The extension is separate: see [`extension`](Self::extension).
+    pub(crate) fn blocking(self) -> bool {
+        !matches!(self, AdblockMode::Off)
+    }
+
+    /// Whether the uBlock Origin Lite extension should be loaded and enabled. Only in
+    /// [`Ubo`](Self::Ubo), and only because the user asked for it — see [`AdblockMode`].
+    pub(crate) fn extension(self) -> bool {
+        matches!(self, AdblockMode::Ubo)
     }
 }
 
@@ -298,15 +360,14 @@ pub(crate) struct App {
     pub(crate) modifiers: ModifiersState,
     /// When true, new tabs are opened with JavaScript disabled.
     pub(crate) nojs: bool,
-    /// Which ad blocker is active (mutually exclusive to save resources). `Ubo` (the
-    /// default) runs the uBlock Origin *extension* and keeps every native guard off;
-    /// `Native` runs the built-in blocker (engine + `netblock` + `ADBLOCK_JS` + redirect/
-    /// popup guards) with the extension disabled; `Off` disables both. Set via
-    /// `:adblock <mode>`; persisted across sessions. See [`set_adblock_mode`](Self::set_adblock_mode).
+    /// Whether ad blocking is on. When it is, the uBlock Origin Lite extension (network)
+    /// and the native layers (`ADBLOCK_JS` cosmetic/YouTube + redirect/popup guards) run
+    /// TOGETHER — see [`AdblockMode`] for why neither is a whole blocker alone. Set via
+    /// `:adblock on|off`; persisted. See [`set_adblock_mode`](Self::set_adblock_mode).
     pub(crate) adblock_mode: AdblockMode,
-    /// The last ENGINE that was running (never `Off`) — what a bare `:ads` switches
-    /// back on. Without it the toggle always returned to the `Ubo` default, so a native
-    /// session that was toggled off came back as uBlock. Persisted across sessions.
+    /// The last non-`Off` state — what a bare `:ads` switches back on. Retained (rather
+    /// than always returning to the default) so the toggle round-trips exactly, including
+    /// for sessions written when `ubo`/`native` still named different engines.
     pub(crate) adblock_prev: AdblockMode,
     /// The installed browser extensions from the last `GetBrowserExtensions` query, cached
     /// to render the `:extensions` picker and to flip an entry's enabled state optimistically
@@ -1343,21 +1404,21 @@ impl App {
         // Set BEFORE the tabs are opened below, so each restored webview bakes the
         // hidden-scrollbar state into its `__featureDefaults` init script.
         self.no_scrollbar = s.no_scrollbar;
-        // Adopt the saved ad-blocker mode (default uBlock). Tabs restored below enforce the
-        // per-mode extension state as they're built; here we just set the mode + native flag
-        // (no webviews exist yet, so the full `set_adblock_mode` sweep would be a no-op).
+        // Adopt the saved ad-blocker state (default: on). Tabs restored below enforce the
+        // extension state as they're built; here we just set the mode + shared flag (no
+        // webviews exist yet, so the full `set_adblock_mode` sweep would be a no-op).
         self.adblock_mode = AdblockMode::parse(&s.adblock_mode);
-        // Which engine a bare `:ads` turns back on. `Off` is not an engine (it would
-        // make the toggle a no-op), so a session that recorded one falls back to the
-        // mode itself, then to the default.
+        // What a bare `:ads` turns back on. `Off` isn't a state to return TO (it would make
+        // the toggle a no-op), so a session that recorded one falls back to the mode
+        // itself, then to the default.
         self.adblock_prev = match AdblockMode::parse(&s.adblock_prev) {
             AdblockMode::Off => match self.adblock_mode {
                 AdblockMode::Off => AdblockMode::Ubo,
-                engine => engine,
+                on => on,
             },
-            engine => engine,
+            on => on,
         };
-        self.set_adblock(self.adblock_mode == AdblockMode::Native);
+        self.set_adblock(self.adblock_mode.blocking());
         if s.zoom != 1.0 {
             self.set_zoom(s.zoom);
         }

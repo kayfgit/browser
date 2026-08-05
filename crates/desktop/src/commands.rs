@@ -149,19 +149,21 @@ impl App {
             }
             // Reopen the most recently closed tab (also `u` / Ctrl+Shift+T).
             "reopen" | "undo" => self.reopen_closed(),
-            // Ad blocker control. `:adblock <mode>` picks the engine — `ubo`/`ublockorigin`
-            // (the default: the uBlock Origin extension) or `native` (the built-in blocker) —
-            // and keeps them mutually exclusive so only one runs. `:adblock off` disables both.
-            // Bare `:ads`/`:adblock` is a quick on/off toggle. Applies live; persisted.
+            // Ad blocker control. `on`/`ubo` (the default) runs both halves — uBO Lite for
+            // network filtering plus the native cosmetic/YouTube/redirect layers, which cover
+            // what the extension structurally can't. `native` drops the extension only, as an
+            // escape hatch for a misbehaving site (see `AdblockMode`). Bare `:ads`/`:adblock`
+            // toggles off/on. Applies live; persisted.
             "ads" | "adblock" => match rest.trim().to_ascii_lowercase().as_str() {
                 "" => self.toggle_adblock(),
-                "native" | "own" => self.set_adblock_mode(crate::AdblockMode::Native),
-                "ubo" | "ublock" | "ublockorigin" | "ublock-origin" | "ublock origin" => {
+                "on" | "ubo" | "ublock" | "ublockorigin" | "ublock-origin" | "ublock origin" => {
                     self.set_adblock_mode(crate::AdblockMode::Ubo)
                 }
+                "native" | "own" => self.set_adblock_mode(crate::AdblockMode::Native),
                 "off" | "none" | "disable" => self.set_adblock_mode(crate::AdblockMode::Off),
-                other => self
-                    .set_error(format!("unknown adblock mode '{other}' — use: ubo, native, or off")),
+                other => self.set_error(format!(
+                    "unknown adblock argument '{other}' — use: on, native, or off"
+                )),
             },
             // `:extensions` — the installed-extension picker (a vim tab); Enter toggles the
             // extension under the cursor on/off. See `open_extensions_page`.
@@ -393,7 +395,7 @@ pub(crate) fn arg_candidates(app: &App, verb: &str, prior: &[&str]) -> Option<Ve
     const PERIODS: &[&str] = &["15m", "1h", "24h", "7d", "all"];
     let cands = match (verb, prior) {
         ("model", []) => own(crate::ai::MODELS),
-        ("ads" | "adblock", []) => own(&["ubo", "native", "off"]),
+        ("ads" | "adblock", []) => own(&["on", "native", "off"]),
         ("clear", []) => own(&["history", "cookies", "cache", "all"]),
         ("clear", [_]) => own(PERIODS),
         ("history" | "hist", []) => own(&["clear"]),

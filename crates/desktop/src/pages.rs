@@ -469,7 +469,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("extensions", ":extensions", "browser-extension picker in a vim tab (Enter toggles one on/off)"),
     ("js", ":js", "toggle JavaScript (reloads this tab; applies to new tabs)"),
     ("nojs", ":nojs <url>", "open a single page with JavaScript disabled"),
-    ("adblock", ":ads · :adblock [ubo|native|off]", "no args: toggle the blocker off/on, keeping whichever engine you were running · with an engine: ubo (uBlock Origin, the default) or native (built-in: ads, trackers, forced redirects + popunders)"),
+    ("adblock", ":ads · :adblock [on|native|off]", "no args: toggle off/on · on (default): both halves — uBlock Origin Lite blocks at the network level, and the built-in layer does cosmetic hiding, YouTube ads, forced redirects and popunders (instantly, no reload) · native: drop the extension only, an escape hatch for a site that misbehaves · off: none"),
     ("downloads", ":downloads · :dl", "allow executable/installer downloads (.exe/.msi…; blocked by default)"),
     ("mute", ":mute · :audio", "toggle muting all page audio/video (live, all tabs)"),
     ("css", ":css", "toggle page styling off/on (live, all tabs)"),
@@ -717,7 +717,7 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
 pub(crate) fn ext_lines(exts: &[crate::ExtInfo]) -> Vec<String> {
     let mut lines = Vec::with_capacity(exts.len() + 3);
     lines.push(format!(
-        "extensions — {} installed    (Enter: toggle on/off · :adblock ubo|native switches engines)",
+        "extensions — {} installed    (Enter: toggle on/off · :adblock on|off for the whole stack)",
         exts.len()
     ));
     lines.push(String::new());

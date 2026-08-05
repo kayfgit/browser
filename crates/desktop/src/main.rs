@@ -44,7 +44,6 @@ mod hints;
 mod keys;
 mod khook;
 mod navguard;
-mod netblock;
 mod pages;
 mod panes;
 mod proc_cwd;
@@ -524,9 +523,9 @@ const RESEARCH_JS: &str = r#"
 /// native navigation guard ([`url_is_ad_host`]) as the tiny always-on fallback that stops
 /// a forced top-level redirect to one of these hosts during the brief window before the
 /// full EasyList [`Engine`](crate::blocklist) finishes compiling off-thread at startup.
-/// Sub-resource blocking ([`netblock`](crate::netblock)) and the page-side cosmetic layer
-/// no longer read this list — the engine is the source of truth there. Matched as a host
-/// substring, so `adservice.google.` catches `adservice.google.com`.
+/// The page-side cosmetic layer doesn't read this list — the engine is the source of truth
+/// there, and sub-resources are uBlock Origin Lite's job. Matched as a host substring, so
+/// `adservice.google.` catches `adservice.google.com`.
 pub(crate) const AD_HOSTS: &[&str] = &[
     "doubleclick.net", "googlesyndication.com", "googleadservices.com",
     "google-analytics.com", "googletagmanager.com", "googletagservices.com",
@@ -548,15 +547,17 @@ pub(crate) const AD_HOSTS: &[&str] = &[
     // NOTE: YouTube's own first-party ad telemetry (`/api/stats/ads`, `/ptracking`,
     // `/get_midroll_`) is DELIBERATELY absent — blocking it trips YouTube's anti-adblock
     // detector, which then serves the "Ad blockers violate ToS" enforcement wall. The ads
-    // are killed by pruning the player-response JSON instead (see ADBLOCK_JS). `netblock`
-    // enforces the same carve-out for sub-resource requests to YouTube's own hosts.
+    // are killed by pruning the player-response JSON instead (see ADBLOCK_JS).
 ];
 
 /// uBlock-style content blocker, injected at document-start into every web tab while
-/// adblock is on. NETWORK-level blocking — stopping the ad/scam scripts, iframes and
-/// XHRs from ever loading — is done natively against the full EasyList engine by the
-/// WebView2 sub-resource blocker ([`netblock`](crate::netblock)); this page-side script
-/// handles only what must run inside the page:
+/// adblock is on. NETWORK-level blocking — stopping ad/scam scripts, iframes and XHRs from
+/// ever loading — belongs to the uBlock Origin Lite extension, which does it declaratively
+/// inside Chromium's network stack. This page-side script is the OTHER half, and not a
+/// fallback: uBO Lite can't see its `<all_urls>` grant under WebView2, so it demotes itself
+/// to network-only and does no cosmetic filtering at all. Everything below is therefore the
+/// only thing doing these jobs. Being an initialization script, it also can't lose a race
+/// with an extension service worker, and it toggles live without a reload:
 ///   * cosmetic — imperatively hide generic ad containers (EasyList-ish) plus YouTube's
 ///     ad slots (inline `display:none`, which survives a strict CSP a `<style>` wouldn't);
 ///   * YouTube — prune the ad descriptors from the player-response JSON, skip/seek past
@@ -604,7 +605,7 @@ const ADBLOCK_JS: &str = r#"
 
   // --- DOM cosmetic observer: hide ad containers as the page builds itself ------
   // Blocking the ad SCRIPTS/iframes/XHRs at the network level (so nothing loads in the
-  // first place) is done natively against the full EasyList engine — see `netblock.rs`.
+  // first place) is uBlock Origin Lite's job, via declarativeNetRequest.
   // The page-side job here is to HIDE leftover ad containers cosmetically, and — on
   // YouTube — to remove the anti-adblock enforcement modal the INSTANT it's inserted,
   // before it can paint (the observer fires before the next render, so no 0.3s flash).
@@ -677,17 +678,27 @@ const ADBLOCK_JS: &str = r#"
     } catch (e) {}
     return data;
   }
+  // DO NOT PATCH NATIVES HERE. This block used to wrap `JSON.parse` and
+  // `Response.prototype.json` so every player response got pruned on the way past.
+  // Bisected 2026-08-03: those two wrappers are what broke YouTube. With either one
+  // installed the player never gets media (`readyState` stays 0, `duration` NaN), and
+  // after ~6s YouTube gives up and auto-advances the playlist — which is the
+  // black-screen / no-audio / "page keeps reloading and lands on a different video"
+  // report. It is NOT the pruning: with `YT_AD_KEYS` emptied so the walk deletes
+  // nothing, merely having the wrappers in place still killed playback. Replacing a
+  // native with a function whose `toString()` is no longer `[native code]` is a
+  // well-known thing YouTube's integrity checks look for, and it clearly acts on it.
+  //
+  // Verified against the same watch URL, everything else enabled: wrappers on → 2-3
+  // playlist skips per 22s, `ready=0`; wrappers off → 0 skips, video plays.
+  //
+  // The accessor below is a DIFFERENT mechanism — it defines a property that doesn't
+  // exist yet rather than replacing a built-in — and was measured innocent (removing it
+  // while the wrappers stayed did not help; keeping it with the wrappers gone plays
+  // fine). It covers the case that matters most anyway: a full page load embeds the
+  // player response as this inline global, which is where pre-roll ads are scheduled.
+  // Ads on subsequent SPA navigations are handled by the `youtube()` tick instead.
   if (isYT) {
-    var _parse = JSON.parse;
-    JSON.parse = function () { return prunePlayerAds(_parse.apply(this, arguments)); };
-    var _rjson = Response.prototype.json;
-    Response.prototype.json = function () {
-      var pr = _rjson.apply(this, arguments);
-      return on ? pr.then(prunePlayerAds) : pr;
-    };
-    // The first full page load embeds the response as an inline `ytInitialPlayerResponse`
-    // global (not via JSON.parse). Our init script runs first, so define a setter that
-    // prunes it the moment YouTube assigns it. Kept configurable so YT can redefine it.
     try {
       var _ytIPR;
       Object.defineProperty(window, 'ytInitialPlayerResponse', {
@@ -762,6 +773,39 @@ const ADBLOCK_JS: &str = r#"
   }
 
   // --- YouTube: skip the skippable, seek past the unskippable ------------------
+  // The dangerous half of this is the seek. YouTube plays ads through the SAME
+  // `<video>` element as the feature, so the `ad-showing` class is the ONLY thing
+  // separating "seek the ad to its end" from "end the user's video". If that class is
+  // stale or set a beat early/late, seeking to `duration` fires `ended` on the real
+  // video — and on a playlist (or with autoplay) YouTube then advances to the NEXT
+  // video, which reads as a page that reloads itself forever and lands on something
+  // else entirely. So the seek is now cross-checked, and never fires on anything that
+  // looks like the feature.
+  //
+  // `lengthSeconds` from the player response is the feature's length; an ad loaded in
+  // the same element has a different duration. If what's loaded matches the feature,
+  // the class is lying — refuse. As an independent backstop (the player response can
+  // be stale across an SPA navigation) anything longer than AD_MAX_SECS is treated as
+  // the feature too: real pre-/mid-rolls are seconds-to-a-couple-minutes long, so the
+  // worst case of the bound is one unusually long ad we let play rather than one video
+  // we destroy.
+  var AD_MAX_SECS = 360;
+  function featureLength() {
+    try {
+      var d = window.ytInitialPlayerResponse && window.ytInitialPlayerResponse.videoDetails;
+      var n = d && parseFloat(d.lengthSeconds);
+      return (isFinite(n) && n > 0) ? n : 0;
+    } catch (e) { return 0; }
+  }
+  // Mute is forced only for the duration of an ad, and the page's own setting is put
+  // back afterwards — the old code muted and never unmuted, so a single misfire left
+  // the video silent for the rest of the session.
+  var premuted = null;
+  function restoreMute(v) {
+    if (premuted === null || !v) return;
+    try { v.muted = premuted; } catch (e) {}
+    premuted = null;
+  }
   function youtube() {
     if (!on || location.hostname.indexOf('youtube.com') === -1) return;
     try {
@@ -769,9 +813,18 @@ const ADBLOCK_JS: &str = r#"
         '.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button');
       if (skip) skip.click();
       var player = document.querySelector('.html5-video-player');
-      if (player && player.classList.contains('ad-showing')) {
-        var v = document.querySelector('video.html5-main-video');
-        if (v && v.duration && isFinite(v.duration)) { v.muted = true; v.currentTime = v.duration; }
+      var v = document.querySelector('video.html5-main-video');
+      var adPlaying = !!player && player.classList.contains('ad-showing');
+      if (adPlaying && v && v.duration && isFinite(v.duration)) {
+        var feat = featureLength();
+        var isFeature = (feat && Math.abs(v.duration - feat) < 2) || v.duration > AD_MAX_SECS;
+        if (!isFeature) {
+          if (premuted === null) premuted = v.muted;
+          v.muted = true;
+          v.currentTime = v.duration;
+        }
+      } else {
+        restoreMute(v);
       }
       var close = document.querySelector('.ytp-ad-overlay-close-button');
       if (close) close.click();
@@ -1428,15 +1481,15 @@ fn main() -> Result<()> {
         active: None,
         modifiers: ModifiersState::default(),
         nojs: false,
-        // Default to the uBlock Origin extension (native blocker off); session restore may
-        // override the mode below. `adblock`/`adblock_on` mirror "native on" = false here.
+        // Blocking on by default: uBO Lite (network) plus the native layers, which cover
+        // different halves of the job (see `AdblockMode`). Session restore may override.
         adblock_mode: AdblockMode::Ubo,
         adblock_prev: AdblockMode::Ubo,
         term_drag: None,
         term_clicks: None,
         extensions: Vec::new(),
-        adblock: false,
-        adblock_on: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        adblock: true,
+        adblock_on: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         allow_risky_downloads: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         nav_intent: std::sync::Arc::new(std::sync::Mutex::new(None)),
         blocker: blocklist::new_shared(),
@@ -1718,6 +1771,7 @@ fn main() -> Result<()> {
                 _ => {}
             },
             Event::UserEvent(UserEvent::ExitToNormal) => app.exit_to_normal(),
+            Event::UserEvent(UserEvent::SyncAdblock) => app.broadcast_adblock(),
             Event::UserEvent(UserEvent::FocusShell) => {
                 match app.mode {
                     // Passthrough persists across navigation: re-assert it on the new
