@@ -134,6 +134,34 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   window position + size, zoom, JS-off, and search-engine settings are saved to `session.toml` in the
   data dir; the next launch with no CLI argument reopens them exactly. Passing a URL/command on the
   command line skips restore for that run.
+- **Profiles (`:saveprofile` / `:profile` / `:scratch`)** — named **snapshots** of the whole
+  workspace. **`:saveprofile work`** (`:sp work`) writes everything a session holds (tabs, the split
+  layout, window size/position, zoom, ad blocker, search engine, shell…) to `profiles/work.toml`.
+  **`:profile work`** (`:p work`) loads it back over the whole browser; **`:profile`** (bare) or
+  **`:profiles`** opens a picker in a vim tab — `Enter` switches to the row, `d` deletes it — and
+  `:delprofile <name>` (`:dp`) removes one. `:profile default` returns to the live session. The
+  profile you're in shows in the status bar.
+  **`:saveprofile` is the only thing that writes a profile.** `:w` saves your *live session*
+  (`session.toml`, what a restart restores) and never touches a snapshot, so a profile stays exactly
+  as you last saved it until you deliberately save over it. Switching still can't lose work: what's
+  open is written to the live session first.
+  (`:sp` is overloaded but unambiguous — splitting takes no argument, so bare `:sp` is vim's split
+  and `:sp <name>` saves a profile.)
+  **`:scratch`** (`:scr`, `:sc`) is the emacs-`*scratch*` escape hatch: it parks everything you have
+  open in the live session and hands you an empty browser to try something in; **`:scratch` again**
+  drops the scratch tabs and brings the parked layout back exactly as it was — the tabs you actually
+  had, not the older snapshot.
+  Not per-profile: the visited-URL history (global, so autocomplete never changes under you), the
+  customization config, and saved `:ai` chats.
+  A switch **pins the WebView2 engine open** for the second it takes to tear the tabs down and
+  rebuild them (a hidden, suspended blank webview), so the new tabs attach to the running browser
+  process instead of cold-starting one — that keeps even session cookies and a warm cache across the
+  swap. It is *not* held while idle: an empty `:scratch` is engine-free like any other empty browser
+  (0 WebView2 processes), which is the whole point of the on-demand engine. What a shutdown costs is
+  only what Chromium itself treats as throwaway — session cookies and cache warmth; persistent
+  cookies (every real login, including the tokens Google rotates every few minutes) are flushed on
+  the way down and come back. If you want a long scratch detour to keep even session cookies, leave
+  any page open in it: a live web tab holds the engine by itself.
 - **`:te <command>` (command runner)** — runs a local shell command on a background thread;
   the result replaces the command-bar text (vim-style). **Strictly shell-initiated** — never
   reachable from page content.

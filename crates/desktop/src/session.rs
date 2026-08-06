@@ -5,6 +5,11 @@
 //! pages (open/nojs/research), engine-free read tabs (re-fetched), and terminals
 //! (reopened fresh). Internal `browser://` pages and the `:error(s)` log are
 //! session-specific and skipped.
+//!
+//! The same [`Session`] shape is also what a **profile** is (`:saveprofile work`):
+//! the unnamed session lives in `session.toml`, each named profile in
+//! `profiles/<key>.toml`, and the `:scratch` stash in `scratch.toml`. See
+//! [`crate::profiles`] for the switching logic.
 
 use std::path::PathBuf;
 
@@ -13,6 +18,12 @@ use serde::{Deserialize, Serialize};
 /// A persisted browsing session.
 #[derive(Serialize, Deserialize)]
 pub struct Session {
+    /// Display name of the profile this file holds, as the user typed it
+    /// (`:saveprofile Work Stuff`). Empty for the unnamed default session and for
+    /// files written before profiles existed; the file NAME is the canonical key
+    /// (see [`profile_key`]), this is only what's shown in `:profiles`.
+    #[serde(default)]
+    pub name: String,
     pub zoom: f64,
     /// Web-content zoom (page scale inside web tabs), separate from the chrome
     /// [`zoom`](Self::zoom). `default` (1.0) for sessions written before it existed.
@@ -107,27 +118,105 @@ fn default_adblock_mode() -> String {
     "ubo".to_string()
 }
 
-/// `%APPDATA%\browser\session.toml` on Windows, the XDG data dir elsewhere.
-fn path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "browser").map(|d| d.data_dir().join("session.toml"))
+/// The app data directory: `%APPDATA%\browser\data` on Windows, the XDG data dir
+/// elsewhere. Everything below lives in it.
+fn data_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "browser").map(|d| d.data_dir().to_path_buf())
 }
 
-/// Write the session to disk (best-effort; failures are ignored).
-pub fn save(session: &Session) {
-    let Some(path) = path() else { return };
+/// `<data>/session.toml` — the unnamed default session (the one you get when no
+/// profile is active).
+pub fn session_path() -> Option<PathBuf> {
+    data_dir().map(|d| d.join("session.toml"))
+}
+
+/// `<data>/profiles` — one `<key>.toml` per named profile.
+fn profiles_dir() -> Option<PathBuf> {
+    data_dir().map(|d| d.join("profiles"))
+}
+
+/// `<data>/scratch.toml` — where `:scratch` parks the layout it wiped, and where
+/// the scratch layout itself is written when you leave it (so an accidental toggle
+/// is recoverable). Deliberately NOT in `profiles/`, so it can't collide with a
+/// user profile or show up in `:profiles`.
+pub fn scratch_path() -> Option<PathBuf> {
+    data_dir().map(|d| d.join("scratch.toml"))
+}
+
+/// The canonical on-disk key for a profile name: lowercase, spaces folded to `-`,
+/// and anything that isn't alphanumeric/`-`/`_` dropped — so "Work Stuff", "work
+/// stuff" and "Work-Stuff" all address the same profile. Empty if the name has no
+/// usable characters (the caller rejects that).
+pub fn profile_key(name: &str) -> String {
+    let mut key = String::new();
+    for c in name.trim().chars() {
+        if c.is_ascii_alphanumeric() {
+            key.push(c.to_ascii_lowercase());
+        } else if (c == '-' || c == '_' || c.is_whitespace()) && !key.ends_with('-') {
+            key.push('-');
+        }
+    }
+    key.trim_matches('-').to_string()
+}
+
+/// Path of the named profile's file, or `None` if the name is unusable / there's
+/// no data dir.
+pub fn profile_path(name: &str) -> Option<PathBuf> {
+    let key = profile_key(name);
+    if key.is_empty() {
+        return None;
+    }
+    profiles_dir().map(|d| d.join(format!("{key}.toml")))
+}
+
+/// Whether a profile with this name exists on disk.
+pub fn profile_exists(name: &str) -> bool {
+    profile_path(name).is_some_and(|p| p.is_file())
+}
+
+/// Every saved profile's display name, sorted. A file whose `name` is empty (an
+/// older or hand-made file) falls back to its filename key, so nothing is hidden.
+pub fn list_profiles() -> Vec<String> {
+    let Some(dir) = profiles_dir() else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "toml"))
+        .filter_map(|e| {
+            let stem = e.path().file_stem()?.to_string_lossy().into_owned();
+            let name = std::fs::read_to_string(e.path())
+                .ok()
+                .and_then(|s| toml::from_str::<Session>(&s).ok())
+                .map(|s| s.name)
+                .filter(|n| !n.trim().is_empty());
+            Some(name.unwrap_or(stem))
+        })
+        .collect();
+    names.sort_by_key(|n| n.to_lowercase());
+    names
+}
+
+/// Delete a profile's file. `true` if one was there.
+pub fn delete_profile(name: &str) -> bool {
+    profile_path(name).is_some_and(|p| std::fs::remove_file(p).is_ok())
+}
+
+/// Write a session to an explicit path, creating the directory (best-effort;
+/// failures are ignored, like the config writer).
+pub fn save_to(path: &std::path::Path, session: &Session) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(text) = toml::to_string(session) {
-        let _ = std::fs::write(&path, text);
+        let _ = std::fs::write(path, text);
     }
 }
 
-/// Read the saved session, or `None` if there isn't one / it can't be parsed.
-pub fn load() -> Option<Session> {
-    let text = std::fs::read_to_string(path()?).ok()?;
-    toml::from_str(&text).ok()
+/// Read a session from an explicit path, or `None` if it isn't there / won't parse.
+pub fn load_from(path: &std::path::Path) -> Option<Session> {
+    toml::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -138,6 +227,7 @@ mod tests {
         // The `tabs` array-of-tables must serialize after the scalar fields, or
         // TOML rejects it — this guards that ordering.
         let s = Session {
+            name: "Work".into(),
             zoom: 1.2,
             content_zoom: 1.1,
             nojs: true,
@@ -163,6 +253,7 @@ mod tests {
         };
         let text = toml::to_string(&s).expect("serialize");
         let back: Session = toml::from_str(&text).expect("deserialize");
+        assert_eq!(back.name, "Work");
         assert!(back.no_scrollbar);
         assert_eq!(back.adblock_prev, "native");
         assert_eq!(back.tabs.len(), 2);
@@ -180,5 +271,21 @@ mod tests {
         // Sessions written before terminal-cwd tracking have no `cwd` key.
         let tab: SavedTab = toml::from_str("kind = \"term\"").expect("deserialize");
         assert_eq!(tab.cwd, "");
+    }
+
+    #[test]
+    fn profile_key_folds_case_spaces_and_punctuation() {
+        // Everything a user might type for the same profile lands on one file.
+        assert_eq!(profile_key("Work"), "work");
+        assert_eq!(profile_key("Work Stuff"), "work-stuff");
+        assert_eq!(profile_key("  work   stuff  "), "work-stuff");
+        assert_eq!(profile_key("Work-Stuff"), "work-stuff");
+        assert_eq!(profile_key("work_stuff"), "work-stuff");
+        // Path separators and other punctuation can't escape the profiles dir.
+        assert_eq!(profile_key("../../etc/passwd"), "etcpasswd");
+        assert_eq!(profile_key("a/b"), "ab");
+        // A name with nothing usable in it has no key (rejected by the caller).
+        assert_eq!(profile_key("!!!"), "");
+        assert_eq!(profile_key(""), "");
     }
 }

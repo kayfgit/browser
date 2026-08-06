@@ -30,7 +30,7 @@ feats:
 [*] - :save/saved or :favorite/favorites for saving a page for later
 [*] - add copy to right mouse button click
 [] - make ";" toggle browser hud visibility
-[*] - add profiles, like ":saveprofile work" which saves the layout, tabs, everything to a profile and can be brought back by ":profile work"
+[x] - add profiles, like ":saveprofile work" which saves the layout, tabs, everything to a profile. then the profile can be brought back by ":profile work". also needs a way to get a clean temporary profile (just like emac's *scratch*) to test something out, sometimes theres a bunch of stuff on my screen and i just want to get rid of everything and get back a clean slate but also not lose all of the things i had opened, so it needs a command to easily get rid of everything and easily get back the previous layout right before the command.
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"

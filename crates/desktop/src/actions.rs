@@ -95,6 +95,38 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         }],
     },
     ActionSpec {
+        name: "profile",
+        summary: "Save, switch to, or delete a PROFILE — a named workspace holding the \
+                  open tabs, the split layout, the window size/position and the UI \
+                  settings, so a whole set-up can be put away and brought back. Use for \
+                  'save this as my work profile', 'switch to personal', 'delete the old \
+                  profile'. The special 'scratch' action toggles a temporary clean slate: \
+                  it parks everything currently open and gives an empty browser, and \
+                  running it again brings the parked layout back — use it when the user \
+                  wants a fresh start / everything out of the way WITHOUT losing what \
+                  they had. Switching always writes what was open to the live session \
+                  first, so nothing is lost — but only 'save' ever writes a profile.",
+        params: &[
+            ParamSpec {
+                name: "do",
+                values: &["save", "load", "delete", "scratch", "list"],
+                required: true,
+                desc: "save = snapshot the current tabs/layout as profile <name>; load = \
+                       switch to the saved profile <name> ('default' returns to the live \
+                       session); delete = remove the saved profile <name>; scratch = toggle \
+                       the temporary clean slate (no name needed); list = show the saved \
+                       profiles.",
+            },
+            ParamSpec {
+                name: "name",
+                values: &[],
+                required: false,
+                desc: "The profile name, for save/load/delete (a short word like 'work' or \
+                       'personal'). Not used by scratch/list.",
+            },
+        ],
+    },
+    ActionSpec {
         name: "restore",
         summary: "Reset ALL customization (aliases, appearance, and any other tunable \
                   settings) back to defaults. Use when the user asks to restore/reset \
@@ -351,6 +383,37 @@ impl App {
                 self.action_clear(str_arg("what"), period)
             }
             "alias" => self.set_alias(str_arg("name"), str_arg("expansion")),
+            // Profiles. `do` is a keyword in Rust but a natural name for the model;
+            // `action` is accepted as a synonym since models reach for it.
+            "profile" => {
+                let verb = if str_arg("do").is_empty() { str_arg("action") } else { str_arg("do") };
+                let name = str_arg("name");
+                match verb.to_ascii_lowercase().as_str() {
+                    "save" | "saveprofile" => self.save_profile(name),
+                    // A bare name with no verb reads as "switch to it".
+                    "load" | "switch" | "open" | "use" | "" => {
+                        if name.is_empty() {
+                            Err("which profile? give a name, or use list to see them".into())
+                        } else {
+                            self.load_profile(name)
+                        }
+                    }
+                    "delete" | "remove" | "rm" => self.delete_profile(name),
+                    "scratch" | "clean" => Ok(self.toggle_scratch()),
+                    "list" | "show" => {
+                        self.open_profiles_page();
+                        let names = crate::session::list_profiles();
+                        Ok(if names.is_empty() {
+                            "no saved profiles yet".into()
+                        } else {
+                            format!("profiles: {}", names.join(", "))
+                        })
+                    }
+                    other => Err(format!(
+                        "can't '{other}' a profile — try save, load, delete, scratch, or list"
+                    )),
+                }
+            }
             "unalias" => self.remove_alias(str_arg("name")),
             "restore" => Ok(self.restore_defaults()),
             "theme" => self.set_theme(args),

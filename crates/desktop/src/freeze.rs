@@ -24,7 +24,11 @@ use crate::App;
 /// Suspend one webview to free its renderer memory. The webview MUST already be
 /// hidden — `TrySuspend` only suspends a non-visible one. Also drops its memory
 /// target to LOW. Best-effort (older runtimes lack these interfaces).
-fn suspend(webview: &WebView) {
+///
+/// Also used on the profile-switch engine keepalive
+/// ([`hold_engine`](crate::App::hold_engine)), which exists only to keep the browser
+/// process up: suspended, it holds the profile open at close to no renderer cost.
+pub(crate) fn suspend(webview: &WebView) {
     unsafe {
         let Ok(core) = webview.controller().CoreWebView2() else { return };
         if let Ok(c19) = core.cast::<ICoreWebView2_19>() {

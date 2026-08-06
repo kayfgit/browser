@@ -159,12 +159,15 @@ impl App {
         if self.active_is_vim() && !self.modifiers.control_key() {
             let is_hist = self.active_url() == Some("browser://history");
             let is_aihist = self.active_url() == Some("browser://aihist");
-            if is_hist || is_aihist {
+            let is_profiles = self.active_url() == Some("browser://profiles");
+            if is_hist || is_aihist || is_profiles {
                 if let Key::Character(s) = &key.logical_key {
                     match *s {
                         "d" => {
                             if is_aihist {
                                 self.delete_ai_chat_lines();
+                            } else if is_profiles {
+                                self.delete_profile_entry();
                             } else {
                                 self.delete_history_lines();
                             }
@@ -322,6 +325,7 @@ impl App {
             Key::Enter => match self.active_url() {
                 Some("browser://aihist") => self.open_ai_history_entry(),
                 Some("browser://extensions") => self.toggle_extension_entry(),
+                Some("browser://profiles") => self.switch_to_profile_entry(),
                 _ => self.open_history_entry(self.modifiers.shift_key()),
             },
             _ => {}
@@ -346,6 +350,40 @@ impl App {
         if url.starts_with("http") {
             self.open_tab(url, self.nojs, new_tab);
         }
+    }
+
+    /// Enter on a `:profiles` row: switch to that profile (`default` = the unnamed
+    /// session, `scratch` = the clean slate). A no-op on the header/blank rows. The
+    /// picker itself goes away with the rest of the tabs — you land in the profile.
+    pub(crate) fn switch_to_profile_entry(&mut self) {
+        let Some(name) = self.profile_row_under_cursor() else { return };
+        self.run_action("profile", serde_json::json!({ "do": "load", "name": name }));
+    }
+
+    /// `d` on a `:profiles` row: delete that saved profile and refresh the picker.
+    /// The `default` and `scratch` rows aren't files, so they're refused.
+    pub(crate) fn delete_profile_entry(&mut self) {
+        let Some(name) = self.profile_row_under_cursor() else { return };
+        if matches!(name.as_str(), "default" | "scratch") {
+            self.set_error(format!("'{name}' isn't a saved profile — nothing to delete"));
+            return;
+        }
+        self.run_action("profile", serde_json::json!({ "do": "delete", "name": name }));
+        // Only refresh if the picker survived (deleting doesn't switch, so it did).
+        if self.active_url() == Some("browser://profiles") {
+            self.open_profiles_page();
+        }
+    }
+
+    /// The profile name on the `:profiles` cursor line, or `None` on a header/blank row.
+    fn profile_row_under_cursor(&self) -> Option<String> {
+        if self.active_url() != Some("browser://profiles") {
+            return None;
+        }
+        let buf = self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.vim())?;
+        let lines: Vec<String> =
+            buf.lines.iter().map(|chars| chars.iter().collect::<String>()).collect();
+        crate::profiles::profile_at_row(&lines, buf.cy)
     }
 
     /// Enter on an `:extensions` row: flip that extension on/off (WebView2 enable/disable),

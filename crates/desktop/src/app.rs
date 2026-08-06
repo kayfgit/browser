@@ -554,6 +554,13 @@ pub(crate) struct App {
     /// waiting for the target character after `f`/`F`/`t`/`T`. The next key is the
     /// target; cleared once consumed (or on Esc). See [`key_term_vi`](App::key_term_vi).
     pub(crate) term_find_pending: Option<(bool, bool)>,
+    /// A hidden, blank webview held ONLY to keep the WebView2 browser process (and so
+    /// the whole live profile: session cookies, rotating auth tokens, service workers,
+    /// warm caches) alive while a profile switch tears every tab down and rebuilds it.
+    /// See [`hold_engine`](Self::hold_engine) / [`release_engine`](Self::release_engine).
+    /// `None` outside a switch — and for the duration of `:scratch`, which is a detour
+    /// you're expected to come back from.
+    pub(crate) engine_keepalive: Option<WebView>,
     /// The terminal id of the editor tab a bare `:theme` opened on config.toml, if
     /// one is live: when that terminal closes, the config is re-read and applied
     /// (the edit → save → quit loop). See [`edit_theme_config`](App::edit_theme_config).
@@ -1302,6 +1309,9 @@ impl App {
         // painted background (the "default page flashes for a second on :wq" bug).
         // Hidden, the rest of the shutdown is invisible and the close feels instant.
         self.window.set_visible(false);
+        // Any pinned-open engine goes with the tabs — nothing must outlive teardown and
+        // keep a WebView2 process up after the window is gone.
+        self.release_engine();
         for tab in &mut self.tabs {
             if let Some(session) = tab.take_term() {
                 session.shutdown();
@@ -1314,14 +1324,24 @@ impl App {
         self.active = None;
     }
 
-    /// Snapshot the open tabs + UI state to disk so the next launch restores them.
-    /// Explicit only — run by `:w` / `:wq` (vim-style), never automatically on exit.
-    /// Internal pages (`browser://…`, the `:error(s)` log) are session-specific and
-    /// skipped. No-op during headless test runs so they don't clobber a real session.
+    /// Write the open tabs + UI state to the current session file so the next launch
+    /// restores them — `session.toml`, or the active profile / scratch stash (see
+    /// [`current_session_path`](Self::current_session_path)). Explicit only: run by
+    /// `:w` / `:wq` (vim-style) and by a profile switch, never automatically on exit.
+    /// No-op during headless test runs so they don't clobber a real session.
     pub(crate) fn save_session(&self) {
         if std::env::var("BROWSER_TEST_QUIT_MS").is_ok() {
             return;
         }
+        let Some(path) = self.current_session_path() else { return };
+        session::save_to(&path, &self.snapshot_session());
+    }
+
+    /// Build the [`Session`](session::Session) snapshot of everything restorable:
+    /// the tabs, the pane layout, the window placement and the UI state. Internal
+    /// pages (`browser://…`, the `:error(s)` log) and private tabs are session-specific
+    /// and skipped.
+    pub(crate) fn snapshot_session(&self) -> session::Session {
         let mut tabs = Vec::new();
         let mut active = 0;
         // Maps each LIVE tab index to its position in `tabs` (the SAVED index), or `None`
@@ -1366,7 +1386,10 @@ impl App {
             let s = self.window.inner_size();
             session::WindowGeom { x: p.x, y: p.y, w: s.width, h: s.height }
         });
-        session::save(&session::Session {
+        session::Session {
+            // The profile this file belongs to (empty for the default session and
+            // the scratch stash) — what `:profiles` lists.
+            name: self.config.profile.clone().unwrap_or_default(),
             zoom: self.zoom,
             content_zoom: self.content_zoom,
             nojs: self.nojs,
@@ -1382,7 +1405,7 @@ impl App {
             windows,
             window,
             tabs,
-        });
+        }
     }
 
     /// Reopen the tabs + UI state saved by a previous run. Read tabs are re-fetched
@@ -1419,7 +1442,10 @@ impl App {
             on => on,
         };
         self.set_adblock(self.adblock_mode.blocking());
-        if s.zoom != 1.0 {
+        // Compared against the LIVE zoom, not 1.0: at startup that's the same thing,
+        // but a profile switch must also step a zoomed-in chrome back DOWN to a
+        // profile saved at 100%.
+        if (s.zoom - self.zoom).abs() > f64::EPSILON {
             self.set_zoom(s.zoom);
         }
         // Web tabs restored below re-assert this via `apply_active_zoom`, but keep the
@@ -1470,16 +1496,30 @@ impl App {
             }
             self.windows = rebuilt;
         }
-        if !self.tabs.is_empty() {
-            // Prefer the saved active tab's new index; fall back to the first tab.
-            let active = saved_to_live
-                .get(s.active)
-                .copied()
-                .flatten()
-                .filter(|&i| i < self.tabs.len())
-                .unwrap_or(0);
+        // Prefer the saved active tab's new index; fall back to the first tab that
+        // actually opened. Nothing opened synchronously (an all-`read` session, or an
+        // empty profile) leaves the focus alone — landing on index 0 could surface the
+        // background `:ai` tab, which a profile switch keeps alive.
+        let landing = saved_to_live
+            .get(s.active)
+            .copied()
+            .flatten()
+            .or_else(|| saved_to_live.iter().flatten().copied().next())
+            .filter(|&i| i < self.tabs.len());
+        if let Some(active) = landing {
             self.active = Some(active);
             self.refresh_visibility();
+        }
+        // A bulk restore must land in Normal mode. Reopening a saved TERMINAL calls the
+        // same `open_terminal` a user would (which drops straight into passthrough so
+        // you can type at the shell) — but nobody asked to type here, and with a web tab
+        // ending up active that left every key going to the PAGE: the "command bar is
+        // frozen until I alt-tab" symptom, on any session holding a `:te` tab.
+        if self.mode != ModeKind::Normal {
+            self.mode = ModeKind::Normal;
+            self.set_page_mode("normal");
+            self.ensure_term_vi();
+            self.reclaim_shell_focus();
         }
         self.clear_status();
         self.window.request_redraw();

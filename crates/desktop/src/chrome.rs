@@ -740,6 +740,13 @@ impl App {
                     None => ":open <url>  (or press o)".to_string(),
                 };
                 let mut segs = vec![("[N]".into(), accent), (label, fg)];
+                // Which profile these tabs belong to — nothing on the plain default
+                // session, so the bar only speaks up when you're somewhere else.
+                match self.profile_label() {
+                    Some("scratch") => segs.push(("   [scratch]".into(), accent)),
+                    Some(name) => segs.push((format!("   [{name}]"), draw::DIM)),
+                    None => {}
+                }
                 if self.frozen {
                     segs.push(("   [FROZEN]  :unfreeze".into(), draw::AI));
                 }

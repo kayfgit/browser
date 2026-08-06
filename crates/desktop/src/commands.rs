@@ -15,7 +15,10 @@ pub(crate) const COMMANDS: &[&str] = &[
     "mute", "audio", "css", "video", "scrollbar", "model", "history", "aihist", "aihistory", "clear", "alias", "unalias", "theme", "restore",
     "next", "tabnext", "tabprev",
     "prev", "back", "forward", "freeze", "unfreeze", "fullscreen", "move", "commands", "help", "version", "close",
-    "vsplit", "split", "write", "wq", "quit",
+    "vsplit", "split",
+    // After "prev"/"reload" above, so `:p`/`:r` still complete to those first.
+    "profile", "profiles", "saveprofile", "delprofile", "scratch",
+    "write", "wq", "quit",
 ];
 
 impl App {
@@ -217,9 +220,24 @@ impl App {
             // tmux-style panes: split the focused pane (side-by-side / stacked) into a
             // new blank pane. Navigate between them with Ctrl+W h/j/k/l.
             "vsplit" | "vs" | "vsp" => self.split_pane(SplitDir::Row),
-            "split" | "sp" | "hsplit" => self.split_pane(SplitDir::Col),
+            "split" | "hsplit" => self.split_pane(SplitDir::Col),
+            // `:sp` is overloaded, and unambiguously so: splitting takes no arguments,
+            // so a bare `:sp` is vim's split (muscle memory kept) and `:sp work` is
+            // `:saveprofile work`.
+            "sp" => {
+                if rest.trim().is_empty() {
+                    self.split_pane(SplitDir::Col);
+                } else {
+                    self.run_action(
+                        "profile",
+                        serde_json::json!({ "do": "save", "name": rest.trim() }),
+                    );
+                }
+            }
             // Session is saved explicitly (vim-style): `:w` writes the current tabs +
             // UI state, `:q` quits without saving, `:wq`/`:x` writes then quits.
+            // Writes the SESSION, never a profile — `:saveprofile` is the only thing
+            // that touches a profile snapshot.
             "write" | "w" => {
                 self.save_session();
                 self.set_status("session written");
@@ -229,6 +247,35 @@ impl App {
                 self.quit = true;
             }
             "quit" | "q" | "q!" => self.quit = true,
+            // Profiles: named snapshots of the workspace (tabs + splits + window + UI
+            // state). `:saveprofile` is the ONLY writer — `:w` records the live session
+            // instead, so a snapshot never changes behind your back. See `profiles.rs`.
+            "saveprofile" | "savep" | "saveprof" | "sprofile" => self.run_action(
+                "profile",
+                serde_json::json!({ "do": "save", "name": rest.trim() }),
+            ),
+            "delprofile" | "delprof" | "rmprofile" | "dp" => self.run_action(
+                "profile",
+                serde_json::json!({ "do": "delete", "name": rest.trim() }),
+            ),
+            // `:profile <name>` loads that snapshot; bare, it opens the picker (same
+            // page as `:profiles`), which is also how you see where you are.
+            "profile" | "prof" | "p" => {
+                if rest.trim().is_empty() {
+                    self.open_profiles_page();
+                } else {
+                    self.run_action(
+                        "profile",
+                        serde_json::json!({ "do": "load", "name": rest.trim() }),
+                    );
+                }
+            }
+            "profiles" | "profs" => self.open_profiles_page(),
+            // The emacs-*scratch* escape hatch: park everything for a clean slate,
+            // `:scratch` again to bring it all back.
+            "scratch" | "scr" | "sc" => {
+                self.run_action("profile", serde_json::json!({ "do": "scratch" }))
+            }
             // Suspend every web tab to hold the least RAM possible while staying open
             // (WebView2 keeps a renderer process per tab); `:unfreeze` resumes them.
             "freeze" => self.freeze(),
@@ -410,6 +457,19 @@ pub(crate) fn arg_candidates(app: &App, verb: &str, prior: &[&str]) -> Option<Ve
             browser_core::bang_list().into_iter().map(|(k, _)| k.to_string()).collect()
         }
         ("help" | "commands", []) => crate::pages::help_topics(),
+        // Saved profile names (plus the two always-there targets), so `:profile <Tab>`
+        // cycles what you can actually switch to.
+        ("profile" | "prof" | "p", []) => {
+            let mut v = crate::session::list_profiles();
+            v.push("default".to_string());
+            v.push("scratch".to_string());
+            v
+        }
+        ("delprofile" | "delprof" | "rmprofile" | "dp", []) => crate::session::list_profiles(),
+        // Saving over an existing profile is common enough to cycle the names too.
+        ("saveprofile" | "savep" | "saveprof" | "sprofile" | "sp", []) => {
+            crate::session::list_profiles()
+        }
         // Alias names are the user's own — sorted so the cycle order is stable.
         ("alias" | "unalias", []) => {
             let mut v: Vec<String> = app.config.aliases.keys().cloned().collect();

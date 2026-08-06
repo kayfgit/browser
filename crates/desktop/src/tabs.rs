@@ -1062,6 +1062,63 @@ impl App {
         Ok((webview, page))
     }
 
+    /// Pin the WebView2 **browser process** open with a hidden, blank webview, so a
+    /// wholesale teardown-and-rebuild of the tabs doesn't cold-start the engine.
+    ///
+    /// Dropping the last webview shuts the engine down (that's the on-demand design —
+    /// idle costs no engine). Normally the next `:open` is far enough away that this is
+    /// free, but a **profile switch** drops every tab and immediately rebuilds them, and
+    /// a fresh browser process starts with an empty everything: **session cookies and
+    /// freshly-rotated auth tokens are gone** (Google rotates its `__Secure-*` cookies
+    /// every few minutes, so a restart mid-rotation logs you out), service workers and
+    /// in-memory caches are cold, and every page is re-fetched — the "I came back to my
+    /// profile logged out, and it took six seconds" bug.
+    ///
+    /// Holding one webview across the swap keeps the process (and its whole profile
+    /// state) live, and the rebuilt tabs attach to it instead of booting a new one.
+    /// Environment options MUST match every other webview (see [`BROWSER_ARGS`]) or
+    /// WebView2 refuses to create it with 0x8007139F.
+    pub(crate) fn hold_engine(&mut self) {
+        if self.engine_keepalive.is_some() {
+            return;
+        }
+        let mut builder = WebViewBuilder::new().with_html("");
+        // An ENVIRONMENT option, so it has to be set the same way here as in
+        // `build_content_webview` — but no `with_extensions_path`: that (re-)adds the
+        // extension to the shared profile, which isn't this webview's business.
+        if ublock_extensions_dir().is_some() {
+            builder = builder.with_browser_extensions_enabled(true);
+        }
+        let webview = builder
+            .with_additional_browser_args(BROWSER_ARGS)
+            .with_visible(false)
+            .with_focused(false)
+            .with_bounds(Rect {
+                position: PhysicalPosition::new(0, 0).into(),
+                size: PhysicalSize::new(1, 1).into(),
+            })
+            .build_as_child(&*self.window);
+        match webview {
+            Ok(wv) => {
+                // It only has to keep the PROCESS (and the profile it has open) alive —
+                // nothing renders in it. Suspending drops its renderer's memory and puts
+                // the engine on the LOW memory target, the same lever `:freeze` pulls.
+                #[cfg(windows)]
+                crate::freeze::suspend(&wv);
+                self.engine_keepalive = Some(wv);
+            }
+            // Not fatal: without it the switch just cold-starts the engine as before.
+            Err(e) => self.set_error(format!("keeping the engine alive: {e}")),
+        }
+    }
+
+    /// Drop the [`hold_engine`](Self::hold_engine) webview. Call it only once the tabs
+    /// that should keep the engine alive exist — if none do, the engine shuts down here,
+    /// which is the intended idle state.
+    pub(crate) fn release_engine(&mut self) {
+        self.engine_keepalive = None;
+    }
+
     /// Kick off a background readability extraction into the Document model; the
     /// result arrives as a ReadReady/ReadFailed user event so the UI stays
     /// responsive. `replace` swaps the active read tab's doc in place (link-follow
@@ -1335,6 +1392,14 @@ impl App {
     }
 
     pub(crate) fn refresh_visibility(&mut self) {
+        // The engine keepalive has done its job the moment a REAL web tab holds the
+        // browser process — during a profile restore that's the first tab to come back,
+        // and inside `:scratch` it's the first page you open there. Handing over here
+        // (rather than at the end of the switch) means the hidden webview never
+        // outlives its purpose, so an engine-free idle stays engine-free.
+        if self.engine_keepalive.is_some() && self.tabs.iter().any(|t| t.webview().is_some()) {
+            self.release_engine();
+        }
         // A web tab is visible iff it occupies a pane; position it at that pane's
         // rect. With no split this is just the active tab filling the band.
         let (panes, _) = self.pane_layout();

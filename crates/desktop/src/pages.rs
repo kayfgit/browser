@@ -290,6 +290,43 @@ impl App {
         self.clear_status();
     }
 
+    /// `:profiles` (and bare `:profile`) — the saved-profile picker in a vim tab:
+    /// `default` and `scratch` first, then every saved profile, with the active one
+    /// marked. Enter switches to the row, `d` deletes it. Refreshed in place when it's
+    /// already the active tab, so switching from the picker updates the marker.
+    pub(crate) fn open_profiles_page(&mut self) {
+        let lines = crate::profiles::profile_lines(
+            &crate::session::list_profiles(),
+            self.profile_label(),
+            self.config.scratch_return.as_deref(),
+        );
+        if self.active_url() == Some("browser://profiles") {
+            let cy = self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.vim()).map_or(0, |b| b.cy);
+            if let Some(buf) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.vim_mut()) {
+                buf.set_lines(lines);
+                buf.anchor = None;
+                buf.cy = cy.min(buf.lines.len().saturating_sub(1));
+                buf.cx = 0;
+            }
+            self.window.request_redraw();
+            return;
+        }
+        self.place_tab(
+            Tab {
+                url: "browser://profiles".into(),
+                nojs: false,
+                read: false,
+                research: false,
+                private: false,
+                nav: TabNav::default(),
+                content: TabContent::Pager(vim::TextBuffer::new(lines)),
+            },
+            true,
+        );
+        self.window.set_focus();
+        self.clear_status();
+    }
+
     /// Open an internal HTML page (e.g. `:commands`) in a new tab.
     pub(crate) fn open_local_page(&mut self, label: &str, html: String) {
         match self.build_content_webview(Source::Html(html), false, "") {
@@ -476,7 +513,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("scrollbar", ":scrollbar · :sb", "toggle hiding the pages' scrollbars (live, all tabs)"),
     ("video", ":video [url]", "no url: toggle stripping video/players off pages (live, all tabs); with a url: play it in mpv/vlc"),
     ("close", ":close · :bd", "close the current tab"),
-    ("split", ":vsplit · :split", "split into tmux-style panes (Ctrl+W h/j/k/l to move between them)"),
+    ("split", ":vsplit · :split · :sp", "split into tmux-style panes (Ctrl+W h/j/k/l to move between them). Note :sp takes no argument — :sp <name> is :saveprofile"),
     ("reload", ":reload · :r", "reload"),
     ("tabnext", ":tabnext · :tn · :tabprev · :tp", "switch tabs"),
     ("back", ":back · :forward", "history navigation"),
@@ -492,6 +529,11 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("restore", ":restore", "reset all customization to defaults — also Ctrl+Alt+Shift+R, which works in any mode"),
     ("help", ":commands · :help [topic]", "this page; a topic jumps to its section (e.g. :help theme, :help caret)"),
     ("version", ":version", "version and build information"),
+    ("saveprofile", ":saveprofile <name> · :sp <name>", "snapshot the open tabs, splits, window and UI state as a named profile — the ONLY thing that writes a profile (:w saves the session, never a profile)"),
+    ("profile", ":profile <name> · :p", "load a saved profile (no args: the picker — Enter switches, d deletes); :profile default returns to the live session. What you had open is written to the session first, so it's never lost"),
+    ("profiles", ":profiles · :profs", "list the saved profiles in a vim tab (same picker as bare :profile)"),
+    ("delprofile", ":delprofile <name> · :dp", "delete a saved profile (the tabs stay open)"),
+    ("scratch", ":scratch · :scr · :sc", "clean slate: park everything you have open and start empty; :scratch again brings the parked layout back"),
     ("write", ":w · :write", "save the current session (open tabs + UI state) to disk"),
     ("wq", ":wq · :x", "save the session, then quit"),
     ("quit", ":quit · :q", "quit WITHOUT saving (the last :w'd session is kept)"),

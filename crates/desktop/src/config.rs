@@ -36,6 +36,20 @@ pub(crate) struct Config {
     /// [`rebuild_term_style`](crate::App::rebuild_term_style).
     #[serde(default)]
     pub(crate) term: TermConfig,
+    /// The active profile's display name (`:profile work`), or `None` for the unnamed
+    /// default session. Decides which session file `:w` writes and the next launch
+    /// restores. Session STATE rather than customization, so
+    /// [`restore_defaults`](crate::App::restore_defaults) preserves it — resetting your
+    /// theme must not silently drop you into a different set of tabs.
+    #[serde(default)]
+    pub(crate) profile: Option<String>,
+    /// True while `:scratch` (the clean-slate scratch profile) is active.
+    #[serde(default)]
+    pub(crate) scratch: bool,
+    /// While [`scratch`](Self::scratch): the profile to return to when it's toggled
+    /// off (`None` = the default session).
+    #[serde(default)]
+    pub(crate) scratch_return: Option<String>,
 }
 
 /// Appearance overrides for the shell chrome — the command/status bar height and the

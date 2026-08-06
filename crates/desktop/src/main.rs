@@ -48,6 +48,7 @@ mod pages;
 mod panes;
 mod proc_cwd;
 mod procmon;
+mod profiles;
 mod pty_term;
 mod read_view;
 mod schemes;
@@ -1432,10 +1433,21 @@ fn main() -> Result<()> {
 
     // Decide up front whether we're restoring a session: only with no CLI target
     // and outside headless test runs. Load it here so the saved window geometry can
-    // be applied at build time (no visible jump from the default size).
+    // be applied at build time (no visible jump from the default size). Always the
+    // LIVE session — profiles are snapshots you load on purpose, never a thing the
+    // browser silently boots into — except in `:scratch`, whose own file is live for
+    // as long as the detour lasts (quitting inside it and relaunching isn't the same
+    // as ENTERING it, which always starts clean). The config knows which, so it has
+    // to be read before the window exists.
     let cli_arg = std::env::args().nth(1);
     let is_test = std::env::var("BROWSER_TEST_QUIT_MS").is_ok();
-    let restore = if cli_arg.is_none() && !is_test { session::load() } else { None };
+    let cfg = config::load();
+    let restore = if cli_arg.is_none() && !is_test {
+        let path = if cfg.scratch { session::scratch_path() } else { session::session_path() };
+        path.as_deref().and_then(session::load_from)
+    } else {
+        None
+    };
 
     let mut builder = WindowBuilder::new()
         .with_title("browser")
@@ -1521,7 +1533,7 @@ fn main() -> Result<()> {
         page_focus_yielded: false,
         page_gesture_at: None,
         acting_ai: None,
-        config: config::load(),
+        config: cfg,
         theme: draw::Theme::default(),
         last_focus_gain: Instant::now(),
         history: Vec::new(),
@@ -1540,6 +1552,7 @@ fn main() -> Result<()> {
         term_painter: None,
         nav_replaying: false,
         term_find_pending: None,
+        engine_keepalive: None,
         config_edit_term: None,
         installing_scheme: None,
         term_last_find: None,
