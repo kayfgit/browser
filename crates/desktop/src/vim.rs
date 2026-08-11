@@ -458,8 +458,10 @@ impl TextBuffer {
         Some(line[a..b].iter().collect())
     }
 
-    /// Text covered by the current visual selection (anchor → cursor).
-    fn selection_text(&self) -> String {
+    /// Text covered by the current visual selection (anchor → cursor). Empty when
+    /// nothing is selected. Also read by the right-click copy, which yanks without
+    /// going through a key.
+    pub fn selection_text(&self) -> String {
         let Some((ay, ax)) = self.anchor else { return String::new() };
         let (cy, cx) = (self.cy, self.cx);
         let ((sy, sx), (ey, ex)) =

@@ -905,6 +905,10 @@ impl App {
                     // Web caret-mode yanked a selection: `caret-yank:<text>`.
                     if let Some(text) = body.strip_prefix("caret-yank:") {
                         let _ = ipc_proxy.send_event(UserEvent::CaretYank(text.to_string()));
+                    // A right-click menu item copied something: `clip:<text>` (the
+                    // selection, a link address, an image address).
+                    } else if let Some(text) = body.strip_prefix("clip:") {
+                        let _ = ipc_proxy.send_event(UserEvent::ClipCopy(text.to_string()));
                     // A hint in new-tab mode resolved to a link: `hint-open:<href>`.
                     } else if let Some(href) = body.strip_prefix("hint-open:") {
                         let _ = ipc_proxy.send_event(UserEvent::HintOpen(href.to_string()));

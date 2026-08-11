@@ -115,6 +115,20 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   drop a caret in the middle of the view and **select text with vim motions** (`hjkl`/`w`/`b`/`0`/`$`/
   `gg`/`G`), then **`y` to yank** (copy) and `Esc` to leave. On web tabs this drives a real DOM
   selection injected into the page; on engine-free read tabs it's the native renderer's own caret.
+- **Saved pages (`:save` / `:saved`)** — the "keep this for later" list. **`:save`** (also
+  `:favorite`, `:bookmark`) files the page you're on; **`:save <name>`** gives it a short label
+  instead of the address. Saving the same page twice renames it rather than duplicating it, and
+  **`:saved`** (`:favorites`) opens the list in a vim tab — `Enter` opens the row, `⇧Enter` opens it
+  in a new tab, `d` deletes the row or the whole visual selection, `:unsave <name>` does the same
+  from the command bar. They live in their own `saved.toml` beside the session, so switching
+  profiles, entering `:scratch`, or running `:restore` never touches them, and every change is
+  written immediately (`:q` without `:w` can't lose one).
+- **Right-click** — on a web page it opens a small menu built from what's under the pointer:
+  **Copy** (the current selection), and over a link **Open in new tab** + **Copy link address**
+  (plus **Copy image address** over an image). WebView2's own menu is suppressed — most of its
+  entries do nothing here. On the natively-drawn surfaces (a terminal, a `:read` document, a vim
+  pager, the command line) a right-click copies that surface's selection directly, leaving it
+  highlighted; with nothing selected it does nothing (it's never a paste — that's `Ctrl+V`).
 - **Bangs** — a `!key` token in any `:open`/`:research` target (or typed straight: `:!yt cats`)
   redirects to that site's search, DuckDuckGo-style: `!yt lofi` → YouTube, `!osrs dragon` → the Old
   School RuneScape Wiki, `!w`/`!gh`/`!so`/`!cr`/`!dr`/`!mdn`/`!ddg`/`!g`/… (see `:commands`). A bang

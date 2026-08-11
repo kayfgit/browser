@@ -117,6 +117,11 @@ pub(crate) enum UserEvent {
     TermClosed { id: u64 },
     /// Web caret mode yanked a selection → put this text on the clipboard.
     CaretYank(String),
+    /// A page's right-click menu copied something (the selection, a link or image
+    /// address) → put this text on the clipboard. Separate from
+    /// [`CaretYank`](Self::CaretYank) only in what it reports: a short one-liner is
+    /// echoed verbatim ("copied https://…"), which is the point of copying an address.
+    ClipCopy(String),
     /// Web caret mode exited (Esc with no selection) → return the shell to Normal.
     CaretExit,
     /// The page entered (`true`) or left (`false`) HTML fullscreen (e.g. YouTube's
@@ -495,6 +500,11 @@ pub(crate) struct App {
     /// Restored-from-session entries are stamped `0` (their real time is unknown, so
     /// only an all-time clear removes them).
     pub(crate) history_at: Vec<u64>,
+    /// Pages kept for later with `:save`, newest first — the `:saved` picker's list.
+    /// Loaded once at startup and rewritten on every change, from its own file rather
+    /// than the session or config (see [`bookmarks`](crate::bookmarks)), so profile
+    /// switches and `:restore` leave it alone.
+    pub(crate) saved: Vec<crate::bookmarks::Bookmark>,
     /// Recently-closed restorable tabs (kind + url), newest last. `U` /
     /// Ctrl+Shift+T pops the most recent and reopens it. Internal pages (the error/
     /// res/version vim tabs, `browser://…`) are never recorded.

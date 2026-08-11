@@ -127,6 +127,31 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         ],
     },
     ActionSpec {
+        name: "bookmark",
+        summary: "Keep the page that is open NOW for later, list the kept pages, or drop \
+                  one. Use for 'save this page', 'bookmark this', 'add this to my \
+                  favorites', 'what have I saved?', 'remove X from my saved pages'. \
+                  Saving needs a page open — it always saves the CURRENT page, so open \
+                  the page first if the user names one.",
+        params: &[
+            ParamSpec {
+                name: "do",
+                values: &["save", "list", "delete"],
+                required: true,
+                desc: "save = keep the current page; list = show the saved pages; \
+                       delete = remove a saved page by name.",
+            },
+            ParamSpec {
+                name: "name",
+                values: &[],
+                required: false,
+                desc: "For save: an optional short label to file it under (defaults to \
+                       the site/address). For delete: the name (or URL) of the saved \
+                       page to remove. Not used by list.",
+            },
+        ],
+    },
+    ActionSpec {
         name: "restore",
         summary: "Reset ALL customization (aliases, appearance, and any other tunable \
                   settings) back to defaults. Use when the user asks to restore/reset \
@@ -411,6 +436,34 @@ impl App {
                     }
                     other => Err(format!(
                         "can't '{other}' a profile — try save, load, delete, scratch, or list"
+                    )),
+                }
+            }
+            // Saved pages. Same `do`-verb shape as `profile` (models reach for
+            // `action` too, so both spellings are accepted).
+            "bookmark" => {
+                let verb = if str_arg("do").is_empty() { str_arg("action") } else { str_arg("do") };
+                let name = str_arg("name");
+                match verb.to_ascii_lowercase().as_str() {
+                    "save" | "add" | "keep" | "" => self.save_current_page(name),
+                    "delete" | "remove" | "rm" | "unsave" => self.remove_saved(name),
+                    "list" | "show" | "open" => {
+                        self.open_saved_page();
+                        Ok(if self.saved.is_empty() {
+                            "nothing saved yet".into()
+                        } else {
+                            format!(
+                                "saved: {}",
+                                self.saved
+                                    .iter()
+                                    .map(|b| b.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        })
+                    }
+                    other => Err(format!(
+                        "can't '{other}' a saved page — try save, list, or delete"
                     )),
                 }
             }

@@ -13,12 +13,18 @@ pub(crate) const COMMANDS: &[&str] = &[
     "open", "tabopen", "edit", "yank", "read", "research", "reload", "resize", "res", "resources", "reopen", "ai",
     "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock", "extensions", "downloads",
     "mute", "audio", "css", "video", "scrollbar", "model", "history", "aihist", "aihistory", "clear", "alias", "unalias", "theme", "restore",
+    // After "search"/"scratch"-style verbs above so `:s`/`:sc` keep their old
+    // completions; "save" precedes "saved" so `:sav` completes to the common one.
+    "save", "saved", "unsave",
     "next", "tabnext", "tabprev",
     "prev", "back", "forward", "freeze", "unfreeze", "fullscreen", "move", "commands", "help", "version", "close",
     "vsplit", "split",
     // After "prev"/"reload" above, so `:p`/`:r` still complete to those first.
     "profile", "profiles", "saveprofile", "delprofile", "scratch",
     "write", "wq", "quit",
+    // Last, so it can't shadow `:f`/`:fo`… (fullscreen/forward/freeze) — `:fa` is
+    // unambiguous and reaches it.
+    "favorites",
 ];
 
 impl App {
@@ -150,6 +156,18 @@ impl App {
                     self.open_tab_private(rest, true, new_tab, private);
                 }
             }
+            // Saved pages ("read it later"). `:save` keeps the page you're on —
+            // optionally under a name — and `:saved` opens the picker. Stored in their
+            // own file, so profiles and `:restore` never touch them (see `bookmarks`).
+            "save" | "sv" | "favorite" | "fav" | "bookmark" | "bm" => self.run_action(
+                "bookmark",
+                serde_json::json!({ "do": "save", "name": rest.trim() }),
+            ),
+            "saved" | "favorites" | "favs" | "bookmarks" => self.open_saved_page(),
+            "unsave" | "unfav" | "delsave" | "unbookmark" => self.run_action(
+                "bookmark",
+                serde_json::json!({ "do": "delete", "name": rest.trim() }),
+            ),
             // Reopen the most recently closed tab (also `u` / Ctrl+Shift+T).
             "reopen" | "undo" => self.reopen_closed(),
             // Ad blocker control. `on`/`ubo` (the default) runs both halves — uBO Lite for
@@ -469,6 +487,11 @@ pub(crate) fn arg_candidates(app: &App, verb: &str, prior: &[&str]) -> Option<Ve
         // Saving over an existing profile is common enough to cycle the names too.
         ("saveprofile" | "savep" | "saveprof" | "sprofile" | "sp", []) => {
             crate::session::list_profiles()
+        }
+        // The saved pages' own names, so `:unsave <Tab>` cycles what can be removed
+        // (in list order — newest first, matching the `:saved` picker).
+        ("unsave" | "unfav" | "delsave" | "unbookmark", []) => {
+            app.saved.iter().map(|b| b.name.clone()).filter(|n| !n.trim().is_empty()).collect()
         }
         // Alias names are the user's own — sorted so the cycle order is stable.
         ("alias" | "unalias", []) => {

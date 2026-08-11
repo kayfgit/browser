@@ -523,6 +523,9 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("errors", ":errors · :errs", "every error this session (newest first), same vim tab"),
     ("resources", ":res · :resources", "live memory/CPU/disk across the whole browser tree (freezes while you select)"),
     ("freeze", ":freeze · :unfreeze", "suspend every web tab to minimize RAM while staying open; :unfreeze resumes them"),
+    ("save", ":save [name] · :favorite · :bookmark", "keep the current page for later, optionally under a short name (re-saving the same page renames it instead of duplicating)"),
+    ("saved", ":saved · :favorites", "the saved pages in a vim tab (Enter opens, ⇧Enter new tab, d deletes the line/selection); kept in their own file, so profiles and :restore never touch them"),
+    ("unsave", ":unsave <name|url>", "remove a saved page (same as d on its row in :saved)"),
     ("history", ":history · :hist", "visited URLs in a vim tab (Enter opens, ⇧Enter new tab, v/y select, d deletes the line/selection); :history clear wipes it"),
     ("clear", ":clear <what> [period]", "erase data: history/cookies/cache/all, optionally a window (15m/1h/24h/7d); cookies/cache need a page open"),
     ("alias", ":alias [name] [cmd] · :unalias", "list / set / remove command aliases (e.g. :alias gh open github.com → :gh)"),
@@ -833,8 +836,9 @@ fn fmt_chat_size(bytes: u64) -> String {
     }
 }
 
-/// Truncate a chat name to `max` characters, appending `…` when shortened.
-fn truncate_name(s: &str, max: usize) -> String {
+/// Truncate a name to `max` characters, appending `…` when shortened. Shared by the
+/// `:aihist` and `:saved` pickers, whose name columns have a fixed width.
+pub(crate) fn truncate_name(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }

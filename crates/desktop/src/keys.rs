@@ -160,7 +160,8 @@ impl App {
             let is_hist = self.active_url() == Some("browser://history");
             let is_aihist = self.active_url() == Some("browser://aihist");
             let is_profiles = self.active_url() == Some("browser://profiles");
-            if is_hist || is_aihist || is_profiles {
+            let is_saved = self.active_url() == Some("browser://saved");
+            if is_hist || is_aihist || is_profiles || is_saved {
                 if let Key::Character(s) = &key.logical_key {
                     match *s {
                         "d" => {
@@ -168,6 +169,8 @@ impl App {
                                 self.delete_ai_chat_lines();
                             } else if is_profiles {
                                 self.delete_profile_entry();
+                            } else if is_saved {
+                                self.delete_saved_lines();
                             } else {
                                 self.delete_history_lines();
                             }
@@ -320,12 +323,13 @@ impl App {
             Key::ArrowUp => self.scroll(-80),
             Key::ArrowLeft => self.scroll_x(-80),
             Key::ArrowRight => self.scroll_x(80),
-            // Enter on a `:history` line opens that entry (Shift+Enter → new tab);
-            // on a `:aihist` line it opens that saved chat; a no-op anywhere else.
+            // Enter on a `:history` or `:saved` line opens that entry (Shift+Enter →
+            // new tab); on a `:aihist` line it opens that saved chat; a no-op elsewhere.
             Key::Enter => match self.active_url() {
                 Some("browser://aihist") => self.open_ai_history_entry(),
                 Some("browser://extensions") => self.toggle_extension_entry(),
                 Some("browser://profiles") => self.switch_to_profile_entry(),
+                Some("browser://saved") => self.open_saved_entry(self.modifiers.shift_key()),
                 _ => self.open_history_entry(self.modifiers.shift_key()),
             },
             _ => {}
@@ -952,6 +956,58 @@ impl App {
         // it back to the shell so Escape and typing reach the command line.
         self.reclaim_shell_focus();
         self.window.request_redraw();
+    }
+
+    /// A right-press anywhere the SHELL draws: copy whatever is selected there. Web
+    /// panes never reach this — the press lands in their own child HWND, where the
+    /// injected context menu offers Copy instead (see `BRIDGE_JS`) — so this covers
+    /// the natively-drawn surfaces: a terminal's mouse/copy-mode selection, a vim
+    /// pager or `:read` caret's visual selection, and the command line's own.
+    ///
+    /// Copying leaves the selection highlighted (like the terminal's drag-release
+    /// copy), so a right-click can't lose what you were pointing at. With nothing
+    /// selected it does nothing at all — deliberately NOT a paste, which is what
+    /// right-click means in some terminals but would be a surprise here (Ctrl+V).
+    pub(crate) fn right_click_copy(&mut self, x: f64, y: f64) {
+        // The command/status bar owns the strip along the bottom.
+        let (_, h) = self.inner();
+        if self.bar_h() > 0 && y >= h as f64 - self.bar_h() as f64 {
+            if let Some((a, b)) = self.sel_range() {
+                let text = self.command[a..b].to_string();
+                self.copy_text(&text);
+                self.window.request_redraw();
+            }
+            return;
+        }
+        let Some((tab, _)) = self.pane_at_pixel(x, y) else { return };
+        let Some(t) = self.tabs.get(tab) else { return };
+        let text = t
+            .term()
+            .and_then(|s| s.pty.selection_text())
+            .or_else(|| t.vim().filter(|b| b.has_selection()).map(|b| b.selection_text()))
+            .or_else(|| {
+                t.native()
+                    .and_then(|n| n.caret.as_ref())
+                    .filter(|b| b.has_selection())
+                    .map(|b| b.selection_text())
+            });
+        if let Some(text) = text {
+            self.copy_text(&text);
+            self.window.request_redraw();
+        }
+    }
+
+    /// Put `text` on the clipboard and say so. A short single-line copy (an address,
+    /// a word) is echoed verbatim — that's the useful confirmation for "copy link
+    /// address" — while anything longer reports its size, like the other yanks.
+    pub(crate) fn copy_text(&mut self, text: &str) {
+        clipboard_set(text);
+        let n = text.chars().count();
+        if n <= 80 && !text.contains('\n') {
+            self.set_status(format!("copied {text}"));
+        } else {
+            self.set_status(format!("copied {n} chars"));
+        }
     }
 
     /// Extend the command-line selection to the click x while left-dragging in the

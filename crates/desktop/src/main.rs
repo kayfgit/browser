@@ -31,6 +31,7 @@ mod actions;
 mod ai;
 mod app;
 mod blocklist;
+mod bookmarks;
 mod chrome;
 mod commands;
 mod config;
@@ -274,29 +275,46 @@ const BRIDGE_JS: &str = r#"
   document.addEventListener('fullscreenchange', fsPost);
   document.addEventListener('webkitfullscreenchange', fsPost);
   // Right-click menu: WebView2's default menu is full of options that don't work
-  // here (and flickered shut). Replace it with our own one-item menu — "Open in
-  // new tab" — shown only over a real link; the shell opens it via `hint-open`.
+  // here (and flickered shut). Replace it with our own, built from what is actually
+  // under (or selected by) the pointer: Copy for a text selection, and for a link
+  // "Open in new tab" (`hint-open`) plus "Copy link address". Copy items hand the
+  // text to the SHELL over IPC (`clip:`) — the page can't reach the real clipboard
+  // in Normal mode, and the shell owns it anyway (`y`, caret yank, terminal select).
+  // With nothing actionable under the cursor we just eat the event: no empty menu.
   var __ctxMenu = null;
   function ctxClose() { if (__ctxMenu) { __ctxMenu.remove(); __ctxMenu = null; } }
   document.addEventListener('contextmenu', function (e) {
     e.preventDefault(); // always kill the broken native menu
     ctxClose();
+    var items = [];
+    var sel = '';
+    try { sel = String(window.getSelection ? window.getSelection() : ''); } catch (err) {}
+    if (sel.trim()) items.push(['Copy', 'clip:' + sel]);
     var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
     var href = (a && a.href && !/^javascript:/i.test(a.href)) ? a.href : null;
-    if (!href) return; // nothing actionable under the cursor
+    if (href) {
+      items.push(['Open in new tab', 'hint-open:' + href]);
+      items.push(['Copy link address', 'clip:' + href]);
+    }
+    var img = e.target && e.target.closest ? e.target.closest('img[src]') : null;
+    var isrc = img ? (img.currentSrc || img.src) : '';
+    if (isrc && !/^data:/i.test(isrc)) items.push(['Copy image address', 'clip:' + isrc]);
+    if (!items.length) return; // nothing actionable under the cursor
     var menu = document.createElement('div');
     menu.style.cssText = 'position:fixed;z-index:2147483647;left:' + e.clientX + 'px;top:' +
       e.clientY + 'px;background:#222;color:#eee;font:13px sans-serif;border:1px solid #444;' +
       'border-radius:4px;padding:4px 0;box-shadow:0 2px 8px rgba(0,0,0,.5);min-width:150px;';
-    var item = document.createElement('div');
-    item.textContent = 'Open in new tab';
-    item.style.cssText = 'padding:6px 14px;white-space:nowrap;cursor:pointer;';
-    item.addEventListener('mouseenter', function () { item.style.background = '#0a84ff'; });
-    item.addEventListener('mouseleave', function () { item.style.background = ''; });
-    item.addEventListener('click', function (ev) {
-      ev.stopPropagation(); ctxClose(); post('hint-open:' + href);
+    items.forEach(function (spec) {
+      var item = document.createElement('div');
+      item.textContent = spec[0];
+      item.style.cssText = 'padding:6px 14px;white-space:nowrap;cursor:pointer;';
+      item.addEventListener('mouseenter', function () { item.style.background = '#0a84ff'; });
+      item.addEventListener('mouseleave', function () { item.style.background = ''; });
+      item.addEventListener('click', function (ev) {
+        ev.stopPropagation(); ctxClose(); post(spec[1]);
+      });
+      menu.appendChild(item);
     });
-    menu.appendChild(item);
     // Clamp to the viewport so a menu near the edges stays fully on-screen.
     document.documentElement.appendChild(menu);
     var r = menu.getBoundingClientRect();
@@ -1538,6 +1556,7 @@ fn main() -> Result<()> {
         last_focus_gain: Instant::now(),
         history: Vec::new(),
         history_at: Vec::new(),
+        saved: bookmarks::load(),
         closed_tabs: Vec::new(),
         fs_from_page: false,
         windows: Vec::new(),
@@ -1725,6 +1744,14 @@ fn main() -> Result<()> {
                     // Ends a terminal drag-select and copies what it covered.
                     app.term_select_end();
                 }
+                // Right-press on a natively-drawn surface (terminal, :read, a vim
+                // pager, the command line): copy that surface's selection. Web panes
+                // handle their own right-click in the page's context menu.
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Right,
+                    ..
+                } => app.right_click_copy(app.cursor_pos.0, app.cursor_pos.1),
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
@@ -1992,6 +2019,10 @@ fn main() -> Result<()> {
                 let n = text.chars().count();
                 clipboard_set(&text);
                 app.set_status(format!("yanked {n} chars"));
+                app.window.request_redraw();
+            }
+            Event::UserEvent(UserEvent::ClipCopy(text)) => {
+                app.copy_text(&text);
                 app.window.request_redraw();
             }
             Event::UserEvent(UserEvent::CaretExit) => {
