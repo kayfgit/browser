@@ -231,6 +231,9 @@ const BRIDGE_JS: &str = r#"
   // non-focused web pane switches focus to it instead of stranding the keyboard.
   // It ALSO opens the shell's mid-gesture focus grace (see `page_gesture_at`).
   document.addEventListener('pointerdown', function (e) {
+    // Hint mode dispatches synthetic pointer events to activate page controls.
+    // They must not select the pane under the unrelated physical mouse cursor.
+    if (!e.isTrusted) return;
     post('pane-click');
     // Report a control press HERE, at the start of the gesture, not on the click that
     // ends it. The webview takes OS keyboard focus on mousedown, and the shell's
@@ -1602,6 +1605,7 @@ fn main() -> Result<()> {
         closed_tabs: Vec::new(),
         fs_from_page: false,
         windows: Vec::new(),
+        pane_focus: panes::PaneFocus::default(),
         pending_window_key: false,
         pending_window_at: Instant::now(),
         pending_yank_key: false,

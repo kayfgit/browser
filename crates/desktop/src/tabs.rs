@@ -1292,6 +1292,7 @@ impl App {
         // since every tab is a leaf of exactly one window).
         let aw = self.active_window();
         self.tabs.remove(i);
+        self.pane_focus.remove(i);
         let mut kept = Vec::with_capacity(self.windows.len());
         for tree in std::mem::take(&mut self.windows) {
             if let Some(mut t) = tree.prune(i) {
@@ -1340,7 +1341,7 @@ impl App {
         // start from the first so n/p steps onto real content.
         let cur = self.active_window().unwrap_or(0) as i32;
         let next = (cur + delta).rem_euclid(n) as usize;
-        let target = self.windows[next].first_leaf();
+        let target = self.pane_focus.target(&self.windows[next]);
         self.show_tab(target);
     }
 
@@ -1348,7 +1349,7 @@ impl App {
     /// singleton has no window, so the digits match the visible strip.
     pub(crate) fn jump_to(&mut self, index: usize) {
         if let Some(tree) = self.windows.get(index) {
-            let target = tree.first_leaf();
+            let target = self.pane_focus.target(tree);
             self.show_tab(target);
         }
     }
@@ -1399,6 +1400,11 @@ impl App {
     }
 
     pub(crate) fn refresh_visibility(&mut self) {
+        // Every pane focus/layout change comes through here, including clicks,
+        // keyboard pane movement, new splits and session restoration.
+        if let Some(active) = self.active.filter(|_| self.active_window().is_some()) {
+            self.pane_focus.remember(active);
+        }
         // The engine keepalive has done its job the moment a REAL web tab holds the
         // browser process — during a profile restore that's the first tab to come back,
         // and inside `:scratch` it's the first page you open there. Handing over here

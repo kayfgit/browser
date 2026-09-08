@@ -24,8 +24,8 @@ issues:
 [*] - pressing a copy button using the hint mode doesnt actually copy it (tested on the copy repository button on github)
 [*] - this fucking out of focus mode freeze thing needs to be fixed, every time i have to alt tab to get control back and its fucking annoying
 [*] - got it now, the freeze happens when i press a button on the webview (like a chatgpt copy, or a picoctf "go to the next challenge"), it makes me unable to do anything related to the commandbar, only fix is alt tabbing.
-[*] - after pressing a button with hint mode while on split, the active split panel switches
-[*] - while on split, if i switch tabs and go back to the split, the active split always go back to the first one.
+[x] - after pressing a button with hint mode while on split, the active split panel switches
+[x] - while on split, if i switch tabs and go back to the split, the active split always go back to the first one.
 
 feats:
 [] - make ";" toggle browser hud visibility

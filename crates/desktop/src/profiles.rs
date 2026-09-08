@@ -306,6 +306,7 @@ impl App {
         // Pane trees index into `tabs`; drop them in lock-step or a redraw indexes
         // an empty list through a stale window. (The retained AI tab has no window.)
         self.windows.clear();
+        self.pane_focus = crate::panes::PaneFocus::default();
         // Stay on the AI tab if that's where we were — it's the only survivor — else
         // fall back to the welcome screen until the new profile's tabs land.
         self.active =

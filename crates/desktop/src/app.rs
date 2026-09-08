@@ -532,6 +532,8 @@ pub(crate) struct App {
     /// has no window (it overlays the whole band when summoned). Every non-AI tab is a
     /// leaf in exactly one window.
     pub(crate) windows: Vec<PaneNode>,
+    /// Last focused pane in each window, retained while another window is shown.
+    pub(crate) pane_focus: crate::panes::PaneFocus,
     /// True after Ctrl+W in Normal mode: the next h/j/k/l moves pane focus, Shift+H/J/K/L
     /// resizes, and s/v splits (vim-window style). Cleared by the following key, or
     /// dropped as stale once [`pending_window_at`](Self::pending_window_at) ages past

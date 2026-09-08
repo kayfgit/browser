@@ -1,0 +1,2 @@
+# Keep TODOs readable in editors that display CR characters as ^M.
+/TODOs.md text eol=lf

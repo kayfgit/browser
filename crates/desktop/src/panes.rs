@@ -32,6 +32,35 @@ pub(crate) enum PaneNode {
     Split { dir: SplitDir, ratio: f32, a: Box<PaneNode>, b: Box<PaneNode> },
 }
 
+/// Most recently focused tabs. Resolve against the current tree so moving or
+/// reordering windows cannot attach remembered focus to the wrong split.
+#[derive(Default)]
+pub(crate) struct PaneFocus(Vec<usize>);
+
+impl PaneFocus {
+    pub(crate) fn remember(&mut self, tab: usize) {
+        if self.0.last() == Some(&tab) {
+            return;
+        }
+        self.0.retain(|&t| t != tab);
+        self.0.push(tab);
+    }
+
+    pub(crate) fn target(&self, tree: &PaneNode) -> usize {
+        self.0.iter().rev().copied().find(|&t| tree.contains_leaf(t))
+            .unwrap_or_else(|| tree.first_leaf())
+    }
+
+    pub(crate) fn remove(&mut self, removed: usize) {
+        self.0.retain(|&t| t != removed);
+        for tab in &mut self.0 {
+            if *tab > removed {
+                *tab -= 1;
+            }
+        }
+    }
+}
+
 /// Clamp on a split's [`ratio`](PaneNode::Split) so a pane can't be resized to nothing
 /// (or swallow its sibling) — each side keeps at least this fraction.
 const RATIO_MIN: f32 = 0.1;
@@ -720,6 +749,58 @@ mod tests {
         let mut v = Vec::new();
         n.leaves(&mut v);
         v
+    }
+
+    #[test]
+    fn focus_survives_switching_between_split_windows() {
+        let left = split(SplitDir::Row, 0, 1).insert_split(1, SplitDir::Col, 2);
+        let right = split(SplitDir::Row, 3, 4);
+        let mut focus = PaneFocus::default();
+        assert_eq!(focus.target(&left), 0); // no remembered pane yet
+        focus.remember(2);
+        focus.remember(4);
+        assert_eq!(focus.target(&left), 2);
+        assert_eq!(focus.target(&right), 4);
+        focus.remember(1); // mouse or keyboard selects another pane
+        focus.remember(4);
+        assert_eq!(focus.target(&left), 1);
+        // Window order has no bearing on the remembered pane.
+        let windows = [right, left];
+        assert_eq!(focus.target(&windows[0]), 4);
+        assert_eq!(focus.target(&windows[1]), 1);
+    }
+
+    #[test]
+    fn focus_survives_tab_removal_and_index_reuse() {
+        let mut tree = split(SplitDir::Row, 1, 2);
+        let mut focus = PaneFocus::default();
+        focus.remember(1);
+        focus.remember(2);
+        focus.remove(0); // closing an earlier window shifts both panes
+        tree.shift_after_remove(0);
+        assert_eq!(focus.target(&tree), 1);
+        tree = tree.prune(1).unwrap();
+        focus.remove(1); // closing the selected pane falls back to its sibling
+        assert_eq!(focus.target(&tree), 0);
+        focus.remove(0);
+        // Newly created tabs must not inherit the old tabs' focus history.
+        assert_eq!(focus.target(&split(SplitDir::Row, 1, 0)), 1);
+    }
+
+    #[test]
+    fn focus_follows_panes_when_layout_changes() {
+        let mut focus = PaneFocus::default();
+        focus.remember(0);
+        focus.remember(1);
+        focus.remember(2);
+        let old = split(SplitDir::Row, 0, 1);
+        // Moving pane 1 out leaves pane 0 as the old window's focus.
+        assert_eq!(focus.target(&old.clone().prune(1).unwrap()), 0);
+        let moved = split(SplitDir::Col, 2, 1);
+        focus.remember(1);
+        assert_eq!(focus.target(&moved), 1);
+        // Cancelling the move restores a tree, without invalidating its focus.
+        assert_eq!(focus.target(&old), 1);
     }
 
     #[test]
