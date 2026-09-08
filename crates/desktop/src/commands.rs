@@ -3,8 +3,7 @@
 
 use crate::panes::SplitDir;
 use crate::{
-    clipboard_set, commands_document, parse_open_flags, parse_tab_flag, program_exists, App,
-    ModeKind,
+    commands_document, parse_open_flags, parse_tab_flag, program_exists, App, ModeKind,
 };
 
 /// Command verbs offered by command-bar autocomplete (`:ver`→`:version`). Longest-
@@ -65,14 +64,8 @@ impl App {
                 }
                 None => self.set_status("no page to edit"),
             },
-            // Yank (copy) the current URL to the system clipboard.
-            "y" | "yank" => match self.current_url() {
-                Some(url) => {
-                    clipboard_set(&url);
-                    self.set_status(format!("yanked {url}"));
-                }
-                None => self.set_status("no url to yank"),
-            },
+            // Yank (copy) the current URL to the system clipboard (also `yy`).
+            "y" | "yank" => self.yank_url(),
             "read" => {
                 let (new_tab, rest) = parse_tab_flag(rest);
                 if rest.is_empty() {

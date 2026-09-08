@@ -493,7 +493,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("reopen", ":reopen · :undo", "reopen the last closed tab (also U / Ctrl+Shift+T)"),
     ("research", ":research <url|query> · :rs", "lighter browse: JS on, images kept, media/embeds stripped (-t = new tab, -n = private)"),
     ("edit", ":edit · :e", "edit the current URL (re-opens in the tab's own mode)"),
-    ("yank", ":y · :yank", "copy the current URL to the clipboard"),
+    ("yank", ":y · :yank", "copy the current URL to the clipboard (also yy; yf copies a link you pick by hint)"),
     ("read", ":read <url|query>", "engine-free reader (no WebView2) in this tab; -t = new tab; non-URL → search"),
     ("search", ":search [name|template]", "show/set the search engine — a name (ddg/google/wiki…) or a %s URL"),
     ("ai", ":ai [question]", "AI tab (Groq): i to ask; Normal mode is a vim buffer (v/y select, / find); H/L step through past chats (persisted)"),
@@ -650,6 +650,8 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
         ("n / N", "next / previous match (while a search is active); Esc clears"),
         ("i", "insert mode (passthrough on a terminal tab)"),
         ("f / F", "hint mode — label every link, type the label to follow (F: open in a new tab)"),
+        ("yf", "hint mode, but the label COPIES that link's address instead of going there (cyan labels)"),
+        ("yy", "copy this page's address to the clipboard (same as :y)"),
         ("v / V", "caret mode on read & web tabs — hjkl/w/b move, v/V select, y yank, Esc exits"),
         ("x", "close the current tab"),
         ("u / Ctrl+Shift+T", "reopen the last closed tab"),
@@ -683,7 +685,7 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
     ]);
     let modes = help_table(&[
         ("Passthrough", "i (or click a field) types into the content; on a web page Ctrl+S or click-away leaves (Esc reaches the page); in a terminal Esc goes to the shell and Ctrl+S leaves"),
-        ("Hint", "type a label to follow it (type it UPPERCASE to open in a new tab); Esc cancels"),
+        ("Hint", "type a label to follow it (type it UPPERCASE to open in a new tab); entered with yf only links are labelled and the label copies the address; Esc cancels"),
         ("Resize / Move", "hjkl to size / reposition the window; Esc finishes"),
     ]);
     let vimpager = help_table(&[

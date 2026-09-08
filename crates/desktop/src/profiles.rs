@@ -54,7 +54,11 @@ impl App {
     /// profile: profiles are snapshots that only `:saveprofile` writes, so `:w` in a
     /// profile records your live session without silently editing the snapshot.
     pub(crate) fn current_session_path(&self) -> Option<PathBuf> {
-        if self.config.scratch {
+        // A `--scratch` launch is walled off in its own file, so nothing a throwaway
+        // run writes can reach the real session OR the `:scratch` slate.
+        if self.cli_scratch {
+            session::cli_scratch_path()
+        } else if self.config.scratch {
             session::scratch_path()
         } else {
             session::session_path()

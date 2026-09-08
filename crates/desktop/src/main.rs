@@ -61,6 +61,7 @@ use draw::Painter;
 use app::{clipboard_get, clipboard_set, AdblockMode, App, ExtInfo, ModeKind, UserEvent};
 use commands::COMMANDS;
 use find::FindState;
+use hints::HintAct;
 use tabs::{js_string, parse_open_flags, parse_tab_flag, Source, Tab};
 use pages::commands_document;
 use term::program_exists;
@@ -376,14 +377,20 @@ const HINT_JS: &str = r#"
     }
   } catch (e) {}
   var chars = "asdfghjkl";
-  var sel = "a[href], button, input:not([type=hidden]):not([disabled]), textarea, " +
+  // Copy mode (`yf`) has nothing to say about buttons and text fields, so it labels
+  // real links only — far fewer badges, hence shorter labels to type.
+  var copyMode = window.__hintMode === 'copy';
+  var sel = copyMode ? "a[href]"
+          : "a[href], button, input:not([type=hidden]):not([disabled]), textarea, " +
             "select, [onclick], [role='button'], [role='link'], [tabindex]:not([tabindex='-1'])";
   var els = Array.prototype.slice.call(document.querySelectorAll(sel)).filter(function (el) {
     var r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return false;
     if (r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) return false;
     var st = getComputedStyle(el);
-    return st.visibility !== 'hidden' && st.display !== 'none';
+    if (st.visibility === 'hidden' || st.display === 'none') return false;
+    // A `javascript:` link has no address worth copying.
+    return !copyMode || (el.href && !/^javascript:/i.test(el.href));
   });
   function gen(n) {
     if (n === 0) return [];
@@ -405,9 +412,10 @@ const HINT_JS: &str = r#"
     var r = els[i].getBoundingClientRect();
     var b = document.createElement('span');
     // New-tab mode (`F`) shows labels uppercase as a cue; matching stays lowercase.
-    b.textContent = window.__hintUpper ? labels[i].toUpperCase() : labels[i];
+    b.textContent = window.__hintMode === 'newtab' ? labels[i].toUpperCase() : labels[i];
     b.style.cssText = 'position:fixed;left:' + Math.max(0, r.left) + 'px;top:' + Math.max(0, r.top) +
-      'px;z-index:2147483647;background:#ffd400;color:#000;font:bold 11px monospace;padding:0 3px;' +
+      'px;z-index:2147483647;background:' + (copyMode ? '#00e5ff' : '#ffd400') +
+      ';color:#000;font:bold 11px monospace;padding:0 3px;' +
       'border:1px solid #000;border-radius:3px;line-height:14px;pointer-events:none;';
     box.appendChild(b);
     map[labels[i]] = { el: els[i], badge: b };
@@ -457,9 +465,12 @@ const HINT_JS: &str = r#"
     try { el.focus(); } catch (e) {}
     fireClick(el);
   }
-  window.__hintInput = function (s, nt) {
+  // `mode` is 'follow' | 'newtab' | 'copy' — the shell re-sends it on every
+  // keystroke, since holding Shift flips follow↔newtab mid-pick.
+  window.__hintInput = function (s, mode) {
     var m = window.__hintMap; if (!m) return;
-    window.__hintUpper = !!nt;
+    window.__hintMode = mode;
+    var nt = mode === 'newtab';
     s = (s || '').toLowerCase();
     var exact = null;
     for (var k in m) {
@@ -471,8 +482,8 @@ const HINT_JS: &str = r#"
     }
     if (exact) {
       var el = exact.el;
-      var edit = editable(el);
-      // For new-tab mode, resolve the link href (if any) before clearing badges.
+      var edit = mode !== 'copy' && editable(el);
+      // For new-tab and copy modes, resolve the link href before clearing badges.
       var a = !edit && el.closest ? el.closest('a[href]') : (el.tagName === 'A' ? el : null);
       var href = (a && a.href && !/^javascript:/i.test(a.href)) ? a.href : null;
       window.__hintClear();
@@ -481,6 +492,10 @@ const HINT_JS: &str = r#"
         // field (not the document body) ends up focused; then enter passthrough.
         window.__hintTarget = el;
         window.__post('hint-edit');
+      } else if (mode === 'copy') {
+        // Copy mode only ever labels links, so `href` is set — but if a page mutated
+        // the element out from under us, leave the clipboard alone and just exit.
+        window.__post(href ? 'hint-copy:' + href : 'hint-exit');
       } else if (nt && href) {
         // New-tab mode on a real link: let the shell open it as a new tab.
         window.__post('hint-open:' + href);
@@ -1457,11 +1472,38 @@ fn main() -> Result<()> {
     // as long as the detour lasts (quitting inside it and relaunching isn't the same
     // as ENTERING it, which always starts clean). The config knows which, so it has
     // to be read before the window exists.
-    let cli_arg = std::env::args().nth(1);
+    // `--scratch` boots this RUN into a throwaway slate: the config pointer is set in
+    // memory only (so the next ordinary launch returns to the real profile), and every
+    // write is redirected to `scratch-cli.toml` — not the live session, not a profile,
+    // and not the `:scratch` slate either. The safe way to poke at a dev build while
+    // real data is set up. Note you can't get here by typing `:scratch` after launch:
+    // that parks whatever is on screen INTO `session.toml` first (`profiles::switch_to`
+    // step 1), which is exactly what a throwaway run must not do.
+    let mut cli_arg = None;
+    let mut cli_scratch = false;
+    for a in std::env::args().skip(1) {
+        match a.as_str() {
+            "--scratch" => cli_scratch = true,
+            _ if cli_arg.is_none() => cli_arg = Some(a),
+            _ => {}
+        }
+    }
     let is_test = std::env::var("BROWSER_TEST_QUIT_MS").is_ok();
-    let cfg = config::load();
+    let mut cfg = config::load();
+    if cli_scratch {
+        // In-memory only: never `config::save`d here, so the next ordinary launch
+        // comes back to the profile the user actually left off in.
+        cfg.scratch = true;
+        cfg.scratch_return = cfg.profile.take();
+    }
     let restore = if cli_arg.is_none() && !is_test {
-        let path = if cfg.scratch { session::scratch_path() } else { session::session_path() };
+        let path = if cli_scratch {
+            session::cli_scratch_path()
+        } else if cfg.scratch {
+            session::scratch_path()
+        } else {
+            session::session_path()
+        };
         path.as_deref().and_then(session::load_from)
     } else {
         None
@@ -1497,7 +1539,7 @@ fn main() -> Result<()> {
         command_cursor: 0,
         command_anchor: None,
         hint_input: String::new(),
-        hint_new_tab: false,
+        hint_act: HintAct::Follow,
         native_hints: Vec::new(),
         status: String::new(),
         status_is_error: false,
@@ -1562,6 +1604,9 @@ fn main() -> Result<()> {
         windows: Vec::new(),
         pending_window_key: false,
         pending_window_at: Instant::now(),
+        pending_yank_key: false,
+        pending_yank_at: Instant::now(),
+        cli_scratch,
         pane_resize_at: Instant::now(),
         pane_move_orig: None,
         active_pane_is_webview: false,
@@ -1908,7 +1953,7 @@ fn main() -> Result<()> {
             }
             Event::UserEvent(UserEvent::ExitHint) => {
                 app.hint_input.clear();
-                app.hint_new_tab = false;
+                app.hint_act = HintAct::Follow;
                 app.mode = ModeKind::Normal;
                 app.window.set_focus();
                 app.window.request_redraw();
@@ -1929,10 +1974,20 @@ fn main() -> Result<()> {
                 // The page already cleared its badges; just reset shell hint state
                 // and open the link in a fresh tab.
                 app.hint_input.clear();
-                app.hint_new_tab = false;
+                app.hint_act = HintAct::Follow;
                 app.mode = ModeKind::Normal;
                 app.window.set_focus();
                 app.open_tab(&url, app.nojs, true);
+            }
+            Event::UserEvent(UserEvent::HintCopy(url)) => {
+                // Copy mode (`yf`): the page already cleared its badges — reset the
+                // shell's hint state, take the keyboard back, and yank the address.
+                app.hint_input.clear();
+                app.hint_act = HintAct::Follow;
+                app.mode = ModeKind::Normal;
+                app.window.set_focus();
+                app.copy_text(&url);
+                app.window.request_redraw();
             }
             Event::UserEvent(UserEvent::ReadReady { doc, replace, record }) => {
                 app.show_read_document(*doc, replace, record);

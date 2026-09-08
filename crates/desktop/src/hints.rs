@@ -1,4 +1,4 @@
-//! Hint mode (`f`/`F`): label clickable things and follow the picked one.
+//! Hint mode (`f`/`F`/`yf`): label clickable things and act on the picked one.
 //! Web tabs inject HINT_JS and filter in-page; native read tabs place labels
 //! over visible links and match them shell-side.
 
@@ -6,6 +6,41 @@ use tao::event::KeyEvent;
 use tao::keyboard::Key;
 
 use crate::{read_view, App, ModeKind, HINT_JS};
+
+/// What picking a hint does with its target.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HintAct {
+    /// `f` — follow it in this tab (or click it, for non-links).
+    Follow,
+    /// `F` (or Shift held mid-pick) — open the link in a new tab.
+    NewTab,
+    /// `yf` — copy the link address instead of going there. Only links are
+    /// labelled in this mode, and Shift doesn't flip it to new-tab.
+    Copy,
+}
+
+impl HintAct {
+    /// The badge style cue: labels render UPPERCASE for new-tab, and copy mode
+    /// paints them cyan instead of the usual yellow.
+    pub(crate) fn upper(self) -> bool {
+        self == HintAct::NewTab
+    }
+    pub(crate) fn badge_rgb(self) -> crate::draw::Rgb {
+        if self == HintAct::Copy {
+            (0x00, 0xe5, 0xff)
+        } else {
+            (0xff, 0xd4, 0x00)
+        }
+    }
+    /// The name HINT_JS switches on (`window.__hintMode`).
+    fn js_name(self) -> &'static str {
+        match self {
+            HintAct::Follow => "follow",
+            HintAct::NewTab => "newtab",
+            HintAct::Copy => "copy",
+        }
+    }
+}
 
 /// A placed hint label over a native read link: the typed label and target URL.
 pub(crate) struct NativeHint {
@@ -41,14 +76,15 @@ pub(crate) fn hint_labels(n: usize) -> Vec<String> {
 }
 
 impl App {
-    /// `new_tab`: enter with `F` to follow the picked link in a NEW tab (badges
-    /// render uppercase). `f` (false) follows in the current tab.
-    pub(crate) fn enter_hint(&mut self, new_tab: bool) {
+    /// Enter hint mode with the action the picked target gets: [`HintAct::Follow`]
+    /// (`f`), [`HintAct::NewTab`] (`F`, badges uppercase), or [`HintAct::Copy`]
+    /// (`yf`, links only, badges cyan).
+    pub(crate) fn enter_hint(&mut self, act: HintAct) {
         let Some(idx) = self.active else {
             self.set_status("no page — open one first");
             return;
         };
-        self.hint_new_tab = new_tab;
+        self.hint_act = act;
         // Engine-free read tab: hints are computed and drawn natively.
         if self.tabs[idx].native().is_some() {
             self.hint_input.clear();
@@ -68,7 +104,7 @@ impl App {
         self.hint_input.clear();
         self.mode = ModeKind::Hint;
         if let Some(wv) = self.tabs[idx].webview() {
-            let _ = wv.evaluate_script(&format!("window.__hintUpper={new_tab};"));
+            let _ = wv.evaluate_script(&format!("window.__hintMode={:?};", act.js_name()));
             let _ = wv.evaluate_script(HINT_JS);
         }
     }
@@ -110,9 +146,12 @@ impl App {
                 let c = *s;
                 if !c.is_empty() && c.chars().all(|ch| ch.is_ascii_alphabetic()) {
                     // Typing a label uppercase switches this pick to new-tab mode,
-                    // even if hint mode was entered with plain `f`.
-                    if c.chars().any(|ch| ch.is_ascii_uppercase()) {
-                        self.hint_new_tab = true;
+                    // even if hint mode was entered with plain `f`. Copy mode (`yf`)
+                    // is a deliberate choice, so Shift doesn't hijack it.
+                    if c.chars().any(|ch| ch.is_ascii_uppercase())
+                        && self.hint_act != HintAct::Copy
+                    {
+                        self.hint_act = HintAct::NewTab;
                     }
                     self.hint_input.push_str(&c.to_lowercase());
                     if native {
@@ -129,15 +168,17 @@ impl App {
     /// Live feedback while picking a hint: holding Shift flips every badge to
     /// UPPERCASE (and arms new-tab mode); releasing it returns to lowercase. The
     /// actual open then follows whatever Shift state is held when a label completes.
+    /// Copy mode (`yf`) opts out — Shift there would silently turn a copy into a
+    /// navigation.
     pub(crate) fn on_modifiers_changed(&mut self) {
-        if self.mode != ModeKind::Hint {
+        if self.mode != ModeKind::Hint || self.hint_act == HintAct::Copy {
             return;
         }
         let shift = self.modifiers.shift_key();
-        if shift == self.hint_new_tab {
+        if shift == (self.hint_act == HintAct::NewTab) {
             return;
         }
-        self.hint_new_tab = shift;
+        self.hint_act = if shift { HintAct::NewTab } else { HintAct::Follow };
         if self.native_hints.is_empty() {
             self.hint_send(); // repaint the page's badges in the new case
         } else {
@@ -153,21 +194,27 @@ impl App {
             // passes. (Harmless when the hint resolves to a button/in-page action.)
             crate::navguard::mark(&self.nav_intent);
             let _ = wv.evaluate_script(&format!(
-                "window.__hintInput&&window.__hintInput({:?},{})",
-                self.hint_input, self.hint_new_tab
+                "window.__hintInput&&window.__hintInput({:?},{:?})",
+                self.hint_input,
+                self.hint_act.js_name()
             ));
         }
     }
 
-    /// Native hint input: on an exact label match, follow the link (re-extract it
-    /// into the current read tab); reset if the typed prefix matches nothing.
+    /// Native hint input: on an exact label match, act on the link (copy its
+    /// address, or re-extract it into a read tab); reset if the typed prefix
+    /// matches nothing.
     pub(crate) fn hint_match_native(&mut self) {
         if let Some(h) = self.native_hints.iter().find(|h| h.label == self.hint_input) {
             let url = h.url.clone();
-            let new_tab = self.hint_new_tab;
+            let act = self.hint_act;
             self.exit_hint();
-            // New-tab mode opens a fresh read tab; otherwise follow in place.
-            self.start_read(&url, !new_tab, true);
+            match act {
+                HintAct::Copy => self.copy_text(&url),
+                // New-tab mode opens a fresh read tab; otherwise follow in place.
+                HintAct::NewTab => self.start_read(&url, false, true),
+                HintAct::Follow => self.start_read(&url, true, true),
+            }
             return;
         }
         if !self.native_hints.iter().any(|h| h.label.starts_with(&self.hint_input)) {
@@ -182,7 +229,7 @@ impl App {
         }
         self.native_hints.clear();
         self.hint_input.clear();
-        self.hint_new_tab = false;
+        self.hint_act = HintAct::Follow;
         self.mode = ModeKind::Normal;
         self.window.request_redraw();
     }

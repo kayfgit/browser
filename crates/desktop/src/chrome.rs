@@ -7,7 +7,7 @@ use anyhow::Result;
 
 use crate::draw::{self, Painter};
 use crate::find::FindState;
-use crate::hints::NativeHint;
+use crate::hints::{HintAct, NativeHint};
 use crate::panes::{PaneRect, FOCUS_BORDER};
 use crate::{pty_term, read_view, App, ModeKind, Tab, TERM_PAD};
 
@@ -28,7 +28,7 @@ pub(crate) fn paint_pane(
     mode: ModeKind,
     native_hints: &[NativeHint],
     hint_input: &str,
-    hint_new_tab: bool,
+    hint_act: HintAct,
     focused: bool,
     cursor_on: bool,
     rect: PaneRect,
@@ -131,7 +131,7 @@ pub(crate) fn paint_pane(
                     if !hint.label.starts_with(hint_input) {
                         continue;
                     }
-                    let label = if hint_new_tab {
+                    let label = if hint_act.upper() {
                         hint.label.to_uppercase()
                     } else {
                         hint.label.clone()
@@ -139,7 +139,7 @@ pub(crate) fn paint_pane(
                     let lw = p.measure(&label);
                     let bx = hint.x.max(0);
                     let by = hint.y - (lh as i32) * 3 / 4;
-                    fill(buf, bx, by, bx + lw as i32 + 4, by + lh as i32, (0xff, 0xd4, 0x00));
+                    fill(buf, bx, by, bx + lw as i32 + 4, by + lh as i32, hint_act.badge_rgb());
                     p.text_rect(
                         buf, wz, hz, bx + 2, hint.y.max(0) as usize, &label, (0x10, 0x10, 0x10),
                         left, right, top, bottom,
@@ -506,7 +506,7 @@ impl App {
                 if !is_web {
                     paint_pane(
                         &self.tabs[*t], p, term_p, term_style, &self.find, self.mode,
-                        &self.native_hints, &self.hint_input, self.hint_new_tab,
+                        &self.native_hints, &self.hint_input, self.hint_act,
                         Some(*t) == self.active, self.cursor_on, *r, &mut buf, wz, hz,
                     );
                 } else if self.frozen {
@@ -676,13 +676,23 @@ impl App {
                 ("  hjkl swap · Enter set · Esc cancel".into(), draw::DIM),
             ],
             ModeKind::Hint => vec![
-                (if self.hint_new_tab { "[HINT ↗]" } else { "[HINT]" }.into(), accent),
+                (
+                    match self.hint_act {
+                        HintAct::NewTab => "[HINT ↗]",
+                        HintAct::Copy => "[HINT y]",
+                        HintAct::Follow => "[HINT]",
+                    }
+                    .into(),
+                    accent,
+                ),
                 (format!(" {}", self.hint_input), fg),
                 (
-                    if self.hint_new_tab {
-                        "   label opens a new tab · Esc cancel".into()
-                    } else {
-                        "   type a label (UPPERCASE = new tab) · Esc cancel".into()
+                    match self.hint_act {
+                        HintAct::NewTab => "   label opens a new tab · Esc cancel".into(),
+                        HintAct::Copy => "   label copies the link address · Esc cancel".into(),
+                        HintAct::Follow => {
+                            "   type a label (UPPERCASE = new tab) · Esc cancel".into()
+                        }
                     },
                     draw::DIM,
                 ),

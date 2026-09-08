@@ -65,7 +65,15 @@ tab spawns the engine on demand and closing it frees the renderer.
 ```sh
 cargo run -p browser-desktop                 # welcome window, no engine
 cargo run -p browser-desktop youtube.com     # open a page on startup
+cargo run -p browser-desktop -- --scratch    # throwaway slate — touches no real data
 ```
+
+`--scratch` is the flag to test a dev build with: it boots into a disposable session
+whose writes all go to `scratch-cli.toml`, so neither `session.toml`, a saved profile,
+nor the `:scratch` slate can be modified, and the remembered profile pointer in
+`config.toml` is left alone (it's overridden in memory only). Combine it with a URL.
+Note that typing `:scratch` *after* launch is NOT equivalent — that parks whatever is
+on screen into `session.toml` first.
 
 Verified on Windows 11: idle ≈ 30 MB with zero WebView2 processes; one tab adds the
 WebView2 process set; quitting (or even a crash) returns to baseline — no orphans.
@@ -144,10 +152,14 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   refresh resumes once the selection clears. Task Manager scatters the WebView2 engine
   processes under their own "WebView2 Manager" group (the Edge runtime gives its broker a separate app
   identity), so this is the one place you see the true total.
-- **Session restore** — on quit the open tabs (web/`:nojs`/`:research`/`:read` and terminals), the
-  window position + size, zoom, JS-off, and search-engine settings are saved to `session.toml` in the
-  data dir; the next launch with no CLI argument reopens them exactly. Passing a URL/command on the
-  command line skips restore for that run.
+- **Session restore** — the open tabs (web/`:nojs`/`:research`/`:read` and terminals), the window
+  position + size, zoom, JS-off, and search-engine settings are saved to `session.toml` in the data
+  dir; the next launch with no CLI argument reopens them exactly. Saving is **explicit and vim-style**
+  — `:w`/`:wq`, plus a profile switch — and deliberately **never happens on quit**, so closing the
+  window or `:q` leaves the last written session untouched. Passing a URL/command on the command line
+  skips restore for that run. A launch always reads the **live session**, never a profile snapshot:
+  the profile shown in the status bar is a remembered *label*, so a fresh launch can read `[work]`
+  while showing the live session's tabs — `:profile work` is what actually loads that snapshot back.
 - **Profiles (`:saveprofile` / `:profile` / `:scratch`)** — named **snapshots** of the whole
   workspace. **`:saveprofile work`** (`:sp work`) writes everything a session holds (tabs, the split
   layout, window size/position, zoom, ad blocker, search engine, shell…) to `profiles/work.toml`.

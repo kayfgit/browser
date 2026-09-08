@@ -912,6 +912,9 @@ impl App {
                     // A hint in new-tab mode resolved to a link: `hint-open:<href>`.
                     } else if let Some(href) = body.strip_prefix("hint-open:") {
                         let _ = ipc_proxy.send_event(UserEvent::HintOpen(href.to_string()));
+                    // A hint in copy mode (`yf`) resolved to a link: `hint-copy:<href>`.
+                    } else if let Some(href) = body.strip_prefix("hint-copy:") {
+                        let _ = ipc_proxy.send_event(UserEvent::HintCopy(href.to_string()));
                     // The page blocker neutered a scripted pop-up. `popup-blocked:<url>`.
                     } else if let Some(url) = body.strip_prefix("popup-blocked:") {
                         let _ = ipc_proxy.send_event(UserEvent::PopupBlocked(url.to_string()));

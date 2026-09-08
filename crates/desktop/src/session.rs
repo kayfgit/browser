@@ -143,6 +143,14 @@ pub fn scratch_path() -> Option<PathBuf> {
     data_dir().map(|d| d.join("scratch.toml"))
 }
 
+/// `<data>/scratch-cli.toml` — the throwaway slate a `--scratch` LAUNCH uses. A
+/// deliberately separate file from [`scratch_path`]: `--scratch` exists so a dev
+/// build can be poked at without risking real data, and sharing the file would let a
+/// test run's `:w` wipe the layout you parked with the `:scratch` command.
+pub fn cli_scratch_path() -> Option<PathBuf> {
+    data_dir().map(|d| d.join("scratch-cli.toml"))
+}
+
 /// The canonical on-disk key for a profile name: lowercase, spaces folded to `-`,
 /// and anything that isn't alphanumeric/`-`/`_` dropped — so "Work Stuff", "work
 /// stuff" and "Work-Stuff" all address the same profile. Empty if the name has no

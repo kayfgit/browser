@@ -33,6 +33,13 @@ pub(crate) const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 /// key, e.g. `H` = history-back — so this is a hair longer.)
 pub(crate) const WINDOW_PREFIX_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// How long the `y` yank prefix stays armed before a stray `y` is forgotten. Much
+/// longer than [`WINDOW_PREFIX_TIMEOUT`]: that one is a modifier chord you finish in
+/// one motion, while `yf`/`yy` are two ordinary letters, and the second is often typed
+/// after a beat of looking at the page. Bounded anyway so a forgotten `y` can't eat a
+/// later key — and the command bar shows the prefix while it's live.
+pub(crate) const YANK_PREFIX_TIMEOUT: Duration = Duration::from_millis(2000);
+
 /// Auto-leave the repeatable pane-resize mode after this much keyboard inactivity, so
 /// a later `j`/`k` (meant to scroll) doesn't silently resize instead.
 pub(crate) const PANE_RESIZE_TIMEOUT: Duration = Duration::from_millis(1000);
@@ -76,6 +83,9 @@ pub(crate) enum UserEvent {
     HintEdit,
     /// A hint was activated in new-tab mode (`F`): open this URL in a new tab.
     HintOpen(String),
+    /// A hint was activated in copy mode (`yf`): put this link address on the
+    /// clipboard instead of going there, and return the shell to Normal.
+    HintCopy(String),
     /// A web pane was clicked (pointerdown): focus the pane under the cursor.
     PaneClick,
     /// A `:read` extraction finished: render this Document in an engine-free read
@@ -329,10 +339,10 @@ pub(crate) struct App {
     pub(crate) command_anchor: Option<usize>,
     /// Accumulated label characters while in Hint mode.
     pub(crate) hint_input: String,
-    /// Whether the current hint will open its target in a NEW tab (entered with
-    /// `F`, or set mid-typing when a label char is typed uppercase). Badges render
-    /// uppercase as the visual cue. Links only; non-link targets click normally.
-    pub(crate) hint_new_tab: bool,
+    /// What the current hint does with its target: follow it (`f`), open it in a
+    /// new tab (`F`, or a label char typed uppercase mid-pick), or copy its
+    /// address (`yf`). Badges carry the cue — UPPERCASE for new-tab, cyan for copy.
+    pub(crate) hint_act: crate::hints::HintAct,
     /// Placed hint labels for an engine-free read tab (web tabs hint via JS).
     pub(crate) native_hints: Vec<NativeHint>,
     pub(crate) status: String,
@@ -530,6 +540,17 @@ pub(crate) struct App {
     /// When [`pending_window_key`](Self::pending_window_key) was armed — the Ctrl+W
     /// prefix expires this long after so a forgotten prefix can't eat a later key.
     pub(crate) pending_window_at: Instant,
+    /// True after `y` in Normal mode: the next key picks what to yank — `f` hints the
+    /// links and copies the picked address, `y` copies this page's URL. Expires like
+    /// the Ctrl+W prefix, but on the roomier [`YANK_PREFIX_TIMEOUT`].
+    pub(crate) pending_yank_key: bool,
+    /// When [`pending_yank_key`](Self::pending_yank_key) was armed.
+    pub(crate) pending_yank_at: Instant,
+    /// This process was launched with `--scratch`: a throwaway slate for poking at a
+    /// dev build. Run-scoped and never persisted — it redirects
+    /// [`current_session_path`](Self::current_session_path) to its own file, so
+    /// neither the live session, a profile, nor the `:scratch` slate can be written.
+    pub(crate) cli_scratch: bool,
     /// Last keypress handled in [`PaneResize`](ModeKind::PaneResize) mode; the mode
     /// auto-exits once this ages past [`PANE_RESIZE_TIMEOUT`].
     pub(crate) pane_resize_at: Instant,
