@@ -1,0 +1,111 @@
+# Engine switching: research and proposed architecture
+
+Research date: 2026-09-08. Repository inspected at `60969b448460a9e1184b6c218d17f589d00fecc5`.
+
+This is a design proposal, not an implemented engine contract or a claim that a new backend has been tested. The work reviewed the repository, upstream documentation, current upstream source, and Servo's v0.5.0 source. No additional engine was built or launched. The existing `docs/ENGINE.md` referenced by `browser-engine` is absent; this document does not replace that promised normative specification.
+
+The shell can support runtime engine selection, including different engines in adjacent panes. The maintainable boundary is a page provider with explicit lifecycle, input, surface, storage, and capability contracts. Each engine still needs an adapter. Framework/language independence can be provided through a versioned process protocol, but no interface can guarantee compatibility with arbitrary future engines without adapter work.
+
+| Requested engine | Concrete provider | Assessment for this Windows shell |
+| --- | --- | --- |
+| Blink | Existing WebView2 provider | Already rendering the application's web pages; extract its implementation behind the contract. |
+| Blink | Chromium Embedded Framework (CEF) | Practical additional provider with an embedding API, native child windows, and off-screen rendering. Adds runtime distribution and update work. |
+| Servo | Published `servo` library | Practical experimental second engine. Public embedding API and Windows support exist; web compatibility and integration still require testing. |
+| Gecko | Custom application running on a maintained Firefox runtime | Concrete research route, but unsupported as a stable desktop embedding SDK. Native surface integration and upgrade maintenance are unresolved. |
+| Gecko on Android | GeckoView | Official embedding route, relevant if an Android shell is ever developed. Does not solve the Windows backend. |
+
+WebView2 uses Microsoft Edge's Chromium engine. CEF explicitly wraps Chromium/Blink internals behind an embedding API. Therefore `webview2` and `cef` should be distinct provider IDs in one `blink` family. `:engine blink` can resolve to the configured installed Blink provider and report which one it chose. It should not silently equate all Chromium distributions. [Microsoft WebView2 introduction](https://learn.microsoft.com/en-us/microsoft-edge/webview2/), [CEF project](https://github.com/chromiumembedded/cef).
+
+**What changed upstream.** Servo published its first embedding crate on crates.io on April 13, 2026. It now offers an LTS branch for embedders who cannot follow monthly breaking changes. The current policy is best effort: a branch approximately every six months, around nine months of support, and security fixes rather than full feature backports. This is a meaningful improvement in integration feasibility, not a guarantee of browser maturity. [Servo crate announcement](https://servo.org/blog/2026/04/13/servo-0.1.0-release/), [LTS policy and limitations](https://book.servo.org/embedding/lts-release.html).
+
+Servo v0.5.0 was released August 31, 2026; the release list also includes v0.1.3 on the LTS line. The live API documentation currently identifies itself as 0.6.0, so a prototype must use code and documentation matching its pinned release. v0.5.0's update still describes interactive text selection as forthcoming. That matters directly to this browser's caret and selection workflows. [Release list](https://github.com/servo/servo/releases), [August 31 update](https://servo.org/blog/2026/08/31/july-in-servo/).
+
+The v0.5.0 minimal example creates a rendering context, builds Servo and a WebView, posts event-loop wakeups, pumps Servo, forwards input, and paints on redraw. Its winit dependency is the example's windowing choice; the embedding design can be adapted to Tao. The actual work includes display/window handles, DPI, event translation, redraw scheduling, and renderer ownership. Do not start a second competing main event loop inside the shell. [Pinned minimal example](https://raw.githubusercontent.com/servo/servo/v0.5.0/components/servo/examples/winit_minimal.rs).
+
+The pinned WebView implementation supports asynchronous JavaScript evaluation. This is useful for adapting shared hints/find/caret scripts, but does not establish that all of their DOM APIs or clipboard activation semantics work identically. Its screenshot API waits for readiness conditions, so it is not a suitable interactive frame-delivery API. Media support also has build/runtime choices, including optional GStreamer integration. [Pinned WebView source](https://raw.githubusercontent.com/servo/servo/v0.5.0/components/servo/webview.rs), [Pinned crate features](https://raw.githubusercontent.com/servo/servo/v0.5.0/components/servo/Cargo.toml).
+
+CEF has Rust bindings maintained in `tauri-apps/cef-rs`, with Windows x86-64 and ARM64 listed among supported targets. The repository supplies examples and binary bundling tools. This lowers Rust integration cost but does not make the native runtime disappear. Pin the adapter and matching CEF binaries together. [cef-rs](https://github.com/tauri-apps/cef-rs).
+
+Wry itself is not a ready-made runtime engine selector. Its current README says the OS-webview feature must be enabled for the crate to work; preparation for other ports is not an implemented selection API. Keep Wry inside the WebView2/system-webview provider. [Wry README](https://github.com/tauri-apps/wry).
+
+**The Gecko route deserves a bounded experiment.** Mozilla documents GeckoView as an Android component. The desktop CEF-equivalent request remains marked "In review" on Mozilla Connect; that status alone is not proof of impossibility, but no supported Windows SDK emerged from this research. [GeckoView quick start](https://mozilla.github.io/geckoview/consumer/docs/geckoview-quick-start), [Mozilla desktop embedding request](https://connect.mozilla.org/t5/ideas/ability-to-embed-gecko-as-an-alternative-to-chromium-embedding/idi-p/186).
+
+Both Firefox's current startup source and its ESR140 branch still implement `-app <application.ini>` as the first command-line argument. The bootstrap uses that application description instead of the built-in Firefox app data. This establishes that a custom application startup path still exists; it does not establish that a complete custom browser app will work on a given release without changes. [Current startup source](https://raw.githubusercontent.com/mozilla-firefox/firefox/main/browser/app/nsBrowserApp.cpp), [ESR140 startup source](https://raw.githubusercontent.com/mozilla-firefox/firefox/esr140/browser/app/nsBrowserApp.cpp).
+
+Proposed experiment: run a dedicated minimal Gecko application on a pinned, maintained Firefox runtime, with its own browser element, privileged host bridge, and separate engine data directory. Keep Gecko's runtime, networking, compositor, and content processes intact. The native Rust shell controls that application's views through the same external-provider protocol used by other providers. Mozilla's JSActors offer an internal parent/content messaging mechanism to investigate for the bridge. They are not a stable external SDK. [Mozilla JSActors documentation](https://firefox-source-docs.mozilla.org/dom/ipc/jsactors.html).
+
+First establish custom-app startup and remote content loading in its own window. Then prove navigation/events and native integration in a shell pane. Cross-process HWND parenting is only an experimental transport: window styles, DPI contexts, focus queues, popup ownership and accessibility all need validation. Microsoft documents DPI-related failures/resets for SetParent. A borderless Firefox window placed over a pane is not an adequate finished integration. [SetParent documentation](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setparent).
+
+If that route needs unstable window manipulation or disables multiprocess security, stop treating it as an acceptable backend. A small maintained Gecko host fork may then be necessary. It can remain a separate optional provider, with an explicit patch/update burden, rather than forcing the shell to become a Firefox fork. A texture-export approach would also require compositor integration; WebDriver screenshots do not provide it automatically. Firefox documents Marionette and BiDi as inspection/control protocols, not embeddable interactive surfaces. [Firefox remote protocols](https://firefox-source-docs.mozilla.org/remote/index.html).
+
+Historical precedents are useful but not drop-in dependencies: Motherhen is a template for a custom Mozilla application, while Sailfish's EmbedLite work demonstrates the ongoing cost of maintaining a nonstandard Gecko embedding. Neither was verified here as a current Windows SDK. [Motherhen project](https://github.com/ajvincent/motherhen), [EmbedLite developer's FOSDEM talk](https://archive.fosdem.org/2024/schedule/event/fosdem-2024-2508-daily-blogging-embedded-gecko-development/).
+
+**The repository already has the beginning of the right boundary.** `crates/engine/src/lib.rs` defines `EngineFactory`, `EngineView`, capabilities, view IDs, and tagged events. It has no concrete backend implementations, and `browser-desktop` does not depend on it. `TabContent::Web(WebView, PageState)` in `crates/desktop/src/tabs.rs` still owns Wry directly. Extracting WebView2 is real migration work, not enabling an existing setting.
+
+The contract also predates current shell behavior: hints still use a `new_tab` boolean rather than the new copy action; the event enum lacks current events; creation has no storage context or private browsing option; presentation has no GPU surface contract; and view destruction promises more immediate process cleanup than shared asynchronous browser runtimes can generally provide. It needs revision against actual adapters.
+
+Other concrete migration sites are `tabs.rs` construction/navigation, `app.rs` zoom/focus/keepalive/session management, `main.rs` page scripts and events, and `favicon.rs`, `extensions.rs`, `data.rs`, `freeze.rs`, and `navguard.rs` COM integration. `khook.rs::fg_is_ours` accepts the main HWND or windows belonging to the shell PID. Helper-process windows require explicit registration and focus routing; broadening the hook to arbitrary processes would be wrong. The split bugs just fixed show why view identity and input ownership must be first-class.
+
+**Recommended boundary: one logical interface, two hosting strategies.** Use Rust adapters compiled with the shell for the initial providers. Add an external-provider adapter for independently distributed runtimes and languages. Both implement the same logical messages and capabilities, while exposing different presentation transports. Keep terminals, pagers, AI views and the existing native reader as their existing pane content types initially; an engine migration does not require rewriting them.
+
+```text
+Rust shell: commands, layout, sessions, modes, policy, provider registry
+    |
+    +-- Built-in adapter --> WebView2
+    +-- Built-in adapter --> Servo prototype / CEF prototype
+    +-- External adapter --> versioned local protocol --> provider host
+                                                        + engine runtime
+                                                        + native renderer processes
+```
+
+For independently installable engines, use an executable package and versioned IPC. A host may be written in Rust, C++, or another language that can implement the protocol and surface integration. A Rust `Box<dyn EngineView>` belongs inside a compatible build; it is not a stable binary plugin interface. The Rust Reference explicitly gives the Rust ABI no stability guarantee. A C ABI with opaque handles is possible for trusted in-process plugins, but has additional ownership/lifetime requirements and cannot contain their crashes. [Rust ABI documentation](https://doc.rust-lang.org/reference/items/external-blocks.html).
+
+Proposed objects and responsibilities:
+
+| Object | Responsibilities |
+| --- | --- |
+| Provider descriptor | ID, engine family, adapter/runtime versions, protocol range, OS/architecture and available features. |
+| Engine runtime | Initialization, event pumping, views, shutdown completion and crash reporting. |
+| Storage context | Provider-specific data directory, private/ephemeral behavior, permissions and clearing operations. |
+| Page view | Stable shell ID, generation, navigation, input mode, bounds/DPI, visibility and rendering surface. |
+| Shell services | Prompts, downloads, clipboard policy, navigation policy and tagged async replies. |
+
+The installed provider descriptor should be inspected without launching the runtime. Start an engine only when a view needs it. A host may share one runtime across many views; separate hosts/contexts are necessary where an engine cannot provide the requested isolation. Do not assume one renderer process per tab, and distinguish renderer cleanup from runtime shutdown. This preserves the project's engine-free idle goal.
+
+CEF's lifecycle specifically initializes on the main application thread and forbids further CEF API calls after shutdown. It also documents event-pump choices and warns about integration overhead. A provider host process can own that lifecycle and be restarted when needed, without imposing CEF's shutdown rules on the long-lived Rust shell. Asynchronous view closure must complete before runtime teardown. [CEF application lifecycle API](https://raw.githubusercontent.com/chromiumembedded/cef/master/include/cef_app.h), [CEF browser lifetime documentation](https://chromiumembedded.github.io/cef/general_usage).
+
+**Presentation is a separate contract.** Preserve native child surfaces for the first Windows implementation. The shell owns a pane container; an in-process adapter renders into an appropriately owned child surface. In particular, give Servo a distinct rendering surface rather than having its graphics context overwrite the softbuffer surface used to paint browser chrome. Its live documentation describes rendering contexts and window/off-screen alternatives, but implementation must follow the pinned release. [Servo embedding overview](https://doc.servo.org/servo/).
+
+Design the protocol to negotiate native child surfaces, shared CPU frames, or shared GPU textures. Do not require all providers to implement all three. Native windows minimize initial compositor work but retain OS-specific focus and stacking constraints. CPU frames are useful for a prototype; an uncompressed 3840 x 2160 BGRA frame at 60 FPS is approximately 1.99 GB/s before additional copies, calculated as width x height x 4 x 60. A common GPU compositor is a later project with real synchronization and input work, not a prerequisite for extracting WebView2.
+
+Current CEF headers expose both CPU `OnPaint` and GPU `OnAcceleratedPaint`. On Windows the latter supplies a texture handle. Its resource is only valid within the callback; an adapter must copy to an owned texture before sharing it beyond that lifetime. The older general guide's statement that off-screen rendering lacks accelerated compositing conflicts with these newer APIs. Treat matching-version headers as authoritative for a prototype. [CEF render-handler API](https://github.com/chromiumembedded/cef/blob/master/include/cef_render_handler.h).
+
+External native windows do not automatically guarantee responsiveness when their process hangs. Shared input queues or synchronous window messaging can still couple applications. Texture presentation avoids some of that coupling but requires input, IME, popup, cursor, drag-and-drop and accessibility bridging. Support must be proved per OS; Windows HWND strategies are not a portable Linux/macOS surface contract.
+
+**Protocol behavior must be explicit.** Use async requests and responses with request IDs, view IDs and generation IDs. Events from a destroyed/replaced view are ignored even if its tab index has been reused. Navigation and script operations should report failure. Declare unsupported features rather than silently accepting them. Negotiate the protocol version and reject incompatible packages before replacing any view.
+
+The current synchronous URL-only `NavPolicy` needs richer context: initiating frame, origin, user activation, redirect, navigation type and provider evidence. Compile immediate network/navigation rules inside the adapter when the engine requires a synchronous answer; publish rule updates from the shell. Use bounded async decisions where supported. Never block an engine callback waiting for a UI thread that is waiting on that engine.
+
+Separate required view support from optional capabilities: document-start scripts, page-to-host messages, script results, native history, private contexts, request interception, extensions, devtools, downloads, fullscreen, media, suspension and data clearing. Share hints/find/caret behavior where the provider supports the necessary DOM/bridge features. JavaScript evaluation alone does not guarantee document-start timing, cross-origin-frame access, or trusted clipboard activation. A requested private view must fail creation if privacy cannot be honored; privacy is not an optional visual feature to ignore.
+
+A helper process is an integration/crash boundary, not automatically a security sandbox. Retain each runtime's content sandbox and verify it in the packaged build. CEF documents a separate Windows sandbox integration. An engine package is native executable code; do not treat an arbitrary installed provider as harmless merely because it uses IPC. Keep the privileged host bridge distinct from page messages and never expose shell execution through that page bridge. [CEF sandbox interface](https://raw.githubusercontent.com/chromiumembedded/cef/master/include/cef_sandbox_win.h).
+
+**Proposed `:engine` semantics.** `:engine servo` changes the active web pane. `:engine default servo` affects future web panes. `:engines` lists installed providers and limitations. Those are proposed commands, not existing commands. Store the concrete provider ID with each saved web tab; old sessions default to WebView2. An unavailable provider leaves a recoverable placeholder rather than silently opening sensitive content in another backend. Site-specific routing can be added after manual selection is reliable.
+
+Switching means reopening a location with another runtime. Preserve the pane ID, split focus, URL, shell history and compatible settings. Scroll can be restored best effort. A JavaScript heap, open sockets, form state, media session, BFCache entry, service worker state or POST navigation is not a generic transferable object. Keep cookie/storage directories separate for WebView2, CEF and Gecko even when two providers use Blink. Reauthentication in another provider is expected. The current `:profile` commands save workspace snapshots, not separate cookie containers; do not silently redefine them during this refactor.
+
+Make switching transactional at the view-creation boundary: resolve the provider and required capabilities, create a hidden blank candidate, honor the outgoing view's close/unload policy, then commit the replacement and navigate. Initialization failure leaves the original view available. Do not wait forever for a site's full page load before accepting a successful engine creation. Do not silently replay a POST or claim lossless transfer of an unsaved page. A new generation must prevent late events from the outgoing view changing the new pane.
+
+**A staged path that keeps usability work moving.**
+
+1. Extract the working WebView2 implementation behind a revised `browser-engine` interface. Preserve all existing behavior and make regressions visible; do not add another engine in the same change.
+2. Add provider IDs, per-view storage/options, tagged events, capabilities and session fields. Test failed creation, stale callbacks, private-mode rejection, and engine-free startup using a small fake provider.
+3. Build a Servo experiment using its pinned minimal example. Prove one interactive pane alongside WebView2, then keyboard/IME, hints, zoom, resize/DPI, dialogs, and complete teardown. This proves actual cross-engine integration. Add CEF separately if an independently bundled Blink runtime is desired; WebView2-to-CEF alone does not prove engine diversity.
+4. Implement the external-provider transport using a backend that already works. Validate restart/exit, repeated switches, cold launch, crash handling and packaged runtime updates before publishing a stable plugin SDK.
+5. Run the Gecko experiment independently: custom app bootstrap, real remote page, IPC, native surface, multiprocess/sandbox behavior, then an upgrade to another maintained runtime build. If those gates fail, leave Gecko experimental without blocking the other providers.
+
+Provider qualification should cover the user's actual sites, including GitHub and ChatGPT buttons; Normal/Insert/Passthrough recovery; adjacent engines in splits; text composition; selection and clipboard; popup/fullscreen/file dialogs; downloads; cross-origin navigation; engine-specific ad blocking; storage isolation; private sessions; history; memory/process counts after closing the final view; and package updates. Passing a page-rendering demo is insufficient for declaring a browser backend usable. Benchmark the real packaged engines rather than promising Servo or CEF will consume less memory.
+
+WebView2 can retain its Evergreen update model. Bundled CEF and custom Gecko/Servo providers require their own runtime-update ownership. Record runtime versions in diagnostics and exercise adapter conformance tests before switching package versions; protocol compatibility alone does not prove website compatibility or security. [WebView2 distribution choices](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/evergreen-vs-fixed-version).
+
+The strongest immediate step is the WebView2 extraction followed by a narrow Servo prototype. Gecko has a specific route worth testing, but there is no evidence yet that it can meet this shell's focus, composition and maintenance requirements cleanly. This architecture allows that uncertainty to stay within one provider while the browser continues improving.

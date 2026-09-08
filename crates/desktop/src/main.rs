@@ -37,6 +37,7 @@ mod commands;
 mod config;
 mod data;
 mod draw;
+mod engines;
 mod extensions;
 mod favicon;
 mod find;
@@ -2049,10 +2050,22 @@ fn main() -> Result<()> {
                 ));
                 app.window.request_redraw();
             }
-            Event::UserEvent(UserEvent::DataCleared { label, ai_id }) => {
-                // The async erase finished. An empty label is a silent bonus clear
-                // (engine history alongside the shell's own list) — don't announce it.
-                if !label.is_empty() {
+            Event::UserEvent(UserEvent::EngineOperationFailed(error)) => {
+                app.set_error(error);
+                app.window.request_redraw();
+            }
+            Event::UserEvent(UserEvent::DataCleared { label, ai_id, result }) => {
+                // Announce failures, including those from the bonus engine-history
+                // clear. An empty label only suppresses successful bonus reports.
+                if let Err(error) = result {
+                    let target = if label.is_empty() { "engine history" } else { &label };
+                    let message = format!("could not clear {target}: {error}");
+                    let shown_in_chat = ai_id.is_some_and(|id| app.ai_note(id, &message));
+                    if !shown_in_chat {
+                        app.set_error(message);
+                        app.window.request_redraw();
+                    }
+                } else if !label.is_empty() {
                     // If an :ai tab asked for it, confirm in that chat; fall back to the
                     // status bar only when that tab isn't the one on screen.
                     let shown_in_chat = ai_id.is_some_and(|id| app.ai_action_done(id, &label));

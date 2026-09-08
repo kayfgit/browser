@@ -1,59 +1,6 @@
-//! `:freeze` — minimize RAM while keeping every tab open. WebView2 runs a renderer
-//! process per tab, so a handful of tabs can hold hundreds of MB. Freezing hides
-//! every web tab and asks WebView2 to **suspend** it
-//! ([`ICoreWebView2_3::TrySuspend`], which frees the renderer's memory) and drop its
-//! **memory-usage target** to LOW. `:unfreeze` resumes them. Handy when the machine
-//! is under memory pressure but you don't want to lose your tabs.
-//!
-//! Both calls reach through wry to the engine COM handle (the same door `data.rs`
-//! uses). They're best-effort: a WebView2 runtime too old for these interfaces just
-//! leaves the tab as-is. The shell-side `App.frozen` flag is what
-//! [`refresh_visibility`](crate::App::refresh_visibility) consults to keep the
-//! webviews hidden, so the freeze sticks even as tabs are switched.
-
-use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2_19, ICoreWebView2_3, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
-    COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
-};
-use webview2_com::TrySuspendCompletedHandler;
-use windows_core::Interface;
-use wry::{WebView, WebViewExtWindows};
+//! Hide/resume web tabs through the optional engine suspension service.
 
 use crate::App;
-
-/// Suspend one webview to free its renderer memory. The webview MUST already be
-/// hidden — `TrySuspend` only suspends a non-visible one. Also drops its memory
-/// target to LOW. Best-effort (older runtimes lack these interfaces).
-///
-/// Also used on the profile-switch engine keepalive
-/// ([`hold_engine`](crate::App::hold_engine)), which exists only to keep the browser
-/// process up: suspended, it holds the profile open at close to no renderer cost.
-pub(crate) fn suspend(webview: &WebView) {
-    unsafe {
-        let Ok(core) = webview.controller().CoreWebView2() else { return };
-        if let Ok(c19) = core.cast::<ICoreWebView2_19>() {
-            let _ = c19.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
-        }
-        if let Ok(c3) = core.cast::<ICoreWebView2_3>() {
-            // The completion just reports whether the suspend took; we don't act on it.
-            let handler = TrySuspendCompletedHandler::create(Box::new(|_hr, _ok| Ok(())));
-            let _ = c3.TrySuspend(&handler);
-        }
-    }
-}
-
-/// Resume a previously suspended webview and restore its memory target to NORMAL.
-fn resume(webview: &WebView) {
-    unsafe {
-        let Ok(core) = webview.controller().CoreWebView2() else { return };
-        if let Ok(c3) = core.cast::<ICoreWebView2_3>() {
-            let _ = c3.Resume();
-        }
-        if let Ok(c19) = core.cast::<ICoreWebView2_19>() {
-            let _ = c19.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL);
-        }
-    }
-}
 
 impl App {
     /// `:freeze` — hide and suspend every web tab so the browser holds the least RAM
@@ -69,7 +16,9 @@ impl App {
             if let Some(wv) = tab.webview() {
                 // Hide first: TrySuspend only suspends a non-visible webview.
                 let _ = wv.set_visible(false);
-                suspend(wv);
+                if let Some(service) = wv.suspension() {
+                    let _ = service.suspend();
+                }
                 n += 1;
             }
         }
@@ -94,7 +43,9 @@ impl App {
         }
         for tab in &self.tabs {
             if let Some(wv) = tab.webview() {
-                resume(wv);
+                if let Some(service) = wv.suspension() {
+                    let _ = service.resume();
+                }
             }
         }
         self.frozen = false;

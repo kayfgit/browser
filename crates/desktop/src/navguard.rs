@@ -24,19 +24,8 @@
 //! redirect, which WebView2 also reports as not-user-initiated — stamp [`NavIntent`]
 //! just before navigating, which the guard honours for a beat.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-
-use tao::event_loop::EventLoopProxy;
-use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
-use webview2_com::{take_pwstr, NavigationStartingEventHandler};
-use windows_core::{BOOL, PWSTR};
-use wry::{WebView, WebViewExtWindows};
-
-use crate::UserEvent;
 
 /// Cross-site navigation intent: stamped `Some(now)` the instant something legitimate
 /// asks to leave the current site, so the guard knows the next cross-site top jump is
@@ -45,7 +34,7 @@ use crate::UserEvent;
 ///     `nav-intent` IPC message — the signal a synthetic-click/overlay hijack can't fake);
 ///   * the shell, before a programmatic jump WebView2 also reports as not-user-initiated
 ///     — `H`/`L` history, the `translate.goog` de-proxy `load_url`, following a hint.
-/// Shared (cloned `Arc`) into every webview's [`install`]ed guard.
+/// Shared (cloned `Arc`) into every webview's native guard.
 pub(crate) type NavIntent = Arc<Mutex<Option<Instant>>>;
 
 /// How long a navigation-intent stamp stays valid. Generous enough to cover a real
@@ -63,111 +52,6 @@ pub(crate) fn mark(intent: &NavIntent) {
     }
 }
 
-/// Whether the webview's OWN session history can step back/forward one page — i.e.
-/// the adjacent page was navigated to WITHIN this webview instance (a clicked link
-/// or form submit), so the engine can restore it from cache instantly (scroll and
-/// form state intact) instead of the shell reopening it. False once a `:open`/search
-/// rebuilt the webview past that boundary, where only the shell's stack can reach.
-#[cfg(windows)]
-pub(crate) fn can_go(webview: &WebView, forward: bool) -> bool {
-    unsafe {
-        let Ok(core) = webview.controller().CoreWebView2() else { return false };
-        let mut b = BOOL::default();
-        let ok = if forward { core.CanGoForward(&mut b) } else { core.CanGoBack(&mut b) };
-        ok.is_ok() && b.as_bool()
-    }
-}
-
-/// Drive the webview's own session history one page back/forward (see [`can_go`]).
-/// Stamp [`mark`] first, like any shell-driven jump, so the native guard lets a
-/// cross-site step through. Best-effort; a failed COM call simply does nothing.
-#[cfg(windows)]
-pub(crate) fn go(webview: &WebView, forward: bool) {
-    unsafe {
-        if let Ok(core) = webview.controller().CoreWebView2() {
-            let _ = if forward { core.GoForward() } else { core.GoBack() };
-        }
-    }
-}
-
-#[cfg(not(windows))]
-pub(crate) fn can_go(_webview: &WebView, _forward: bool) -> bool {
-    false
-}
-
-#[cfg(not(windows))]
-pub(crate) fn go(_webview: &WebView, _forward: bool) {}
-
-/// Install the native redirect guard on a freshly built content webview. Best-effort:
-/// if the raw engine handle or the event registration is unavailable, the wry-handler
-/// guards still stand, so this never fails the build.
-pub(crate) fn install(
-    webview: &WebView,
-    adblock_on: Arc<AtomicBool>,
-    nav_intent: NavIntent,
-    proxy: EventLoopProxy<UserEvent>,
-) {
-    let core = match unsafe { webview.controller().CoreWebView2() } {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    // The current top-frame registrable domain ("youtube.com"), updated on every
-    // allowed navigation. `NavigationStarting` only ever fires on the UI thread, so a
-    // plain `Rc<RefCell<…>>` is enough — no locking, no cross-thread sharing.
-    let current_site: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
-    let handler = NavigationStartingEventHandler::create(Box::new(
-        move |_sender: Option<ICoreWebView2>, args| {
-            let Some(args) = args else { return Ok(()) };
-            let uri = unsafe {
-                let mut p = PWSTR::null();
-                args.Uri(&mut p)?;
-                take_pwstr(p)
-            };
-            // wry's handler ran first; if it already cancelled, respect that and don't
-            // advance our origin past a navigation that isn't going to happen.
-            let already_cancelled = unsafe {
-                let mut c = BOOL::default();
-                args.Cancel(&mut c)?;
-                c.as_bool()
-            };
-            if already_cancelled {
-                return Ok(());
-            }
-            let target = site_of(&uri);
-            // Blocker off, or a non-web target (`about:`/`data:`/`blob:`) we can't reason
-            // about → defer to the other guards; only advance origin for real web pages.
-            if !adblock_on.load(Ordering::Relaxed) || target.is_empty() {
-                if !target.is_empty() {
-                    *current_site.borrow_mut() = target;
-                }
-                return Ok(());
-            }
-            let prev = current_site.borrow().clone();
-            let cross_site = !prev.is_empty() && target != prev;
-            // The rule: a TOP-LEVEL, CROSS-SITE jump is a forced redirect UNLESS the shell
-            // just saw legitimate intent for it. WebView2's `IsUserInitiated` and the
-            // window's foreground state are useless here — these scripts hijack your real
-            // click (a synthetic `<a>` click, or a transparent overlay over the player), so
-            // the jump is reported as foreground AND user-initiated. The only trustworthy
-            // signal is whether a TRUSTED gesture actually landed on a real cross-site
-            // link/submit — which the page reports as `nav-intent`, stamped into
-            // [`nav_intent`]. Shell navigations pass the same way (`:open` rebuilds the
-            // webview, so its first load has no prior origin; `H`/`L`, the translate
-            // de-proxy, and hint-follow stamp intent). A synthetic click / overlay div
-            // carries no such intent, so its redirect is cancelled.
-            if cross_site && !recent(&nav_intent) {
-                let _ = unsafe { args.SetCancel(true) };
-                let _ = proxy.send_event(UserEvent::RedirectBlocked(uri));
-                return Ok(());
-            }
-            *current_site.borrow_mut() = target;
-            Ok(())
-        },
-    ));
-    let mut token = 0i64;
-    let _ = unsafe { core.add_NavigationStarting(&handler, &mut token) };
-}
-
 /// Whether a navigation-intent stamp landed within [`INTENT_WINDOW`] — i.e. a trusted
 /// user gesture just asked to leave/open a link. Shared with the popup guard in
 /// `tabs.rs`, which uses the same signal to tell a real "open in new tab" from a popunder.
@@ -180,7 +64,7 @@ pub(crate) fn recent(intent: &NavIntent) -> bool {
 /// unparseable input. Comparing by *site* (not full origin) is what lets the guard tell
 /// a real cross-site jump (`animepahe.pw` → `searchapp.space`) from a benign same-site
 /// one (apex ↔ `www.` ↔ `m.`, http ↔ https), so it never fights a site's own subdomains.
-fn site_of(url: &str) -> String {
+pub(crate) fn site_of(url: &str) -> String {
     let Ok(u) = url::Url::parse(url) else { return String::new() };
     if !matches!(u.scheme(), "http" | "https") {
         return String::new();

@@ -24,12 +24,9 @@ issues:
 [*] - pressing a copy button using the hint mode doesnt actually copy it (tested on the copy repository button on github)
 [*] - this fucking out of focus mode freeze thing needs to be fixed, every time i have to alt tab to get control back and its fucking annoying
 [*] - got it now, the freeze happens when i press a button on the webview (like a chatgpt copy, or a picoctf "go to the next challenge"), it makes me unable to do anything related to the commandbar, only fix is alt tabbing.
-[x] - after pressing a button with hint mode while on split, the active split panel switches
-[x] - while on split, if i switch tabs and go back to the split, the active split always go back to the first one.
 
 feats:
 [] - make ";" toggle browser hud visibility
-[x] - "y" or something to enter hint mode with copy, for example pressing "y" and follow the hint of a youtube nail will copy the url instead of opening it (done as "yf" — y is now a yank prefix, so "yy" also copies the page url)
 [] - add inspect and view source to right mouse button, aswell as a command and a keyboard shortcut
 [] - make the "U" button undo the layout, for example if i accidently close something, or move something around, U will undo it (maybe add R to redo it aswell) 
 

@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use tao::event_loop::EventLoopProxy;
 use tao::keyboard::ModifiersState;
 use tao::window::Window;
-use wry::dpi::{PhysicalPosition, PhysicalSize};
-use wry::{Rect, WebView};
+use browser_engine::{EngineView, RectPx};
+pub(crate) use browser_engine::ExtensionInfo as ExtInfo;
 
 use crate::draw::Painter;
 use crate::find::FindState;
@@ -164,11 +164,13 @@ pub(crate) enum UserEvent {
     /// returns to it (false for `replaceState`, which adds no history entry).
     UrlChanged { record: bool },
     /// A WebView2 browsing-data clear finished (`:clear cookies`/`cache`/`all`).
-    /// `label` is the human description of what was cleared (empty = a silent bonus
-    /// clear, ignored). `ai_id` is the `:ai` tab that initiated it, if any: the
+    /// `label` describes the requested clear (empty suppresses successful bonus
+    /// reports). `ai_id` is the `:ai` tab that initiated it, if any: the
     /// confirmation goes into that chat, and the status bar is used only when that tab
     /// isn't the one on screen.
-    DataCleared { label: String, ai_id: Option<u64> },
+    DataCleared { label: String, ai_id: Option<u64>, result: Result<(), String> },
+    /// An optional engine operation failed.
+    EngineOperationFailed(String),
     /// A background terminal-scheme download (`install_scheme` / `:theme install`)
     /// finished: `Ok` carries the installed scheme's display name (the shell applies
     /// it), `Err` a human-readable reason — possibly a "did you mean …" candidate
@@ -311,15 +313,6 @@ impl AdblockMode {
     pub(crate) fn extension(self) -> bool {
         matches!(self, AdblockMode::Ubo)
     }
-}
-
-/// One installed browser extension, as surfaced by `:extensions` (id/name/enabled). Plain
-/// data so it can travel in a [`UserEvent`] and be cached on [`App`] regardless of platform.
-#[derive(Clone, Debug)]
-pub(crate) struct ExtInfo {
-    pub id: String,
-    pub name: String,
-    pub enabled: bool,
 }
 
 pub(crate) struct App {
@@ -593,7 +586,7 @@ pub(crate) struct App {
     /// See [`hold_engine`](Self::hold_engine) / [`release_engine`](Self::release_engine).
     /// `None` outside a switch — and for the duration of `:scratch`, which is a detour
     /// you're expected to come back from.
-    pub(crate) engine_keepalive: Option<WebView>,
+    pub(crate) engine_keepalive: Option<Box<dyn EngineView>>,
     /// The terminal id of the editor tab a bare `:theme` opened on config.toml, if
     /// one is live: when that terminal closes, the config is re-read and applied
     /// (the edit → save → quit loop). See [`edit_theme_config`](App::edit_theme_config).
@@ -772,13 +765,10 @@ impl App {
     }
 
     /// Bounds for a content webview: full width, between the tab bar and command bar.
-    pub(crate) fn content_rect(&self) -> Rect {
+    pub(crate) fn content_rect(&self) -> RectPx {
         let (w, h) = self.inner();
         let top = self.tab_bar_h();
-        Rect {
-            position: PhysicalPosition::new(0_i32, top as i32).into(),
-            size: PhysicalSize::new(w, h.saturating_sub(top + self.bar_h())).into(),
-        }
+        RectPx { x: 0, y: top as i32, w, h: h.saturating_sub(top + self.bar_h()) }
     }
 
     pub(crate) fn on_resize(&mut self, _w: u32, _h: u32) {
@@ -1030,14 +1020,14 @@ impl App {
 
     // --- tab access -----------------------------------------------------------
 
-    pub(crate) fn active_webview(&self) -> Option<&WebView> {
+    pub(crate) fn active_webview(&self) -> Option<&dyn EngineView> {
         self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.webview())
     }
 
     /// The first open web tab's engine handle, if any. All web tabs share one
     /// WebView2 profile, so this is enough to reach the profile for data clears
     /// (`:clear cookies`/`cache`/`all`) regardless of which tab is active.
-    pub(crate) fn any_webview(&self) -> Option<&WebView> {
+    pub(crate) fn any_webview(&self) -> Option<&dyn EngineView> {
         self.tabs.iter().find_map(|t| t.webview())
     }
 
