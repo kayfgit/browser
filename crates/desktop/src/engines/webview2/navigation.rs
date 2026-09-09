@@ -11,7 +11,6 @@ use std::{
         Arc,
     },
 };
-use tao::event_loop::EventLoopProxy;
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
 use webview2_com::{take_pwstr, NavigationStartingEventHandler};
 use windows_core::{BOOL, PWSTR};
@@ -50,7 +49,7 @@ pub(crate) fn install(
     webview: &WebView,
     adblock_on: Arc<AtomicBool>,
     nav_intent: NavIntent,
-    proxy: EventLoopProxy<UserEvent>,
+    proxy: crate::engines::PageEventProxy,
 ) {
     let core = match unsafe { webview.controller().CoreWebView2() } {
         Ok(c) => c,

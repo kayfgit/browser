@@ -433,15 +433,22 @@ impl App {
         let Some(line) = line else { return };
         // Row form: "[on ]  Name    <id>" — the id is the last whitespace-delimited token.
         let Some(id) = line.split_whitespace().last().map(str::to_string) else { return };
-        let Some(pos) = self.extensions.iter().position(|e| e.id == id) else { return };
-        let want = !self.extensions[pos].enabled;
-        #[cfg(windows)]
-        if let Some(wv) = self.any_webview() {
-            crate::extensions::set_enabled(wv, id, want);
+        let Some(crate::tabs::TabContent::Extensions { view, items, .. }) = self.active
+            .and_then(|i| self.tabs.get(i)).map(|t| &t.content) else { return };
+        let target = *view;
+        let Some(pos) = items.iter().position(|e| e.id == id) else { return };
+        let want = !items[pos].enabled;
+        let mut items = items.clone();
+        let Some(view) = self.view_by_id(target) else {
+            self.set_error("the source page was closed or replaced — reopen :extensions from a web page");
+            return;
+        };
+        if let Err(error) = crate::extensions::set_enabled(view, id, want) {
+            self.set_error(error); return;
         }
-        self.extensions[pos].enabled = want;
-        let name = self.extensions[pos].name.trim().to_string();
-        self.show_extensions_page();
+        items[pos].enabled = want;
+        let name = items[pos].name.trim().to_string();
+        self.show_extensions_page(target, items);
         let name = if name.is_empty() { "extension".to_string() } else { name };
         self.set_status(format!("{} {name}", if want { "enabled" } else { "disabled" }));
     }

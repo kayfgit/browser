@@ -7,6 +7,7 @@ use crate::tabs::{engine_rect, nav_entry, NavKind, PageState, Tab, TabContent};
 use browser_engine::{EngineResult, EngineView, RectPx};
 
 struct FakeView {
+    identity: browser_engine::ViewIdentity,
     url: RefCell<String>,
     dropped: Rc<Cell<bool>>,
     bounds: Rc<Cell<Option<RectPx>>>,
@@ -19,6 +20,9 @@ impl Drop for FakeView {
 }
 
 impl EngineView for FakeView {
+    fn identity(&self) -> &browser_engine::ViewIdentity {
+        &self.identity
+    }
     fn load_url(&self, url: &str) -> EngineResult {
         if url == "test:failure" {
             return Err("navigation rejected".into());
@@ -62,6 +66,11 @@ fn shell_tab_owns_an_independent_engine_and_releases_it_on_replacement() {
     assert!(tab.page_state().is_none());
     tab.content = TabContent::Web(
         Box::new(FakeView {
+            identity: browser_engine::ViewIdentity {
+                id: browser_engine::ViewId::allocate(),
+                provider: "fake".into(),
+                storage: browser_engine::StorageMode::Persistent,
+            },
             url: RefCell::new("https://example.com".into()),
             dropped: dropped.clone(),
             bounds: bounds.clone(),
@@ -97,6 +106,11 @@ fn shell_history_keeps_private_and_research_flags_with_an_erased_engine() {
     tab.research = true;
     tab.content = TabContent::Web(
         Box::new(FakeView {
+            identity: browser_engine::ViewIdentity {
+                id: browser_engine::ViewId::allocate(),
+                provider: "fake".into(),
+                storage: browser_engine::StorageMode::Persistent,
+            },
             url: RefCell::new(tab.url.clone()),
             dropped: Rc::new(Cell::new(false)),
             bounds: Rc::new(Cell::new(None)),
@@ -115,6 +129,69 @@ fn collapsed_pane_bounds_stay_valid_for_child_surfaces() {
         engine_rect(PaneRect { x: -2, y: 10, w: 0, h: -4 }),
         RectPx { x: -2, y: 10, w: 1, h: 1 }
     );
+}
+
+fn fake_tab() -> Tab {
+    let mut tab = Tab::blank();
+    tab.url = "https://example.org".into();
+    tab.content = TabContent::Web(
+        Box::new(FakeView {
+            identity: browser_engine::ViewIdentity {
+                id: browser_engine::ViewId::allocate(),
+                provider: "fake".into(),
+                storage: browser_engine::StorageMode::Private,
+            },
+            url: RefCell::new(tab.url.clone()),
+            dropped: Rc::new(Cell::new(false)),
+            bounds: Rc::new(Cell::new(None)),
+        }),
+        PageState::default(),
+    );
+    tab
+}
+
+#[test]
+fn callbacks_follow_the_view_when_tab_indices_shift_and_expire_on_replacement() {
+    let mut tabs = vec![fake_tab(), fake_tab()];
+    let first = tabs[0].webview().unwrap().identity().id;
+    let second = tabs[1].webview().unwrap().identity().id;
+    assert_eq!(super::events::event_target(&tabs, second), Some(1));
+    tabs.remove(0);
+    assert_eq!(super::events::event_target(&tabs, first), None);
+    assert_eq!(super::events::event_target(&tabs, second), Some(0));
+    tabs[0] = fake_tab();
+    assert_eq!(super::events::event_target(&tabs, second), None);
+}
+
+#[test]
+fn failed_engine_creation_keeps_the_live_view_and_history() {
+    let mut tab = fake_tab();
+    tab.private = true;
+    tab.research = true;
+    tab.nav.back.push(nav_entry(&tab).unwrap());
+    let id = tab.webview().unwrap().identity().id;
+    let failure = Err(anyhow::anyhow!("runtime unavailable"));
+    assert!(tab.replace_engine(failure).is_err());
+    assert_eq!(tab.webview().unwrap().identity().id, id);
+    assert_eq!(tab.url, "https://example.org");
+    assert!(tab.private && tab.research);
+    assert_eq!(tab.nav.back.len(), 1);
+}
+
+#[test]
+fn unavailable_location_keeps_provider_metadata_and_can_be_recovered() {
+    let mut tab = Tab::blank();
+    tab.url = "https://example.org".into();
+    tab.content = super::shell::unavailable_content("servo", &tab.url, "not installed");
+    assert_eq!(tab.provider(), Some("servo"));
+    assert!(tab.webview().is_none());
+    assert!(tab.vim().is_some());
+    assert_eq!(nav_entry(&tab).unwrap().provider, "servo");
+    let TabContent::Web(view, page) = fake_tab().content else { unreachable!() };
+    tab.replace_engine(Ok((view, page))).unwrap();
+    assert!(tab.unavailable().is_none());
+    assert_eq!(tab.provider(), Some("fake"));
+    assert_eq!(tab.url, "https://example.org");
 }
 
 #[test]

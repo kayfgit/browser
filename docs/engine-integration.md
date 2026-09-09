@@ -1,65 +1,86 @@
 # Engine integration progress
 
-The first implementation stage is the WebView2 extraction. WebView2 remains the only
-production provider. Runtime switching commands and a second engine are not implemented
-yet. The broader design and its research are in [engine-switching-research.md](engine-switching-research.md).
+The first two stages are implemented: the WebView2 boundary, followed by provider
+selection, view identity, storage requirements, callback routing and persistence.
+WebView2 is still the only installed provider. The research and remaining roadmap
+are in [engine-switching-research.md](engine-switching-research.md).
 
-The desktop shell now owns `Box<dyn browser_engine::EngineView>` for web tabs and the
-temporary profile-switch keepalive. Navigation, scripts, focus, zoom, visibility and
-physical bounds cross that interface. Native history, extensions, browsing-data clearing
-and suspension are optional service interfaces. The contract has no native handles,
-downcasts, Wry dependency, platform dependency or startup side effects.
+Commands available now:
 
-All Wry and WebView2 COM access is confined to `crates/desktop/src/engines/webview2/`.
-That adapter owns view construction, initialization scripts, callback registration,
-native history, navigation guards, extension APIs, data clearing, suspension and favicon
-retrieval. Favicon decoding/painting, navigation policy, hints/find/caret scripts and
-workspace state remain shell code. The adapter receives an explicit options snapshot,
-not access to `App`.
+- `:engines` lists installed providers and their supported view options without starting
+  a browser runtime.
+- `:engine` shows the current and default providers.
+- `:engine webview2` selects WebView2 for the active web pane; selecting its current
+  provider is a no-op. It also recovers an unavailable-engine placeholder.
+- `:engine blink` resolves the family alias to the installed concrete provider.
+- `:engine default webview2` persists the provider for new web tabs. Existing tabs keep
+  their provider when reopened or reloaded.
+- Uninstalled names such as `servo` and `gecko` return an error without replacing a view.
 
-This is an internal module boundary in the existing desktop binary. It is not yet an
-independently packaged provider crate or stable plugin SDK. Construction still takes
-WebView2-specific options and callbacks still use the existing shell `UserEvent` enum.
-The unused speculative engine contract was replaced with the smaller implemented
-interface; unimplemented factories, software rendering hooks and downcast escape hatches
-were removed rather than advertised as working features.
+The desktop owns `Box<dyn browser_engine::EngineView>` for web tabs and the temporary
+profile-switch keepalive. All Wry/WebView2 objects stay under `engines/webview2/`.
+Navigation, scripts, focus, bounds, visibility and zoom cross the contract; history,
+extensions, data clearing and suspension are optional services. The contract has no
+platform dependency, native-handle escape hatch or downcast.
 
-The existing document-start scripts, private-controller option, browser environment
-arguments, extension loading policy, navigation/download guards and keepalive behavior
-are retained. Creating a blank/native tab still requires no engine. View destruction
-releases the owned view; shared runtime shutdown is the provider's responsibility and
-need not finish synchronously.
+Each view receives a process-unique, monotonically allocated ID for that incarnation.
+IDs are not tab indices and are never reused. Page callbacks carry the originating ID;
+a closed/replaced view cannot address its successor. Background URL/load events update
+their own tab, while focus, modal-state, clipboard and fullscreen events require the
+active view. Real pane clicks select the emitting visible pane instead of consulting a
+possibly moved OS cursor. Navigation-intent stamps are also per-view. Hint and popup
+new-tab requests retain the source provider and private setting.
 
-Data clearing now distinguishes dispatch from completion. A failed WebView2 completion
-reports an error in the initiating AI chat or status bar instead of claiming the data
-was cleared. Extension-list failures also reach the status bar. Existing extension
-mutations and suspension remain best effort; their immediate return does not confirm
-asynchronous completion.
+Saved tabs, closed tabs and shell navigation entries record their concrete provider.
+Older session files default to WebView2. An unavailable provider restores a native
+placeholder that keeps the URL, page mode, provider and position in the split layout.
+It remains restorable when the session is saved again. `:reload` retries its provider;
+`:engine webview2` explicitly reopens it using the available provider. Private tabs
+remain excluded from saved sessions and the closed-tab list.
 
-Validation for this stage:
+View requirements explicitly distinguish persistent and private storage, disabling
+page JavaScript and the document-script/message support needed by the shell bridge.
+Unsupported requirements fail before factory dispatch. The WebView2 adapter additionally
+verifies the actual runtime's storage mode on a hidden blank view before loading user
+content: Wry 0.55 can otherwise fall back to a regular controller on older runtimes.
+Private extension installation is also deferred until after verification. Existing
+persistent WebView2 data stays in its legacy location; there is no cookie migration.
 
-- `cargo check -p browser-desktop --offline` passed.
-- `cargo test -p browser-desktop -p browser-engine --offline` passed: 110 desktop tests,
-  including four new engine-boundary regressions; engine library/doc tests also passed.
-- `node --test crates/desktop/tests/bridge-hints.cjs` passed all three regressions.
-- `cargo build -p browser-desktop --locked --offline` passed. The existing Windows
-  manifest `maxversiontested` linker warning remains.
-- The test adapter exercises shell ownership/replacement, error propagation, physical
-  pane bounds, absent optional services and private/research history metadata without
-  loading a browser runtime. A source-boundary test prevents Wry/COM references from
-  returning to other desktop modules.
+Profile operations select the active view's context. From a native page they select a
+persistent view of the configured default provider, never an arbitrary private view or
+another provider. Extension pickers retain their exact source view and cached items;
+request tokens reject outdated list results. Closing/replacing the source prevents a
+picker from changing another context. Browsing-data completion reports stay associated
+with the original request and initiating AI chat, even if the page is subsequently closed.
 
-The user also tested the live browser and reported that it looks and works correctly.
-For future adapter changes, exercise the following live behavior before moving on to
-a second runtime, exercise ordinary/no-JS/research/private pages, hints and copying,
-split focus and tab switching, back/forward, zoom/resize, extensions, freeze/unfreeze,
-profile switching, fullscreen and closing the last web tab in the desktop application.
-Test data clearing only with an isolated WebView2 user-data directory: the shell's
-`:profile` command saves workspace layouts and does not isolate browser storage.
+Creation failure retains the outgoing view and shell history. Candidate surfaces stay
+hidden until placement succeeds. A successful engine change reopens an HTTP(S) URL and
+preserves pane position and compatible tab settings; it does not transfer live DOM,
+forms, sockets, sign-ins or engine-native history. Before registering a second production
+provider, add and verify unload/POST-navigation handling and runtime lifecycle behavior.
+Currently the only live-to-live selection is WebView2-to-WebView2, which is a no-op.
 
-Next stage: provider IDs and discovery, explicit storage requirements, per-view event
-identity, capability validation and session persistence. Tests must cover unavailable
-providers, failed creation, stale callbacks and rejected private-mode requests before
-exposing engine-switching commands. Profile-scoped operations currently use the first
-open web view; that routing must become context-aware before multiple providers coexist.
-Afterward, prove a pinned Servo build beside WebView2 using a separate native surface.
+Validation:
+
+- `cargo test -p browser-desktop -p browser-engine --locked --offline`: 115 desktop tests
+  and four contract tests passed; the opt-in native-runtime test is excluded by default.
+- `cargo test -p browser-desktop --locked --offline runtime_storage_mode_is_verified_before_user_content -- --ignored --test-threads=1`:
+  the native-runtime test passed separately. It creates hidden ordinary/private views
+  in an isolated directory under `target/engine-tests`, verifies each mode, and rejects
+  both mismatches. These temporary profiles are retained for diagnostics.
+- `node --test crates/desktop/tests/bridge-hints.cjs`: all three regressions passed.
+- `cargo build -p browser-desktop --locked --offline`: passed.
+- The existing Windows manifest `maxversiontested` linker warning remains.
+
+The user verified live browser behavior after both stages and reported that everything
+works so far. Future adapter changes should repeat interactive checks: normal/no-JS/research/private pages, hints and copying,
+split focus, background loads, history, zoom/resize, extensions, freeze/unfreeze,
+profile switching and closing the last web tab. Test data clearing only with an
+isolated WebView2 data directory: the shell's `:profile` stores workspace layouts and
+does not isolate browser storage.
+
+Next is a pinned Servo experiment alongside WebView2, with its own rendering surface
+and provider-owned storage. The registry currently contains compiled-in metadata; it
+is not a downloadable-provider installer or stable plugin ABI. After proving a second
+engine, extract provider runtime/storage lifecycles, add the executable transport and
+negotiate protocol versions. Gecko remains a separate feasibility experiment.

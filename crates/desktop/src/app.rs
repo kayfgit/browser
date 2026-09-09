@@ -59,6 +59,8 @@ pub(crate) const TERM_RESIZE_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// Events posted from webview IPC back into the event loop.
 pub(crate) enum UserEvent {
+    /// Callback from one live view incarnation; never a tab index.
+    Engine { view: browser_engine::ViewId, event: Box<UserEvent> },
     /// Leave insert/passthrough: move focus from the page back to the shell.
     ExitToNormal,
     /// Reclaim keyboard focus for the shell (e.g. after a page finishes loading
@@ -118,7 +120,7 @@ pub(crate) enum UserEvent {
     BlocklistReady,
     /// The async `GetBrowserExtensions` query finished — carries the installed extensions
     /// (id/name/enabled). The shell caches them and (re)renders the `:extensions` picker.
-    ExtensionsListed(Vec<ExtInfo>),
+    ExtensionsListed { request: u64, view: browser_engine::ViewId, result: Result<Vec<ExtInfo>, String> },
     /// A `:te` command finished: combined output and exit code.
     TermDone { cmd: String, output: String, code: Option<i32> },
     /// Raw output bytes from a terminal's PTY → feed to its native VT engine.
@@ -169,8 +171,6 @@ pub(crate) enum UserEvent {
     /// confirmation goes into that chat, and the status bar is used only when that tab
     /// isn't the one on screen.
     DataCleared { label: String, ai_id: Option<u64>, result: Result<(), String> },
-    /// An optional engine operation failed.
-    EngineOperationFailed(String),
     /// A background terminal-scheme download (`install_scheme` / `:theme install`)
     /// finished: `Ok` carries the installed scheme's display name (the shell applies
     /// it), `Err` a human-readable reason — possibly a "did you mean …" candidate
@@ -377,10 +377,9 @@ pub(crate) struct App {
     /// than always returning to the default) so the toggle round-trips exactly, including
     /// for sessions written when `ubo`/`native` still named different engines.
     pub(crate) adblock_prev: AdblockMode,
-    /// The installed browser extensions from the last `GetBrowserExtensions` query, cached
-    /// to render the `:extensions` picker and to flip an entry's enabled state optimistically
-    /// when Enter toggles it.
-    pub(crate) extensions: Vec<ExtInfo>,
+    /// Monotonic request token: stale extension-list responses must not replace a
+    /// newer picker. Each picker owns its source view and its own cached items.
+    pub(crate) extension_request: u64,
     /// When true, the native uBlock-style content blocker ([`ADBLOCK_JS`]) is injected
     /// into web tabs. Driven by [`adblock_mode`](Self::adblock_mode) (true only in `Native`).
     pub(crate) adblock: bool,
@@ -393,13 +392,6 @@ pub(crate) struct App {
     /// a drive-by `.exe`/`.msi` (the "you almost clicked install" trap) is blocked with
     /// a warning. Toggled with `:downloads`. Shared into every tab's download handler.
     pub(crate) allow_risky_downloads: Arc<AtomicBool>,
-    /// Cross-site navigation intent for the native redirect guard
-    /// ([`navguard`](crate::navguard)): stamped when something legitimate wants to leave
-    /// the current site — the page reports a TRUSTED gesture on a real cross-site
-    /// link/submit, or the shell drives `H`/`L` history, the translate de-proxy, or a
-    /// hint follow. The guard cancels any cross-site top navigation that carries no fresh
-    /// stamp (a forced redirect). Shared (cloned `Arc`) into every web tab.
-    pub(crate) nav_intent: crate::navguard::NavIntent,
     /// The uBlock-style network blocklist engine ([`blocklist`](crate::blocklist)),
     /// shared (cloned `Arc`) into every tab's navigation handler. It blocks navigations
     /// to known ad/redirect/malware domains BY NAME — the race-free primary guard, the
@@ -1024,11 +1016,14 @@ impl App {
         self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.webview())
     }
 
-    /// The first open web tab's engine handle, if any. All web tabs share one
-    /// WebView2 profile, so this is enough to reach the profile for data clears
-    /// (`:clear cookies`/`cache`/`all`) regardless of which tab is active.
+    /// Select the active web context, or the default provider's persistent context
+    /// when a native page initiates a profile operation. Never fall through to a
+    /// private view or an unrelated provider.
     pub(crate) fn any_webview(&self) -> Option<&dyn EngineView> {
-        self.tabs.iter().find_map(|t| t.webview())
+        self.active_webview().or_else(|| self.tabs.iter().filter_map(|t| t.webview()).find(|view| {
+            view.identity().provider == self.default_engine()
+                && view.identity().storage == browser_engine::StorageMode::Persistent
+        }))
     }
 
     /// Mutable access to the active engine-free read tab's state, if any.
@@ -1075,8 +1070,12 @@ impl App {
     /// recording: `record = false` only syncs the shown URL (a `replaceState` rewrite
     /// isn't a page worth returning to).
     pub(crate) fn refresh_active_url_record(&mut self, record: bool) {
+        if let Some(index) = self.active { self.refresh_tab_url_record(index, record); }
+    }
+
+    pub(crate) fn refresh_tab_url_record(&mut self, index: usize, record: bool) {
         let mut visited = None;
-        if let Some(tab) = self.active.and_then(|i| self.tabs.get_mut(i)) {
+        if let Some(tab) = self.tabs.get_mut(index) {
             if tab.term().is_some() {
                 return;
             }
@@ -1373,7 +1372,7 @@ impl App {
         let mut live_to_saved = vec![None; self.tabs.len()];
         for (i, tab) in self.tabs.iter().enumerate() {
             // Internal pages are session-specific; private tabs must leave no trace.
-            if tab.url.starts_with("browser://") || tab.vim().is_some() || tab.private {
+            if tab.url.starts_with("browser://") || (tab.vim().is_some() && tab.unavailable().is_none()) || tab.private {
                 continue;
             }
             let kind = if tab.term().is_some() {
@@ -1394,7 +1393,7 @@ impl App {
             // A terminal remembers its shell's working directory (OSC report or
             // live process read — see TermSession::cwd) so restore reopens it there.
             let cwd = tab.term().and_then(|s| s.cwd()).unwrap_or_default();
-            tabs.push(session::SavedTab { kind: kind.to_string(), url: tab.url.clone(), cwd });
+            tabs.push(session::SavedTab { provider: tab.provider().unwrap_or("webview2").into(), kind: kind.to_string(), url: tab.url.clone(), cwd });
         }
         // Encode each window's split tree (dropping windows whose tabs were all skipped),
         // so `:wq` remembers the layout and reopening restores it.
@@ -1484,9 +1483,7 @@ impl App {
             match tab.kind.as_str() {
                 "term" => self.open_terminal_at((!tab.cwd.is_empty()).then_some(&tab.cwd)),
                 "read" => self.start_read(&tab.url, false, true),
-                "research" => self.open_research(&tab.url, true, false),
-                "nojs" => self.open_tab(&tab.url, true, true),
-                _ => self.open_tab(&tab.url, false, true),
+                _ => self.restore_web_tab(tab),
             }
             if self.tabs.len() > before {
                 saved_to_live[si] = Some(self.tabs.len() - 1);

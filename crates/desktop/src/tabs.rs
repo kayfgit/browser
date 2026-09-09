@@ -79,6 +79,9 @@ pub(crate) enum TabContent {
     /// An engine page (child surface over the content band) plus the load /
     /// favicon state its engine callbacks report into.
     Web(Box<dyn EngineView>, PageState),
+    /// A restorable location whose requested provider could not be created.
+    Extensions { view: browser_engine::ViewId, items: Vec<crate::ExtInfo>, buffer: vim::TextBuffer },
+    Unavailable { provider: String, error: String, buffer: vim::TextBuffer },
     /// An engine-free read-mode document, painted by the shell.
     Read(NativeRead),
     /// A read-only vim-style pager (`:error(s)`, `:res`, `:version`).
@@ -127,13 +130,14 @@ pub(crate) enum NavKind {
 /// page was private (so an `H`/`L` replay reopens it InPrivate, not as a normal tab).
 #[derive(Clone)]
 pub(crate) struct NavEntry {
+    pub(crate) provider: String,
     pub(crate) url: String,
     pub(crate) kind: NavKind,
     pub(crate) private: bool,
 }
 
 /// A tab slot's back/forward stacks (`H` pops `back`, `L` pops `fwd`).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct TabNav {
     /// Pages behind the current one, oldest first; the top is where `H` goes.
     pub(crate) back: Vec<NavEntry>,
@@ -158,7 +162,7 @@ pub(crate) fn nav_entry(tab: &Tab) -> Option<NavEntry> {
     }
     let kind = if tab.native().is_some() {
         tab.read.then_some(NavKind::Read)?
-    } else if tab.webview().is_some() {
+    } else if tab.provider().is_some() {
         if tab.research {
             NavKind::Research
         } else if tab.nojs {
@@ -169,7 +173,7 @@ pub(crate) fn nav_entry(tab: &Tab) -> Option<NavEntry> {
     } else {
         return None;
     };
-    Some(NavEntry { url: tab.url.clone(), kind, private: tab.private })
+    Some(NavEntry { provider: tab.provider().unwrap_or("webview2").into(), url: tab.url.clone(), kind, private: tab.private })
 }
 
 /// Push `entry` onto a back/forward stack, dropping the oldest if it would exceed
@@ -182,6 +186,26 @@ pub(crate) fn nav_push(stack: &mut Vec<NavEntry>, entry: NavEntry) {
 }
 
 impl Tab {
+    pub(crate) fn provider(&self) -> Option<&str> {
+        match &self.content {
+            TabContent::Web(view, _) => Some(&view.identity().provider),
+            TabContent::Unavailable { provider, .. } => Some(provider),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn unavailable(&self) -> Option<&str> {
+        match &self.content { TabContent::Unavailable { error, .. } => Some(error), _ => None }
+    }
+
+    /// Creation failure must leave the outgoing view and its state intact.
+    pub(crate) fn replace_engine(&mut self, candidate: Result<(Box<dyn EngineView>, PageState)>) -> Result<()> {
+        let (view, page) = candidate?;
+        self.content = TabContent::Web(view, page);
+        self.nav.settling = true;
+        Ok(())
+    }
+
     /// A blank tab: no engine, no content. Used to fill a freshly `:split` pane —
     /// it paints an empty "open something" prompt and is replaced in place by the
     /// first `:open`/`:te`/`:read`/… run while it's focused.
@@ -234,14 +258,14 @@ impl Tab {
 
     pub(crate) fn vim(&self) -> Option<&vim::TextBuffer> {
         match &self.content {
-            TabContent::Pager(b) => Some(b),
+            TabContent::Pager(b) | TabContent::Unavailable { buffer: b, .. } | TabContent::Extensions { buffer: b, .. } => Some(b),
             _ => None,
         }
     }
 
     pub(crate) fn vim_mut(&mut self) -> Option<&mut vim::TextBuffer> {
         match &mut self.content {
-            TabContent::Pager(b) => Some(b),
+            TabContent::Pager(b) | TabContent::Unavailable { buffer: b, .. } | TabContent::Extensions { buffer: b, .. } => Some(b),
             _ => None,
         }
     }
@@ -394,79 +418,13 @@ impl App {
         new_tab: bool,
         private: bool,
     ) {
-        // Frozen: refuse to spin up a new web engine — the whole point is to NOT
-        // process web content. Native pages (:read/:te/:res/…) stay available.
-        if self.frozen {
-            self.set_status("browser is frozen — :unfreeze first");
-            return;
-        }
-        let url = self.resolve_target(target);
-        if !private {
-            self.record_history(&url);
-        }
-        match self.build_content_webview_private(Source::Url(url.clone()), disable_js, "", private) {
-            Ok((webview, page)) => {
-                let tab = Tab {
-                    content: TabContent::Web(webview, page),
-                    url,
-                    nojs: disable_js,
-                    read: false,
-                    research: false,
-                    private,
-                    // The first live-URL refresh after this open is the page's own
-                    // landing, not a navigation worth a back-stack entry.
-                    nav: TabNav { settling: true, ..TabNav::default() },
-                };
-                self.place_tab_escaping_split(tab, new_tab);
-                // Keep the keyboard on the shell; the page-load handler re-asserts
-                // this once navigation finishes (which is when focus tends to move).
-                self.window.set_focus();
-                self.set_status(match (private, disable_js) {
-                    (true, true) => "(private, no-js)",
-                    (true, false) => "(private)",
-                    (false, true) => "(no-js)",
-                    (false, false) => "",
-                });
-            }
-            Err(e) => self.set_error(format!("failed to open: {e:#}")),
-        }
+        let provider = self.provider_for_open(new_tab);
+        self.open_web_provider(target, disable_js, false, new_tab, private, &provider);
     }
 
-    /// Open a "research" tab: like `:open` (URL or → search engine), but JS-on with
-    /// the [`RESEARCH_JS`] pruner injected so video/audio/embeds are stripped while
-    /// images and text stay. A lighter browse for "how do I…" lookups. `new_tab` and
-    /// `private` as in [`open_tab_private`](Self::open_tab_private).
     pub(crate) fn open_research(&mut self, target: &str, new_tab: bool, private: bool) {
-        if self.frozen {
-            self.set_status("browser is frozen — :unfreeze first");
-            return;
-        }
-        let url = self.resolve_target(target);
-        if !private {
-            self.record_history(&url);
-        }
-        match self.build_content_webview_private(Source::Url(url.clone()), false, RESEARCH_JS, private)
-        {
-            Ok((webview, page)) => {
-                let tab = Tab {
-                    content: TabContent::Web(webview, page),
-                    url,
-                    nojs: false,
-                    read: false,
-                    research: true,
-                    private,
-                    nav: TabNav { settling: true, ..TabNav::default() },
-                };
-                self.place_tab_escaping_split(tab, new_tab);
-                self.window.set_focus();
-                self.set_status(if private {
-                    "(research, private — media stripped)"
-                } else {
-                    "(research — media stripped)"
-                });
-            }
-            Err(e) => self.set_error(format!("failed to open: {e:#}")),
-        }
+        let provider = self.provider_for_open(new_tab);
+        self.open_web_provider(target, false, true, new_tab, private, &provider);
     }
 
     /// Insert `tab`, either as a NEW tab at the end (`new_tab`, or when nothing is
@@ -550,7 +508,7 @@ impl App {
     /// tabs, which must leave no reopenable trace once closed.
     pub(crate) fn record_closed(&mut self, i: usize) {
         let Some(t) = self.tabs.get(i) else { return };
-        if t.url.starts_with("browser://") || t.vim().is_some() || t.private {
+        if t.url.starts_with("browser://") || (t.vim().is_some() && t.unavailable().is_none()) || t.private {
             return;
         }
         let kind = if t.term().is_some() {
@@ -566,7 +524,7 @@ impl App {
         };
         // A closed terminal keeps its last known cwd so `U` reopens it there.
         let cwd = t.term().and_then(|s| s.cwd()).unwrap_or_default();
-        self.closed_tabs.push(session::SavedTab { kind: kind.to_string(), url: t.url.clone(), cwd });
+        self.closed_tabs.push(session::SavedTab { provider: t.provider().unwrap_or("webview2").into(), kind: kind.to_string(), url: t.url.clone(), cwd });
         if self.closed_tabs.len() > CLOSED_CAP {
             self.closed_tabs.remove(0);
         }
@@ -582,9 +540,7 @@ impl App {
         match c.kind.as_str() {
             "term" => self.open_terminal_at((!c.cwd.is_empty()).then_some(&c.cwd)),
             "read" => self.start_read(&c.url, false, true),
-            "research" => self.open_research(&c.url, true, false),
-            "nojs" => self.open_tab(&c.url, true, true),
-            _ => self.open_tab(&c.url, false, true),
+            _ => self.restore_web_tab(&c),
         }
     }
 
@@ -613,13 +569,20 @@ impl App {
         extra_init: &str,
         private: bool,
     ) -> Result<(Box<dyn EngineView>, PageState)> {
-        crate::engines::build_webview2(
+        self.build_provider_view(self.default_engine(), source, disable_js, extra_init, private)
+    }
+
+    pub(crate) fn build_provider_view(
+        &self, provider: &str, source: Source, disable_js: bool, extra_init: &str, private: bool,
+    ) -> Result<(Box<dyn EngineView>, PageState)> {
+        crate::engines::build(
+            provider,
             &self.window,
             crate::engines::WebView2Options {
                 source,
                 disable_js,
                 extra_init,
-                private,
+                storage: if private { browser_engine::StorageMode::Private } else { browser_engine::StorageMode::Persistent },
                 bounds: self.content_rect(),
                 adblock: self.adblock,
                 adblock_mode: self.adblock_mode,
@@ -629,7 +592,6 @@ impl App {
                 no_scrollbar: self.no_scrollbar,
                 proxy: self.proxy.clone(),
                 adblock_on: self.adblock_on.clone(),
-                nav_intent: self.nav_intent.clone(),
                 blocker: self.blocker.clone(),
                 allow_risky_downloads: self.allow_risky_downloads.clone(),
             },
@@ -1064,6 +1026,9 @@ impl App {
     /// read tabs (which have no engine history at all) — so it goes back the full way.
     pub(crate) fn history(&mut self, forward: bool) {
         let Some(i) = self.active else { return };
+        let Some(current) = self.tabs.get(i) else { return };
+        let previous_nav = current.nav.clone();
+        let previous_url = current.url.clone();
         // Nothing to go to?
         let empty = {
             let Some(tab) = self.tabs.get(i) else { return };
@@ -1094,12 +1059,7 @@ impl App {
                 }
             }
             tab.nav.settling = true;
-            crate::navguard::mark(&self.nav_intent);
-            if let Some(wv) = self.tabs.get(i).and_then(|t| t.webview()) {
-                if let Some(history) = wv.history() {
-                    let _ = history.go(forward);
-                }
-            }
+            self.step_native_history(i, forward, previous_nav, previous_url);
             self.window.request_redraw();
             return;
         }
@@ -1126,20 +1086,27 @@ impl App {
             }
         }
 
+        let engine = engine && tab.provider() == Some(entry.provider.as_str())
+            && tab.private == entry.private && nav_entry(tab).is_some_and(|current| current.kind == entry.kind);
         if engine {
             // Pre-set the URL and settle so the engine nav's page-load doesn't record
             // the step a second time into the back stack.
             tab.url = entry.url;
             tab.nav.settling = true;
-            crate::navguard::mark(&self.nav_intent);
-            if let Some(wv) = self.tabs.get(i).and_then(|t| t.webview()) {
-                if let Some(history) = wv.history() {
-                    let _ = history.go(forward);
-                }
-            }
+            self.step_native_history(i, forward, previous_nav, previous_url);
             self.window.request_redraw();
-        } else {
-            self.open_entry(entry);
+        } else if !self.open_entry(entry) {
+            self.tabs[i].nav = previous_nav;
+        }
+    }
+
+    fn step_native_history(&mut self, index: usize, forward: bool, previous: TabNav, url: String) {
+        let result = self.tabs[index].webview().and_then(|view| view.history())
+            .ok_or_else(|| "native history is unavailable".to_string()).and_then(|history| history.go(forward));
+        if let Err(error) = result {
+            self.tabs[index].nav = previous;
+            self.tabs[index].url = url;
+            self.set_error(error);
         }
     }
 
@@ -1147,24 +1114,26 @@ impl App {
     /// already adjusted by [`history`](Self::history), so recording is suppressed
     /// (`nav_replaying` for the synchronous web/place_tab paths; `record = false`
     /// threaded through the asynchronous read path).
-    fn open_entry(&mut self, entry: NavEntry) {
-        match entry.kind {
-            NavKind::Web => {
+    fn open_entry(&mut self, entry: NavEntry) -> bool {
+        if entry.kind == NavKind::Read {
+            self.start_read(&entry.url, true, false);
+            return true;
+        }
+        if self.frozen { self.set_status("browser is frozen — :unfreeze first"); return false; }
+        let nojs = entry.kind == NavKind::Nojs;
+        let research = entry.kind == NavKind::Research;
+        let extra = if research { RESEARCH_JS } else { "" };
+        match self.build_provider_view(&entry.provider, Source::Url(entry.url.clone()), nojs, extra, entry.private) {
+            Ok((view, page)) => {
                 self.nav_replaying = true;
-                self.open_tab_private(&entry.url, false, false, entry.private);
+                self.place_tab(Tab {
+                    content: TabContent::Web(view, page), url: entry.url, nojs, research, read: false,
+                    private: entry.private, nav: TabNav { settling: true, ..TabNav::default() },
+                }, false);
                 self.nav_replaying = false;
+                true
             }
-            NavKind::Nojs => {
-                self.nav_replaying = true;
-                self.open_tab_private(&entry.url, true, false, entry.private);
-                self.nav_replaying = false;
-            }
-            NavKind::Research => {
-                self.nav_replaying = true;
-                self.open_research(&entry.url, false, entry.private);
-                self.nav_replaying = false;
-            }
-            NavKind::Read => self.start_read(&entry.url, true, false),
+            Err(error) => { self.set_error(format!("history unchanged: {error:#}")); false }
         }
     }
 
@@ -1292,7 +1261,7 @@ impl App {
         let research = t.research;
         let private = t.private;
         let extra = if research { RESEARCH_JS } else { "" };
-        match self.build_content_webview_private(Source::Url(url.clone()), self.nojs, extra, private)
+        match self.build_provider_view(t.provider().unwrap_or("webview2"), Source::Url(url.clone()), self.nojs, extra, private)
         {
             Ok((webview, page)) => {
                 let nojs = self.nojs;
@@ -1322,6 +1291,13 @@ impl App {
     /// Reload the active tab: re-extract for an engine-free read tab, else reload
     /// the webview.
     pub(crate) fn reload_active(&mut self) {
+        if let Some(tab) = self.active.and_then(|i| self.tabs.get(i)) {
+            if tab.unavailable().is_some() {
+                let provider = tab.provider().unwrap().to_string();
+                self.switch_engine(&provider);
+                return;
+            }
+        }
         if let Some(url) = self
             .active
             .and_then(|i| self.tabs.get(i))
@@ -1500,7 +1476,7 @@ mod tests {
         for i in 0..NAV_CAP + 5 {
             nav_push(
                 &mut stack,
-                NavEntry { url: format!("https://e/{i}"), kind: NavKind::Web, private: false },
+                NavEntry { provider: "webview2".into(), url: format!("https://e/{i}"), kind: NavKind::Web, private: false },
             );
         }
         // Capped at NAV_CAP, and it's the OLDEST entries that fell off the front.

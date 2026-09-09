@@ -1563,11 +1563,10 @@ fn main() -> Result<()> {
         adblock_prev: AdblockMode::Ubo,
         term_drag: None,
         term_clicks: None,
-        extensions: Vec::new(),
+        extension_request: 0,
         adblock: true,
         adblock_on: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         allow_risky_downloads: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        nav_intent: std::sync::Arc::new(std::sync::Mutex::new(None)),
         blocker: blocklist::new_shared(),
         mute: false,
         no_css: false,
@@ -1681,6 +1680,12 @@ fn main() -> Result<()> {
     window.request_redraw();
 
     event_loop.run(move |event, _target, control_flow| {
+        let event = match event {
+            Event::UserEvent(UserEvent::Engine { view, event }) => {
+                Event::UserEvent(app.route_engine_event(view, *event).unwrap_or(UserEvent::Redraw))
+            }
+            event => event,
+        };
         *control_flow = ControlFlow::Wait;
         match event {
             // Command-bar cursor blink: the WaitUntil deadline (set below while in
@@ -2005,7 +2010,6 @@ fn main() -> Result<()> {
                 if let Some(i) = app.active {
                     // Shell-driven `load_url` reads as not-user-initiated; stamp intent so
                     // the native guard lets this de-proxy redirect through.
-                    navguard::mark(&app.nav_intent);
                     if let Some(wv) = app.tabs.get(i).and_then(|t| t.webview()) {
                         let _ = wv.load_url(&url);
                     }
@@ -2038,20 +2042,19 @@ fn main() -> Result<()> {
                 // Quiet by default (don't clobber a useful status); the engine simply
                 // starts catching navigations from here on.
             }
-            Event::UserEvent(UserEvent::ExtensionsListed(list)) => {
-                // The async extension query finished: cache it and (re)render `:extensions`.
-                app.extensions = list;
-                app.show_extensions_page();
+            Event::UserEvent(UserEvent::ExtensionsListed { request, view, result }) => {
+                if request == app.extension_request && app.view_by_id(view).is_some() {
+                    match result {
+                        Ok(items) => app.show_extensions_page(view, items),
+                        Err(error) => app.set_error(error),
+                    }
+                }
             }
             Event::UserEvent(UserEvent::DownloadBlocked(name)) => {
                 let short: String = name.chars().take(60).collect();
                 app.set_error(format!(
                     "blocked download of {short} — executable/installer. :downloads to allow"
                 ));
-                app.window.request_redraw();
-            }
-            Event::UserEvent(UserEvent::EngineOperationFailed(error)) => {
-                app.set_error(error);
                 app.window.request_redraw();
             }
             Event::UserEvent(UserEvent::DataCleared { label, ai_id, result }) => {

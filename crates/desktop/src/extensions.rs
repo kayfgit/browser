@@ -3,29 +3,32 @@ use crate::UserEvent;
 use browser_engine::EngineView;
 use tao::event_loop::EventLoopProxy;
 
-pub(crate) fn list(view: &dyn EngineView, proxy: EventLoopProxy<UserEvent>) {
+pub(crate) fn list(view: &dyn EngineView, request: u64, proxy: EventLoopProxy<UserEvent>) {
+    let source = view.identity().id;
     let callback_proxy = proxy.clone();
     let result = view
         .extensions()
         .ok_or_else(|| "this engine does not support extensions".to_string())
         .and_then(|service| {
             service.list(Box::new(move |result| {
-                let event = match result {
-                    Ok(items) => UserEvent::ExtensionsListed(items),
-                    Err(error) => UserEvent::EngineOperationFailed(error),
-                };
-                let _ = callback_proxy.send_event(event);
+                let _ = callback_proxy.send_event(UserEvent::ExtensionsListed {
+                    request,
+                    view: source,
+                    result,
+                });
             }))
         });
     if let Err(error) = result {
-        let _ = proxy.send_event(UserEvent::EngineOperationFailed(error));
+        let _ = proxy.send_event(UserEvent::ExtensionsListed {
+            request,
+            view: source,
+            result: Err(error),
+        });
     }
 }
 
-pub(crate) fn set_enabled(view: &dyn EngineView, id: String, enabled: bool) {
-    if let Some(service) = view.extensions() {
-        let _ = service.set_enabled(id, enabled);
-    }
+pub(crate) fn set_enabled(view: &dyn EngineView, id: String, enabled: bool) -> Result<(), String> {
+    view.extensions().ok_or("this engine does not support extensions")?.set_enabled(id, enabled)
 }
 pub(crate) fn set_all_enabled(view: &dyn EngineView, enabled: bool) {
     if let Some(service) = view.extensions() {

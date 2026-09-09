@@ -220,49 +220,38 @@ impl App {
     /// [`show_extensions_page`](Self::show_extensions_page)). Extensions hang off the webview
     /// profile, so this needs a live web engine — it asks you to open a page first if none.
     pub(crate) fn open_extensions_page(&mut self) {
-        #[cfg(windows)]
+        self.extension_request = self.extension_request.checked_add(1).expect("extension request space exhausted");
         match self.any_webview() {
-            Some(wv) => {
-                crate::extensions::list(wv, self.proxy.clone());
+            Some(view) => {
+                crate::extensions::list(view, self.extension_request, self.proxy.clone());
                 self.set_status("loading extensions…");
             }
-            None => {
-                self.set_status("open a web page first — extensions load with the browser engine")
-            }
+            None => self.set_status("open a web page first — extensions need a live storage context"),
         }
-        #[cfg(not(windows))]
-        self.set_status("browser extensions are only available on Windows");
     }
 
-    /// Render the cached extension list into the `:extensions` vim picker — refreshing it in
-    /// place (keeping the cursor row) if it's already active, else opening a new tab. Called
-    /// when a query completes and after Enter toggles a row.
-    pub(crate) fn show_extensions_page(&mut self) {
-        let lines = ext_lines(&self.extensions);
-        if self.active_url() == Some("browser://extensions") {
-            let cy = self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.vim()).map_or(0, |b| b.cy);
-            if let Some(buf) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.vim_mut()) {
-                buf.set_lines(lines);
-                buf.anchor = None;
-                buf.cy = cy.min(buf.lines.len().saturating_sub(1));
-                buf.cx = 0;
-            }
-            self.window.request_redraw();
+    /// A picker owns its source view and cached items, even after another picker
+    /// queries a different provider or storage context.
+    pub(crate) fn show_extensions_page(&mut self, view: browser_engine::ViewId, items: Vec<crate::ExtInfo>) {
+        let lines = ext_lines(&items);
+        let current = self.active.and_then(|i| self.tabs.get_mut(i));
+        if let Some(Tab { content: TabContent::Extensions { view: target, items: cached, buffer }, .. }) = current {
+            *target = view;
+            *cached = items;
+            let cy = buffer.cy;
+            buffer.set_lines(lines);
+            buffer.anchor = None;
+            buffer.cy = cy.min(buffer.lines.len().saturating_sub(1));
+            buffer.cx = 0;
         } else {
-            self.place_tab(
-                Tab {
-                    url: "browser://extensions".into(),
-                    nojs: false,
-                    read: false,
-                    research: false,
-                    private: false,
-                    nav: TabNav::default(),
-                    content: TabContent::Pager(vim::TextBuffer::new(lines)),
-                },
-                true,
-            );
+            let mut tab = Tab::blank();
+            tab.url = "browser://extensions".into();
+            tab.content = TabContent::Extensions { view, items, buffer: vim::TextBuffer::new(lines) };
+            // Keep the source pane alive even when this command comes from a split.
+            self.place_tab_escaping_split(tab, true);
             self.window.set_focus();
         }
+        self.window.request_redraw();
         self.clear_status();
     }
 
@@ -503,6 +492,8 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("terun", ":te <command>", "run a local command, result in the command bar"),
     ("shell", ":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
     ("theme", ":theme [key value]", "appearance: no args opens config.toml in an editor (closing it applies); a key + value sets one field (bar_bg, bar_fg, accent, bg, bar_height_pct, term_font, term_font_px, term_scheme, term_bg, term_fg — 'default' resets); :theme install <scheme> downloads a terminal scheme; :theme reload / show"),
+    ("engine", ":engine [provider] · :engine default <provider>", "inspect or select the web engine; changes reopen the URL"),
+    ("engines", ":engines", "list installed providers and supported view options"),
     ("extensions", ":extensions", "browser-extension picker in a vim tab (Enter toggles one on/off)"),
     ("js", ":js", "toggle JavaScript (reloads this tab; applies to new tabs)"),
     ("nojs", ":nojs <url>", "open a single page with JavaScript disabled"),

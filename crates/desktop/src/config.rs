@@ -21,6 +21,9 @@ use serde::{Deserialize, Serialize};
 /// never discards the rest.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Config {
+    /// Concrete provider for new web tabs. None preserves the legacy WebView2 default.
+    #[serde(default)]
+    pub(crate) engine: Option<String>,
     /// Command aliases: the word typed after `:` → the command line it expands to
     /// (e.g. `gh` → `open github.com`). Resolved before the built-in verbs in
     /// [`run_command`](crate::App::run_command). Sorted (BTreeMap) for stable

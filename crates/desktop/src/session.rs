@@ -91,6 +91,9 @@ pub struct WindowGeom {
 /// `term`) and the address to reopen it at (unused for `term`).
 #[derive(Serialize, Deserialize)]
 pub struct SavedTab {
+    /// Concrete provider; old sessions used WebView2. Native tabs ignore this field.
+    #[serde(default = "default_provider")]
+    pub provider: String,
     pub kind: String,
     #[serde(default)]
     pub url: String,
@@ -100,6 +103,8 @@ pub struct SavedTab {
     #[serde(default)]
     pub cwd: String,
 }
+
+pub fn default_provider() -> String { "webview2".into() }
 
 /// Serde default for [`Session::content_zoom`]: 100% (no page scaling) for
 /// sessions written before content zoom was split from the chrome zoom.
@@ -251,8 +256,9 @@ mod tests {
             windows: vec!["R0.5000(0|1)".into()],
             window: Some(WindowGeom { x: 40, y: 60, w: 1280, h: 800 }),
             tabs: vec![
-                SavedTab { kind: "open".into(), url: "https://a.test/".into(), cwd: String::new() },
+                SavedTab { provider: default_provider(), kind: "open".into(), url: "https://a.test/".into(), cwd: String::new() },
                 SavedTab {
+                    provider: default_provider(),
                     kind: "term".into(),
                     url: String::new(),
                     cwd: "C:\\projects\\browser".into(),
@@ -279,6 +285,16 @@ mod tests {
         // Sessions written before terminal-cwd tracking have no `cwd` key.
         let tab: SavedTab = toml::from_str("kind = \"term\"").expect("deserialize");
         assert_eq!(tab.cwd, "");
+        assert_eq!(tab.provider, "webview2");
+    }
+
+    #[test]
+    fn saved_tab_preserves_an_unavailable_provider() {
+        let tab: SavedTab = toml::from_str("kind = 'research'\nurl = 'https://example.org'\nprovider = 'servo'").unwrap();
+        let restored: SavedTab = toml::from_str(&toml::to_string(&tab).unwrap()).unwrap();
+        assert_eq!(restored.provider, "servo");
+        assert_eq!(restored.kind, "research");
+        assert_eq!(restored.url, "https://example.org");
     }
 
     #[test]

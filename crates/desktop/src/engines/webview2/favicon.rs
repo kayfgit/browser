@@ -12,7 +12,7 @@ use std::sync::Arc;
 pub(crate) fn install(
     webview: &wry::WebView,
     slot: SharedIcon,
-    proxy: tao::event_loop::EventLoopProxy<crate::UserEvent>,
+    proxy: crate::engines::PageEventProxy,
 ) {
     use webview2_com::FaviconChangedEventHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2, ICoreWebView2_15};
@@ -40,7 +40,7 @@ pub(crate) fn install(
 fn fetch(
     c15: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_15,
     slot: &SharedIcon,
-    proxy: &tao::event_loop::EventLoopProxy<crate::UserEvent>,
+    proxy: &crate::engines::PageEventProxy,
 ) {
     use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG;
     use webview2_com::{take_pwstr, GetFaviconCompletedHandler};

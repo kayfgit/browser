@@ -24,6 +24,7 @@ pub(crate) const COMMANDS: &[&str] = &[
     // Last, so it can't shadow `:f`/`:fo`… (fullscreen/forward/freeze) — `:fa` is
     // unambiguous and reaches it.
     "favorites",
+    "engine", "engines",
 ];
 
 impl App {
@@ -41,6 +42,8 @@ impl App {
             None => (line, ""),
         };
         match verb {
+            "engine" => self.engine_command(rest),
+            "engines" => self.list_engines(),
             // `:open`/`:o` open in THIS tab (replacing it); a leading `-t` opens a new
             // tab instead and `-n` a private (InPrivate, no-trace) one — combinable as
             // `-tn`. `:tabopen`/`:t` always open a new tab (that's their meaning).

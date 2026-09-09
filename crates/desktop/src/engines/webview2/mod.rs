@@ -1,6 +1,6 @@
 //! The only desktop module allowed to own Wry/WebView2 objects.
-//! Event translation still uses the shell's existing UserEvent messages; tagging
-//! those events and introducing a provider registry are the next migration stage.
+//! Page callbacks carry the identity of the view that emitted them. Storage mode
+//! is checked against the runtime before loading the requested location.
 
 mod data;
 mod extensions;
@@ -33,7 +33,7 @@ pub(crate) struct BuildOptions<'a> {
     pub source: Source,
     pub disable_js: bool,
     pub extra_init: &'a str,
-    pub private: bool,
+    pub storage: browser_engine::StorageMode,
     pub bounds: RectPx,
     pub adblock: bool,
     pub adblock_mode: AdblockMode,
@@ -43,7 +43,6 @@ pub(crate) struct BuildOptions<'a> {
     pub no_scrollbar: bool,
     pub proxy: EventLoopProxy<UserEvent>,
     pub adblock_on: Arc<AtomicBool>,
-    pub nav_intent: crate::navguard::NavIntent,
     pub blocker: crate::blocklist::SharedBlocker,
     pub allow_risky_downloads: Arc<AtomicBool>,
 }
@@ -51,8 +50,12 @@ pub(crate) struct BuildOptions<'a> {
 pub(crate) fn build(
     parent: &Window,
     opts: BuildOptions<'_>,
+    identity: browser_engine::ViewIdentity,
 ) -> Result<(Box<dyn EngineView>, PageState)> {
-    let BuildOptions { source, disable_js, extra_init, private, .. } = opts;
+    let BuildOptions { source, disable_js, extra_init, .. } = opts;
+    let private = identity.storage == browser_engine::StorageMode::Private;
+    let proxy = super::PageEventProxy::new(opts.proxy.clone(), identity.id);
+    let nav_intent: crate::navguard::NavIntent = Arc::new(Mutex::new(None));
     // Shared with the page-load handler below (and, once built, the favicon
     // watcher) so the tab strip can show this tab's progress and icon. Seeded as
     // loading: the webview is about to fetch its first page, and WebView2's own
@@ -60,16 +63,16 @@ pub(crate) fn build(
     let page = PageState::default();
     page.begin_load();
     let load_state = page.clone();
-    let ipc_proxy = opts.proxy.clone();
-    let load_proxy = opts.proxy.clone();
-    let nav_proxy = opts.proxy.clone();
+    let ipc_proxy = proxy.clone();
+    let load_proxy = proxy.clone();
+    let nav_proxy = proxy.clone();
     // Shared with the App so `:ads` toggles the native redirect guard live.
     let adblock_on = opts.adblock_on.clone();
     let popup_adblock = opts.adblock_on.clone();
-    let popup_proxy = opts.proxy.clone();
+    let popup_proxy = proxy.clone();
     // The popup guard consults the same trusted-gesture stamp and blocklist engine the
     // navigation guards do, to tell a real "open in new tab" from a scripted popunder.
-    let popup_intent = opts.nav_intent.clone();
+    let popup_intent = nav_intent.clone();
     let popup_blocker = opts.blocker.clone();
     // This tab's current top origin, so the blocklist's `$third-party` rules resolve
     // against the right source on each navigation. `cur_top` is the full top-frame URL.
@@ -81,17 +84,15 @@ pub(crate) fn build(
     // one signal that a cross-site top navigation is genuinely wanted. Stamped here,
     // directly (no event-loop hop), so it lands before the navigation it authorises
     // reaches the native guard. Shared (cloned `Arc`) with that guard.
-    let intent_set = opts.nav_intent.clone();
+    let intent_set = nav_intent.clone();
     // The uBlock-style domain blocklist engine — the race-free primary redirect guard.
     let blocker = opts.blocker.clone();
     // Download guard: block executable/installer types unless the user opted in.
     let dl_allow = opts.allow_risky_downloads.clone();
-    let dl_proxy = opts.proxy.clone();
+    let dl_proxy = proxy.clone();
+    // Wry falls back to a regular controller on runtimes without Environment10.
+    // Build blank, verify the real storage mode, and only then load user content.
     let mut builder = WebViewBuilder::new();
-    builder = match source {
-        Source::Url(u) => builder.with_url(u),
-        Source::Html(h) => builder.with_html(h),
-    };
     // Load uBlock Origin (any unpacked extension in the dir) into WebView2's own
     // Chromium engine. The extension does network + cosmetic + scriptlet ad-blocking
     // natively — far more capable than a hand-rolled blocker, and it doesn't depend on
@@ -110,13 +111,14 @@ pub(crate) fn build(
     //     persisted copy alone (swept disabled below). Absent dir → no extensions.
     if let Some(ext_dir) = ublock_extensions_dir() {
         builder = builder.with_browser_extensions_enabled(true);
-        if opts.adblock_mode.extension() {
+        if opts.adblock_mode.extension() && !private {
             builder = builder.with_extensions_path(ext_dir);
         }
     }
     builder = builder
         .with_bounds(native_rect(opts.bounds))
         .with_focused(false)
+        .with_visible(false)
         // Private (`-n`): WebView2's InPrivate profile — cookies/storage live only
         // as long as the tab. A controller option, so it can differ per webview.
         .with_incognito(private)
@@ -357,15 +359,16 @@ pub(crate) fn build(
         builder = builder.with_javascript_disabled();
     }
     let webview = builder.build_as_child(parent).map_err(|e| anyhow::anyhow!("{e}"))?;
+    verify_storage(&webview, identity.storage)?;
+    if private && opts.adblock_mode.extension() {
+        if let Some(dir) = ublock_extensions_dir() {
+            let _ = extensions::install_dir(&webview, &dir);
+        }
+    }
     // The native redirect guard: cancels forced (non-user-initiated) cross-site top
     // navigations via WebView2's own `IsUserInitiated` — the structural fix the
     // URL-only wry handler above can't be. Best-effort; the wry guards still stand.
-    navigation::install(
-        &webview,
-        opts.adblock_on.clone(),
-        opts.nav_intent.clone(),
-        opts.proxy.clone(),
-    );
+    navigation::install(&webview, opts.adblock_on.clone(), nav_intent.clone(), proxy.clone());
     // NOTE: there is deliberately no `WebResourceRequested` sub-resource blocker here.
     // One used to run the full EasyList engine over every script/iframe/XHR, but
     // registering that filter routes every sub-resource through a handler on the HOST's
@@ -387,8 +390,38 @@ pub(crate) fn build(
     }
     // Watch WebView2's own favicon for this tab, so the strip can show it.
     #[cfg(windows)]
-    favicon::install(&webview, page.icon.clone(), opts.proxy.clone());
-    Ok((Box::new(WebView2View { inner: webview }), page))
+    favicon::install(&webview, page.icon.clone(), proxy.clone());
+    match source {
+        Source::Url(url) => webview.load_url(&url)?,
+        Source::Html(html) => webview.load_html(&html)?,
+    }
+    Ok((Box::new(WebView2View { inner: webview, identity, nav_intent }), page))
+}
+
+fn verify_storage(view: &WebView, expected: browser_engine::StorageMode) -> Result<()> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_13;
+    use windows_core::{Interface, BOOL};
+    use wry::WebViewExtWindows;
+    // Old runtimes without the profile API can serve regular pages, but cannot
+    // provide the evidence needed to honor a private request.
+    let profile = unsafe { view.controller().CoreWebView2() }
+        .and_then(|core| core.cast::<ICoreWebView2_13>())
+        .and_then(|core| unsafe { core.Profile() });
+    match profile {
+        Ok(profile) => {
+            let mut private = BOOL::default();
+            unsafe { profile.IsInPrivateModeEnabled(&mut private) }?;
+            anyhow::ensure!(
+                private.as_bool() == (expected == browser_engine::StorageMode::Private),
+                "WebView2 did not honor the requested storage mode; page was not loaded"
+            );
+        }
+        Err(_) if expected == browser_engine::StorageMode::Private => {
+            anyhow::bail!("this WebView2 runtime cannot verify private mode; page was not loaded");
+        }
+        Err(_) => {}
+    }
+    Ok(())
 }
 
 /// TEMPORARY diagnostic probe for the YouTube half-load bug — injected only when
@@ -498,6 +531,8 @@ const YT_PROBE_JS: &str = r#"
 
 struct WebView2View {
     inner: WebView,
+    identity: browser_engine::ViewIdentity,
+    nav_intent: crate::navguard::NavIntent,
 }
 
 fn native_rect(rect: RectPx) -> Rect {
@@ -520,11 +555,26 @@ pub(crate) fn keep_alive(parent: &Window) -> Result<Box<dyn EngineView>> {
         .with_bounds(native_rect(RectPx { x: 0, y: 0, w: 1, h: 1 }))
         .build_as_child(parent)?;
     let _ = suspension::suspend(&inner);
-    Ok(Box::new(WebView2View { inner }))
+    Ok(Box::new(WebView2View {
+        inner,
+        identity: browser_engine::ViewIdentity {
+            id: browser_engine::ViewId::allocate(),
+            provider: "webview2".into(),
+            storage: browser_engine::StorageMode::Persistent,
+        },
+        nav_intent: Arc::new(Mutex::new(None)),
+    }))
 }
 
 impl EngineView for WebView2View {
+    fn identity(&self) -> &browser_engine::ViewIdentity {
+        &self.identity
+    }
+    fn authorize_navigation(&self) {
+        crate::navguard::mark(&self.nav_intent);
+    }
     fn load_url(&self, url: &str) -> EngineResult {
+        self.authorize_navigation();
         self.inner.load_url(url).map_err(|e| e.to_string())
     }
     fn reload(&self) -> EngineResult {
@@ -570,6 +620,7 @@ impl History for WebView2View {
         navigation::can_go(&self.inner, forward)
     }
     fn go(&self, forward: bool) -> EngineResult {
+        self.authorize_navigation();
         navigation::go(&self.inner, forward)
     }
 }
@@ -598,5 +649,45 @@ impl Suspension for WebView2View {
     }
     fn resume(&self) -> EngineResult {
         suspension::resume(&self.inner)
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+    #[test]
+    #[ignore = "requires an installed WebView2 runtime; creates hidden isolated views"]
+    fn runtime_storage_mode_is_verified_before_user_content() {
+        use browser_engine::StorageMode;
+        use tao::platform::windows::EventLoopBuilderExtWindows;
+        let mut builder = tao::event_loop::EventLoopBuilder::<()>::new();
+        builder.with_any_thread(true);
+        let event_loop = builder.build();
+        let window =
+            tao::window::WindowBuilder::new().with_visible(false).build(&event_loop).unwrap();
+        let stamp =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/engine-tests")
+            .join(format!("{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut context = wry::WebContext::new(Some(dir));
+        let regular = WebViewBuilder::new_with_web_context(&mut context)
+            .with_focused(false)
+            .with_visible(false)
+            .build_as_child(&window)
+            .unwrap();
+        assert!(verify_storage(&regular, StorageMode::Persistent).is_ok());
+        assert!(verify_storage(&regular, StorageMode::Private).is_err());
+        let private = WebViewBuilder::new_with_web_context(&mut context)
+            .with_incognito(true)
+            .with_focused(false)
+            .with_visible(false)
+            .build_as_child(&window)
+            .unwrap();
+        assert!(verify_storage(&private, StorageMode::Private).is_ok());
+        assert!(verify_storage(&private, StorageMode::Persistent).is_err());
+        // Profiles are isolated under target/engine-tests; teardown is asynchronous.
+        // Keep them available for inspecting failures instead of racing runtime cleanup.
     }
 }

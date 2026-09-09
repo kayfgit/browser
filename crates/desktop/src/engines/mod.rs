@@ -1,9 +1,49 @@
 //! Adapter entry points. The shell only stores browser_engine trait objects.
+mod events;
+mod shell;
 mod webview2;
 
 #[cfg(test)]
 mod tests;
 
-pub(crate) use webview2::{
-    build as build_webview2, keep_alive as keep_webview2_alive, BuildOptions as WebView2Options,
-};
+pub(crate) use events::PageEventProxy;
+pub(crate) use webview2::{keep_alive as keep_webview2_alive, BuildOptions as WebView2Options};
+
+use browser_engine::{Capabilities, ProviderDescriptor, ViewRequirements};
+
+pub(crate) const PROVIDERS: &[ProviderDescriptor] = &[ProviderDescriptor {
+    id: "webview2",
+    family: "blink",
+    display_name: "Microsoft Edge WebView2",
+    capabilities: Capabilities {
+        private: true,
+        disable_javascript: true,
+        document_scripts: true,
+        page_messages: true,
+    },
+}];
+
+pub(crate) fn resolve(
+    name: &str,
+    preferred: &str,
+) -> browser_engine::EngineResult<&'static ProviderDescriptor> {
+    browser_engine::resolve_provider(PROVIDERS, name, preferred)
+}
+
+pub(crate) fn build(
+    provider: &str,
+    parent: &tao::window::Window,
+    opts: WebView2Options<'_>,
+) -> anyhow::Result<(Box<dyn browser_engine::EngineView>, crate::tabs::PageState)> {
+    let provider = resolve(provider, "webview2").map_err(anyhow::Error::msg)?;
+    let needs = ViewRequirements {
+        storage: opts.storage,
+        disable_javascript: opts.disable_js,
+        shell_bridge: true,
+    };
+    browser_engine::build_checked(provider, needs, |identity| match provider.id {
+        "webview2" => webview2::build(parent, opts, identity).map_err(|e| format!("{e:#}")),
+        _ => Err(format!("no factory for {}", provider.id)),
+    })
+    .map_err(anyhow::Error::msg)
+}
