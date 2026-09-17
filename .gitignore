@@ -1,15 +1,37 @@
 # Rust build output
-/target/
+**/target/
 **/*.rs.bk
+
+# Compiled/native artifacts and locally downloaded Windows toolchains
+*.exe
+*.dll
+*.lib
+*.exp
+*.obj
+*.ilk
+*.vsix
 
 # We DO commit Cargo.lock: this workspace produces a binary, and a locked
 # dependency set keeps builds reproducible. (Only libraries omit it.)
 
 # Backtraces / debugging
 *.pdb
+*.dmp
+*.log
+
+# Browser runtime data and native smoke-test output (also outside target/)
+*.WebView2/
+lab-data/
+desktop-smoke/
+installed-smoke/
+servo-smoke.png
 
 # Local config overrides (sample lives at config/config.toml)
 /config/local.toml
+
+# Machine-specific coding-assistant settings and scratch state
+/.claude/
+/.codex/
 
 # Editor / IDE
 /.vscode/

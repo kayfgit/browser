@@ -163,6 +163,14 @@ impl App {
         lines.push(format!("{:>9}  {:>6}  {:>9}  {:<22} {}", "MEM", "CPU", "DISK", "PROCESS", "PID"));
         lines.extend(rows);
 
+        #[cfg(all(windows, feature = "servo-engine"))]
+        if let Some(views) = crate::engines::servo::runtime_view_count() {
+            lines.push(String::new());
+            lines.push(format!("Servo: {views} open views; shared runtime loaded."));
+            lines.push(format!("Servo CPU/memory/I/O are included in browser-desktop (PID {}).", std::process::id()));
+            lines.push("The shell and Servo share this process; separate engine totals are unavailable.".into());
+        }
+
         // Roll the sample forward for the next delta.
         self.res_prev = sample.iter().map(|p| (p.pid, (p.cpu_100ns, p.io_bytes))).collect();
         self.res_at = Instant::now();

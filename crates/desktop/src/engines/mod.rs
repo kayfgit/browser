@@ -2,6 +2,15 @@
 mod events;
 mod shell;
 mod webview2;
+#[cfg(all(windows, feature = "servo-engine"))]
+pub(crate) mod servo;
+
+pub(crate) fn with_window_target<R>(target: &tao::event_loop::EventLoopWindowTarget<crate::UserEvent>, f: impl FnOnce() -> R) -> R {
+    #[cfg(all(windows, feature = "servo-engine"))]
+    { servo::with_target(target, f) }
+    #[cfg(not(all(windows, feature = "servo-engine")))]
+    { let _ = target; f() }
+}
 
 #[cfg(test)]
 mod tests;
@@ -21,6 +30,11 @@ pub(crate) const PROVIDERS: &[ProviderDescriptor] = &[ProviderDescriptor {
         document_scripts: true,
         page_messages: true,
     },
+},
+#[cfg(all(windows, feature = "servo-engine"))]
+ProviderDescriptor {
+    id: "servo", family: "servo", display_name: "Servo 0.5 (experimental)",
+    capabilities: Capabilities { private: false, disable_javascript: false, document_scripts: true, page_messages: true },
 }];
 
 pub(crate) fn resolve(
@@ -32,7 +46,7 @@ pub(crate) fn resolve(
 
 pub(crate) fn build(
     provider: &str,
-    parent: &tao::window::Window,
+    parent: &std::rc::Rc<tao::window::Window>,
     opts: WebView2Options<'_>,
 ) -> anyhow::Result<(Box<dyn browser_engine::EngineView>, crate::tabs::PageState)> {
     let provider = resolve(provider, "webview2").map_err(anyhow::Error::msg)?;
@@ -43,6 +57,8 @@ pub(crate) fn build(
     };
     browser_engine::build_checked(provider, needs, |identity| match provider.id {
         "webview2" => webview2::build(parent, opts, identity).map_err(|e| format!("{e:#}")),
+        #[cfg(all(windows, feature = "servo-engine"))]
+        "servo" => servo::build(parent, opts, identity).map_err(|e| format!("{e:#}")),
         _ => Err(format!("no factory for {}", provider.id)),
     })
     .map_err(anyhow::Error::msg)

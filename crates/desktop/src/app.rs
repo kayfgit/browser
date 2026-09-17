@@ -59,6 +59,8 @@ pub(crate) const TERM_RESIZE_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// Events posted from webview IPC back into the event loop.
 pub(crate) enum UserEvent {
+    #[cfg(all(windows, feature = "servo-engine"))]
+    Servo(crate::engines::servo::Event),
     /// Callback from one live view incarnation; never a tab index.
     Engine { view: browser_engine::ViewId, event: Box<UserEvent> },
     /// Leave insert/passthrough: move focus from the page back to the shell.
@@ -1340,6 +1342,8 @@ impl App {
             }
         }
         self.tabs.clear();
+        #[cfg(all(windows, feature = "servo-engine"))]
+        crate::engines::servo::shutdown();
         // Windows reference tab indices; drop them in lock-step so a stray post-quit
         // redraw can't index the now-empty tab list through a stale window.
         self.windows.clear();

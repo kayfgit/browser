@@ -23,11 +23,40 @@ cargo run -p browser-desktop                   # welcome window, no engine
 cargo run -p browser-desktop youtube.com       # open a page on startup
 ```
 
+### Experimental Servo in the desktop shell (Windows)
+
+The opt-in `servo-engine` feature adds Servo alongside WebView2 in the actual browser.
+With the native tools from the [Servo lab](experiments/servo/README.md) installed:
+
+```powershell
+./run-servo.ps1 -UseLocalLinker                 # main browser, existing shell session
+./run-servo.ps1 -UseLocalLinker -Scratch        # throwaway shell layout
+./run-servo.ps1 -Action Smoke -UseLocalLinker   # isolated native integration check
+```
+
+Open an HTTP(S) page, then use `:engine servo` or `:engine webview2` to reopen the
+active pane. Splits can mix engines. `:engine default servo` chooses Servo for new
+web tabs; `:engines` lists capabilities. Ordinary builds keep WebView2 only.
+
+Servo is experimental: storage/sign-ins are separate, private/no-JavaScript views
+are rejected, and extensions/uBlock, downloads, full IME and some page controls are
+not implemented. See [integration notes](docs/engine-integration.md) for details.
+After its first use, the Servo runtime stays loaded until browser exit; individual
+pages still close normally.
+
 ### Install (Windows, per-user)
 
 ```powershell
 pwsh -File install.ps1                         # build release, install, Start Menu shortcut, add to PATH
+pwsh -File install.ps1 -Servo                  # install the tested WebView2 + Servo build instead
 ```
+
+Both commands update the same `browser` Start Menu shortcut and installed executable.
+`-Servo` reuses the development build and native tools from `run-servo.ps1`; it does
+not start a separate optimized Servo release build. Keep `-Servo` on future updates
+to retain both engines; the plain command installs WebView2 only. `-NoBuild` uses
+the existing binaries for the selected variant. Close the installed browser before
+updating it. Sessions and engine data are preserved.
 
 ### Uninstall
 

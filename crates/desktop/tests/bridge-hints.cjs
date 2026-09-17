@@ -6,9 +6,9 @@ const vm = require('node:vm');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const source = readFileSync(join(__dirname, '../src/main.rs'), 'utf8');
 function script(name) {
-  return source.split(`const ${name}: &str = r#"`)[1].split('"#;')[0];
+  const files = { BRIDGE_JS: 'bridge.js', HINT_JS: 'hints.js' };
+  return readFileSync(join(__dirname, '../scripts', files[name]), 'utf8');
 }
 
 function page() {
@@ -87,4 +87,19 @@ test('synthetic pointer press does not change pane or gesture focus in normal mo
   const p = page();
   p.button.dispatchEvent({ type: 'pointerdown', isTrusted: false });
   assert.deepEqual(p.messages, []);
+});
+
+test('providers with native context menus keep their contextmenu event', () => {
+  const p = page();
+  p.window.__shellNativeContextMenu = true;
+  let prevented = false;
+  p.button.dispatchEvent({ type: 'contextmenu', preventDefault() { prevented = true; } });
+  assert.equal(prevented, false);
+});
+
+test('default provider still suppresses the native context menu', () => {
+  const p = page();
+  let prevented = false;
+  p.button.dispatchEvent({ type: 'contextmenu', preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
 });

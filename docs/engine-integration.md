@@ -2,7 +2,8 @@
 
 The first two stages are implemented: the WebView2 boundary, followed by provider
 selection, view identity, storage requirements, callback routing and persistence.
-WebView2 is still the only installed provider. The research and remaining roadmap
+Default builds install WebView2; Windows builds with `servo-engine` also install
+the experimental Servo provider. The research and remaining roadmap
 are in [engine-switching-research.md](engine-switching-research.md).
 
 Commands available now:
@@ -15,7 +16,9 @@ Commands available now:
 - `:engine blink` resolves the family alias to the installed concrete provider.
 - `:engine default webview2` persists the provider for new web tabs. Existing tabs keep
   their provider when reopened or reloaded.
-- Uninstalled names such as `servo` and `gecko` return an error without replacing a view.
+- `:engine servo` reopens the active HTTP(S) pane in Servo in the opt-in build.
+  `:engine default servo` applies it to new web tabs.
+- Uninstalled names (including `servo` in a default build) return an error without replacing a view.
 
 The desktop owns `Box<dyn browser_engine::EngineView>` for web tabs and the temporary
 profile-switch keepalive. All Wry/WebView2 objects stay under `engines/webview2/`.
@@ -79,8 +82,216 @@ profile switching and closing the last web tab. Test data clearing only with an
 isolated WebView2 data directory: the shell's `:profile` stores workspace layouts and
 does not isolate browser storage.
 
-Next is a pinned Servo experiment alongside WebView2, with its own rendering surface
-and provider-owned storage. The registry currently contains compiled-in metadata; it
+The pinned Servo experiment below is the first part of stage 3. The registry
+currently contains compiled-in metadata; it
 is not a downloadable-provider installer or stable plugin ABI. After proving a second
 engine, extract provider runtime/storage lifecycles, add the executable transport and
 negotiate protocol versions. Gecko remains a separate feasibility experiment.
+
+## Stage 3: Servo qualification lab
+
+The isolated [Servo/WebView2 lab](../experiments/servo/README.md) now contains a
+Servo 0.5.0 child surface beside WebView2 in one Tao window and event loop. It has
+its own workspace/lockfile, fresh engine-specific profiles, a local interactive
+fixture and a smoke mode with an external startup/shutdown deadline. Normal desktop
+builds remain independent of Servo. The complete lab passes `cargo check`, and its
+native build and smoke test passed on 2026-09-09 using the local v143 linker.
+
+The smoke test loaded both engines, verified document-start injection and Servo
+script evaluation, painted and captured a Servo frame, and returned from teardown
+within the external deadline. The captured PNG was visually inspected and showed
+the fixture correctly. The user subsequently verified both panes, clicks, anchor
+navigation, resizing and repeated startup/shutdown. Their input report led to native
+child focus, wheel scaling, cursor handling and context-menu work in the lab, with
+an expanded native-input smoke test. Integration into the daily browser remains a
+separate qualification step; see the lab README for remaining manual checks and
+Servo 0.5's upstream interactive text-selection limitation.
+
+The expanded smoke passed on 2026-09-10: native focus transfer, exactly one character
+per key, Backspace, committed accented text, the configured wheel distance, native
+menu open/dismiss and focus recovery were verified against the real engines.
+The mixed-focus cursor case and selecting individual menu actions still require
+manual retesting. Full IME preedit remains a separate integration task.
+
+Two build issues have concrete workarounds: pin content-security-policy to 0.8.1
+(the version in Servo's release lockfile), and supply libclang locally. This machine
+has VS 2019 and SDK 10.0.18362; Servo documents a newer baseline. The lab includes
+an optional, checksum-verified Microsoft v143 linker/library setup for testing with
+the existing compiler, without modifying the installed toolchain.
+
+The first native run also exposed a Servo 0.5 initialization bug: WGL restores the
+previous context after creation, but Servo loaded GL functions and queried
+`GL_VERSION` before activating the new context. The lab carries a documented local
+patch to `servo-paint-api` that fixes this order and cleans up on activation failure.
+A focused native context probe and the full two-engine smoke test passed afterward.
+The shared Cargo registry and the daily browser's dependencies were not modified.
+
+The lab is not yet a registered `EngineView` provider. Full IME composition and the
+remaining qualification items in the lab README still precede enabling
+`:engine servo` in the daily browser.
+
+## Stage 3: shared shell bridge
+
+The user verified the corrected native input and approved proceeding to the bridge.
+Servo 0.5 has no native host-message callback, so the lab implements an experimental
+transport through its public asynchronous evaluation API. Document-start code queues
+untrusted messages; the host reads bounded batches and acknowledges accepted sequence
+numbers. Native navigation epochs reject retired replies, and document tokens keep
+old acknowledgements from clearing a new document. Overflow and malformed responses
+stop the current bridge instead of silently dropping shell actions. This transport
+uses no network endpoint, console interception or new Servo patch.
+
+The production bridge and hint scripts now live in `crates/desktop/scripts` and are
+included by both WebView2 and the lab. An explicit provider option lets Servo retain
+its native context menu; WebView2 keeps its existing default behavior. The lab host
+demonstrates Normal/Insert/Passthrough transitions and hint activation, and preserves
+WebView2 focus when delayed Servo messages arrive.
+Shell commands in the standalone lab apply only to Servo; its WebView2 pane remains
+an ordinary-input comparison surface.
+
+This is a top-level-document transport with polling overhead (16 ms while focused,
+100 ms otherwise), not a new native IPC capability. Subframes and the remaining host
+actions are not yet wired. In particular, polling cannot reproduce the synchronous
+`nav-intent` stamping used by WebView2's navigation guard. Provider runtime ownership,
+view-scoped routing and the remaining capabilities must be integrated separately.
+
+Validation on 2026-09-10: the native smoke passed shared Escape and hint handling,
+native Insert/Escape transitions, SPA URL messages, full navigation and strict-CSP
+reinjection, plus background focus isolation. Four protocol tests, nine Node tests,
+115 desktop tests and four engine-contract tests passed. Lab formatting and diff
+whitespace checks passed; repository-wide default formatting reports pre-existing
+differences in untouched crates.
+
+The subsequent input-hint fix keeps shell keys owned through physical release and
+suppresses Tao's synthetic focus events, preventing the hint label from being typed
+into the newly focused input. Two key-ownership tests and an expanded native smoke
+passed: focus-event replay and held-key repeat leave the input empty, while a fresh
+press of the same key types once.
+
+## Stage 3: Servo page contract
+
+The lab now depends on `browser-engine` and implements its existing `EngineView`
+and `History` contracts in `experiments/servo/src/page.rs`. The adapter retains its
+runtime, GL context and native surfaces through view teardown. Lab shell operations
+use this interface for script dispatch, focus, URL navigation, reload, bounds, zoom
+and history. Normal-mode `+`/`-`/`0`, `r`, and `H`/`L` expose the new operations.
+
+Native qualification on 2026-09-10 passed through a trait object, including DOM
+layout changes at 150% zoom and reset, native/rendering dimensions, hide/show focus
+isolation, back/forward destinations, and reload discarding a JavaScript marker.
+The existing input and hint regressions and complete teardown passed. Eight lab
+library tests cover transport, key ownership and conservative capability/zoom policy.
+The CSP fixture encoding was corrected, and the test now verifies that its inline
+page script is blocked while injected host messaging continues to work.
+
+No production provider was registered. The lab's metadata explicitly rejects
+private/no-JavaScript requests and the full production bridge requirement. The next
+step is multi-view runtime ownership and scoped callbacks, including retiring and
+recreating views with pending replies. Subframes, dialogs, unload policy and the
+other lab qualification gates still precede enabling `:engine servo`.
+
+## Experimental main-browser integration
+
+The user chose to start daily testing before every qualification item is complete.
+The Windows-only `servo-engine` feature now registers Servo in the real browser.
+`run-servo.ps1 -UseLocalLinker` builds and launches that application, with its usual
+commands and saved layouts. `-Scratch` starts a throwaway shell layout. The feature
+is not part of a default build. `install.ps1 -Servo` installs the same tested build
+and PTY companion through the normal Start Menu shortcut; plain `install.ps1`
+continues to build WebView2 only. The Servo install automatically uses the local
+native linker when present and reuses the lab cache instead of doing a separate
+optimized release build.
+
+Installation validation on 2026-09-17: `install.ps1 -Servo` updated the existing
+per-user executable, PTY companion and `browser.lnk` in the Start Menu Programs
+folder. Installed binary hashes matched the tested build. The installed executable
+passed the visible split smoke from the shortcut's working directory, with isolated
+profiles, including native command-bar engine switches and pane geometry checks.
+
+The main adapter owns each view, rendering context and child window. Servo 0.5
+initializes process-global options only once: destroying and recreating its runtime
+panics. Therefore the first Servo view initializes a shared runtime retained until
+application shutdown. Closed pages and surfaces are released, and the runtime can
+serve new views afterward. A fresh shell still starts without Servo, but after first
+use its runtime memory stays allocated until exit. Window construction uses a scoped event-loop target on the UI
+thread. Child events/redraws are separated from parent chrome events. Input, native
+menus, hint-key ownership and the bounded queue parser are shared with the lab.
+Callbacks carry view identities, and transport replies additionally carry navigation
+epochs; stale views cannot mutate their replacements. Servo initialization failures
+reported by the factory leave the outgoing pane intact.
+
+The normal shell bridge, hints, find, caret and feature scripts run in top-level
+Servo documents. Navigation, native history, zoom, focus and layout use `EngineView`.
+The normal keyboard hook continues to provide mode recovery. Servo storage lives
+under the browser data directory in `engines/servo`, separate from WebView2 cookies
+and sign-ins. Private/no-JavaScript creation is rejected before building a view.
+
+Known limits for this experimental build: no extensions/uBlock or native network
+filter, downloads, full IME preedit, interactive page-text selection, subframe bridge,
+or complete dialogs/permission controls. Page-side blocking is only the existing
+JavaScript layer. Engine switches reopen the URL without transferring forms or live
+page state; full unload/POST policy remains unfinished. Servo runs in-process, so
+a runtime crash can terminate the application. Use `:engine webview2` for sites that
+need capabilities Servo does not yet provide.
+
+`run-servo.ps1 -Action Smoke -UseLocalLinker` runs a loopback-only fixture in the main
+browser, using fresh Servo and WebView2 directories. It exercises switching, native
+input hints, shared-runtime splits, retired callbacks and last-view close/reopen.
+Logs and temporary profiles are retained under `target/servo-lab/desktop-smoke`.
+The test does not write the user's config or saved session. The two profile overrides
+are `BROWSER_SERVO_DATA_DIR` and `BROWSER_WEBVIEW2_DATA_DIR`.
+
+The smoke explicitly shows its temporary window and requires a presented Servo
+frame, not just a loaded document. `-Scenario Split` starts with two WebView2 panes
+on the loopback fixture and switches the right pane using native command-bar Enter;
+`-Scenario Example` repeats that sequence on `https://example.com/` and therefore
+requires network access. Both scenarios switch back through the command bar and
+check that the split survives. The default scenario retains the broader input,
+runtime-lifetime and stale-callback checks. Each run records its process ID beside
+the logs for targeted debugging.
+
+Validation on 2026-09-15: the final main-browser build passed the native smoke,
+including hint activation without leaking the label into the input, subsequent
+typing, two Servo panes sharing one runtime, mixed WebView2/Servo splits, rejected
+private/no-JavaScript requests, retired callbacks, and closing/reopening the last
+Servo pane. The test process exited successfully. Standard tests passed (115
+desktop and four engine tests, with one existing native test ignored), as did all
+eight lab library tests and nine Node bridge tests. Formatting checks passed for
+the new modules using their respective desktop/lab editions. Whitespace checks
+passed for this work; the user's separate TODO additions were preserved.
+
+The initial smoke above did not require visible frame presentation and missed a
+redraw starvation bug. Servo 0.5 repeats `notify_new_frame_ready` on each runtime
+pump until a view paints. Pumping after every shell event and posting every repeated
+notification kept the Windows posted-message queue busy, starving `WM_PAINT` and
+leaving a visible Servo pane black. The adapter now coalesces requests per view,
+keeping the pending flag set until a successful paint. Hidden panes also retain
+that flag until shown and painted, so they cannot flood the event loop.
+
+The visible `Example` scenario reproduced the missing first frame before the fix.
+After coalescing, `Example`, the network-independent `Split` scenario, and the full
+default native smoke all passed on 2026-09-15, including presentation and successful
+process exit. The split scenarios also verified a subsequent command-bar switch
+back to WebView2. Formatting and scoped whitespace checks passed.
+
+Visual integration: Servo children disable Tao's undecorated-window shadows and
+native resizing. The shadow insets otherwise shift the client area eight pixels
+right and one down on the tested desktop, leaving a black strip at the split.
+Repeated bounds/visibility assignments are no-ops. Split chrome now presents only
+the regions outside live web children, preserving their pixels during command-bar
+typing, cursor blinks and loading animation; borders and native panes still repaint.
+This avoids the full-surface GDI copy overwriting Servo's OpenGL output.
+
+`:resources` identifies the loaded Servo runtime and open-view count. Servo's CPU,
+memory and I/O are already included in the browser process row and overall totals;
+the monitor explains that the shell and Servo share those counters. It does not
+invent a separate per-engine memory figure. A loaded runtime remains listed after
+its last view closes, until application exit.
+
+Visual validation on 2026-09-15: native geometry checks reproduced the `(8, 1)`
+client-area offset before disabling child shadows and passed afterward. The split
+smoke passed exact client bounds, 20 command-bar redraws, resource-accounting text,
+and switching back; the broader visible smoke passed input/hints, multiple Servo
+views, stale callbacks and close/reopen. A pixel-coverage regression verifies that
+presentation rectangles exclude all web pixels while covering every remaining
+pixel exactly once, including borders, overlapping/clipped children and frozen mode.

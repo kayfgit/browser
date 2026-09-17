@@ -11,6 +11,56 @@ use crate::hints::{HintAct, NativeHint};
 use crate::panes::{PaneRect, FOCUS_BORDER};
 use crate::{pty_term, read_view, App, ModeKind, Tab, TERM_PAD};
 
+/// Partition the shell surface around native web children. The backing buffer
+/// still contains their background for use after a view is hidden or closed.
+fn native_damage(w: u32, h: u32, web_rects: impl IntoIterator<Item = PaneRect>) -> Vec<softbuffer::Rect> {
+    let mut regions = vec![(0i64, 0i64, i64::from(w), i64::from(h))];
+    for web in web_rects {
+        let (wx0, wy0) = (i64::from(web.x), i64::from(web.y));
+        let (wx1, wy1) = (wx0 + i64::from(web.w.max(0)), wy0 + i64::from(web.h.max(0)));
+        regions = regions.into_iter().flat_map(|(x0, y0, x1, y1)| {
+            let (l, t, r, b) = (x0.max(wx0), y0.max(wy0), x1.min(wx1), y1.min(wy1));
+            if l >= r || t >= b { return vec![(x0, y0, x1, y1)]; }
+            vec![(x0, y0, x1, t), (x0, b, x1, y1), (x0, t, l, b), (r, t, x1, b)]
+                .into_iter().filter(|&(l, t, r, b)| l < r && t < b).collect()
+        }).collect();
+    }
+    regions.into_iter().filter_map(|(x0, y0, x1, y1)| Some(softbuffer::Rect {
+        x: x0 as u32, y: y0 as u32,
+        width: NonZeroU32::new((x1 - x0) as u32)?,
+        height: NonZeroU32::new((y1 - y0) as u32)?,
+    })).collect()
+}
+
+#[cfg(test)]
+mod damage_tests {
+    use super::*;
+
+    #[test]
+    fn web_pixels_are_never_presented_but_borders_and_native_panes_are() {
+        // Includes adjacent split panes, an overlapping rectangle, and a child
+        // extending beyond the surface during a resize. Empty covers frozen mode.
+        for web in [vec![], vec![PaneRect { x: 1, y: 2, w: 4, h: 5 },
+            PaneRect { x: 7, y: 2, w: 4, h: 5 }],
+            vec![PaneRect { x: -2, y: 3, w: 7, h: 9 }, PaneRect { x: 3, y: 2, w: 4, h: 4 }]] {
+            let damage = native_damage(12, 10, web.iter().copied());
+            let mut hits = [[0; 12]; 10];
+            for r in damage {
+                assert!(r.x + r.width.get() <= 12 && r.y + r.height.get() <= 10);
+                for y in r.y..r.y + r.height.get() {
+                    for x in r.x..r.x + r.width.get() { hits[y as usize][x as usize] += 1; }
+                }
+            }
+            for y in 0..10i32 {
+                for x in 0..12i32 {
+                    let covered = web.iter().any(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+                    assert_eq!(hits[y as usize][x as usize], if covered { 0 } else { 1 }, "pixel {x},{y}");
+                }
+            }
+        }
+    }
+}
+
 /// Paint one pane's native content into `rect`: an engine-free read document,
 /// the vim error/res pager, a terminal grid, or the blank-pane prompt. Web panes
 /// paint nothing here (their webview HWND covers the rect). `focused` gates the
@@ -530,7 +580,19 @@ impl App {
             draw::fill_band(&mut buf, wz, hz, 0, tab_h, theme.bar_bg);
             draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels, theme.accent);
             draw_bar(&mut buf);
-            buf.present().map_err(|e| anyhow::anyhow!("present: {e}"))?;
+            // GDI's full-window copy can overwrite an OpenGL child surface until
+            // its next frame. Present only chrome/native areas, preserving live
+            // web pixels during typing, cursor blinks and loading-bar updates.
+            let web_rects = panes.iter().filter_map(|(t, r)| {
+                if self.frozen || !self.tabs.get(*t).is_some_and(|tb| tb.webview().is_some()) {
+                    return None;
+                }
+                let inset = if is_split { FOCUS_BORDER } else { 0 };
+                Some(PaneRect { x: r.x + inset, y: r.y + inset,
+                    w: (r.w - 2 * inset).max(1), h: (r.h - 2 * inset).max(1) })
+            });
+            let damage = native_damage(w, h, web_rects);
+            buf.present_with_damage(&damage).map_err(|e| anyhow::anyhow!("present: {e}"))?;
         } else {
             // Single web tab: a webview covers the whole content band, so we only
             // repaint the bars and present just those rects — never over the page.

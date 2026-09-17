@@ -60,10 +60,13 @@ impl App {
                 provider.capabilities.disable_javascript,
                 provider.capabilities.document_scripts && provider.capabilities.page_messages
             ));
+            if provider.id == "servo" {
+                lines.push("  Experimental: top-level shell bridge; separate storage; no extensions/uBlock, downloads or full IME; limited site compatibility.".into());
+            }
         }
         lines.extend([
             String::new(),
-            "Only installed providers can be selected. Servo and Gecko are not installed.".into(),
+            "Only providers listed above can be selected. Gecko is not installed.".into(),
             ":engine blink selects the installed Blink provider (currently webview2).".into(),
             ":engine default <provider> changes new tabs; :engine <provider> reopens this pane."
                 .into(),

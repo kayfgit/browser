@@ -92,7 +92,11 @@ pub(crate) fn build(
     let dl_proxy = proxy.clone();
     // Wry falls back to a regular controller on runtimes without Environment10.
     // Build blank, verify the real storage mode, and only then load user content.
-    let mut builder = WebViewBuilder::new();
+    let mut isolated_context = std::env::var_os("BROWSER_WEBVIEW2_DATA_DIR")
+        .map(|dir| wry::WebContext::new(Some(dir.into())));
+    let mut builder = if let Some(context) = isolated_context.as_mut() {
+        WebViewBuilder::new_with_web_context(context)
+    } else { WebViewBuilder::new() };
     // Load uBlock Origin (any unpacked extension in the dir) into WebView2's own
     // Chromium engine. The extension does network + cosmetic + scriptlet ad-blocking
     // natively — far more capable than a hand-rolled blocker, and it doesn't depend on
@@ -395,7 +399,7 @@ pub(crate) fn build(
         Source::Url(url) => webview.load_url(&url)?,
         Source::Html(html) => webview.load_html(&html)?,
     }
-    Ok((Box::new(WebView2View { inner: webview, identity, nav_intent }), page))
+    Ok((Box::new(WebView2View { inner: webview, identity, nav_intent, _context: isolated_context }), page))
 }
 
 fn verify_storage(view: &WebView, expected: browser_engine::StorageMode) -> Result<()> {
@@ -531,6 +535,7 @@ const YT_PROBE_JS: &str = r#"
 
 struct WebView2View {
     inner: WebView,
+    _context: Option<wry::WebContext>,
     identity: browser_engine::ViewIdentity,
     nav_intent: crate::navguard::NavIntent,
 }
@@ -543,7 +548,11 @@ fn native_rect(rect: RectPx) -> Rect {
 }
 
 pub(crate) fn keep_alive(parent: &Window) -> Result<Box<dyn EngineView>> {
-    let mut builder = WebViewBuilder::new().with_html("");
+    let mut isolated_context = std::env::var_os("BROWSER_WEBVIEW2_DATA_DIR")
+        .map(|dir| wry::WebContext::new(Some(dir.into())));
+    let mut builder = if let Some(context) = isolated_context.as_mut() {
+        WebViewBuilder::new_with_web_context(context)
+    } else { WebViewBuilder::new() }.with_html("");
     // Match the content views' environment options, without reinstalling extensions.
     if ublock_extensions_dir().is_some() {
         builder = builder.with_browser_extensions_enabled(true);
@@ -557,6 +566,7 @@ pub(crate) fn keep_alive(parent: &Window) -> Result<Box<dyn EngineView>> {
     let _ = suspension::suspend(&inner);
     Ok(Box::new(WebView2View {
         inner,
+        _context: isolated_context,
         identity: browser_engine::ViewIdentity {
             id: browser_engine::ViewId::allocate(),
             provider: "webview2".into(),
