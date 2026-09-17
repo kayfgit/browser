@@ -36,7 +36,8 @@ With the native tools from the [Servo lab](experiments/servo/README.md) installe
 
 Open an HTTP(S) page, then use `:engine servo` or `:engine webview2` to reopen the
 active pane. Splits can mix engines. `:engine default servo` chooses Servo for new
-web tabs; `:engines` lists capabilities. Ordinary builds keep WebView2 only.
+web tabs; `:engines` lists capabilities. Direct Cargo builds keep WebView2 only
+unless the feature is enabled; the Windows installer includes both engines by default.
 
 Servo is experimental: storage/sign-ins are separate, private/no-JavaScript views
 are rejected, and extensions/uBlock, downloads, full IME and some page controls are
@@ -47,14 +48,16 @@ pages still close normally.
 ### Install (Windows, per-user)
 
 ```powershell
-pwsh -File install.ps1                         # build release, install, Start Menu shortcut, add to PATH
-pwsh -File install.ps1 -Servo                  # install the tested WebView2 + Servo build instead
+pwsh -File install.ps1                         # build WebView2 + Servo, install, Start Menu shortcut, add to PATH
+pwsh -File install.ps1 -WebView2Only            # optional WebView2-only release build
 ```
 
 Both commands update the same `browser` Start Menu shortcut and installed executable.
-`-Servo` reuses the development build and native tools from `run-servo.ps1`; it does
-not start a separate optimized Servo release build. Keep `-Servo` on future updates
-to retain both engines; the plain command installs WebView2 only. `-NoBuild` uses
+The default installation reuses the development build and native tools from
+`run-servo.ps1`; it does not start a separate optimized Servo release build.
+Use the plain command for future updates to retain both engines. The old `-Servo`
+flag still works for compatibility. `-WebView2Only` replaces the installed executable
+with one that has no Servo support. `-NoBuild` uses
 the existing binaries for the selected variant. Close the installed browser before
 updating it. Sessions and engine data are preserved.
 

@@ -81,14 +81,17 @@ WebView2 process set; quitting (or even a crash) returns to baseline — no orph
 ### Install (Windows, per-user)
 
 ```powershell
-pwsh -File install.ps1          # build release, install, Start Menu shortcut, add to PATH
+pwsh -File install.ps1          # build WebView2 + Servo, install, Start Menu shortcut, add to PATH
 ```
 
 Installs `browser.exe` (+ its `browser-pty-host.exe` companion) to
 `%LOCALAPPDATA%\Programs\browser`, adds a Start Menu shortcut named **browser**, and puts
 it on your PATH (so `browser <url>` works in a new terminal). No admin required; nothing
 else is needed at runtime (WebView2 ships with Windows 11; assets are baked into the exe).
-Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it with
+The default install includes experimental Servo using the development build and native
+tools from `run-servo.ps1`. Use `-WebView2Only` for a WebView2-only release build;
+the old `-Servo` flag still works. `-NoBuild` uses cached binaries for the selected variant.
+Other flags: `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it with
 `pwsh -File uninstall.ps1`.
 
 **Modes (qutebrowser-style):**
@@ -119,10 +122,14 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   **`Shift`+movement selects** text (and `Ctrl+A` selects all), `Ctrl+C`/`Ctrl+X`/`Ctrl+V`
   copy/cut/paste, `Backspace`/`Delete` (and the selection), `Ctrl+W` / `Ctrl`/`Alt+Backspace` delete
   a word, `Ctrl+Delete` the next word, `Ctrl+U` to the line start, `Esc`/`Ctrl+C` cancel.
-- **Caret browsing** — press **`v`/`V`** on any page (read tabs, and `:open`/`:research` web tabs) to
-  drop a caret in the middle of the view and **select text with vim motions** (`hjkl`/`w`/`b`/`0`/`$`/
+- **Selection mode** — press **`v`/`V`** on any page (read tabs, and `:open`/`:research` web tabs) to
+  enter **SELECTION** mode with a cursor in the middle of the view and **select text with vim motions** (`hjkl`/`w`/`b`/`0`/`$`/
   `gg`/`G`), then **`y` to yank** (copy) and `Esc` to leave. On web tabs this drives a real DOM
   selection injected into the page; on engine-free read tabs it's the native renderer's own caret.
+  Press `v` again to select characters (including the character under the cursor), or `V`
+  to select whole lines. Web copies drop trailing padding and blank lines while preserving
+  internal line breaks and indentation.
+  Yanking automatically returns to Normal mode on both web and read tabs.
 - **Saved pages (`:save` / `:saved`)** — the "keep this for later" list. **`:save`** (also
   `:favorite`, `:bookmark`) files the page you're on; **`:save <name>`** gives it a short label
   instead of the address. Saving the same page twice renames it rather than duplicating it, and
@@ -234,7 +241,7 @@ Flags: `-NoBuild`, `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it wit
   a normal tab's set). This is the leanest tier by far — a few MB instead of a Chromium process group
   — ideal on low-RAM machines. `j`/`k`/`d`/`u` scroll the laid-out text and **`f` hint mode** labels
   the links natively (home-row labels, same as web hint mode); typing a label follows it by
-  re-extracting that page in place, `r` reloads. Press **`v`/`V` for caret/visual selection** — a
+  re-extracting that page in place, `r` reloads. Press **`v`/`V` for SELECTION mode** — a
   cursor appears mid-view and you highlight article text with vim motions and **`y` to yank** (copy),
   `Esc` to leave. Headings, code, lists, quotes and links are styled;
   images/media are simply absent. Best for docs/wikis/news. Read tabs are tinted **green** and show

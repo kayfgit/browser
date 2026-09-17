@@ -3,10 +3,14 @@
     Build and install `browser` (the desktop shell) for the current user.
 
 .DESCRIPTION
-    Builds the release binaries (or the tested Servo development build with -Servo),
+    Builds the tested WebView2 + Servo development binaries by default,
     copies them to a per-user install directory,
     creates a Start Menu shortcut named "browser", and adds the install dir to
     the user PATH so you can launch it by typing `browser`.
+
+    Uses run-servo.ps1 and automatically selects the local native linker when
+    installed by the Servo lab setup. Both variants update the same executable
+    and Start Menu shortcut.
 
     Everything is per-user (no admin needed) and reversible via uninstall.ps1.
 
@@ -14,12 +18,13 @@
     Where to install. Default: %LOCALAPPDATA%\Programs\browser
 
 .PARAMETER NoBuild
-    Use existing binaries: target\release normally, target\servo-lab\debug with -Servo.
+    Use existing binaries: target\servo-lab\debug normally, target\release with -WebView2Only.
 
 .PARAMETER Servo
-    Include WebView2 and experimental Servo using run-servo.ps1's tested build.
-    Automatically uses the local native linker when installed by the Servo lab setup.
-    Updates the same browser.exe and Start Menu shortcut as the ordinary install.
+    Compatibility flag: Servo is now included by default.
+
+.PARAMETER WebView2Only
+    Omit Servo and install a WebView2-only release build instead.
 
 .PARAMETER NoPath
     Don't modify the user PATH.
@@ -31,12 +36,13 @@
     pwsh -File install.ps1
 
 .EXAMPLE
-    pwsh -File install.ps1 -Servo
+    pwsh -File install.ps1 -WebView2Only
 #>
 [CmdletBinding()]
 param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\browser'),
     [switch]$Servo,
+    [switch]$WebView2Only,
     [switch]$NoBuild,
     [switch]$NoPath,
     [switch]$NoShortcut
@@ -44,15 +50,17 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ($Servo -and $WebView2Only) { throw 'Choose either -Servo or -WebView2Only, not both.' }
+$includeServo = -not $WebView2Only
 
 Write-Host "browser installer"
 Write-Host "  repo:    $repo"
 Write-Host "  install: $InstallDir"
 
-$rel = Join-Path $repo $(if ($Servo) { 'target\servo-lab\debug' } else { 'target\release' })
-Write-Host "  engines: $(if ($Servo) { 'WebView2 + Servo (tested development build)' } else { 'WebView2 (release build)' })"
+$rel = Join-Path $repo $(if ($includeServo) { 'target\servo-lab\debug' } else { 'target\release' })
+Write-Host "  engines: $(if ($includeServo) { 'WebView2 + Servo (tested development build)' } else { 'WebView2 (release build)' })"
 
-if ($Servo -and -not $NoBuild) {
+if ($includeServo -and -not $NoBuild) {
     Write-Host "`nBuilding WebView2 + Servo..."
     $localLinker = Join-Path $repo 'target/servo-tools/msvc-linker/Contents/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/link.exe'
     & (Join-Path $repo 'run-servo.ps1') -Action Build -UseLocalLinker:(Test-Path -LiteralPath $localLinker)
@@ -83,7 +91,7 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item $desktop (Join-Path $InstallDir 'browser.exe') -Force
 Copy-Item $ptyhost (Join-Path $InstallDir 'browser-pty-host.exe') -Force
 Write-Host "Copied browser.exe + browser-pty-host.exe -> $InstallDir"
-if ($Servo) { Write-Host 'For future dual-engine updates, keep using: pwsh -File install.ps1 -Servo' }
+if ($includeServo) { Write-Host 'For future dual-engine updates, use: pwsh -File install.ps1' }
 
 if (-not $NoShortcut) {
     $programs = [Environment]::GetFolderPath('Programs')

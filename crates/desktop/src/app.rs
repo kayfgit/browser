@@ -129,11 +129,11 @@ pub(crate) enum UserEvent {
     TermOutput { id: u64, data: Vec<u8> },
     /// The terminal's shell exited (pty-host stdout EOF) → close that tab.
     TermClosed { id: u64 },
-    /// Web caret mode yanked a selection → put this text on the clipboard.
+    /// Web selection mode yanked text → copy it and return the shell to Normal.
     CaretYank(String),
     /// A page's right-click menu copied something (the selection, a link or image
     /// address) → put this text on the clipboard. Separate from
-    /// [`CaretYank`](Self::CaretYank) only in what it reports: a short one-liner is
+    /// [`CaretYank`](Self::CaretYank), it keeps the current mode. A short one-liner is
     /// echoed verbatim ("copied https://…"), which is the point of copying an address.
     ClipCopy(String),
     /// Web caret mode exited (Esc with no selection) → return the shell to Normal.

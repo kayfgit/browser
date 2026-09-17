@@ -18,7 +18,7 @@ issues:
 [*] - if i zoom on a tab it changes the zoom for all the tabs, both the browser and content zoom. it should be individual (since browser zoom is related to terminal zoom, separating browser and terminal might be needed)
 [*] - insert mode should also be exitable with ctrl+s or shift+escape
 [] - still has that annoying issue of the commandbar being frozen but only sometimes
-[*] - caret mode cursor is not placed correctly when selecting, its always one to the right. the word "apple" for example, if the cursor is on the "a" of the "apple" and i start selecting, the selection doesnt happen until i move the cursor somewhere (it should, just like vim), so if i select the word until the cursor is on "e" of the "apple" and i yank it, i only yank "appl" and not "apple"
+[x] - caret mode cursor is not placed correctly when selecting, its always one to the right. the word "apple" for example, if the cursor is on the "a" of the "apple" and i start selecting, the selection doesnt happen until i move the cursor somewhere (it should, just like vim), so if i select the word until the cursor is on "e" of the "apple" and i yank it, i only yank "appl" and not "apple"
 [] - saving a session with :w sometimes doesnt work, no idea why
 [] - random not responding after new update 26/07/2026 22:54
 [*] - pressing a copy button using the hint mode doesnt actually copy it (tested on the copy repository button on github)

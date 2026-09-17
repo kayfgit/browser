@@ -196,9 +196,10 @@ The user chose to start daily testing before every qualification item is complet
 The Windows-only `servo-engine` feature now registers Servo in the real browser.
 `run-servo.ps1 -UseLocalLinker` builds and launches that application, with its usual
 commands and saved layouts. `-Scratch` starts a throwaway shell layout. The feature
-is not part of a default build. `install.ps1 -Servo` installs the same tested build
-and PTY companion through the normal Start Menu shortcut; plain `install.ps1`
-continues to build WebView2 only. The Servo install automatically uses the local
+is not part of a default Cargo build. Plain `install.ps1` installs the same tested
+dual-engine build and PTY companion through the normal Start Menu shortcut.
+`-Servo` remains accepted for compatibility; `-WebView2Only` explicitly installs
+a WebView2-only release build. The Servo install automatically uses the local
 native linker when present and reuses the lab cache instead of doing a separate
 optimized release build.
 

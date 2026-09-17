@@ -155,20 +155,14 @@ pub(crate) fn paint_pane(
                             let chars: Vec<char> =
                                 line.runs.iter().flat_map(|r| r.text.chars()).collect();
                             let cx0 = line_col_x(&line.runs, caret.cx, left + line.indent, p);
-                            // Block exactly as wide as the glyph under it (a fixed
-                            // M-width overhangs narrow glyphs to the right); the
-                            // empty end-of-line slot keeps one M cell.
-                            let cwid = if chars.get(caret.cx).is_some() {
-                                (line_col_x(&line.runs, caret.cx + 1, left + line.indent, p) - cx0)
-                                    .max(1)
-                            } else {
-                                p.measure("M").max(1) as i32
-                            };
+                            // A stable cell width, including on narrow glyphs and
+                            // at the empty end-of-line slot.
+                            let cwid = (p.measure("M") * 3 / 4).max(1) as i32;
                             fill(buf, cx0, y_top, cx0 + cwid, y_top + line_h, draw::ACCENT);
                             if let Some(ch) = chars.get(caret.cx) {
                                 p.text_rect(
                                     buf, wz, hz, cx0.max(left), baseline as usize, &ch.to_string(),
-                                    draw::BG, left, right, top, bottom,
+                                    draw::BG, left, right.min(cx0 + cwid), top, bottom,
                                 );
                             }
                         }
@@ -760,8 +754,8 @@ impl App {
                 ),
             ],
             ModeKind::Caret => vec![
-                ("[CARET]".into(), accent),
-                ("  hjkl/w/b/0/$/gg/G move · v select · y yank · Esc exit".into(), draw::DIM),
+                ("[SELECTION]".into(), accent),
+                ("  hjkl/w/b/0/$/gg/G move · v/V select · y yank · Esc exit".into(), draw::DIM),
             ],
             // Light field-typing mode (web only): reads as [INSERT], with the field's
             // page URL and the leave/promote hint.
@@ -824,14 +818,14 @@ impl App {
                 }
                 if self.active_is_read() {
                     segs.push(("   [read]".into(), draw::READ));
-                    // Read-mode caret: show [VISUAL]/[VISUAL LINE] (or [CARET]) + hint.
+                    // Read-mode caret: show [VISUAL]/[VISUAL LINE] (or [SELECTION]) + hint.
                     if let Some(caret) = self
                         .active
                         .and_then(|i| self.tabs.get(i))
                         .and_then(|t| t.native())
                         .and_then(|n| n.caret.as_ref())
                     {
-                        let m = caret.mode_label().unwrap_or("CARET");
+                        let m = caret.mode_label().unwrap_or("SELECTION");
                         segs.push((format!("   [{m}]"), accent));
                         segs.push(("  motions select · y yank · Esc exit".into(), draw::DIM));
                     }

@@ -529,7 +529,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("clear", ":clear <what> [period]", "erase data: history/cookies/cache/all, optionally a window (15m/1h/24h/7d); cookies/cache need a page open"),
     ("alias", ":alias [name] [cmd] · :unalias", "list / set / remove command aliases (e.g. :alias gh open github.com → :gh)"),
     ("restore", ":restore", "reset all customization to defaults — also Ctrl+Alt+Shift+R, which works in any mode"),
-    ("help", ":commands · :help [topic]", "this page; a topic jumps to its section (e.g. :help theme, :help caret)"),
+    ("help", ":commands · :help [topic]", "this page; a topic jumps to its section (e.g. :help theme, :help selection)"),
     ("version", ":version", "version and build information"),
     ("saveprofile", ":saveprofile <name> · :sp <name>", "snapshot the open tabs, splits, window and UI state as a named profile — the ONLY thing that writes a profile (:w saves the session, never a profile)"),
     ("profile", ":profile <name> · :p", "load a saved profile (no args: the picker — Enter switches, d deletes); :profile default returns to the live session. What you had open is written to the session first, so it's never lost"),
@@ -544,7 +544,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
 /// Help sections: element id, TOC label, and the extra `:help` aliases that reach
 /// them (beyond words already caught by a command row or action name).
 const HELP_SECTIONS: &[(&str, &str, &[&str])] = &[
-    ("sec-normal", "Normal mode", &["normal", "keys", "keybinds", "keybindings", "bindings", "keyboard", "caret", "hints", "panes"]),
+    ("sec-normal", "Normal mode", &["normal", "keys", "keybinds", "keybindings", "bindings", "keyboard", "caret", "selection", "hints", "panes"]),
     ("sec-cmdline", "Command line", &["cmdline", "commandline", "editing", "bar", "commandbar"]),
     ("sec-modes", "Modes", &["modes", "mode", "passthrough", "hint", "insert"]),
     ("sec-pager", "Vim pager", &["pager", "vim", "vimpager", "visual", "motions"]),
@@ -651,7 +651,7 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
         ("f / F", "hint mode — label every link, type the label to follow (F: open in a new tab)"),
         ("yf", "hint mode, but the label COPIES that link's address instead of going there (cyan labels)"),
         ("yy", "copy this page's address to the clipboard (same as :y)"),
-        ("v / V", "caret mode on read & web tabs — hjkl/w/b move, v/V select, y yank, Esc exits"),
+        ("v / V", "selection mode on read & web tabs — hjkl/w/b move, v/V select, y yank, Esc exits"),
         ("x", "close the current tab"),
         ("u / Ctrl+Shift+T", "reopen the last closed tab"),
         ("r", "reload the page"),
@@ -730,7 +730,7 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
          <h1>Commands &amp; keybindings</h1>\
          <p class=\"sub\">Not customizable yet — these are the built-in bindings. \
          <code>:help &lt;topic&gt;</code> jumps straight to a command, action, or section — \
-         e.g. <code>:help theme</code>, <code>:help caret</code>, <code>:help bangs</code>.</p>\
+         e.g. <code>:help theme</code>, <code>:help selection</code>, <code>:help bangs</code>.</p>\
          <nav>{toc}</nav>\
          <section id=\"sec-normal\"><h2>Normal mode</h2>{normal}</section>\
          <section id=\"sec-cmdline\"><h2>Command-line editing</h2>{cmdline}</section>\
@@ -897,6 +897,7 @@ mod tests {
         assert_eq!(help_anchor("install_scheme").as_deref(), Some("act-install_scheme"));
         // Section names and aliases.
         assert_eq!(help_anchor("caret").as_deref(), Some("sec-normal"));
+        assert_eq!(help_anchor("selection").as_deref(), Some("sec-normal"));
         assert_eq!(help_anchor("bangs").as_deref(), Some("sec-bangs"));
         assert_eq!(help_anchor("math").as_deref(), Some("sec-maths"));
         // Unknown topics are None (the caller shows the full page and says so).

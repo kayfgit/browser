@@ -652,7 +652,7 @@ impl App {
         nr.scroll = tb.top as i32 * lh;
         nr.caret = Some(tb);
         self.cursor_on = true; // start the blink on the solid phase
-        self.set_status("[CARET]  hjkl/w/b/0/$/gg/G move · v/V select · y yank · Esc exit");
+        self.set_status("[SELECTION]  hjkl/w/b/0/$/gg/G move · v/V select · y yank · Esc exit");
         self.window.request_redraw();
     }
 
@@ -692,7 +692,7 @@ impl App {
 
         let mut yanked: Option<String> = None;
         let mut consumed = true;
-        let mut exit = false;
+        let exit;
         {
             let Some(nr) = self.active_native_mut() else { return false };
             let Some(buf) = nr.caret.as_mut() else { return false };
@@ -701,6 +701,7 @@ impl App {
             } else {
                 let res = buf.key(vk, rows, cols);
                 yanked = res.yanked;
+                exit = yanked.is_some();
                 consumed = res.consumed;
                 nr.scroll = buf.top as i32 * nr.layout.line_h.max(1);
             }
@@ -730,7 +731,7 @@ impl App {
         let Some(wv) = self.active_webview() else { return };
         let _ = wv.evaluate_script("window.__caretEnter&&window.__caretEnter()");
         self.mode = ModeKind::Caret;
-        self.set_status("[CARET]  hjkl/w/b/0/$/gg/G move · v/V select · y yank · Esc exit");
+        self.set_status("[SELECTION]  hjkl/w/b/0/$/gg/G move · v/V select · y yank · Esc exit");
         self.window.request_redraw();
     }
 
