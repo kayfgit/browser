@@ -33,7 +33,8 @@ impl App {
             ModeKind::PaneResize => self.key_pane_resize(key),
             ModeKind::PaneMove => self.key_pane_move(key),
             ModeKind::Hint => self.key_hint(key),
-            ModeKind::Caret => self.key_caret(key),
+            ModeKind::Scroll => self.key_scroll(key),
+            ModeKind::Caret | ModeKind::ScrollCaret => self.key_caret(key),
             // Light field typing (web only): the page has focus and the bridge + hook own
             // the leave key; this is the shell-side fallback for the beat right after
             // entering, before focus lands on the page. Esc leaves. Ctrl+V is left to the
@@ -290,6 +291,7 @@ impl App {
                 // its copy/vi mode (handled above) uses f/F/t/T for vim find-char.
                 // So suppress hints on terminal tabs (the source of the f/F conflict).
                 "f" if !self.active_is_term() => self.enter_hint(HintAct::Follow),
+                "s" => self.enter_hint(HintAct::Scroll),
                 // Shift+F: hints open the picked link in a NEW tab (like `:open -t`).
                 "F" if !self.active_is_term() => self.enter_hint(HintAct::NewTab),
                 // `y` is a prefix, not an action — the next key says what to yank
@@ -724,20 +726,27 @@ impl App {
     }
 
     /// Enter caret browsing on a WEB tab: tell the injected page caret to place
-    /// itself at the viewport center — without selecting; a second `v`/`V` starts
+    /// itself at the viewport (or selected scroll box) center — without selecting; a second `v`/`V` starts
     /// the visual selection. The shell keeps keyboard focus (like hint mode) and
     /// forwards motions via `key_caret`.
     pub(crate) fn enter_web_caret(&mut self) {
         let Some(wv) = self.active_webview() else { return };
-        let _ = wv.evaluate_script("window.__caretEnter&&window.__caretEnter()");
-        self.mode = ModeKind::Caret;
+        if self.mode == ModeKind::Scroll {
+            let _ = wv.evaluate_script(
+                "window.__caretEnter&&window.__caretEnter(window.__scrollTarget());",
+            );
+            self.mode = ModeKind::ScrollCaret;
+        } else {
+            let _ = wv.evaluate_script("window.__caretEnter&&window.__caretEnter()");
+            self.mode = ModeKind::Caret;
+        }
         self.set_status("[SELECTION]  hjkl/w/b/0/$/gg/G move · v/V select · y yank · Esc exit");
         self.window.request_redraw();
     }
 
     /// Forward a key to the web tab's injected caret. Motions/visual go to
     /// `__caretKey`; `y` yanks; `Esc` collapses-then-exits (the page posts
-    /// `caret-exit` when it actually leaves, which returns the shell to Normal).
+    /// `caret-exit` when it actually leaves, returning to Normal or the selected box).
     pub(crate) fn key_caret(&mut self, key: &KeyEvent) {
         let Some(wv) = self.active_webview() else {
             self.mode = ModeKind::Normal;
@@ -1342,6 +1351,12 @@ impl App {
     /// keys to intercept. Called whenever the mode changes.
     pub(crate) fn set_page_mode(&self, mode: &str) {
         if let Some(wv) = self.active_webview() {
+            if mode != "scroll" && mode != "scroll-hint" {
+                let _ = wv.evaluate_script(
+                    "window.__scrollClear&&window.__scrollClear();\
+                     if(window.__hintMode==='scroll'&&window.__hintClear)window.__hintClear();",
+                );
+            }
             let _ = wv.evaluate_script(&format!("window.__mode={mode:?}"));
         }
     }

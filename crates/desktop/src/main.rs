@@ -1080,7 +1080,9 @@ fn main() -> Result<()> {
                 if matches!(app.mode, ModeKind::Command | ModeKind::Find) {
                     app.cursor_on = !app.cursor_on;
                     app.window.request_redraw();
-                } else if app.mode == ModeKind::Normal {
+                } else if matches!(app.mode, ModeKind::Normal | ModeKind::Scroll | ModeKind::ScrollCaret)
+                    || (app.mode == ModeKind::Hint && app.hint_act == HintAct::Scroll)
+                {
                     // Read-mode caret: blink its block cursor.
                     if app.read_caret_active() {
                         app.cursor_on = !app.cursor_on;
@@ -1234,6 +1236,10 @@ fn main() -> Result<()> {
             Event::UserEvent(UserEvent::SyncAdblock) => app.broadcast_adblock(),
             Event::UserEvent(UserEvent::FocusShell) => {
                 match app.mode {
+                    ModeKind::Hint if app.hint_act == HintAct::Scroll => {
+                        app.exit_hint();
+                        app.reclaim_shell_focus();
+                    }
                     // Passthrough persists across navigation: re-assert it on the new
                     // page and keep the page focused.
                     ModeKind::Passthrough => {
@@ -1242,9 +1248,10 @@ fn main() -> Result<()> {
                             let _ = wv.focus();
                         }
                     }
-                    // Insert and Caret are tied to the old page's DOM; a navigation ends
+                    // Insert, Caret and Scroll are tied to the old page's DOM; navigation ends
                     // them (the field/caret is gone on the new document).
-                    ModeKind::Insert | ModeKind::Caret => {
+                    ModeKind::Insert | ModeKind::Caret | ModeKind::Scroll | ModeKind::ScrollCaret => {
+                        app.set_page_mode("normal");
                         app.mode = ModeKind::Normal;
                         app.reclaim_shell_focus();
                         app.window.request_redraw();
@@ -1332,6 +1339,25 @@ fn main() -> Result<()> {
                 app.mode = ModeKind::Normal;
                 app.window.set_focus();
                 app.window.request_redraw();
+            }
+            Event::UserEvent(UserEvent::ScrollSelected) => {
+                if app.mode == ModeKind::Hint && app.hint_act == HintAct::Scroll {
+                    app.hint_input.clear();
+                    app.hint_act = HintAct::Follow;
+                    app.mode = ModeKind::Scroll;
+                    app.set_page_mode("scroll");
+                    app.reclaim_shell_focus();
+                    app.window.request_redraw();
+                }
+            }
+            Event::UserEvent(UserEvent::ScrollExit) => {
+                if matches!(app.mode, ModeKind::Scroll | ModeKind::ScrollCaret) {
+                    app.exit_to_normal();
+                    app.set_status("scroll target is no longer available");
+                } else if app.mode == ModeKind::Hint && app.hint_act == HintAct::Scroll {
+                    app.exit_hint();
+                    app.set_status("no scrollable boxes on screen");
+                }
             }
             Event::UserEvent(UserEvent::HintEdit) => {
                 // The hint selected a text field: enter Insert (type into the page),
@@ -1460,6 +1486,8 @@ fn main() -> Result<()> {
                 clipboard_set(&text);
                 if app.mode == ModeKind::Caret {
                     app.mode = ModeKind::Normal;
+                } else if app.mode == ModeKind::ScrollCaret {
+                    app.mode = ModeKind::Scroll;
                 }
                 app.set_status(format!("yanked {n} chars"));
                 app.window.request_redraw();
@@ -1469,8 +1497,12 @@ fn main() -> Result<()> {
                 app.window.request_redraw();
             }
             Event::UserEvent(UserEvent::CaretExit) => {
-                if app.mode == ModeKind::Caret {
-                    app.mode = ModeKind::Normal;
+                if matches!(app.mode, ModeKind::Caret | ModeKind::ScrollCaret) {
+                    app.mode = if app.mode == ModeKind::ScrollCaret {
+                        ModeKind::Scroll
+                    } else {
+                        ModeKind::Normal
+                    };
                     app.clear_status();
                     app.window.request_redraw();
                 }
@@ -1515,7 +1547,10 @@ fn main() -> Result<()> {
             } else if app.mode == ModeKind::Normal && app.read_caret_active() {
                 // Blink the read-mode caret's block cursor.
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(530));
-            } else if app.mode == ModeKind::Normal && app.active_pane_is_webview {
+            } else if app.active_pane_is_webview
+                && (matches!(app.mode, ModeKind::Normal | ModeKind::Scroll | ModeKind::ScrollCaret)
+                    || (app.mode == ModeKind::Hint && app.hint_act == HintAct::Scroll))
+            {
                 // Poll to keep keyboard focus on the shell while the FOCUSED pane is a
                 // web tab (the click-focus backstop).
                 *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(300));

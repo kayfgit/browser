@@ -30,8 +30,9 @@ feats:
 [] - make ";" toggle browser hud visibility
 [] - add inspect and view source to right mouse button, aswell as a command and a keyboard shortcut
 [] - make the "U" button undo the layout, for example if i accidently close something, or move something around, U will undo it (maybe add R to redo it aswell) 
-[] - add "s" hint mode to select scrollable stuff (like a box that inside a site that can be scrolled down), so i would press "s", hit the hint keys and scroll inside that box, pressing esc would get out of the box naturally.
+[x] - add "s" hint mode to select scrollable stuff (like a box that inside a site that can be scrolled down), so i would press "s", hit the hint keys and scroll inside that box, pressing esc would get out of the box naturally.
 [] - maybe change ":q" to ":quit"? i keep quitting the browser accidently when i want to quit vim because i think im in passthrough when im in normal
+[] - add vertical sidebar like zen browser
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"

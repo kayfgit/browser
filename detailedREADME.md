@@ -105,6 +105,15 @@ Other flags: `-NoPath`, `-NoShortcut`, `-InstallDir <path>`. Remove it with
 - **Hint** — `f` labels every clickable element (qutebrowser-style); type the label to
   follow it, `Esc` cancels. Injected JS draws the badges and clicks the target, while the
   shell keeps the keyboard — so it works on CSP-strict sites (needs JS, so not on `:nojs` tabs).
+  **`s` selects a scrollable box:** type its cyan hint label to enter Scroll mode.
+  `h/j/k/l` and arrow keys scroll only that box; `g`/`G` (or Home/End) jump to its
+  top/bottom, `Ctrl+D/U` scroll half its height, and PageDown/PageUp, Space/Shift+Space
+  or `Ctrl+F/B` scroll a full box height. A cyan outline marks the selected box.
+  `Esc` returns to normal page scrolling. Hints include visible overflowing containers
+  in the page and open shadow roots; iframe contents are not currently labelled.
+  Press `v` inside a selected box to enter caret mode there; use `v`/`V` to select
+  text and `y` to copy. Leaving caret mode or yanking returns to that box's scroll
+  mode; `Esc` then releases the box. Caret motions and `gg`/`G` stay inside the box.
   A hint on a text field / search box focuses it and drops into Insert so you can type
   (Esc or click-away to leave).
 - **Command** — `:open <url>`, `:research <url|query>`/`:rs` (lighter browse), `:edit`/`:e` (edit

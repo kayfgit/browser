@@ -1,9 +1,9 @@
-//! Hint mode (`f`/`F`/`yf`): label clickable things and act on the picked one.
+//! Hint mode (`f`/`F`/`yf`/`s`): label targets and act on the picked one.
 //! Web tabs inject HINT_JS and filter in-page; native read tabs place labels
 //! over visible links and match them shell-side.
 
 use tao::event::KeyEvent;
-use tao::keyboard::Key;
+use tao::keyboard::{Key, KeyCode};
 
 use crate::{read_view, App, ModeKind, HINT_JS};
 
@@ -17,6 +17,8 @@ pub(crate) enum HintAct {
     /// `yf` — copy the link address instead of going there. Only links are
     /// labelled in this mode, and Shift doesn't flip it to new-tab.
     Copy,
+    /// `s` — select an overflowing container for keyboard scrolling.
+    Scroll,
 }
 
 impl HintAct {
@@ -38,6 +40,7 @@ impl HintAct {
             HintAct::Follow => "follow",
             HintAct::NewTab => "newtab",
             HintAct::Copy => "copy",
+            HintAct::Scroll => "scroll",
         }
     }
 }
@@ -78,12 +81,16 @@ pub(crate) fn hint_labels(n: usize) -> Vec<String> {
 impl App {
     /// Enter hint mode with the action the picked target gets: [`HintAct::Follow`]
     /// (`f`), [`HintAct::NewTab`] (`F`, badges uppercase), or [`HintAct::Copy`]
-    /// (`yf`, links only, badges cyan).
+    /// (`yf`, links only, badges cyan), or [`HintAct::Scroll`] (`s`, scrollable boxes).
     pub(crate) fn enter_hint(&mut self, act: HintAct) {
         let Some(idx) = self.active else {
             self.set_status("no page — open one first");
             return;
         };
+        if act == HintAct::Scroll && self.tabs[idx].webview().is_none() {
+            self.set_status("scroll hints need a web page");
+            return;
+        }
         self.hint_act = act;
         // Engine-free read tab: hints are computed and drawn natively.
         if self.tabs[idx].native().is_some() {
@@ -103,7 +110,14 @@ impl App {
         }
         self.hint_input.clear();
         self.mode = ModeKind::Hint;
+        if act == HintAct::Scroll {
+            self.set_page_mode("scroll-hint");
+            self.clear_status();
+        }
         if let Some(wv) = self.tabs[idx].webview() {
+            if act == HintAct::Scroll {
+                let _ = wv.evaluate_script(include_str!("../scripts/scroll.js"));
+            }
             let _ = wv.evaluate_script(&format!("window.__hintMode={:?};", act.js_name()));
             let _ = wv.evaluate_script(HINT_JS);
         }
@@ -146,10 +160,10 @@ impl App {
                 let c = *s;
                 if !c.is_empty() && c.chars().all(|ch| ch.is_ascii_alphabetic()) {
                     // Typing a label uppercase switches this pick to new-tab mode,
-                    // even if hint mode was entered with plain `f`. Copy mode (`yf`)
-                    // is a deliberate choice, so Shift doesn't hijack it.
+                    // even if hint mode was entered with plain `f`. Copy and scroll
+                    // modes are deliberate choices, so Shift doesn't hijack them.
                     if c.chars().any(|ch| ch.is_ascii_uppercase())
-                        && self.hint_act != HintAct::Copy
+                        && !matches!(self.hint_act, HintAct::Copy | HintAct::Scroll)
                     {
                         self.hint_act = HintAct::NewTab;
                     }
@@ -168,10 +182,9 @@ impl App {
     /// Live feedback while picking a hint: holding Shift flips every badge to
     /// UPPERCASE (and arms new-tab mode); releasing it returns to lowercase. The
     /// actual open then follows whatever Shift state is held when a label completes.
-    /// Copy mode (`yf`) opts out — Shift there would silently turn a copy into a
-    /// navigation.
+    /// Copy (`yf`) and scroll (`s`) opt out so Shift cannot turn them into navigation.
     pub(crate) fn on_modifiers_changed(&mut self) {
-        if self.mode != ModeKind::Hint || self.hint_act == HintAct::Copy {
+        if self.mode != ModeKind::Hint || matches!(self.hint_act, HintAct::Copy | HintAct::Scroll) {
             return;
         }
         let shift = self.modifiers.shift_key();
@@ -192,7 +205,9 @@ impl App {
             // Following a hint may navigate this tab cross-site via a synthetic click the
             // native guard would otherwise read as a forced redirect — stamp intent so it
             // passes. (Harmless when the hint resolves to a button/in-page action.)
-            wv.authorize_navigation();
+            if self.hint_act != HintAct::Scroll {
+                wv.authorize_navigation();
+            }
             let _ = wv.evaluate_script(&format!(
                 "window.__hintInput&&window.__hintInput({:?},{:?})",
                 self.hint_input,
@@ -214,6 +229,7 @@ impl App {
                 // New-tab mode opens a fresh read tab; otherwise follow in place.
                 HintAct::NewTab => self.start_read(&url, false, true),
                 HintAct::Follow => self.start_read(&url, true, true),
+                HintAct::Scroll => {}
             }
             return;
         }
@@ -224,6 +240,7 @@ impl App {
     }
 
     pub(crate) fn exit_hint(&mut self) {
+        self.set_page_mode("normal");
         if let Some(wv) = self.active_webview() {
             let _ = wv.evaluate_script("window.__hintClear&&window.__hintClear()");
         }
@@ -232,5 +249,44 @@ impl App {
         self.hint_act = HintAct::Follow;
         self.mode = ModeKind::Normal;
         self.window.request_redraw();
+    }
+
+    /// Scroll mode deliberately consumes unrelated keys until Escape releases the box.
+    pub(crate) fn key_scroll(&mut self, key: &KeyEvent) {
+        if key.logical_key == Key::Escape {
+            self.exit_to_normal();
+            return;
+        }
+        let action = if self.modifiers.control_key() {
+            match key.physical_key {
+                KeyCode::KeyD => "half-down",
+                KeyCode::KeyU => "half-up",
+                KeyCode::KeyF => "page-down",
+                KeyCode::KeyB => "page-up",
+                _ => return,
+            }
+        } else {
+            match &key.logical_key {
+                Key::Character("v" | "V") => {
+                    self.enter_web_caret();
+                    return;
+                }
+                Key::Character("j") | Key::ArrowDown => "down",
+                Key::Character("k") | Key::ArrowUp => "up",
+                Key::Character("h") | Key::ArrowLeft => "left",
+                Key::Character("l") | Key::ArrowRight => "right",
+                Key::Character("g") | Key::Home => "top",
+                Key::Character("G") | Key::End => "bottom",
+                Key::Character(" ") if self.modifiers.shift_key() => "page-up",
+                Key::Character(" ") | Key::PageDown => "page-down",
+                Key::PageUp => "page-up",
+                _ => return,
+            }
+        };
+        if let Some(wv) = self.active_webview() {
+            let _ = wv.evaluate_script(&format!(
+                "window.__scrollMove?window.__scrollMove({action:?}):window.__post('scroll-exit')"
+            ));
+        }
     }
 }

@@ -15,10 +15,11 @@
   // Copy mode (`yf`) has nothing to say about buttons and text fields, so it labels
   // real links only — far fewer badges, hence shorter labels to type.
   var copyMode = window.__hintMode === 'copy';
+  var scrollMode = window.__hintMode === 'scroll';
   var sel = copyMode ? "a[href]"
           : "a[href], button, input:not([type=hidden]):not([disabled]), textarea, " +
             "select, [onclick], [role='button'], [role='link'], [tabindex]:not([tabindex='-1'])";
-  var els = Array.prototype.slice.call(document.querySelectorAll(sel)).filter(function (el) {
+  var els = scrollMode ? window.__scrollCandidates() : Array.prototype.slice.call(document.querySelectorAll(sel)).filter(function (el) {
     var r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return false;
     if (r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) return false;
@@ -27,6 +28,7 @@
     // A `javascript:` link has no address worth copying.
     return !copyMode || (el.href && !/^javascript:/i.test(el.href));
   });
+  if (scrollMode && !els.length) { window.__post('scroll-exit'); return; }
   function gen(n) {
     if (n === 0) return [];
     var width = 1, cap = chars.length;
@@ -44,12 +46,12 @@
   box.id = '__hint_box';
   var map = {};
   for (var i = 0; i < els.length; i++) {
-    var r = els[i].getBoundingClientRect();
+    var r = scrollMode ? window.__scrollRect(els[i]) : els[i].getBoundingClientRect();
     var b = document.createElement('span');
     // New-tab mode (`F`) shows labels uppercase as a cue; matching stays lowercase.
     b.textContent = window.__hintMode === 'newtab' ? labels[i].toUpperCase() : labels[i];
     b.style.cssText = 'position:fixed;left:' + Math.max(0, r.left) + 'px;top:' + Math.max(0, r.top) +
-      'px;z-index:2147483647;background:' + (copyMode ? '#00e5ff' : '#ffd400') +
+      'px;z-index:2147483647;background:' + (copyMode || scrollMode ? '#00e5ff' : '#ffd400') +
       ';color:#000;font:bold 11px monospace;padding:0 3px;' +
       'border:1px solid #000;border-radius:3px;line-height:14px;pointer-events:none;';
     box.appendChild(b);
@@ -100,7 +102,7 @@
     try { el.focus(); } catch (e) {}
     fireClick(el);
   }
-  // `mode` is 'follow' | 'newtab' | 'copy' — the shell re-sends it on every
+  // `mode` is 'follow' | 'newtab' | 'copy' | 'scroll' — the shell re-sends it on every
   // keystroke, since holding Shift flips follow↔newtab mid-pick.
   window.__hintInput = function (s, mode) {
     var m = window.__hintMap; if (!m) return;
@@ -117,6 +119,11 @@
     }
     if (exact) {
       var el = exact.el;
+      if (scrollMode) {
+        window.__hintClear();
+        window.__scrollSelect(el);
+        return;
+      }
       var edit = mode !== 'copy' && editable(el);
       // For new-tab and copy modes, resolve the link href before clearing badges.
       var a = !edit && el.closest ? el.closest('a[href]') : (el.tagName === 'A' ? el : null);

@@ -85,6 +85,9 @@ pub(crate) enum UserEvent {
     ExitHint,
     /// A hint selected an editable element: focus it and enter Insert.
     HintEdit,
+    /// A scroll hint selected a DOM container, or its target is no longer available.
+    ScrollSelected,
+    ScrollExit,
     /// A hint was activated in new-tab mode (`F`): open this URL in a new tab.
     HintOpen(String),
     /// A hint was activated in copy mode (`yf`): put this link address on the
@@ -222,6 +225,10 @@ pub(crate) enum ModeKind {
     PaneMove,
     /// Link hints are shown; typed characters select one. Entered with `f`.
     Hint,
+    /// Vim scrolling is locked to the container selected by `s`; Escape releases it.
+    Scroll,
+    /// Caret/visual selection inside the current scroll target; returns to Scroll.
+    ScrollCaret,
     /// Find-in-page: `/` opened a search prompt. Typing searches live; Enter keeps
     /// the highlights and returns to Normal (where `n`/`N` step through matches).
     Find,

@@ -38,6 +38,8 @@ fn active_ui_event(event: UserEvent, source: usize, active: Option<usize>) -> Op
         | UserEvent::LinkHover(_)
         | UserEvent::ExitHint
         | UserEvent::HintEdit
+        | UserEvent::ScrollSelected
+        | UserEvent::ScrollExit
         | UserEvent::HintCopy(_)
         | UserEvent::CaretYank(_)
         | UserEvent::ClipCopy(_)
@@ -134,6 +136,8 @@ mod tests {
             UserEvent::FocusShell,
             UserEvent::ExitToNormal,
             UserEvent::HintEdit,
+            UserEvent::ScrollSelected,
+            UserEvent::ScrollExit,
             UserEvent::PageFullscreen(true),
             UserEvent::ClipCopy("background".into()),
         ] {

@@ -221,6 +221,12 @@ pub(crate) fn build(
             "hint-edit" => {
                 let _ = ipc_proxy.send_event(UserEvent::HintEdit);
             }
+            "scroll-selected" => {
+                let _ = ipc_proxy.send_event(UserEvent::ScrollSelected);
+            }
+            "scroll-exit" => {
+                let _ = ipc_proxy.send_event(UserEvent::ScrollExit);
+            }
             "caret-exit" => {
                 let _ = ipc_proxy.send_event(UserEvent::CaretExit);
             }

@@ -650,6 +650,7 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
         ("i", "insert mode (passthrough on a terminal tab)"),
         ("f / F", "hint mode — label every link, type the label to follow (F: open in a new tab)"),
         ("yf", "hint mode, but the label COPIES that link's address instead of going there (cyan labels)"),
+        ("s", "hint scrollable boxes; pick a label, then hjkl, g/G, Ctrl+D/U or PgUp/PgDn scroll that box; v selects text inside it; Esc exits"),
         ("yy", "copy this page's address to the clipboard (same as :y)"),
         ("v / V", "selection mode on read & web tabs — hjkl/w/b move, v/V select, y yank, Esc exits"),
         ("x", "close the current tab"),

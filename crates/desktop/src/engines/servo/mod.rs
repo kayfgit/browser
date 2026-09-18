@@ -569,6 +569,8 @@ fn decode_message(message: &str) -> Option<UserEvent> {
         "pane-click" => UserEvent::PaneClick,
         "hint-exit" => UserEvent::ExitHint,
         "hint-edit" => UserEvent::HintEdit,
+        "scroll-selected" => UserEvent::ScrollSelected,
+        "scroll-exit" => UserEvent::ScrollExit,
         "caret-exit" => UserEvent::CaretExit,
         "fs-enter" => UserEvent::PageFullscreen(true),
         "fs-exit" => UserEvent::PageFullscreen(false),

@@ -737,6 +737,7 @@ impl App {
                         HintAct::NewTab => "[HINT ↗]",
                         HintAct::Copy => "[HINT y]",
                         HintAct::Follow => "[HINT]",
+                        HintAct::Scroll => "[SCROLL HINT]",
                     }
                     .into(),
                     accent,
@@ -746,12 +747,21 @@ impl App {
                     match self.hint_act {
                         HintAct::NewTab => "   label opens a new tab · Esc cancel".into(),
                         HintAct::Copy => "   label copies the link address · Esc cancel".into(),
+                        HintAct::Scroll => "   label selects a scrollable box · Esc cancel".into(),
                         HintAct::Follow => {
                             "   type a label (UPPERCASE = new tab) · Esc cancel".into()
                         }
                     },
                     draw::DIM,
                 ),
+            ],
+            ModeKind::Scroll => vec![
+                ("[SCROLL]".into(), accent),
+                ("  hjkl · g/G · Ctrl+D/U · PgUp/PgDn · v select · Esc exit".into(), draw::DIM),
+            ],
+            ModeKind::ScrollCaret => vec![
+                ("[SCROLL SELECTION]".into(), accent),
+                ("  hjkl/w/b/gg/G move · v/V select · y yank · Esc back".into(), draw::DIM),
             ],
             ModeKind::Caret => vec![
                 ("[SELECTION]".into(), accent),

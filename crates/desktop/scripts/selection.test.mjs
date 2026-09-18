@@ -13,12 +13,14 @@ const browser = process.argv[2] || [
 ].find(existsSync);
 if (!browser) throw new Error('Pass a Chromium executable as the first argument.');
 const script = readFileSync(new URL('./selection.js', import.meta.url), 'utf8');
+const scrollScript = readFileSync(new URL('./scroll.js', import.meta.url), 'utf8');
 const dir = mkdtempSync(join(tmpdir(), 'browser-selection-test-'));
 const html = `<!doctype html><meta charset="utf-8"><style>
 body { margin:60px; font:20px Arial; } p { margin:0 0 20px; }
 </style><main id="fixture"></main><pre id="results"></pre>
-<script>${script}</script><script>
+<script>${scrollScript}</script><script>${script}</script><script>
 const results = [];
+const nativeRangeFromPoint = document.caretRangeFromPoint.bind(document);
 let copied = '', exited = false;
 window.__post = text => {
   if (text.startsWith('caret-yank:')) copied = text.slice(11);
@@ -172,6 +174,78 @@ test('Escape cancels at the cursor, then exits on the second press', () => {
 test('v and V switch between character and line selection', () => {
   start('<p>apple</p>', 2); keys('vV'); equal(selected(), 'apple');
   keys('v'); equal(selected(), 'p'); keys('v'); equal(selected(), '');
+});
+test('scoped selection starts inside a scrolled box using its visible center', () => {
+  __caretExit();
+  fixture.innerHTML = '<p>outside before</p><div id="box" style="width:240px;height:120px;overflow:auto">' +
+    Array.from({length:30}, (_,i) => '<p>box line ' + i + '</p>').join('') + '</div><p>outside after</p>';
+  document.caretRangeFromPoint = nativeRangeFromPoint;
+  const box = fixture.querySelector('#box'); box.scrollTop = 240;
+  const pageTop = window.scrollY;
+  __caretEnter(box);
+  equal(box.contains(getSelection().focusNode), true);
+  const rect = block().getBoundingClientRect(), bounds = box.getBoundingClientRect();
+  equal(rect.top >= bounds.top && rect.bottom <= bounds.bottom, true);
+  equal(window.scrollY, pageTop);
+  equal(box.scrollTop, 240);
+});
+test('scoped gg/G and character selection never include surrounding text', () => {
+  start('<p>outside before</p><div id="box" style="height:80px;overflow:auto">' +
+    '<p>apple</p><p>berry</p><p>cherry</p></div><p>outside after</p>', 0, '#box p');
+  const box = fixture.querySelector('#box'); __caretEnter(box);
+  keys('ggvG');
+  equal(selected(), 'apple\\n\\nberry\\n\\ncherry');
+  keys('lljjww'); equal(selected(), 'apple\\n\\nberry\\n\\ncherry');
+  __caretYank(); equal(copied, 'apple\\n\\nberry\\n\\ncherry');
+  __caretEnter(box); keys('ggvhhkkbb'); equal(selected(), 'a');
+});
+test('scoped line selection and word motions stay within inline box boundaries', () => {
+  start('<p>before <span id="box">apple berry</span> after</p>', 0, '#box');
+  const box = fixture.querySelector('#box'); __caretEnter(box);
+  keys('V'); equal(selected(), 'apple berry');
+  __caretYank(); equal(copied, 'apple berry');
+  __caretEnter(box); keys('vwe'); equal(selected(), 'apple berry');
+  keys('ee'); equal(selected(), 'apple berry');
+});
+test('scoped caret scrolls only its box, preserving parent and page positions', () => {
+  start('<div id="outer" style="height:180px;overflow:auto"><p>outer text</p>' +
+    '<div id="box" style="height:90px;overflow:auto">' +
+    Array.from({length:25}, (_,i) => '<p>line ' + i + '</p>').join('') +
+    '</div><div style="height:1000px">outer end</div></div><p>outside after</p>', 0, '#box p');
+  const box = fixture.querySelector('#box'), outer = fixture.querySelector('#outer');
+  outer.scrollTop = 10;
+  const pageTop = window.scrollY;
+  __caretEnter(box); keys('vG');
+  equal(box.scrollTop > 0, true);
+  equal(outer.scrollTop, 10); equal(window.scrollY, pageTop);
+  equal(selected().includes('outer'), false); equal(selected().includes('outside'), false);
+  keys('gg'); equal(box.scrollTop, 0);
+  equal(outer.scrollTop, 10); equal(window.scrollY, pageTop);
+});
+test('leaving scoped selection releases its bounds for later page selection', () => {
+  start('<p>outside before</p><div id="box"><p>apple</p></div><p>outside after</p>', 0, '#box p');
+  __caretEnter(fixture.querySelector('#box')); keys('vll'); __caretEsc();
+  equal(selected(), ''); equal(exited, false);
+  __caretEsc(); equal(exited, true);
+  __caretEnter(); keys('ggvG');
+  equal(selected().includes('outside before'), true);
+  equal(selected().includes('outside after'), true);
+});
+test('yanking inside a selected scroll target preserves its scroll lock', () => {
+  start('<div id="box" style="height:90px;overflow:auto"><p>apple</p>' +
+    '<div style="height:600px">berry</div></div>', 0, '#box p');
+  const box = fixture.querySelector('#box'); __scrollSelect(box);
+  __caretEnter(__scrollTarget()); keys('vll'); __caretYank();
+  equal(copied, 'app'); equal(__scrollTarget(), box);
+  const before = box.scrollTop; __scrollMove('down'); equal(box.scrollTop, before + 80);
+  __scrollClear(); equal(__scrollTarget(), null);
+});
+test('releasing the scroll target clears its active visual selection', () => {
+  start('<div id="box"><p>apple</p></div>', 0, '#box p');
+  __scrollSelect(fixture.querySelector('#box'));
+  __caretEnter(__scrollTarget()); keys('vll'); equal(selected(), 'app');
+  __scrollClear(); equal(getSelection().rangeCount, 0); equal(block().style.display, 'none');
+  keys('vG'); equal(getSelection().rangeCount, 0);
 });
 document.getElementById('results').textContent = JSON.stringify(results);
 </script>`;

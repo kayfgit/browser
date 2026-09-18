@@ -5,18 +5,38 @@
   // Logical character positions stay separate from the DOM's exclusive range
   // endpoints. This lets the highlighted range include BOTH cursor and anchor.
   var cursor = null, anchor = null;
+  // A scroll-selected box optionally bounds both the caret and visual ranges.
+  var scope = null;
   // Affinity of the LAST motion. At a soft-wrap boundary the same (node, offset)
   // renders on two lines; without this a `j` that logically moved down can paint
   // the block at the end of the line ABOVE (the "j went up" visual glitch).
   var dirBack = false;
   var BLINK = '__caretBlink 1.06s step-end infinite';
   function sel() { return window.getSelection(); }
-  function position() { var s = sel(); return { n: s.focusNode, o: s.focusOffset }; }
+  function position() { var s = sel(); return bounded({ n: s.focusNode, o: s.focusOffset }); }
   function collapse(p) { sel().collapse(p.n, p.o); }
   function pointRange(p) {
     var r = document.createRange(); r.setStart(p.n, p.o); r.collapse(true); return r;
   }
   function compare(a, b) { return pointRange(a).compareBoundaryPoints(Range.START_TO_START, pointRange(b)); }
+  function scopeEdge(last) {
+    var tw = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, null), n, hit = null;
+    while ((n = tw.nextNode())) {
+      if (!n.nodeValue.trim()) continue;
+      var st = getComputedStyle(n.parentElement);
+      if (st.visibility === 'hidden' || st.display === 'none') continue;
+      var r = document.createRange(); r.selectNodeContents(n);
+      if (!r.getClientRects().length) continue;
+      hit = n;
+      if (!last) break;
+    }
+    return hit ? { n: hit, o: last ? hit.nodeValue.length : 0 } : { n: scope, o: 0 };
+  }
+  function bounded(p) {
+    if (!scope || !p.n || scope.contains(p.n)) return p;
+    var first = scopeEdge(false);
+    return compare(p, first) < 0 ? first : scopeEdge(true);
+  }
   function lineEdge(p, direction) {
     collapse(p); sel().modify('move', direction, 'lineboundary'); return position();
   }
@@ -196,6 +216,25 @@
     lineBar.style.display = 'block';
     lineBar.style.top = rc.top + 'px';
     lineBar.style.height = h + 'px';
+    lineBar.style.left = '0'; lineBar.style.width = '100vw';
+    if (scope) {
+      var box = scopeRect();
+      lineBar.style.left = box.left + 'px'; lineBar.style.width = box.width + 'px';
+      var top = Math.max(rc.top, box.top), bottom = Math.min(rc.top + h, box.top + box.height);
+      lineBar.style.top = b.style.top = top + 'px';
+      lineBar.style.height = b.style.height = Math.max(0, bottom - top) + 'px';
+      var left = Math.max(rc.left, box.left);
+      var right = Math.min(rc.left + Math.max(1, Math.round(h * 0.38)), box.left + box.width);
+      b.style.left = left + 'px'; b.style.width = Math.max(0, right - left) + 'px';
+      if (bottom <= top || right <= left) b.style.display = 'none';
+    }
+  }
+  function scopeRect() {
+    if (window.__scrollRect) return window.__scrollRect(scope);
+    var r = scope.getBoundingClientRect();
+    var left = Math.max(0, r.left), top = Math.max(0, r.top);
+    return { left: left, top: top, width: Math.min(innerWidth, r.right) - left,
+      height: Math.min(innerHeight, r.bottom) - top };
   }
   // Vim scrolloff: when a motion pushes the cursor within ~2 lines of the top or
   // bottom edge, scroll the window so the text around it stays visible (h/l past
@@ -204,6 +243,16 @@
     var rc = focusRect();
     if (!rc) return;
     var h = rc.height || 16, pad = h * 2, bot = rc.top + h;
+    if (scope) {
+      var box = scopeRect(), dx = 0, dy = 0;
+      pad = Math.min(pad, Math.max(0, (box.height - h) / 2));
+      if (bot > box.top + box.height - pad) dy = Math.ceil(bot - (box.top + box.height - pad));
+      else if (rc.top < box.top + pad) dy = Math.floor(rc.top - (box.top + pad));
+      if (rc.left + rc.width > box.left + box.width) dx = Math.ceil(rc.left + rc.width - box.left - box.width);
+      else if (rc.left < box.left) dx = Math.floor(rc.left - box.left);
+      scope.scrollBy({ left: dx, top: dy, behavior: 'instant' });
+      return;
+    }
     if (bot > innerHeight - pad) scrollBy(0, Math.ceil(bot - (innerHeight - pad)));
     else if (rc.top < pad) scrollBy(0, Math.floor(rc.top - pad));
     if (rc.left > innerWidth) scrollBy(Math.ceil(rc.left - innerWidth + 40), 0);
@@ -218,17 +267,19 @@
     return null;
   }
   function caretAtCenter() {
-    var x = Math.floor(innerWidth / 2), r = null;
+    var box = scope ? scopeRect() : { left: 0, top: 0, width: innerWidth, height: innerHeight };
+    var x = Math.floor(box.left + box.width / 2), r = null;
     // Probe outward from the vertical center for a TEXT node — a page's middle is
     // often whitespace (caret would land on an element, where word/line motions
     // can't move). Fall back to the first text node in the document.
     var ys = [0.5, 0.4, 0.6, 0.3, 0.7, 0.25, 0.75, 0.15, 0.85];
     for (var i = 0; i < ys.length && !r; i++) {
-      var rr = rangeAt(x, Math.floor(innerHeight * ys[i]));
-      if (rr && rr.startContainer && rr.startContainer.nodeType === 3) r = rr;
+      var rr = rangeAt(x, Math.floor(box.top + box.height * ys[i]));
+      if (rr && rr.startContainer && rr.startContainer.nodeType === 3
+          && (!scope || scope.contains(rr.startContainer))) r = rr;
     }
     if (!r) {
-      var root = document.body || document.documentElement;
+      var root = scope || document.body || document.documentElement;
       var tw = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
       var n;
       while ((n = tw.nextNode())) { if (n.nodeValue && n.nodeValue.trim()) break; }
@@ -238,7 +289,8 @@
     r.collapse(true);
     var s = sel(); s.removeAllRanges(); s.addRange(r);
   }
-  window.__caretEnter = function () {
+  window.__caretEnter = function (root) {
+    scope = root || null;
     on = true; visual = false; pend = ''; dirBack = false;
     caretAtCenter();
     cursor = position(); anchor = null;
@@ -247,6 +299,7 @@
   };
   window.__caretExit = function () {
     on = false; visual = false; pend = '';
+    scope = null;
     cursor = anchor = null;
     try { sel().removeAllRanges(); } catch (e) {}
     if (bar) bar.style.display = 'none';
@@ -279,7 +332,7 @@
     // that render on two lines (soft wraps).
     if ('hkb0'.indexOf(k) >= 0) dirBack = true;
     else if ('ljweG$'.indexOf(k) >= 0) dirBack = false;
-    if (pend === 'g') { pend = ''; if (k === 'g') { dirBack = true; s.modify(alter,'backward','documentboundary'); cursor = position(); renderSelection(); keepInView(); updateBar(); return; } }
+    if (pend === 'g') { pend = ''; if (k === 'g') { dirBack = true; if (scope) collapse(scopeEdge(false)); else s.modify(alter,'backward','documentboundary'); cursor = position(); renderSelection(); keepInView(); updateBar(); return; } }
     switch (k) {
       case 'h': s.modify(alter,'left','character'); break;
       case 'l': s.modify(alter,'right','character'); break;
@@ -290,7 +343,7 @@
       case 'b': s.modify(alter,'backward','word'); break;
       case '0': s.modify(alter,'left','lineboundary'); break;
       case '$': s.modify(alter,'right','lineboundary'); break;
-      case 'G': s.modify(alter,'forward','documentboundary'); break;
+      case 'G': if (scope) collapse(scopeEdge(true)); else s.modify(alter,'forward','documentboundary'); break;
       case 'g': pend = 'g'; break;
       case 'v':
         visual = visual === 'char' ? false : 'char';
@@ -310,6 +363,30 @@
     keepInView();
     updateBar();
   };
+  // Selection.modify can reveal its endpoint by scrolling ancestor containers.
+  // Restore those positions so a boxed selection never drags the outer page along.
+  ['__caretEnter', '__caretKey', '__caretEsc', '__caretYank'].forEach(function (name) {
+    var run = window[name];
+    window[name] = function () {
+      var root = name === '__caretEnter' ? arguments[0] : scope;
+      if (!root) return run.apply(this, arguments);
+      var positions = [], pageX = window.scrollX, pageY = window.scrollY;
+      for (var p = root.parentElement || root.getRootNode().host; p;
+           p = p.parentElement || p.getRootNode().host) {
+        positions.push({ el: p, x: p.scrollLeft, y: p.scrollTop });
+      }
+      try { return run.apply(this, arguments); }
+      finally {
+        positions.forEach(function (p) {
+          if (p.el.scrollLeft !== p.x || p.el.scrollTop !== p.y)
+            p.el.scrollTo({ left: p.x, top: p.y, behavior: 'instant' });
+        });
+        if (window.scrollX !== pageX || window.scrollY !== pageY)
+          window.scrollTo({ left: pageX, top: pageY, behavior: 'instant' });
+        if (on) updateBar();
+      }
+    };
+  });
   window.addEventListener('scroll', function () { if (on) updateBar(); }, true);
   window.addEventListener('resize', function () { if (on) updateBar(); });
 })();
