@@ -1,86 +1,80 @@
 # browser
 
-A modal, mode-dispatching terminal browser — *only what's needed, when needed.*
+A keyboard-driven, modal browser for Windows that only runs the heavy machinery
+when a page actually needs it.
 
-Instead of one heavyweight engine for everything, this is a fast Rust shell that
-routes each request to the lightest backend that can satisfy it. Reading docs and
-quick searches never load a browser engine at all, so they cost tens of MB instead
-of gigabytes. Heavy interactive pages fall back to a system webview only on demand.
+Most browsers keep a full Chromium engine running for everything. Here the window
+itself is a small native Rust program, and each tab runs on the lightest backend
+that works for it:
 
-## Build & run
+| Tab type | What runs | Cost |
+|---|---|---|
+| **Web** (`:open`) | Microsoft Edge WebView2 (Chromium), started when the first page opens | a normal browser tab |
+| **Research** (`:research`) | WebView2 with video, audio and embeds stripped out | lighter than a web tab |
+| **Read** (`:read`) | Article text extracted and drawn natively, no engine at all | a few MB |
+| **Terminal** (`:te`) | A native terminal (Alacritty's VT engine) with your shell | a few MB |
 
-```sh
-cargo build --release
-./target/release/browser                       # welcome screen
-./target/release/browser https://docs.rs       # open a page in text mode
-./target/release/browser :s rust ownership     # search
-```
+With no pages open, the browser sits at about 30 MB with zero engine processes.
 
-### Desktop shell:
+> **Status: alpha.** It's used daily by its author, but expect rough edges. Windows 10/11
+> (x64) only for now. Please [report bugs](../../issues).
 
-```sh
-cargo run -p browser-desktop                   # welcome window, no engine
-cargo run -p browser-desktop youtube.com       # open a page on startup
-```
+## Features
 
-### Experimental Servo in the desktop shell (Windows)
+- **Vim-style modes**: Normal, Insert, Passthrough, Hint, Selection (caret) and Command,
+  inspired by qutebrowser.
+- **Link hints**: `f` labels every clickable element; type the label to follow it.
+- **Splits**: tmux-like panes inside a tab (`Ctrl+W` then `s`/`v`), and the panes can mix
+  web pages, read views and terminals.
+- **Built-in terminal**: `:te` opens your shell (nushell, PowerShell, cmd, WSL…) in a tab.
+- **Ad blocking**: bundled uBlock Origin Lite plus a native filter engine and a guard
+  against forced redirects and pop-unders.
+- **Sessions and profiles**: `:w` saves your tabs, splits and window layout;
+  `:saveprofile work` / `:profile work` switch between whole workspaces.
+- **Command bar**: autocomplete from history, `!bangs` (`!yt lofi`, `!gh wry`), and
+  inline maths (`:20*8` → `= 160`).
+- **`:res`**: live memory, CPU and disk use for every process the browser owns.
+- **Optional `:ai` assistant** (needs your own [Groq](https://groq.com/) API key) that can
+  change settings, open pages and manage data for you.
 
-The opt-in `servo-engine` feature adds Servo alongside WebView2 in the actual browser.
-With the native tools from the [Servo lab](experiments/servo/README.md) installed:
+## Install
 
-```powershell
-./run-servo.ps1 -UseLocalLinker                 # main browser, existing shell session
-./run-servo.ps1 -UseLocalLinker -Scratch        # throwaway shell layout
-./run-servo.ps1 -Action Smoke -UseLocalLinker   # isolated native integration check
-```
+Download the latest installer from the [Releases page](../../releases/latest) and run it.
 
-Open an HTTP(S) page, then use `:engine servo` or `:engine webview2` to reopen the
-active pane. Splits can mix engines. `:engine default servo` chooses Servo for new
-web tabs; `:engines` lists capabilities. Direct Cargo builds keep WebView2 only
-unless the feature is enabled; the Windows installer includes both engines by default.
+You need the [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/).
+Windows 11 ships with it; on Windows 10 install the Evergreen runtime if pages don't load.
 
-Servo is experimental: storage/sign-ins are separate, private/no-JavaScript views
-are rejected, and extensions/uBlock, downloads, full IME and some page controls are
-not implemented. See [integration notes](docs/engine-integration.md) for details.
-After its first use, the Servo runtime stays loaded until browser exit; individual
-pages still close normally.
+The executables aren't code-signed yet, so Windows SmartScreen may warn on first run
+("More info" → "Run anyway").
 
-### Install (Windows, per-user)
+## Getting started
 
-```powershell
-pwsh -File install.ps1                         # build WebView2 + Servo, install, Start Menu shortcut, add to PATH
-pwsh -File install.ps1 -WebView2Only            # optional WebView2-only release build
-```
-
-Both commands update the same `browser` Start Menu shortcut and installed executable.
-The default installation reuses the development build and native tools from
-`run-servo.ps1`; it does not start a separate optimized Servo release build.
-Use the plain command for future updates to retain both engines. The old `-Servo`
-flag still works for compatibility. `-WebView2Only` replaces the installed executable
-with one that has no Servo support. `-NoBuild` uses
-the existing binaries for the selected variant. Close the installed browser before
-updating it. Sessions and engine data are preserved.
-
-### Uninstall
-
-```powershell
-pwsh -File uninstall.ps1
-```
-
-## Keys
+Launch **browser** from the Start Menu, or run `browser <url>` in a terminal.
 
 | Key | Action |
-|-----|--------|
-| `j`/`k`, `Space`, `PgUp/PgDn` | scroll |
-| `g` / `G` | top / bottom |
-| `f` | follow a link |
-| `/` | find in page |
-| `H` / `L` | history back / forward |
-| `r` | reload |
-| `:` | command bar |
-| `q` | quit |
+|---|---|
+| `:` | command bar (`:open github.com`, `:read <url>`, `:te`, …) |
+| `o` / `O` | open a page here / in a new tab |
+| `j` `k` / `Ctrl+D` `Ctrl+U` | scroll / half page |
+| `f` / `F` | follow a link / open it in a new tab |
+| `/` then `n` `N` | find in page |
+| `H` / `L` | back / forward |
+| `n` / `p`, `1`–`9` | next / previous tab, jump to tab |
+| `x` / `u` | close tab / reopen it |
+| `i` | type into a page field (`Esc` to leave) |
+| `Ctrl+V` | passthrough: every key goes to the page (`Ctrl+S` or `Shift+Esc` to leave) |
+| `v` | select text with vim motions, `y` to copy |
+| `:w` / `:q` | save the session / quit |
 
-## More
+`:commands` (or `:help <topic>`) opens the full reference inside the browser. The
+[user guide](docs/user-guide.md) covers every mode and feature in detail.
 
-See [detailedREADME.md](detailedREADME.md) for the full feature set, the desktop
-shell (`browser-desktop`), config, architecture, and roadmap.
+## Building from source
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE). Bundled third-party components, including uBlock
+Origin Lite (GPLv3) and the filter lists, keep their own licenses; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

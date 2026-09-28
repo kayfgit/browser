@@ -576,7 +576,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("ai", ":ai [question]", "AI tab (Groq): i to ask; Normal mode is a vim buffer (v/y select, / find); H/L step through past chats (persisted)"),
     ("aihist", ":aihist · :aihistory", "saved-chat picker in a vim tab: each row shows created time · size · name (first prompt); Enter opens that chat, d deletes the row/selection"),
     ("model", ":model [id]", "show/set the :ai model (Tab cycles the model list); persisted"),
-    ("te", ":te", "native terminal (Ctrl+V pastes · drag to select and copy, double/triple-click takes a word/line · Ctrl+S → vim copy-mode: hjkl/w/b/f-find navigate, v/y yank, i resumes) · :w/:wq remembers the cwd and restores it — cmd/nushell automatic; pwsh and WSL need a one-line prompt hook (see detailedREADME 'Terminal working-directory restore', or ask :ai)"),
+    ("te", ":te", "native terminal (Ctrl+V pastes · drag to select and copy, double/triple-click takes a word/line · Ctrl+S → vim copy-mode: hjkl/w/b/f-find navigate, v/y yank, i resumes) · :w/:wq remembers the cwd and restores it — cmd/nushell automatic; pwsh and WSL need a one-line prompt hook (see the user guide, docs/user-guide.md, or ask :ai)"),
     ("terun", ":te <command>", "run a local command, result in the command bar"),
     ("shell", ":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
     ("theme", ":theme [key value]", "appearance: no args opens config.toml in an editor (closing it applies); a key + value sets one field (bar_bg, bar_fg, accent, bg, bar_height_pct, term_font, term_font_px, term_scheme, term_bg, term_fg — 'default' resets); :theme install <scheme> downloads a terminal scheme; :theme reload / show"),
@@ -788,7 +788,8 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
         ("Ctrl+W then s / v", "split the pane stacked / side-by-side (also :split / :vsplit)"),
         ("Ctrl+W then c", "close the focused pane"),
         ("Ctrl+V", "passthrough mode (every key to the page)"),
-        ("Ctrl +/-/0", "zoom the whole UI in / out / reset"),
+        ("+ / - / )", "zoom the page content in / out / reset (web tabs)"),
+        ("Ctrl +/-/0", "zoom the browser UI and terminals in / out / reset"),
     ]);
     let cmdline = help_table(&[
         ("Enter", "run the command"),
@@ -806,7 +807,8 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
         ("Ctrl+U", "delete to the start of the line"),
     ]);
     let modes = help_table(&[
-        ("Passthrough", "i (or click a field) types into the content; on a web page Ctrl+S or click-away leaves (Esc reaches the page); in a terminal Esc goes to the shell and Ctrl+S leaves"),
+        ("Insert", "i (or clicking / hinting a text field) types into a page field; Esc, clicking away or navigating leaves"),
+        ("Passthrough", "Ctrl+V sends every key to the page and survives clicks and navigation; Ctrl+S or Shift+Esc leaves. On a terminal i enters it; Esc goes to the shell and Ctrl+S leaves"),
         ("Hint", "type a label to follow it (type it UPPERCASE to open in a new tab); entered with yf only links are labelled and the label copies the address; Esc cancels"),
         ("Resize / Move", "hjkl to size / reposition the window; Esc finishes"),
     ]);
@@ -892,8 +894,6 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
     )
 }
 
-/// Plain-text lines for the `:history` vim pager: a header plus the visited URLs,
-/// most-recent first, one per line (full URLs so they stay selectable/openable).
 /// The `:extensions` picker body: a header plus one row per installed extension —
 /// `[on ]`/`[off]` state, name, then the extension id (kept as the last token so Enter can
 /// parse it back out to toggle that exact extension). See `open_extensions_page`.
@@ -919,6 +919,8 @@ pub(crate) fn ext_lines(exts: &[crate::ExtInfo]) -> Vec<String> {
     lines
 }
 
+/// Plain-text lines for the `:history` vim pager: a header plus the visited URLs,
+/// most-recent first, one per line (full URLs so they stay selectable/openable).
 pub(crate) fn history_lines(history: &[String]) -> Vec<String> {
     let mut lines = Vec::with_capacity(history.len() + 2);
     lines.push(format!(
@@ -1011,11 +1013,11 @@ pub(crate) fn alias_lines(aliases: &std::collections::BTreeMap<String, String>) 
     lines
 }
 
-/// The `:version` page: build/runtime details about this browser.
-/// Plain-text lines for the `:version` pager (navigable/yankable with vim motions).
+/// Plain-text lines for the `:version` pager: build/runtime details about this
+/// browser, navigable and yankable with vim motions.
 pub(crate) fn version_lines() -> Vec<String> {
     let kv = [
-        ("Name", env!("CARGO_PKG_NAME")),
+        ("Name", "browser"),
         ("Version", env!("CARGO_PKG_VERSION")),
         ("Description", env!("CARGO_PKG_DESCRIPTION")),
         ("Authors", env!("CARGO_PKG_AUTHORS")),
@@ -1032,7 +1034,7 @@ pub(crate) fn version_lines() -> Vec<String> {
         ("Architecture", std::env::consts::ARCH),
     ];
     let mut lines = vec![
-        format!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
+        format!("browser {}", env!("CARGO_PKG_VERSION")),
         String::new(),
     ];
     for (k, v) in kv {
@@ -1052,8 +1054,9 @@ mod tests {
         // A command row wins first: by its anchor key or any word of the signature.
         assert_eq!(help_anchor("theme").as_deref(), Some("cmd-theme"));
         assert_eq!(help_anchor(":open").as_deref(), Some("cmd-open"));
-        assert_eq!(help_anchor("t").as_deref(), Some("cmd-tabopen")); // ":tabopen · :t"
-                                                                      // Actions not shadowed by a command resolve to their card.
+        // ":tabopen · :t"
+        assert_eq!(help_anchor("t").as_deref(), Some("cmd-tabopen"));
+        // Actions not shadowed by a command resolve to their card.
         assert_eq!(
             help_anchor("install_scheme").as_deref(),
             Some("act-install_scheme")
@@ -1159,7 +1162,8 @@ mod tests {
         assert_eq!(aihist_rows_to_chat_range(3, 4, 4), Some((0, 0))); // oldest row → chat 0
         assert_eq!(aihist_rows_to_chat_range(3, 2, 3), Some((1, 2))); // two newest rows
         assert_eq!(aihist_rows_to_chat_range(3, 2, 4), Some((0, 2))); // all rows
-                                                                      // A header-only or out-of-range span deletes nothing.
+
+        // A header-only or out-of-range span deletes nothing.
         assert_eq!(aihist_rows_to_chat_range(3, 0, 1), None);
         assert_eq!(aihist_rows_to_chat_range(0, 2, 2), None);
         // A span starting in the header clamps to the chat rows.

@@ -1812,8 +1812,9 @@ mod tests {
             Path::new("setup.exe")
         ));
         assert!(is_risky_download("https://x.test/a", Path::new("pkg.msi")));
-        assert!(is_risky_download("https://x.test/a", Path::new("s.BAT"))); // case-insensitive
-                                                                            // …or inferred from the URL when the save path has no extension.
+        // Case-insensitive.
+        assert!(is_risky_download("https://x.test/a", Path::new("s.BAT")));
+        // …or inferred from the URL when the save path has no extension.
         assert!(is_risky_download(
             "https://x.test/download/installer.exe",
             Path::new("installer")
