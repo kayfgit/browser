@@ -150,7 +150,7 @@
                         Target='[Bin]browser.exe'
                         WorkingDirectory='Bin'/>
                     <RegistryValue
-                        Root='HKMU'
+                        Root='HKCU'
                         Key='Software\kayf\browser'
                         Name='StartMenuShortcut'
                         Type='integer'
