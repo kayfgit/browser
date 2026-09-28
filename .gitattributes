@@ -1,2 +1,10 @@
+# Store and check out text as LF everywhere (rustfmt writes LF, and a Windows
+# checkout with core.autocrlf would otherwise flip files to CRLF on every touch).
+* text=auto eol=lf
+
 # Keep TODOs readable in editors that display CR characters as ^M.
 /TODOs.md text eol=lf
+
+# Vendored third-party code and data: keep it out of GitHub's language stats and diffs.
+crates/desktop/extensions/** linguist-vendored
+crates/desktop/assets/** linguist-vendored
