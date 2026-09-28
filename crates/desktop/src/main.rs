@@ -1,4 +1,4 @@
-//! browser-desktop — a lightweight, keyboard-driven shell that boots a WebView2
+//! browser — a lightweight, keyboard-driven shell that boots a WebView2
 //! engine only when you open a page.
 //!
 //! The window chrome (welcome screen + command bar) is drawn natively with a
@@ -35,6 +35,7 @@ mod ai;
 mod app;
 mod blocklist;
 mod bookmarks;
+mod bundled_extensions;
 mod chrome;
 mod commands;
 mod config;
@@ -880,6 +881,12 @@ fn main() -> Result<()> {
     #[cfg(windows)]
     set_app_user_model_id();
 
+    // Release builds load uBlock Origin Lite from a copy unpacked out of the
+    // executable; get that done before the first web tab needs it.
+    if !cfg!(debug_assertions) {
+        bundled_extensions::prepare_in_background();
+    }
+
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
@@ -1050,8 +1057,8 @@ fn main() -> Result<()> {
     // launch (BlocklistReady), and navigations use the timing heuristic until then.
     blocklist::spawn_build(app.blocker.clone(), app.proxy.clone());
 
-    // Optional: open a page immediately, e.g. `browser-desktop youtube.com`,
-    // or run a command, e.g. `browser-desktop ":nojs youtube.com"`. An explicit
+    // Optional: open a page immediately, e.g. `browser youtube.com`,
+    // or run a command, e.g. `browser ":nojs youtube.com"`. An explicit
     // CLI target takes precedence over (and skips) session restore. With no
     // argument, restore the previous session's tabs + UI state (window geometry was
     // already applied at build time above).

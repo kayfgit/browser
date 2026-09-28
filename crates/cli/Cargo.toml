@@ -1,13 +1,18 @@
 [package]
-name = "browser"
+name = "browser-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+# The original terminal-only reader. Named browser-tui so it doesn't collide with
+# the desktop browser's `browser` binary; not part of releases.
 [[bin]]
-name = "browser"
+name = "browser-tui"
 path = "src/main.rs"
+
+[package.metadata.dist]
+dist = false
 
 [dependencies]
 browser-core.workspace = true

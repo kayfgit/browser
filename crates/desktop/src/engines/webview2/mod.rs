@@ -47,6 +47,69 @@ pub(crate) struct BuildOptions<'a> {
     pub allow_risky_downloads: Arc<AtomicBool>,
 }
 
+/// The WebView2 user-data folder (cookies, cache, extensions) every view shares.
+///
+/// `BROWSER_WEBVIEW2_DATA_DIR` overrides it. Debug builds keep WebView2's default, a
+/// folder next to the executable, so development never touches the real profile.
+/// Release builds use `%LOCALAPPDATA%\browser\data\WebView2`: the default would put
+/// it beside `browser.exe`, which an installer may place in a read-only folder.
+///
+/// Before that location existed, the profile lived next to the executable. The first
+/// run moves such a folder over so users stay signed in, or, if it can't be moved
+/// (another copy of the browser is using it), keeps using it where it is.
+pub(crate) fn data_dir() -> Option<std::path::PathBuf> {
+    static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        if let Some(dir) = std::env::var_os("BROWSER_WEBVIEW2_DATA_DIR") {
+            return Some(dir.into());
+        }
+        if cfg!(debug_assertions) {
+            return None;
+        }
+        let target = crate::session::local_data_dir()?.join("WebView2");
+        if target.exists() {
+            return Some(target);
+        }
+        for legacy in legacy_data_dirs() {
+            if !legacy.is_dir() {
+                continue;
+            }
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            return Some(match std::fs::rename(&legacy, &target) {
+                Ok(()) => target,
+                Err(_) => legacy,
+            });
+        }
+        Some(target)
+    })
+    .clone()
+}
+
+/// Where older builds kept the WebView2 profile: WebView2's default beside the running
+/// executable, and beside the `browser.exe` the old `install.ps1` put in
+/// `%LOCALAPPDATA%\Programs\browser`.
+fn legacy_data_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(name) = exe.file_name() {
+            let mut folder = name.to_os_string();
+            folder.push(".WebView2");
+            dirs.push(exe.with_file_name(folder));
+        }
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        dirs.push(
+            std::path::PathBuf::from(local)
+                .join("Programs")
+                .join("browser")
+                .join("browser.exe.WebView2"),
+        );
+    }
+    dirs
+}
+
 pub(crate) fn build(
     parent: &Window,
     opts: BuildOptions<'_>,
@@ -97,8 +160,7 @@ pub(crate) fn build(
     let dl_proxy = proxy.clone();
     // Wry falls back to a regular controller on runtimes without Environment10.
     // Build blank, verify the real storage mode, and only then load user content.
-    let mut isolated_context = std::env::var_os("BROWSER_WEBVIEW2_DATA_DIR")
-        .map(|dir| wry::WebContext::new(Some(dir.into())));
+    let mut isolated_context = data_dir().map(|dir| wry::WebContext::new(Some(dir)));
     let mut builder = if let Some(context) = isolated_context.as_mut() {
         WebViewBuilder::new_with_web_context(context)
     } else {
@@ -384,6 +446,14 @@ pub(crate) fn build(
             let _ = extensions::install_dir(&webview, &dir);
         }
     }
+    // Once per run, drop stale copies of the bundled extensions left in the profile
+    // by an older install location (see `install_dir_replacing`).
+    static DEDUPED: AtomicBool = AtomicBool::new(false);
+    if !private && opts.adblock_mode.extension() && !DEDUPED.swap(true, Ordering::Relaxed) {
+        if let Some(dir) = ublock_extensions_dir() {
+            let _ = extensions::install_dir_replacing(&webview, &dir);
+        }
+    }
     // The native redirect guard: cancels forced (non-user-initiated) cross-site top
     // navigations via WebView2's own `IsUserInitiated` — the structural fix the
     // URL-only wry handler above can't be. Best-effort; the wry guards still stand.
@@ -576,8 +646,7 @@ fn native_rect(rect: RectPx) -> Rect {
 }
 
 pub(crate) fn keep_alive(parent: &Window) -> Result<Box<dyn EngineView>> {
-    let mut isolated_context = std::env::var_os("BROWSER_WEBVIEW2_DATA_DIR")
-        .map(|dir| wry::WebContext::new(Some(dir.into())));
+    let mut isolated_context = data_dir().map(|dir| wry::WebContext::new(Some(dir)));
     let mut builder = if let Some(context) = isolated_context.as_mut() {
         WebViewBuilder::new_with_web_context(context)
     } else {

@@ -6,12 +6,18 @@ You need Windows 10/11 x64, a stable Rust toolchain (`rustup` with the MSVC targ
 the WebView2 runtime (preinstalled on Windows 11).
 
 ```powershell
-cargo build --release -p browser-desktop -p browser-pty-host
-.\target\release\browser-desktop.exe
+cargo build --release -p browser-desktop
+.\target\release\browser.exe
 ```
 
-`browser-pty-host.exe` must sit next to the main executable: terminals run in that
-companion process.
+That builds both executables of the `browser-desktop` package: `browser.exe` and
+`browser-pty-host.exe`, the companion process terminals run in. They must stay in
+the same folder.
+
+Release builds keep their data in `%LOCALAPPDATA%\browser\data` (WebView2 profile,
+unpacked uBlock Origin Lite) and `%APPDATA%\browser\data` (session, profiles,
+config). Debug builds keep the WebView2 profile next to the executable and load the
+extension straight from the source tree.
 
 Launch development builds with `--scratch` so they can't touch your real session or
 profiles:
@@ -28,7 +34,7 @@ Useful environment variables:
 
 | Variable | Effect |
 |---|---|
-| `BROWSER_WEBVIEW2_DATA_DIR` | use an isolated WebView2 profile directory |
+| `BROWSER_WEBVIEW2_DATA_DIR` | use an isolated WebView2 profile directory (recommended when testing release builds) |
 | `BROWSER_TEST_QUIT_MS` | quit after N ms without saving (for headless start/stop checks) |
 | `BROWSER_YT_DEBUG=1` | log YouTube page-lifecycle probes to the console |
 
@@ -78,8 +84,8 @@ crates/
     src/engines/  engine adapters behind the browser-engine contract (WebView2, Servo)
     scripts/      JavaScript injected into pages (bridge, hints, selection, scroll)
     assets/       filter lists compiled into the executable
-    extensions/   bundled uBlock Origin Lite
-  pty-host/       companion process that owns the ConPTY and shell for terminal tabs
+    src/bin/      browser-pty-host: owns the ConPTY and shell for terminal tabs
+    extensions/   bundled uBlock Origin Lite (packed into the exe by build.rs)
   engine/         engine-agnostic view/provider contract
   core/           shared Document model, config, bangs, maths, search routing
   backend-text/   readability extraction for :read (reqwest + dom_smoothie)
@@ -116,6 +122,11 @@ The `servo-engine` feature adds Servo as a second engine, selectable per pane wi
 ./run-servo.ps1 -Action Smoke -UseLocalLinker   # isolated integration check
 ```
 
-`install.ps1` installs a local build for your own use (`-WebView2Only` for an optimized
-release build without Servo). End users should use the installers from GitHub Releases.
 See [docs/engine-integration.md](docs/engine-integration.md) for the engine design.
+
+## Installing your own build
+
+`pwsh -File install.ps1` builds an optimized release from your checkout and installs it
+to `%LOCALAPPDATA%\Programs\browser` with a Start Menu shortcut and a PATH entry;
+`-Servo` installs the Servo development build instead. `uninstall.ps1` removes it.
+End users should use the installers from GitHub Releases.

@@ -23,7 +23,7 @@ try {
         '--config','profile.dev.package."*".opt-level=0',
         '--config','profile.dev.package.fontdue.opt-level=2',
         '--config','profile.dev.package.alacritty_terminal.opt-level=2',
-        '--config','profile.dev.package.browser-desktop.opt-level=1','--bin','browser-desktop')
+        '--config','profile.dev.package.browser-desktop.opt-level=1','--bin','browser')
     if ($UseLocalLinker) {
         $tools = Join-Path $repo 'target/servo-tools'
         $linker = Join-Path $tools 'msvc-linker/Contents/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/link.exe'
@@ -35,10 +35,10 @@ try {
     & cargo @cargoArgs
     if ($LASTEXITCODE -ne 0) { throw 'Servo desktop build failed.' }
     # Terminals need their existing companion next to the new browser binary.
-    & cargo build -p browser-pty-host --locked
+    & cargo build -p browser-desktop --bin browser-pty-host --locked
     if ($LASTEXITCODE -ne 0) { throw 'PTY companion build failed.' }
     Copy-Item -LiteralPath (Join-Path $repo 'target/debug/browser-pty-host.exe') -Destination (Join-Path $target 'debug/browser-pty-host.exe') -Force
-    $exe = Join-Path $target 'debug/browser-desktop.exe'
+    $exe = Join-Path $target 'debug/browser.exe'
     if ($Action -eq 'Run') {
         $runArgs = @()
         if ($Scratch) { $runArgs += '--scratch' }

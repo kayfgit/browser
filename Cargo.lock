@@ -712,16 +712,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "browser"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "browser-core",
- "browser-tui",
- "tokio",
-]
-
-[[package]]
 name = "browser-backend-search"
 version = "0.1.0"
 dependencies = [
@@ -746,6 +736,16 @@ dependencies = [
  "scraper",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "browser-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "browser-core",
+ "browser-tui",
+ "tokio",
 ]
 
 [[package]]
@@ -778,8 +778,10 @@ dependencies = [
  "dpi",
  "embed-manifest",
  "euclid",
+ "flate2",
  "fontdue",
  "png",
+ "portable-pty",
  "raw-window-handle",
  "reqwest",
  "rustls",
@@ -790,6 +792,7 @@ dependencies = [
  "softbuffer",
  "surfman",
  "tao",
+ "tar",
  "toml 1.1.2+spec-1.1.0",
  "url",
  "webview2-com",
@@ -802,13 +805,6 @@ dependencies = [
 [[package]]
 name = "browser-engine"
 version = "0.1.0"
-
-[[package]]
-name = "browser-pty-host"
-version = "0.1.0"
-dependencies = [
- "portable-pty",
-]
 
 [[package]]
 name = "browser-tui"

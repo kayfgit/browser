@@ -131,6 +131,13 @@ fn data_dir() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "browser").map(|d| d.data_dir().to_path_buf())
 }
 
+/// The machine-local data directory: `%LOCALAPPDATA%\browser\data` on Windows. For
+/// bulky, rebuildable state that shouldn't roam with the user profile (the WebView2
+/// profile and caches, the unpacked bundled extensions).
+pub fn local_data_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "browser").map(|d| d.data_local_dir().to_path_buf())
+}
+
 /// `<data>/session.toml` — the unnamed default session (the one you get when no
 /// profile is active).
 pub fn session_path() -> Option<PathBuf> {

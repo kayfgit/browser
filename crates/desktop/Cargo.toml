@@ -4,11 +4,20 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+default-run = "browser"
 description = "A modal, mode-dispatching browser — only what's needed, when needed."
 
+# The browser itself. Installed as `browser.exe`.
 [[bin]]
-name = "browser-desktop"
+name = "browser"
 path = "src/main.rs"
+
+# Companion process that owns the ConPTY for terminal tabs (see its module docs).
+# Lives in this package so every build and installer ships the pair together;
+# the browser looks for it next to its own executable.
+[[bin]]
+name = "browser-pty-host"
+path = "src/bin/browser-pty-host.rs"
 
 [features]
 servo-engine = ["dep:servo", "dep:content-security-policy", "dep:euclid", "dep:dpi", "dep:surfman", "dep:raw-window-handle", "dep:scoped-tls", "dep:rustls"]
@@ -33,6 +42,8 @@ fontdue.workspace = true
 # default-features off drops the image/png clipboard stack — we only do text.
 arboard = { version = "3", default-features = false }
 alacritty_terminal = "0.26.0"
+# Only used by the browser-pty-host binary.
+portable-pty = "0.9"
 # default-features off drops `single-thread` (which makes Engine !Send via Rc) so the
 # engine is Send+Sync — we build it off-thread and share it. We only need network
 # blocking, not the cosmetic/CSS machinery.
@@ -43,7 +54,15 @@ adblock = { version = "0.12.5", default-features = false, features = [
 # Decodes the `data:<mime>;base64,…` bodies adblock-rust hands back for `$redirect`
 # surrogate rules (`blocklist::classify_request`, kept for a future ruleset; see there).
 base64 = "0.22"
+# Unpack the bundled extensions embedded by build.rs (bundled_extensions.rs).
+flate2 = "1"
+tar = "0.4"
 png = "0.18.1"
+
+[build-dependencies]
+# Pack the bundled extensions into the executable (see build.rs).
+flate2 = "1"
+tar = "0.4"
 
 [target.'cfg(windows)'.build-dependencies]
 embed-manifest = "1.4"

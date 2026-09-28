@@ -13,7 +13,7 @@
 //!   * browser → our stdin: frames `[type:u8][len:u32 LE][payload]`;
 //!     type 0 = input bytes to write to the PTY; type 1 = resize with payload
 //!     `[cols:u16 LE][rows:u16 LE]`.
-//!   * our stdout ← PTY: raw output bytes (the browser base64s and feeds xterm).
+//!   * our stdout ← PTY: raw output bytes (the browser feeds them to its VT parser).
 //!
 //! Built as a Windows GUI-subsystem binary so launching it from the (GUI)
 //! browser does not pop up a console window — and, crucially, WITHOUT spawning
