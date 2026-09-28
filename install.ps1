@@ -68,7 +68,7 @@ if ($Servo -and -not $NoBuild) {
     Write-Host "`nBuilding release binaries..."
     Push-Location $repo
     try {
-        cargo build --release --locked -p browser-desktop
+        cargo build --release --locked -p browser
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed (exit $LASTEXITCODE)" }
     } finally {
         Pop-Location

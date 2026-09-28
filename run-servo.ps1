@@ -18,12 +18,12 @@ try {
         $env:LIBCLANG_PATH = [IO.Path]::GetFullPath($localClang)
     }
     # Reuse the lab's dev artifacts; normal desktop builds retain their optimization.
-    $cargoArgs = @('rustc','-p','browser-desktop','--features','servo-engine','--locked','--target-dir',$target,'-j','1',
+    $cargoArgs = @('rustc','-p','browser','--features','servo-engine','--locked','--target-dir',$target,'-j','1',
         '--config','profile.dev.opt-level=0','--config','profile.dev.debug=0','--config','profile.dev.incremental=false',
         '--config','profile.dev.package."*".opt-level=0',
         '--config','profile.dev.package.fontdue.opt-level=2',
         '--config','profile.dev.package.alacritty_terminal.opt-level=2',
-        '--config','profile.dev.package.browser-desktop.opt-level=1','--bin','browser')
+        '--config','profile.dev.package.browser.opt-level=1','--bin','browser')
     if ($UseLocalLinker) {
         $tools = Join-Path $repo 'target/servo-tools'
         $linker = Join-Path $tools 'msvc-linker/Contents/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/link.exe'
@@ -35,7 +35,7 @@ try {
     & cargo @cargoArgs
     if ($LASTEXITCODE -ne 0) { throw 'Servo desktop build failed.' }
     # Terminals need their existing companion next to the new browser binary.
-    & cargo build -p browser-desktop --bin browser-pty-host --locked
+    & cargo build -p browser --bin browser-pty-host --locked
     if ($LASTEXITCODE -ne 0) { throw 'PTY companion build failed.' }
     Copy-Item -LiteralPath (Join-Path $repo 'target/debug/browser-pty-host.exe') -Destination (Join-Path $target 'debug/browser-pty-host.exe') -Force
     $exe = Join-Path $target 'debug/browser.exe'

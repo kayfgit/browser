@@ -49,7 +49,7 @@ impl Candidate {
 fn client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
-        .user_agent("browser-desktop") // GitHub rejects requests without a UA
+        .user_agent("browser") // GitHub rejects requests without a UA
         .build()
         .map_err(|e| e.to_string())
 }

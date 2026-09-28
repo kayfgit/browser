@@ -1,11 +1,23 @@
 [package]
-name = "browser-desktop"
+name = "browser"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 default-run = "browser"
 description = "A modal, mode-dispatching browser — only what's needed, when needed."
+
+[package.metadata.dist]
+# Ship the third-party notices in the release archive (the MSI adds them too).
+include = ["../../THIRD_PARTY_NOTICES.md"]
+
+[package.metadata.wix]
+upgrade-guid = "48D6537F-B5B7-450F-BB2A-CA44F4275E40"
+path-guid = "74A64A9E-90DA-43E4-9945-59106CCE9B42"
+license = false
+eula = false
 
 # The browser itself. Installed as `browser.exe`.
 [[bin]]

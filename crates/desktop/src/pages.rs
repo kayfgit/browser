@@ -192,7 +192,7 @@ impl App {
             lines.push(String::new());
             lines.push(format!("Servo: {views} open views; shared runtime loaded."));
             lines.push(format!(
-                "Servo CPU/memory/I/O are included in browser-desktop (PID {}).",
+                "Servo CPU/memory/I/O are included in browser.exe (PID {}).",
                 std::process::id()
             ));
             lines.push(
