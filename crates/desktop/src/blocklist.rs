@@ -269,8 +269,8 @@ mod tests {
     /// suspect was a filter rule killing the request that populates it. It isn't: with all
     /// five lists compiled, every request that menu depends on passes — the lazy
     /// `/youtubei/v1/*` fetches, the avatar images, and the `accounts.google.com` /
-    /// `ogs.google.com` frames it embeds. (The cause was the INTERCEPTION itself; see the
-    /// YouTube filter gate in `netblock`.) This test exists so a future list refresh that
+    /// `ogs.google.com` frames it embeds. (The cause was the INTERCEPTION itself — the
+    /// since-removed `WebResourceRequested` sub-resource blocker.) This test exists so a future list refresh that
     /// does start blocking one of these is caught here rather than as a dead button.
     #[test]
     fn nothing_bundled_blocks_the_youtube_account_menu() {
@@ -315,8 +315,8 @@ mod tests {
     ///
     /// The account-menu test above covers the lazy UI fetches; this one covers the
     /// resources the video itself needs. They matter more, and they're less obvious:
-    /// unlike `youtubei`, most of them are NOT on a `youtube.com` host, so the
-    /// `is_youtube_host` carve-out in `netblock` does not spare them — the player JS
+    /// unlike `youtubei`, most of them are NOT on a `youtube.com` host, so a
+    /// `youtube.com` carve-out would not spare them — the player JS
     /// comes from `s.ytimg.com` and the audio/video segments from `*.googlevideo.com`.
     /// A rule that catches one of those reads as a black player with no sound.
     #[test]

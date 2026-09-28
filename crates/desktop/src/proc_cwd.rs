@@ -44,7 +44,7 @@ pub(crate) fn shell_cwd(host_pid: u32) -> Option<String> {
             }
         }
     }
-    candidates.sort_by(|a, b| b.0.cmp(&a.0)); // deepest first
+    candidates.sort_by_key(|&(depth, _)| std::cmp::Reverse(depth)); // deepest first
     candidates.iter().find_map(|&(_, pid)| process_cwd(pid))
 }
 
@@ -179,8 +179,10 @@ fn process_cwd(pid: u32) -> Option<String> {
                 return None;
             }
             let wide: Vec<u16> = raw
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&c| u16::from_le_bytes(c))
                 .collect();
             let mut path = String::from_utf16_lossy(&wide);
             // The PEB stores "C:\dir\" with a trailing slash; drop it (but keep

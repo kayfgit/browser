@@ -1,5 +1,5 @@
 //! Terminal UI front end: sets up the terminal, pumps input events, and runs the
-//! [`App`] event loop. Public entry point is [`run`].
+//! `App` event loop. Public entry point is [`run`].
 
 use std::io;
 use std::sync::Arc;

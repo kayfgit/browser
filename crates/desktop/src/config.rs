@@ -143,9 +143,11 @@ pub(crate) fn scheme_key(name: &str) -> String {
 pub(crate) fn load_custom_scheme(name: &str) -> Option<crate::pty_term::TermStyle> {
     let path = schemes_dir()?.join(format!("{}.toml", scheme_key(name)));
     let file: SchemeFile = toml::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-    let mut st = crate::pty_term::TermStyle::default();
-    st.fg = crate::draw::parse_color(&file.fg)?;
-    st.bg = crate::draw::parse_color(&file.bg)?;
+    let mut st = crate::pty_term::TermStyle {
+        fg: crate::draw::parse_color(&file.fg)?,
+        bg: crate::draw::parse_color(&file.bg)?,
+        ..Default::default()
+    };
     if file.ansi.len() != 16 {
         return None;
     }

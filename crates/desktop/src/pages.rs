@@ -257,7 +257,7 @@ impl App {
     }
 
     /// `:extensions` — kick off the async query of the installed browser extensions. The
-    /// picker opens once the result lands ([`UserEvent::ExtensionsListed`] →
+    /// picker opens once the result lands ([`UserEvent::ExtensionsListed`](crate::app::UserEvent::ExtensionsListed) →
     /// [`show_extensions_page`](Self::show_extensions_page)). Extensions hang off the webview
     /// profile, so this needs a live web engine — it asks you to open a page first if none.
     pub(crate) fn open_extensions_page(&mut self) {

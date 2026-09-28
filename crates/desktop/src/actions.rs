@@ -845,7 +845,7 @@ impl App {
         self.window.request_redraw();
     }
 
-    /// A background scheme download finished ([`UserEvent::SchemeInstalled`]): apply
+    /// A background scheme download finished ([`UserEvent::SchemeInstalled`](crate::app::UserEvent::SchemeInstalled)): apply
     /// it on success, report either way — into the initiating `:ai` chat when there
     /// was one (falling back to the status bar when that chat isn't on screen).
     pub(crate) fn finish_scheme_install(

@@ -659,8 +659,7 @@ fn quote_object(line: &[char], cx: usize, q: char, around: bool) -> Option<(usiz
         .filter(|(_, &c)| c == q)
         .map(|(i, _)| i)
         .collect();
-    for pair in positions.chunks_exact(2) {
-        let (a, b) = (pair[0], pair[1]);
+    for &[a, b] in positions.as_chunks::<2>().0 {
         if cx >= a && cx <= b {
             return if around {
                 Some((a, b + 1))

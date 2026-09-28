@@ -269,22 +269,11 @@ pub(crate) enum ModeKind {
     Caret,
 }
 
-/// Whether ad blocking is on.
+/// Whether ad blocking is on, and which halves run.
 ///
-/// This used to select between two rival ENGINES, mutually exclusive so only one ran. That
+/// There used to be two rival ENGINES here, mutually exclusive so only one ran. That
 /// framing was wrong: neither one is a whole ad blocker, and running either alone left a
 /// hole the other would have covered.
-///
-///   * uBlock Origin Lite filters at the NETWORK level, inside Chromium's own stack — fast,
-///     and free of any host-process cost. But under WebView2 it doesn't see its `<all_urls>`
-///     grant, so it demotes itself to "Basic" (`js/mode-manager.js`), which does no COSMETIC
-///     filtering at all. It cannot hide YouTube's own ad slots, and never will here.
-///   * The native side — `ADBLOCK_JS` plus the blocklist engine — is exactly the other half:
-///     cosmetic hiding, YouTube player-response pruning, popunder neutering, and the
-///     redirect guard. It runs as an initialization script, so it can't lose a race with an
-///     extension service worker, and it toggles live with no reload.
-///
-/// The two halves of ad blocking, and why they run TOGETHER rather than as rivals.
 ///
 ///   * uBlock Origin Lite filters at the NETWORK level, inside Chromium's own stack — fast,
 ///     and free of any host-process cost. But under WebView2 it doesn't see its `<all_urls>`
@@ -420,8 +409,9 @@ pub(crate) struct App {
     /// Monotonic request token: stale extension-list responses must not replace a
     /// newer picker. Each picker owns its source view and its own cached items.
     pub(crate) extension_request: u64,
-    /// When true, the native uBlock-style content blocker ([`ADBLOCK_JS`]) is injected
-    /// into web tabs. Driven by [`adblock_mode`](Self::adblock_mode) (true only in `Native`).
+    /// Whether the native layers ([`ADBLOCK_JS`](crate::ADBLOCK_JS) and the redirect/popup
+    /// guards) are active: [`AdblockMode::blocking`] of [`adblock_mode`](Self::adblock_mode),
+    /// so true in both `Ubo` and `Native`.
     pub(crate) adblock: bool,
     /// A live mirror of [`adblock`](Self::adblock) shared (cloned `Arc`) into every
     /// web tab's navigation handler, so the native top-level redirect guard
@@ -437,7 +427,7 @@ pub(crate) struct App {
     /// to known ad/redirect/malware domains BY NAME — the race-free primary guard, the
     /// way Brave/uBlock do it. `None` until it finishes compiling just after launch.
     pub(crate) blocker: crate::blocklist::SharedBlocker,
-    /// Live page-feature toggles ([`FEATURES_JS`]), applied to every web tab without
+    /// Live page-feature toggles ([`FEATURES_JS`](crate::FEATURES_JS)), applied to every web tab without
     /// a reload. `mute` keeps all media muted; `no_css` disables every stylesheet;
     /// `no_video` strips `<video>`/player embeds (like `:research`, but toggleable);
     /// `no_scrollbar` hides the pages' scrollbars (`:scrollbar`).
@@ -593,7 +583,7 @@ pub(crate) struct App {
     /// (1 s) backstop tier is enough, so a focused native pane stays near-idle.
     pub(crate) background_webview_visible: bool,
     /// Scrollback lines kept per terminal (memory scales with it; see
-    /// [`pty_term::DEFAULT_SCROLLBACK`]).
+    /// [`pty_term::DEFAULT_SCROLLBACK`](crate::pty_term::DEFAULT_SCROLLBACK)).
     pub(crate) term_scrollback: usize,
     /// The live `:te` terminal style (fg/bg + ANSI palette), resolved from
     /// `config.term` by [`rebuild_term_style`](Self::rebuild_term_style).
@@ -605,7 +595,7 @@ pub(crate) struct App {
     pub(crate) term_painter: Option<crate::draw::Painter>,
     /// Set while an `H`/`L` history replay is reopening a page in place, so the
     /// synchronous navigation paths ([`place_tab`](Self::place_tab)) don't re-record
-    /// the page being left (the stacks were already adjusted by [`history`]). The
+    /// the page being left (the stacks were already adjusted by [`history`](Self::history)). The
     /// asynchronous read path is gated separately by `ReadReady.record`.
     pub(crate) nav_replaying: bool,
     /// Pending vi find-char in a terminal's copy mode: `(forward, till)` while
@@ -644,9 +634,6 @@ pub(crate) struct App {
     /// the (hidden) webviews. `:unfreeze` resumes them. See [`freeze`](crate::freeze).
     pub(crate) frozen: bool,
 }
-
-/// Tag this process with an explicit AppUserModelID so Windows (taskbar + Task
-/// Manager) treats it and every process it spawns as one application. The id is
 
 /// Put `text` on the system clipboard (best-effort; failures are ignored).
 pub(crate) fn clipboard_set(text: &str) {
@@ -1590,8 +1577,8 @@ impl App {
                     *c = true;
                 }
             }
-            for i in 0..self.tabs.len() {
-                if !covered[i] && self.tabs[i].ai().is_none() {
+            for (i, tab) in self.tabs.iter().enumerate() {
+                if !covered[i] && tab.ai().is_none() {
                     rebuilt.push(PaneNode::Leaf(i));
                 }
             }

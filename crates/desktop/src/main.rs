@@ -175,7 +175,7 @@ const RESEARCH_JS: &str = r#"
 "#;
 
 /// Well-known ad-exchange / analytics / tracker hostnames, lower-cased. Consulted by the
-/// native navigation guard ([`url_is_ad_host`]) as the tiny always-on fallback that stops
+/// native navigation guard ([`url_is_ad_host`](crate::tabs::url_is_ad_host)) as the tiny always-on fallback that stops
 /// a forced top-level redirect to one of these hosts during the brief window before the
 /// full EasyList [`Engine`](crate::blocklist) finishes compiling off-thread at startup.
 /// The page-side cosmetic layer doesn't read this list — the engine is the source of truth
@@ -856,7 +856,11 @@ const FIND_JS: &str = r#"
 })();
 "#;
 
-/// pty-host trees under the shell. Best-effort: any failure is ignored.
+/// Tag this process with an explicit AppUserModelID so the taskbar treats it and
+/// the processes it spawns as one application. (Task Manager still files WebView2
+/// under its own "WebView2 Manager" group: the runtime claims a separate identity.
+/// Correct parenting comes from the DPI manifest in `build.rs`.) Best-effort: any
+/// failure is ignored.
 #[cfg(windows)]
 fn set_app_user_model_id() {
     use windows::core::w;
@@ -1273,13 +1277,13 @@ fn main() -> Result<()> {
                         app.on_wheel(dy);
                     }
                 }
-                WindowEvent::KeyboardInput { event: key, .. } => {
-                    if key.state == ElementState::Pressed {
-                        app.handle_key(&key);
-                        if app.quit {
-                            app.teardown();
-                            *control_flow = ControlFlow::Exit;
-                        }
+                WindowEvent::KeyboardInput { event: key, .. }
+                    if key.state == ElementState::Pressed =>
+                {
+                    app.handle_key(&key);
+                    if app.quit {
+                        app.teardown();
+                        *control_flow = ControlFlow::Exit;
                     }
                 }
                 _ => {}

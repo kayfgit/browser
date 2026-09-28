@@ -939,7 +939,7 @@ enum ShellKind {
     Other,
 }
 
-/// Classify a shell argv[0] (possibly a full path, possibly `.exe`-suffixed).
+/// Classify a shell `argv[0]` (possibly a full path, possibly `.exe`-suffixed).
 fn shell_kind(argv0: &str) -> ShellKind {
     let base = argv0.rsplit(['\\', '/']).next().unwrap_or(argv0);
     match base.to_ascii_lowercase().trim_end_matches(".exe") {
@@ -1071,7 +1071,7 @@ fn encode_term_key(
     Some(out)
 }
 
-/// Control code for Ctrl+<char>: `Ctrl+A`→0x01 … `Ctrl+Z`→0x1a, `Ctrl+[`→ESC,
+/// Control code for `Ctrl+<char>`: `Ctrl+A`→0x01 … `Ctrl+Z`→0x1a, `Ctrl+[`→ESC,
 /// `Ctrl+Space`→NUL, etc. `None` for non-controllable keys.
 fn ctrl_byte(c: char) -> Option<u8> {
     if !c.is_ascii() {

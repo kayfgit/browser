@@ -75,16 +75,20 @@ impl PageState {
 
 /// What a tab shows. Exactly one of these — the invariants the old
 /// quadruple-Option encoding kept by comment are now kept by construction.
+// Variants differ a lot in size, but there are only ever a handful of tabs, so
+// boxing the big ones would buy nothing but indirection.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum TabContent {
     /// An engine page (child surface over the content band) plus the load /
     /// favicon state its engine callbacks report into.
     Web(Box<dyn EngineView>, PageState),
-    /// A restorable location whose requested provider could not be created.
+    /// The `:extensions` picker for the extensions installed in `view`'s profile.
     Extensions {
         view: browser_engine::ViewId,
         items: Vec<crate::ExtInfo>,
         buffer: vim::TextBuffer,
     },
+    /// A restorable location whose requested provider could not be created.
     Unavailable {
         provider: String,
         error: String,
@@ -658,7 +662,7 @@ impl App {
     ///
     /// Holding one webview across the swap keeps the process (and its whole profile
     /// state) live, and the rebuilt tabs attach to it instead of booting a new one.
-    /// Environment options MUST match every other webview (see [`BROWSER_ARGS`]) or
+    /// Environment options MUST match every other webview (see [`BROWSER_ARGS`](crate::BROWSER_ARGS)) or
     /// WebView2 refuses to create it with 0x8007139F.
     pub(crate) fn hold_engine(&mut self) {
         if self.engine_keepalive.is_some() {
@@ -1349,7 +1353,7 @@ impl App {
         self.window.request_redraw();
     }
 
-    /// Flip a live page-feature toggle ([`FEATURES_JS`]) on every open web tab via
+    /// Flip a live page-feature toggle ([`FEATURES_JS`](crate::FEATURES_JS)) on every open web tab via
     /// `__setToggle` (no reload). `name` is `mute` | `css` | `video` | `scrollbar`.
     pub(crate) fn broadcast_toggle(&self, name: &str, on: bool) {
         for tab in &self.tabs {

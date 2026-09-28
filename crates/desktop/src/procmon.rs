@@ -104,7 +104,7 @@ pub fn tree_sample() -> Vec<ProcSample> {
             stack.extend(kids.iter().copied());
         }
     }
-    out.sort_by(|a, b| b.working_set.cmp(&a.working_set));
+    out.sort_by_key(|p| std::cmp::Reverse(p.working_set));
     out
 }
 

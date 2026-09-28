@@ -801,7 +801,7 @@ impl App {
     }
 
     /// Enter passthrough on the AI tab (type into its field). The shell keeps keyboard
-    /// focus — there's no webview — and forwards keys via [`key_ai`], which owns Esc
+    /// focus — there's no webview — and forwards keys via [`key_ai`](crate::App::key_ai), which owns Esc
     /// (leave), Enter (send), and Ctrl+U (clear).
     pub(crate) fn enter_ai_passthrough(&mut self) {
         if let Some(ai) = self.active_ai_mut() {

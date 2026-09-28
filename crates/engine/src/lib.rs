@@ -215,8 +215,17 @@ pub trait Suspension {
 }
 
 // Runtime polymorphism is the point of this contract: keep every service object safe.
-const _: fn(&dyn EngineView, &dyn History, &dyn Extensions, &dyn BrowsingData, &dyn Suspension) =
-    |_, _, _, _, _| {};
+const _: () = {
+    #[allow(dead_code)]
+    fn assert_dyn_compatible(
+        _: &dyn EngineView,
+        _: &dyn History,
+        _: &dyn Extensions,
+        _: &dyn BrowsingData,
+        _: &dyn Suspension,
+    ) {
+    }
+};
 
 #[cfg(test)]
 mod provider_tests {

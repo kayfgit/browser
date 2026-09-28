@@ -39,7 +39,7 @@ impl Default for Config {
 pub enum SearchProvider {
     /// A SearXNG instance exposing the JSON `format=json` API.
     Searxng,
-    /// DuckDuckGo's HTML-lite endpoint (https://lite.duckduckgo.com/lite/).
+    /// DuckDuckGo's HTML-lite endpoint (<https://lite.duckduckgo.com/lite/>).
     Ddg,
 }
 

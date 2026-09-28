@@ -1,10 +1,10 @@
 //! A low-level keyboard hook (`WH_KEYBOARD_LL`) that lets the shell intercept its
 //! reserved mode-exit chords even when keyboard focus lives inside the web page —
-//! including a cross-origin iframe, where the injected [`BRIDGE_JS`] can't run. That
+//! including a cross-origin iframe, where the injected [`BRIDGE_JS`](crate::BRIDGE_JS) can't run. That
 //! is the root cause of "stuck in passthrough, only alt-tab gets me out": the leave
 //! chord was caught solely by in-page JS.
 //!
-//! It posts SEMANTIC [`UserEvent`]s back to the event loop — it never replays raw
+//! It posts SEMANTIC [`UserEvent`](crate::app::UserEvent)s back to the event loop — it never replays raw
 //! keystrokes (tao's `KeyEvent` isn't constructible), so it only handles the small,
 //! fixed set of chords below and passes everything else straight through. It acts
 //! ONLY while our own window is the foreground window, so other apps are never
