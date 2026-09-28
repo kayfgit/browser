@@ -52,7 +52,12 @@ pub(crate) fn build(
     opts: BuildOptions<'_>,
     identity: browser_engine::ViewIdentity,
 ) -> Result<(Box<dyn EngineView>, PageState)> {
-    let BuildOptions { source, disable_js, extra_init, .. } = opts;
+    let BuildOptions {
+        source,
+        disable_js,
+        extra_init,
+        ..
+    } = opts;
     let private = identity.storage == browser_engine::StorageMode::Private;
     let proxy = super::PageEventProxy::new(opts.proxy.clone(), identity.id);
     let nav_intent: crate::navguard::NavIntent = Arc::new(Mutex::new(None));
@@ -96,7 +101,9 @@ pub(crate) fn build(
         .map(|dir| wry::WebContext::new(Some(dir.into())));
     let mut builder = if let Some(context) = isolated_context.as_mut() {
         WebViewBuilder::new_with_web_context(context)
-    } else { WebViewBuilder::new() };
+    } else {
+        WebViewBuilder::new()
+    };
     // Load uBlock Origin (any unpacked extension in the dir) into WebView2's own
     // Chromium engine. The extension does network + cosmetic + scriptlet ad-blocking
     // natively — far more capable than a hand-rolled blocker, and it doesn't depend on
@@ -368,7 +375,9 @@ pub(crate) fn build(
     if disable_js {
         builder = builder.with_javascript_disabled();
     }
-    let webview = builder.build_as_child(parent).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let webview = builder
+        .build_as_child(parent)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     verify_storage(&webview, identity.storage)?;
     if private && opts.adblock_mode.extension() {
         if let Some(dir) = ublock_extensions_dir() {
@@ -378,7 +387,12 @@ pub(crate) fn build(
     // The native redirect guard: cancels forced (non-user-initiated) cross-site top
     // navigations via WebView2's own `IsUserInitiated` — the structural fix the
     // URL-only wry handler above can't be. Best-effort; the wry guards still stand.
-    navigation::install(&webview, opts.adblock_on.clone(), nav_intent.clone(), proxy.clone());
+    navigation::install(
+        &webview,
+        opts.adblock_on.clone(),
+        nav_intent.clone(),
+        proxy.clone(),
+    );
     // NOTE: there is deliberately no `WebResourceRequested` sub-resource blocker here.
     // One used to run the full EasyList engine over every script/iframe/XHR, but
     // registering that filter routes every sub-resource through a handler on the HOST's
@@ -405,7 +419,15 @@ pub(crate) fn build(
         Source::Url(url) => webview.load_url(&url)?,
         Source::Html(html) => webview.load_html(&html)?,
     }
-    Ok((Box::new(WebView2View { inner: webview, identity, nav_intent, _context: isolated_context }), page))
+    Ok((
+        Box::new(WebView2View {
+            inner: webview,
+            identity,
+            nav_intent,
+            _context: isolated_context,
+        }),
+        page,
+    ))
 }
 
 fn verify_storage(view: &WebView, expected: browser_engine::StorageMode) -> Result<()> {
@@ -558,7 +580,10 @@ pub(crate) fn keep_alive(parent: &Window) -> Result<Box<dyn EngineView>> {
         .map(|dir| wry::WebContext::new(Some(dir.into())));
     let mut builder = if let Some(context) = isolated_context.as_mut() {
         WebViewBuilder::new_with_web_context(context)
-    } else { WebViewBuilder::new() }.with_html("");
+    } else {
+        WebViewBuilder::new()
+    }
+    .with_html("");
     // Match the content views' environment options, without reinstalling extensions.
     if ublock_extensions_dir().is_some() {
         builder = builder.with_browser_extensions_enabled(true);
@@ -567,7 +592,12 @@ pub(crate) fn keep_alive(parent: &Window) -> Result<Box<dyn EngineView>> {
         .with_additional_browser_args(BROWSER_ARGS)
         .with_visible(false)
         .with_focused(false)
-        .with_bounds(native_rect(RectPx { x: 0, y: 0, w: 1, h: 1 }))
+        .with_bounds(native_rect(RectPx {
+            x: 0,
+            y: 0,
+            w: 1,
+            h: 1,
+        }))
         .build_as_child(parent)?;
     let _ = suspension::suspend(&inner);
     Ok(Box::new(WebView2View {
@@ -600,7 +630,9 @@ impl EngineView for WebView2View {
         self.inner.url().map_err(|e| e.to_string())
     }
     fn set_bounds(&self, rect: RectPx) -> EngineResult {
-        self.inner.set_bounds(native_rect(rect)).map_err(|e| e.to_string())
+        self.inner
+            .set_bounds(native_rect(rect))
+            .map_err(|e| e.to_string())
     }
     fn set_visible(&self, visible: bool) -> EngineResult {
         self.inner.set_visible(visible).map_err(|e| e.to_string())
@@ -615,7 +647,9 @@ impl EngineView for WebView2View {
         self.inner.focus_parent().map_err(|e| e.to_string())
     }
     fn evaluate_script(&self, script: &str) -> EngineResult {
-        self.inner.evaluate_script(script).map_err(|e| e.to_string())
+        self.inner
+            .evaluate_script(script)
+            .map_err(|e| e.to_string())
     }
     fn history(&self) -> Option<&dyn History> {
         Some(self)
@@ -679,10 +713,14 @@ mod runtime_tests {
         let mut builder = tao::event_loop::EventLoopBuilder::<()>::new();
         builder.with_any_thread(true);
         let event_loop = builder.build();
-        let window =
-            tao::window::WindowBuilder::new().with_visible(false).build(&event_loop).unwrap();
-        let stamp =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let window = tao::window::WindowBuilder::new()
+            .with_visible(false)
+            .build(&event_loop)
+            .unwrap();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/engine-tests")
             .join(format!("{}-{stamp}", std::process::id()));

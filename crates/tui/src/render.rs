@@ -21,7 +21,9 @@ impl Word {
 }
 
 fn link_style() -> Style {
-    Style::default().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)
+    Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::UNDERLINED)
 }
 fn marker_style() -> Style {
     Style::default().fg(Color::DarkGray)
@@ -42,10 +44,16 @@ pub fn render_document(doc: &Document, width: usize) -> Vec<Line<'static>> {
                 out.extend(wrap_words(spans_to_words(spans, base), width, 0));
             }
             Block::Paragraph { spans } => {
-                out.extend(wrap_words(spans_to_words(spans, Style::default()), width, 0));
+                out.extend(wrap_words(
+                    spans_to_words(spans, Style::default()),
+                    width,
+                    0,
+                ));
             }
             Block::Quote { spans } => {
-                let base = Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC);
+                let base = Style::default()
+                    .fg(Color::Gray)
+                    .add_modifier(Modifier::ITALIC);
                 for mut line in wrap_words(spans_to_words(spans, base), width, 2) {
                     line.spans.insert(0, TSpan::styled("│ ", marker_style()));
                     out.push(line);
@@ -112,7 +120,9 @@ fn spans_to_words(spans: &[Span], base: Style) -> Vec<Word> {
                 let marker = format!("[{link_id}]");
                 match words.last_mut() {
                     Some(last) => last.frags.push((marker, marker_style())),
-                    None => words.push(Word { frags: vec![(marker, marker_style())] }),
+                    None => words.push(Word {
+                        frags: vec![(marker, marker_style())],
+                    }),
                 }
             }
         }
@@ -123,7 +133,9 @@ fn spans_to_words(spans: &[Span], base: Style) -> Vec<Word> {
 /// Split `text` on whitespace into single-fragment words.
 fn push_words(words: &mut Vec<Word>, text: &str, style: Style) {
     for piece in text.split_whitespace() {
-        words.push(Word { frags: vec![(piece.to_string(), style)] });
+        words.push(Word {
+            frags: vec![(piece.to_string(), style)],
+        });
     }
 }
 

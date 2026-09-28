@@ -112,7 +112,13 @@ impl TextBuffer {
 
     /// Status-bar mode tag, if a visual selection is active.
     pub fn mode_label(&self) -> Option<&'static str> {
-        self.anchor.map(|_| if self.linewise { "VISUAL LINE" } else { "VISUAL" })
+        self.anchor.map(|_| {
+            if self.linewise {
+                "VISUAL LINE"
+            } else {
+                "VISUAL"
+            }
+        })
     }
 
     fn line_len(&self, row: usize) -> usize {
@@ -123,7 +129,11 @@ impl TextBuffer {
     /// past the last char (used while building selections / after `$`).
     fn clamp_cx(&mut self, allow_end: bool) {
         let len = self.line_len(self.cy);
-        let max = if allow_end { len } else { len.saturating_sub(1) };
+        let max = if allow_end {
+            len
+        } else {
+            len.saturating_sub(1)
+        };
         if self.cx > max {
             self.cx = max;
         }
@@ -352,7 +362,8 @@ impl TextBuffer {
             while i < n && line[i].is_whitespace() {
                 i += 1;
             }
-            while i + 1 < n && is_word(line[i + 1]) == is_word(line[i]) && !line[i].is_whitespace() {
+            while i + 1 < n && is_word(line[i + 1]) == is_word(line[i]) && !line[i].is_whitespace()
+            {
                 i += 1;
             }
             i.min(n.saturating_sub(1))
@@ -442,11 +453,17 @@ impl TextBuffer {
     // --- text extraction ------------------------------------------------------
 
     fn line_text(&self, row: usize) -> String {
-        self.lines.get(row).map(|l| l.iter().collect()).unwrap_or_default()
+        self.lines
+            .get(row)
+            .map(|l| l.iter().collect())
+            .unwrap_or_default()
     }
 
     fn lines_text(&self, a: usize, b: usize) -> String {
-        (a..=b).map(|r| self.line_text(r)).collect::<Vec<_>>().join("\n")
+        (a..=b)
+            .map(|r| self.line_text(r))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn yank_cols(&self, row: usize, a: usize, b: usize) -> Option<String> {
@@ -462,10 +479,15 @@ impl TextBuffer {
     /// nothing is selected. Also read by the right-click copy, which yanks without
     /// going through a key.
     pub fn selection_text(&self) -> String {
-        let Some((ay, ax)) = self.anchor else { return String::new() };
+        let Some((ay, ax)) = self.anchor else {
+            return String::new();
+        };
         let (cy, cx) = (self.cy, self.cx);
-        let ((sy, sx), (ey, ex)) =
-            if (ay, ax) <= (cy, cx) { ((ay, ax), (cy, cx)) } else { ((cy, cx), (ay, ax)) };
+        let ((sy, sx), (ey, ex)) = if (ay, ax) <= (cy, cx) {
+            ((ay, ax), (cy, cx))
+        } else {
+            ((cy, cx), (ay, ax))
+        };
         if self.linewise {
             return self.lines_text(sy, ey);
         }
@@ -508,8 +530,11 @@ impl TextBuffer {
     pub fn selection_on_row(&self, row: usize) -> Option<(usize, usize)> {
         let (ay, ax) = self.anchor?;
         let (cy, cx) = (self.cy, self.cx);
-        let ((sy, sx), (ey, ex)) =
-            if (ay, ax) <= (cy, cx) { ((ay, ax), (cy, cx)) } else { ((cy, cx), (ay, ax)) };
+        let ((sy, sx), (ey, ex)) = if (ay, ax) <= (cy, cx) {
+            ((ay, ax), (cy, cx))
+        } else {
+            ((cy, cx), (ay, ax))
+        };
         if row < sy || row > ey {
             return None;
         }
@@ -518,7 +543,11 @@ impl TextBuffer {
             return Some((0, len + 1));
         }
         let start = if row == sy { sx } else { 0 };
-        let end = if row == ey { (ex + 1).min(len) } else { len + 1 };
+        let end = if row == ey {
+            (ex + 1).min(len)
+        } else {
+            len + 1
+        };
         Some((start, end))
     }
 }
@@ -577,7 +606,13 @@ fn word_object(line: &[char], cx: usize, around: bool) -> Option<(usize, usize)>
 
 /// Range between the `open`/`close` pair surrounding `cx` (non-nested, single line).
 /// `around` includes the delimiters.
-fn pair_object(line: &[char], cx: usize, open: char, close: char, around: bool) -> Option<(usize, usize)> {
+fn pair_object(
+    line: &[char],
+    cx: usize,
+    open: char,
+    close: char,
+    around: bool,
+) -> Option<(usize, usize)> {
     // Nearest unmatched `open` at or before cx.
     let mut depth = 0i32;
     let mut o = None;
@@ -618,11 +653,20 @@ fn pair_object(line: &[char], cx: usize, open: char, close: char, around: bool) 
 /// Range inside the pair of `q` quotes surrounding `cx` (single line). `around`
 /// includes the quotes.
 fn quote_object(line: &[char], cx: usize, q: char, around: bool) -> Option<(usize, usize)> {
-    let positions: Vec<usize> = line.iter().enumerate().filter(|(_, &c)| c == q).map(|(i, _)| i).collect();
+    let positions: Vec<usize> = line
+        .iter()
+        .enumerate()
+        .filter(|(_, &c)| c == q)
+        .map(|(i, _)| i)
+        .collect();
     for pair in positions.chunks_exact(2) {
         let (a, b) = (pair[0], pair[1]);
         if cx >= a && cx <= b {
-            return if around { Some((a, b + 1)) } else { Some((a + 1, b)) };
+            return if around {
+                Some((a, b + 1))
+            } else {
+                Some((a + 1, b))
+            };
         }
     }
     None

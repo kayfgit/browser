@@ -70,48 +70,93 @@ pub struct TermStyle {
 
 impl Default for TermStyle {
     fn default() -> Self {
-        TermStyle { fg: FG, bg: BG, ansi: ANSI }
+        TermStyle {
+            fg: FG,
+            bg: BG,
+            ansi: ANSI,
+        }
     }
 }
 
 /// Scheme names accepted by [`scheme`], in the order shown to the user/AI.
-pub const SCHEMES: &[&str] =
-    &["campbell", "dracula", "gruvbox", "nord", "solarized", "onedark", "monokai"];
+pub const SCHEMES: &[&str] = &[
+    "campbell",
+    "dracula",
+    "gruvbox",
+    "nord",
+    "solarized",
+    "onedark",
+    "monokai",
+];
 
 /// Look up a built-in colour scheme by name (case-insensitive). Palettes are the
 /// widely-published values for each theme; `campbell` is the built-in default.
 pub fn scheme(name: &str) -> Option<TermStyle> {
     // (fg, bg, [16 ANSI colors 0..=7 normal, 8..=15 bright])
-    let hex = |n: u32| -> Rgb { (((n >> 16) & 0xff) as u8, ((n >> 8) & 0xff) as u8, (n & 0xff) as u8) };
+    let hex = |n: u32| -> Rgb {
+        (
+            ((n >> 16) & 0xff) as u8,
+            ((n >> 8) & 0xff) as u8,
+            (n & 0xff) as u8,
+        )
+    };
     let build = |fg: u32, bg: u32, pal: [u32; 16]| -> TermStyle {
-        TermStyle { fg: hex(fg), bg: hex(bg), ansi: pal.map(hex) }
+        TermStyle {
+            fg: hex(fg),
+            bg: hex(bg),
+            ansi: pal.map(hex),
+        }
     };
     Some(match name.to_ascii_lowercase().as_str() {
         "campbell" | "default" => TermStyle::default(),
-        "dracula" => build(0xf8f8f2, 0x282a36, [
-            0x21222c, 0xff5555, 0x50fa7b, 0xf1fa8c, 0xbd93f9, 0xff79c6, 0x8be9fd, 0xf8f8f2,
-            0x6272a4, 0xff6e6e, 0x69ff94, 0xffffa5, 0xd6acff, 0xff92df, 0xa4ffff, 0xffffff,
-        ]),
-        "gruvbox" => build(0xebdbb2, 0x282828, [
-            0x282828, 0xcc241d, 0x98971a, 0xd79921, 0x458588, 0xb16286, 0x689d6a, 0xa89984,
-            0x928374, 0xfb4934, 0xb8bb26, 0xfabd2f, 0x83a598, 0xd3869b, 0x8ec07c, 0xebdbb2,
-        ]),
-        "nord" => build(0xd8dee9, 0x2e3440, [
-            0x3b4252, 0xbf616a, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead, 0x88c0d0, 0xe5e9f0,
-            0x4c566a, 0xbf616a, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead, 0x8fbcbb, 0xeceff4,
-        ]),
-        "solarized" => build(0x839496, 0x002b36, [
-            0x073642, 0xdc322f, 0x859900, 0xb58900, 0x268bd2, 0xd33682, 0x2aa198, 0xeee8d5,
-            0x002b36, 0xcb4b16, 0x586e75, 0x657b83, 0x839496, 0x6c71c4, 0x93a1a1, 0xfdf6e3,
-        ]),
-        "onedark" => build(0xabb2bf, 0x282c34, [
-            0x282c34, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xabb2bf,
-            0x5c6370, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xffffff,
-        ]),
-        "monokai" => build(0xf8f8f2, 0x272822, [
-            0x272822, 0xf92672, 0xa6e22e, 0xf4bf75, 0x66d9ef, 0xae81ff, 0xa1efe4, 0xf8f8f2,
-            0x75715e, 0xf92672, 0xa6e22e, 0xf4bf75, 0x66d9ef, 0xae81ff, 0xa1efe4, 0xf9f8f5,
-        ]),
+        "dracula" => build(
+            0xf8f8f2,
+            0x282a36,
+            [
+                0x21222c, 0xff5555, 0x50fa7b, 0xf1fa8c, 0xbd93f9, 0xff79c6, 0x8be9fd, 0xf8f8f2,
+                0x6272a4, 0xff6e6e, 0x69ff94, 0xffffa5, 0xd6acff, 0xff92df, 0xa4ffff, 0xffffff,
+            ],
+        ),
+        "gruvbox" => build(
+            0xebdbb2,
+            0x282828,
+            [
+                0x282828, 0xcc241d, 0x98971a, 0xd79921, 0x458588, 0xb16286, 0x689d6a, 0xa89984,
+                0x928374, 0xfb4934, 0xb8bb26, 0xfabd2f, 0x83a598, 0xd3869b, 0x8ec07c, 0xebdbb2,
+            ],
+        ),
+        "nord" => build(
+            0xd8dee9,
+            0x2e3440,
+            [
+                0x3b4252, 0xbf616a, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead, 0x88c0d0, 0xe5e9f0,
+                0x4c566a, 0xbf616a, 0xa3be8c, 0xebcb8b, 0x81a1c1, 0xb48ead, 0x8fbcbb, 0xeceff4,
+            ],
+        ),
+        "solarized" => build(
+            0x839496,
+            0x002b36,
+            [
+                0x073642, 0xdc322f, 0x859900, 0xb58900, 0x268bd2, 0xd33682, 0x2aa198, 0xeee8d5,
+                0x002b36, 0xcb4b16, 0x586e75, 0x657b83, 0x839496, 0x6c71c4, 0x93a1a1, 0xfdf6e3,
+            ],
+        ),
+        "onedark" => build(
+            0xabb2bf,
+            0x282c34,
+            [
+                0x282c34, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xabb2bf,
+                0x5c6370, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xffffff,
+            ],
+        ),
+        "monokai" => build(
+            0xf8f8f2,
+            0x272822,
+            [
+                0x272822, 0xf92672, 0xa6e22e, 0xf4bf75, 0x66d9ef, 0xae81ff, 0xa1efe4, 0xf8f8f2,
+                0x75715e, 0xf92672, 0xa6e22e, 0xf4bf75, 0x66d9ef, 0xae81ff, 0xa1efe4, 0xf9f8f5,
+            ],
+        ),
         _ => return None,
     })
 }
@@ -276,9 +321,15 @@ impl PtyTerm {
         let (cols, rows) = (cols.max(1), rows.max(1));
         let out = Arc::new(Mutex::new(Vec::new()));
         let title = Arc::new(Mutex::new(None));
-        let listener = TermListener { out: out.clone(), title: title.clone() };
+        let listener = TermListener {
+            out: out.clone(),
+            title: title.clone(),
+        };
         // Keep scrollback so copy-mode (Shift+Esc) can page back through history.
-        let config = Config { scrolling_history: scrollback, ..Config::default() };
+        let config = Config {
+            scrolling_history: scrollback,
+            ..Config::default()
+        };
         let vt = Term::new(config, &TermSize::new(cols, rows), listener);
         PtyTerm {
             vt,
@@ -377,7 +428,11 @@ impl PtyTerm {
         if let Some(mut col) = found {
             // `t`/`T` land just before the target (toward the cursor's side).
             if till {
-                col = if forward { col.saturating_sub(1) } else { col + 1 };
+                col = if forward {
+                    col.saturating_sub(1)
+                } else {
+                    col + 1
+                };
             }
             self.vt.vi_goto_point(Point::new(line, Column(col)));
             self.force_extend();
@@ -402,7 +457,11 @@ impl PtyTerm {
 
     /// Start a selection at the vi cursor (`lines` = linewise `V` vs charwise `v`).
     pub fn start_selection(&mut self, lines: bool) {
-        let ty = if lines { SelectionType::Lines } else { SelectionType::Simple };
+        let ty = if lines {
+            SelectionType::Lines
+        } else {
+            SelectionType::Simple
+        };
         let p = self.vt.vi_mode_cursor.point;
         self.vt.selection = Some(Selection::new(ty, p, Side::Left));
     }
@@ -589,18 +648,36 @@ fn lerp(a: Rgb, b: Rgb, t: u32) -> Rgb {
 /// special it handled (caller then skips the normal glyph).
 #[allow(clippy::too_many_arguments)]
 fn draw_special(
-    buf: &mut [u32], w: usize, h: usize,
-    cx: i32, cy: i32, cw: i32, ch_h: i32, c: char, fg: Rgb, bg: Rgb,
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    cx: i32,
+    cy: i32,
+    cw: i32,
+    ch_h: i32,
+    c: char,
+    fg: Rgb,
+    bg: Rgb,
 ) -> bool {
     let fill = |buf: &mut [u32], x0: i32, y0: i32, x1: i32, y1: i32, col: Rgb| {
-        draw::fill_rect(buf, w, h, x0.max(0) as usize, y0.max(0) as usize, x1.max(0) as usize, y1.max(0) as usize, col);
+        draw::fill_rect(
+            buf,
+            w,
+            h,
+            x0.max(0) as usize,
+            y0.max(0) as usize,
+            x1.max(0) as usize,
+            y1.max(0) as usize,
+            col,
+        );
     };
     // Block elements (U+2580..U+259F) — drawn as exact cell fills so block/pixel art
     // (e.g. the Claude Code logo) tiles cleanly.
     let mid_x = cx + cw / 2;
     let mid_y = cy + ch_h / 2;
     // Fill the bottom `n/8` of the cell (for lower-eighth blocks ▁▂▃…).
-    let lower = |buf: &mut [u32], n: i32| fill(buf, cx, cy + ch_h * (8 - n) / 8, cx + cw, cy + ch_h, fg);
+    let lower =
+        |buf: &mut [u32], n: i32| fill(buf, cx, cy + ch_h * (8 - n) / 8, cx + cw, cy + ch_h, fg);
     // Fill the left `n/8` of the cell (for left-eighth blocks ▏▎▍…).
     let left = |buf: &mut [u32], n: i32| fill(buf, cx, cy, cx + cw * n / 8, cy + ch_h, fg);
     // Quadrant fills (UL/UR/LL/LR), for ▖▗▘▙▚▛▜▝▞▟ and the half blocks.
@@ -609,42 +686,112 @@ fn draw_special(
     let ll = |buf: &mut [u32]| fill(buf, cx, mid_y, mid_x, cy + ch_h, fg);
     let lr = |buf: &mut [u32]| fill(buf, mid_x, mid_y, cx + cw, cy + ch_h, fg);
     match c {
-        '\u{2580}' => { fill(buf, cx, cy, cx + cw, mid_y, fg); return true; } // ▀ upper half
-        '\u{2581}'..='\u{2587}' => { lower(buf, c as i32 - 0x2580); return true; } // ▁..▇ lower n/8
-        '\u{2588}' => { fill(buf, cx, cy, cx + cw, cy + ch_h, fg); return true; } // █ full
-        '\u{2589}'..='\u{258f}' => { left(buf, 8 - (c as i32 - 0x2588)); return true; } // ▉..▏ left n/8
-        '\u{2590}' => { fill(buf, mid_x, cy, cx + cw, cy + ch_h, fg); return true; } // ▐ right half
-        '\u{2591}' => { fill(buf, cx, cy, cx + cw, cy + ch_h, lerp(bg, fg, 64)); return true; } // ░
-        '\u{2592}' => { fill(buf, cx, cy, cx + cw, cy + ch_h, lerp(bg, fg, 128)); return true; } // ▒
-        '\u{2593}' => { fill(buf, cx, cy, cx + cw, cy + ch_h, lerp(bg, fg, 192)); return true; } // ▓
-        '\u{2594}' => { fill(buf, cx, cy, cx + cw, cy + ch_h / 8, fg); return true; } // ▔ upper 1/8
-        '\u{2595}' => { fill(buf, cx + cw * 7 / 8, cy, cx + cw, cy + ch_h, fg); return true; } // ▕ right 1/8
-        '\u{2596}' => { ll(buf); return true; }
-        '\u{2597}' => { lr(buf); return true; }
-        '\u{2598}' => { ul(buf); return true; }
-        '\u{2599}' => { ul(buf); ll(buf); lr(buf); return true; }
-        '\u{259a}' => { ul(buf); lr(buf); return true; }
-        '\u{259b}' => { ul(buf); ur(buf); ll(buf); return true; }
-        '\u{259c}' => { ul(buf); ur(buf); lr(buf); return true; }
-        '\u{259d}' => { ur(buf); return true; }
-        '\u{259e}' => { ur(buf); ll(buf); return true; }
-        '\u{259f}' => { ur(buf); ll(buf); lr(buf); return true; }
+        '\u{2580}' => {
+            fill(buf, cx, cy, cx + cw, mid_y, fg);
+            return true;
+        } // ▀ upper half
+        '\u{2581}'..='\u{2587}' => {
+            lower(buf, c as i32 - 0x2580);
+            return true;
+        } // ▁..▇ lower n/8
+        '\u{2588}' => {
+            fill(buf, cx, cy, cx + cw, cy + ch_h, fg);
+            return true;
+        } // █ full
+        '\u{2589}'..='\u{258f}' => {
+            left(buf, 8 - (c as i32 - 0x2588));
+            return true;
+        } // ▉..▏ left n/8
+        '\u{2590}' => {
+            fill(buf, mid_x, cy, cx + cw, cy + ch_h, fg);
+            return true;
+        } // ▐ right half
+        '\u{2591}' => {
+            fill(buf, cx, cy, cx + cw, cy + ch_h, lerp(bg, fg, 64));
+            return true;
+        } // ░
+        '\u{2592}' => {
+            fill(buf, cx, cy, cx + cw, cy + ch_h, lerp(bg, fg, 128));
+            return true;
+        } // ▒
+        '\u{2593}' => {
+            fill(buf, cx, cy, cx + cw, cy + ch_h, lerp(bg, fg, 192));
+            return true;
+        } // ▓
+        '\u{2594}' => {
+            fill(buf, cx, cy, cx + cw, cy + ch_h / 8, fg);
+            return true;
+        } // ▔ upper 1/8
+        '\u{2595}' => {
+            fill(buf, cx + cw * 7 / 8, cy, cx + cw, cy + ch_h, fg);
+            return true;
+        } // ▕ right 1/8
+        '\u{2596}' => {
+            ll(buf);
+            return true;
+        }
+        '\u{2597}' => {
+            lr(buf);
+            return true;
+        }
+        '\u{2598}' => {
+            ul(buf);
+            return true;
+        }
+        '\u{2599}' => {
+            ul(buf);
+            ll(buf);
+            lr(buf);
+            return true;
+        }
+        '\u{259a}' => {
+            ul(buf);
+            lr(buf);
+            return true;
+        }
+        '\u{259b}' => {
+            ul(buf);
+            ur(buf);
+            ll(buf);
+            return true;
+        }
+        '\u{259c}' => {
+            ul(buf);
+            ur(buf);
+            lr(buf);
+            return true;
+        }
+        '\u{259d}' => {
+            ur(buf);
+            return true;
+        }
+        '\u{259e}' => {
+            ur(buf);
+            ll(buf);
+            return true;
+        }
+        '\u{259f}' => {
+            ur(buf);
+            ll(buf);
+            lr(buf);
+            return true;
+        }
         _ => {}
     }
     // Line-drawing: which arms reach the cell centre (up/down/left/right). Heavy and
     // double variants are drawn as their light single-line equivalent.
     let (u, d, l, r) = match c {
-        '\u{2500}' | '\u{2501}' | '\u{2550}' => (false, false, true, true),   // ─ ━ ═
-        '\u{2502}' | '\u{2503}' | '\u{2551}' => (true, true, false, false),   // │ ┃ ║
+        '\u{2500}' | '\u{2501}' | '\u{2550}' => (false, false, true, true), // ─ ━ ═
+        '\u{2502}' | '\u{2503}' | '\u{2551}' => (true, true, false, false), // │ ┃ ║
         '\u{250c}' | '\u{250f}' | '\u{2554}' | '\u{256d}' => (false, true, false, true), // ┌ ┏ ╔ ╭
         '\u{2510}' | '\u{2513}' | '\u{2557}' | '\u{256e}' => (false, true, true, false), // ┐ ┓ ╗ ╮
         '\u{2514}' | '\u{2517}' | '\u{255a}' | '\u{2570}' => (true, false, false, true), // └ ┗ ╚ ╰
         '\u{2518}' | '\u{251b}' | '\u{255d}' | '\u{256f}' => (true, false, true, false), // ┘ ┛ ╝ ╯
-        '\u{251c}' | '\u{2523}' | '\u{2560}' => (true, true, false, true),    // ├ ┣ ╠
-        '\u{2524}' | '\u{252b}' | '\u{2563}' => (true, true, true, false),    // ┤ ┫ ╣
-        '\u{252c}' | '\u{2533}' | '\u{2566}' => (false, true, true, true),    // ┬ ┳ ╦
-        '\u{2534}' | '\u{253b}' | '\u{2569}' => (true, false, true, true),    // ┴ ┻ ╩
-        '\u{253c}' | '\u{254b}' | '\u{256c}' => (true, true, true, true),     // ┼ ╋ ╬
+        '\u{251c}' | '\u{2523}' | '\u{2560}' => (true, true, false, true),  // ├ ┣ ╠
+        '\u{2524}' | '\u{252b}' | '\u{2563}' => (true, true, true, false),  // ┤ ┫ ╣
+        '\u{252c}' | '\u{2533}' | '\u{2566}' => (false, true, true, true),  // ┬ ┳ ╦
+        '\u{2534}' | '\u{253b}' | '\u{2569}' => (true, false, true, true),  // ┴ ┻ ╩
+        '\u{253c}' | '\u{254b}' | '\u{256c}' => (true, true, true, true),   // ┼ ╋ ╬
         _ => return false,
     };
     let th = (ch_h / 9).max(1);
@@ -671,10 +818,12 @@ fn draw_special(
 fn resolve(c: Color, colors: &Colors, st: &TermStyle) -> Rgb {
     match c {
         Color::Spec(rgb) => to_rgb(rgb),
-        Color::Named(n) => colors[n].map(to_rgb).unwrap_or_else(|| named_default(n, st)),
-        Color::Indexed(i) => {
-            colors[i as usize].map(to_rgb).unwrap_or_else(|| indexed_default(i, st))
-        }
+        Color::Named(n) => colors[n]
+            .map(to_rgb)
+            .unwrap_or_else(|| named_default(n, st)),
+        Color::Indexed(i) => colors[i as usize]
+            .map(to_rgb)
+            .unwrap_or_else(|| indexed_default(i, st)),
     }
 }
 
@@ -739,17 +888,36 @@ pub fn render(
         if selection.is_some_and(|s| s.contains(item.point)) {
             bg = draw::SEL;
         }
-        let cw = if cell.flags.contains(Flags::WIDE_CHAR) { cell_w * 2 } else { cell_w };
+        let cw = if cell.flags.contains(Flags::WIDE_CHAR) {
+            cell_w * 2
+        } else {
+            cell_w
+        };
         if bg != st.bg {
             draw::fill_rect(
-                buf, w, h, cx.max(0) as usize, cy.max(0) as usize,
-                (cx + cw).max(0) as usize, (cy + cell_h).max(0) as usize, bg,
+                buf,
+                w,
+                h,
+                cx.max(0) as usize,
+                cy.max(0) as usize,
+                (cx + cw).max(0) as usize,
+                (cy + cell_h).max(0) as usize,
+                bg,
             );
         }
-        if cell.c != ' ' && cell.c != '\0'
+        if cell.c != ' '
+            && cell.c != '\0'
             && !draw_special(buf, w, h, cx, cy, cell_w, cell_h, cell.c, fg, bg)
         {
-            p.text(buf, w, h, cx.max(0) as usize, (cy + baseline_off) as usize, &cell.c.to_string(), fg);
+            p.text(
+                buf,
+                w,
+                h,
+                cx.max(0) as usize,
+                (cy + baseline_off) as usize,
+                &cell.c.to_string(),
+                fg,
+            );
         }
     }
 
@@ -760,13 +928,28 @@ pub fn render(
         let cy = y0 + cursor_row * cell_h;
         if cy >= y0 && cy + cell_h <= clip_bottom {
             draw::fill_rect(
-                buf, w, h, cx.max(0) as usize, cy.max(0) as usize,
-                (cx + cell_w).max(0) as usize, (cy + cell_h).max(0) as usize, st.fg,
+                buf,
+                w,
+                h,
+                cx.max(0) as usize,
+                cy.max(0) as usize,
+                (cx + cell_w).max(0) as usize,
+                (cy + cell_h).max(0) as usize,
+                st.fg,
             );
-            if cursor_char != ' ' && cursor_char != '\0'
+            if cursor_char != ' '
+                && cursor_char != '\0'
                 && !draw_special(buf, w, h, cx, cy, cell_w, cell_h, cursor_char, st.bg, st.fg)
             {
-                p.text(buf, w, h, cx.max(0) as usize, (cy + baseline_off) as usize, &cursor_char.to_string(), st.bg);
+                p.text(
+                    buf,
+                    w,
+                    h,
+                    cx.max(0) as usize,
+                    (cy + baseline_off) as usize,
+                    &cursor_char.to_string(),
+                    st.bg,
+                );
             }
         }
     }
@@ -874,7 +1057,10 @@ mod tests {
         for _ in 0..15 {
             pty.vi_motion(ViMotion::Up);
         }
-        assert!(pty.vt.grid().display_offset() > 0, "viewport should have scrolled up");
+        assert!(
+            pty.vt.grid().display_offset() > 0,
+            "viewport should have scrolled up"
+        );
         // The cursor's VIEWPORT row (absolute line + display_offset) must stay within
         // the visible band — this is what `render` uses to place the block, so a value
         // outside [0, rows) is the "cursor flew off-screen, camera didn't follow" bug.
@@ -888,7 +1074,10 @@ mod tests {
         pty.vi_top();
         assert!(pty.vt.grid().display_offset() > 0);
         let vp_row = pty.vt.vi_mode_cursor.point.line.0 + pty.vt.grid().display_offset() as i32;
-        assert!((0..pty.rows as i32).contains(&vp_row), "cursor row {vp_row} on-screen after gg");
+        assert!(
+            (0..pty.rows as i32).contains(&vp_row),
+            "cursor row {vp_row} on-screen after gg"
+        );
     }
 
     #[test]
@@ -937,11 +1126,18 @@ mod tests {
         for _ in 0..15 {
             pty.vi_motion(ViMotion::Up);
         }
-        assert!(pty.vt.grid().display_offset() > 0, "should be parked in scrollback");
+        assert!(
+            pty.vt.grid().display_offset() > 0,
+            "should be parked in scrollback"
+        );
         // Esc/i resumes: leaving vi mode alone does NOT reset the viewport (the
         // "camera stuck after Esc" bug) — the resume path must snap it down.
         pty.toggle_vi();
         pty.scroll_to_bottom();
-        assert_eq!(pty.vt.grid().display_offset(), 0, "camera should be back at the live line");
+        assert_eq!(
+            pty.vt.grid().display_offset(),
+            0,
+            "camera should be back at the live line"
+        );
     }
 }

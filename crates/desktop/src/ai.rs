@@ -13,8 +13,8 @@ use tao::keyboard::{Key, KeyCode};
 
 use std::path::PathBuf;
 
-use crate::{clipboard_get, clipboard_set, draw, vim};
 use crate::tabs::{TabContent, TabNav};
+use crate::{clipboard_get, clipboard_set, draw, vim};
 use crate::{App, ModeKind, Tab, UserEvent};
 
 /// Groq's OpenAI-compatible chat-completions endpoint.
@@ -131,7 +131,9 @@ impl AiChat {
 
     /// Rough on-disk size of the conversation (its serialized JSON), for the picker.
     pub(crate) fn size_bytes(&self) -> u64 {
-        serde_json::to_string(&self.messages).map(|s| s.len() as u64).unwrap_or(0)
+        serde_json::to_string(&self.messages)
+            .map(|s| s.len() as u64)
+            .unwrap_or(0)
     }
 }
 
@@ -152,7 +154,10 @@ pub(crate) struct ToolCall {
 /// the next request.
 pub(crate) enum AiStep {
     Done(String),
-    Calls { calls: Vec<ToolCall>, assistant_msg: serde_json::Value },
+    Calls {
+        calls: Vec<ToolCall>,
+        assistant_msg: serde_json::Value,
+    },
 }
 
 /// Cap on tool-execution rounds per user prompt, so a confused model can't loop
@@ -206,7 +211,10 @@ fn data_file(name: &str) -> Option<PathBuf> {
 }
 
 fn read_trimmed(name: &str) -> Option<String> {
-    let s = std::fs::read_to_string(data_file(name)?).ok()?.trim().to_string();
+    let s = std::fs::read_to_string(data_file(name)?)
+        .ok()?
+        .trim()
+        .to_string();
     (!s.is_empty()).then_some(s)
 }
 
@@ -235,20 +243,33 @@ pub(crate) fn save_model(model: &str) {
 /// Accepts the current `Vec<AiChat>` format and transparently migrates the older
 /// `Vec<Vec<AiMessage>>` one (a chat was just its messages, no timestamp).
 pub(crate) fn load_chats() -> Vec<AiChat> {
-    let Some(path) = data_file("groq.chats.json") else { return Vec::new() };
-    let Ok(s) = std::fs::read_to_string(path) else { return Vec::new() };
+    let Some(path) = data_file("groq.chats.json") else {
+        return Vec::new();
+    };
+    let Ok(s) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
     if let Ok(chats) = serde_json::from_str::<Vec<AiChat>>(&s) {
         return chats;
     }
     // Old format: an array of message-arrays with no stamp — wrap each (created blank).
     serde_json::from_str::<Vec<Vec<AiMessage>>>(&s)
-        .map(|old| old.into_iter().map(|messages| AiChat { created: String::new(), messages }).collect())
+        .map(|old| {
+            old.into_iter()
+                .map(|messages| AiChat {
+                    created: String::new(),
+                    messages,
+                })
+                .collect()
+        })
         .unwrap_or_default()
 }
 
 /// Persist all conversations (best-effort; failures are ignored).
 pub(crate) fn save_chats(chats: &[AiChat]) {
-    let Some(path) = data_file("groq.chats.json") else { return };
+    let Some(path) = data_file("groq.chats.json") else {
+        return;
+    };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -310,7 +331,10 @@ pub(crate) fn ask_raw(
         // didn't conform to the API, so generation itself failed (common on llama-3.x).
         // The raw attempt is in `failed_generation`; recover the intended calls from it
         // so a flaky tool-formatter still drives the browser instead of just erroring.
-        if let Some(fg) = err.and_then(|e| e.get("failed_generation")).and_then(|f| f.as_str()) {
+        if let Some(fg) = err
+            .and_then(|e| e.get("failed_generation"))
+            .and_then(|f| f.as_str())
+        {
             if let Some(step) = build_calls_step(recover_calls(fg), serde_json::Value::Null) {
                 return Ok(step);
             }
@@ -321,13 +345,18 @@ pub(crate) fn ask_raw(
             .unwrap_or("request failed");
         return Err(format!("groq {}: {msg}", status.as_u16()));
     }
-    let message = val.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("message"));
+    let message = val
+        .get("choices")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("message"));
     // A tool-call response: the model chose to operate the browser. Normalise each call
     // (recovering args crammed into the name) and build the step; `content` is usually
     // empty here. `build_calls_step` drops unknown names and rebuilds the echoed
     // assistant message from the cleaned calls, so the next round can't fail validation.
-    if let Some(tcs) =
-        message.and_then(|m| m.get("tool_calls")).and_then(|t| t.as_array()).filter(|a| !a.is_empty())
+    if let Some(tcs) = message
+        .and_then(|m| m.get("tool_calls"))
+        .and_then(|t| t.as_array())
+        .filter(|a| !a.is_empty())
     {
         let pairs: Vec<(String, serde_json::Value)> = tcs
             .iter()
@@ -338,8 +367,10 @@ pub(crate) fn ask_raw(
                 Some(normalize_call(name_raw, args_str))
             })
             .collect();
-        let content =
-            message.and_then(|m| m.get("content")).cloned().unwrap_or(serde_json::Value::Null);
+        let content = message
+            .and_then(|m| m.get("content"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         if let Some(step) = build_calls_step(pairs, content) {
             return Ok(step);
         }
@@ -367,7 +398,11 @@ fn build_calls_step(
         .into_iter()
         .enumerate()
         .filter_map(|(i, (name, args))| {
-            crate::actions::is_action(&name).then_some(ToolCall { id: format!("call_{i}"), name, args })
+            crate::actions::is_action(&name).then_some(ToolCall {
+                id: format!("call_{i}"),
+                name,
+                args,
+            })
         })
         .collect();
     if calls.is_empty() {
@@ -385,7 +420,10 @@ fn build_calls_step(
         .collect();
     let assistant_msg =
         serde_json::json!({ "role": "assistant", "content": content, "tool_calls": tool_calls });
-    Some(AiStep::Calls { calls, assistant_msg })
+    Some(AiStep::Calls {
+        calls,
+        assistant_msg,
+    })
 }
 
 /// Recover tool calls from Groq's `failed_generation` text — the raw output the model
@@ -421,7 +459,9 @@ fn recover_calls(text: &str) -> Vec<(String, serde_json::Value)> {
     // Shape B: one or more {"name": "...", "arguments"/"parameters": {...}} objects.
     let mut rest = text;
     while let Some(brace) = rest.find('{') {
-        let Some((obj, consumed)) = take_json_object(&rest[brace..]) else { break };
+        let Some((obj, consumed)) = take_json_object(&rest[brace..]) else {
+            break;
+        };
         if let Some(name) = obj.get("name").and_then(|n| n.as_str()) {
             let args = match obj.get("arguments").or_else(|| obj.get("parameters")) {
                 Some(serde_json::Value::String(s)) => {
@@ -493,7 +533,11 @@ fn normalize_call(name_raw: &str, args_str: &str) -> (String, serde_json::Value)
             }
         }
     }
-    let name = name_raw.split_whitespace().next().unwrap_or(name_raw).to_string();
+    let name = name_raw
+        .split_whitespace()
+        .next()
+        .unwrap_or(name_raw)
+        .to_string();
     let args = serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
     (name, args)
 }
@@ -568,12 +612,30 @@ fn push_line(
 fn render(ai: &AiState, model: &str, has_key: bool, cols: usize) -> (Vec<String>, Vec<draw::Rgb>) {
     let mut lines = Vec::new();
     let mut colors = Vec::new();
-    push_line(&mut lines, &mut colors, &format!("ai — {model}"), draw::AI, cols);
+    push_line(
+        &mut lines,
+        &mut colors,
+        &format!("ai — {model}"),
+        draw::AI,
+        cols,
+    );
     push_line(&mut lines, &mut colors, "", draw::DIM, cols);
 
     if !has_key {
-        push_line(&mut lines, &mut colors, "Paste your Groq API key to begin.", draw::FG, cols);
-        push_line(&mut lines, &mut colors, "Press i to type/paste, then Enter to save.", draw::DIM, cols);
+        push_line(
+            &mut lines,
+            &mut colors,
+            "Paste your Groq API key to begin.",
+            draw::FG,
+            cols,
+        );
+        push_line(
+            &mut lines,
+            &mut colors,
+            "Press i to type/paste, then Enter to save.",
+            draw::DIM,
+            cols,
+        );
         push_line(
             &mut lines,
             &mut colors,
@@ -584,26 +646,56 @@ fn render(ai: &AiState, model: &str, has_key: bool, cols: usize) -> (Vec<String>
         push_line(&mut lines, &mut colors, "", draw::DIM, cols);
         // Mask the key as it's pasted/typed.
         let masked: String = "•".repeat(ai.input.chars().count());
-        push_line(&mut lines, &mut colors, &format!("› {masked}"), draw::ACCENT, cols);
+        push_line(
+            &mut lines,
+            &mut colors,
+            &format!("› {masked}"),
+            draw::ACCENT,
+            cols,
+        );
         return (lines, colors);
     }
 
     if ai.messages.is_empty() {
-        push_line(&mut lines, &mut colors, "Press i, ask a question, Enter to send.", draw::DIM, cols);
+        push_line(
+            &mut lines,
+            &mut colors,
+            "Press i, ask a question, Enter to send.",
+            draw::DIM,
+            cols,
+        );
         push_line(&mut lines, &mut colors, "", draw::DIM, cols);
     }
     for m in &ai.messages {
         match m.role {
-            AiRole::You => push_line(&mut lines, &mut colors, &format!("you › {}", m.text), draw::ACCENT, cols),
+            AiRole::You => push_line(
+                &mut lines,
+                &mut colors,
+                &format!("you › {}", m.text),
+                draw::ACCENT,
+                cols,
+            ),
             AiRole::Ai => push_line(&mut lines, &mut colors, &m.text, draw::FG, cols),
-            AiRole::Err => push_line(&mut lines, &mut colors, &format!("⚠ {}", m.text), draw::ERR, cols),
+            AiRole::Err => push_line(
+                &mut lines,
+                &mut colors,
+                &format!("⚠ {}", m.text),
+                draw::ERR,
+                cols,
+            ),
         }
         push_line(&mut lines, &mut colors, "", draw::DIM, cols);
     }
     if ai.pending {
         push_line(&mut lines, &mut colors, "· thinking…", draw::DIM, cols);
     } else {
-        push_line(&mut lines, &mut colors, &format!("› {}", ai.input), draw::ACCENT, cols);
+        push_line(
+            &mut lines,
+            &mut colors,
+            &format!("› {}", ai.input),
+            draw::ACCENT,
+            cols,
+        );
     }
     (lines, colors)
 }
@@ -696,12 +788,16 @@ impl App {
 
     /// Whether the active tab is a `:ai` tab.
     pub(crate) fn active_is_ai(&self) -> bool {
-        self.active.and_then(|i| self.tabs.get(i)).is_some_and(|t| t.ai().is_some())
+        self.active
+            .and_then(|i| self.tabs.get(i))
+            .is_some_and(|t| t.ai().is_some())
     }
 
     /// Mutable access to the active `:ai` tab's state, if any.
     pub(crate) fn active_ai_mut(&mut self) -> Option<&mut AiState> {
-        self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.ai_mut())
+        self.active
+            .and_then(|i| self.tabs.get_mut(i))
+            .and_then(|t| t.ai_mut())
     }
 
     /// Enter passthrough on the AI tab (type into its field). The shell keeps keyboard
@@ -793,7 +889,9 @@ impl App {
                 return false;
             }
         }
-        let Some(vk) = self.map_vim_key(key) else { return false };
+        let Some(vk) = self.map_vim_key(key) else {
+            return false;
+        };
         let (w, _) = self.inner();
         let cw = self.painter.measure("M").max(1);
         let line_h = self.painter.line_height().max(1);
@@ -803,7 +901,9 @@ impl App {
         let mut yanked = None;
         let consumed;
         {
-            let Some(ai) = self.active_ai_mut() else { return false };
+            let Some(ai) = self.active_ai_mut() else {
+                return false;
+            };
             let res = ai.buf.key(vk, rows, cols);
             consumed = res.consumed;
             yanked = res.yanked.or(yanked);
@@ -827,7 +927,9 @@ impl App {
     /// the line as the key (and runs any stashed prompt); afterwards each line is a
     /// question.
     fn submit_ai(&mut self) {
-        let Some(id) = self.active_ai_mut().map(|ai| ai.id) else { return };
+        let Some(id) = self.active_ai_mut().map(|ai| ai.id) else {
+            return;
+        };
         if self.groq_key.is_none() {
             let key = self
                 .active_ai_mut()
@@ -872,12 +974,17 @@ impl App {
         }
         let model = self.ai_model.clone();
         let convo = {
-            let Some(ai) = self.ai_by_id_mut(id) else { return };
+            let Some(ai) = self.ai_by_id_mut(id) else {
+                return;
+            };
             if ai.pending {
                 // A turn is already running for this tab; don't pile on.
                 return;
             }
-            ai.messages.push(AiMessage { role: AiRole::You, text: prompt });
+            ai.messages.push(AiMessage {
+                role: AiRole::You,
+                text: prompt,
+            });
             ai.pending = true;
             ai.follow = true;
             build_convo(&ai.messages)
@@ -892,11 +999,18 @@ impl App {
     /// Fire one Groq round on a background thread; its result returns as
     /// [`UserEvent::AiReply`] carrying `convo`/`round` so the loop can continue.
     fn spawn_ai_round(&self, id: u64, model: String, convo: Vec<serde_json::Value>, round: u32) {
-        let Some(key) = self.groq_key.clone() else { return };
+        let Some(key) = self.groq_key.clone() else {
+            return;
+        };
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
             let result = ask_raw(&key, &model, &convo);
-            let _ = proxy.send_event(UserEvent::AiReply { id, convo, round, result });
+            let _ = proxy.send_event(UserEvent::AiReply {
+                id,
+                convo,
+                round,
+                result,
+            });
         });
     }
 
@@ -906,7 +1020,9 @@ impl App {
     /// open tab's `chat_idx` so it keeps pointing at the right conversation.
     fn commit_ai(&mut self, id: u64) {
         let found = self.tabs.iter().find_map(|t| {
-            t.ai().filter(|a| a.id == id).map(|a| (a.chat_idx, a.messages.clone()))
+            t.ai()
+                .filter(|a| a.id == id)
+                .map(|a| (a.chat_idx, a.messages.clone()))
         });
         let Some((idx, msgs)) = found else { return };
         if msgs.is_empty() {
@@ -919,7 +1035,10 @@ impl App {
                 i
             }
             _ => {
-                self.ai_chats.push(AiChat { created: crate::pages::now_stamp(), messages: msgs });
+                self.ai_chats.push(AiChat {
+                    created: crate::pages::now_stamp(),
+                    messages: msgs,
+                });
                 self.ai_chats.len() - 1
             }
         };
@@ -960,15 +1079,28 @@ impl App {
             return;
         }
         // Draft (no chat_idx) sits at position `n`, just past the newest chat.
-        let cur = self.active_ai_mut().map(|a| a.chat_idx.unwrap_or(n)).unwrap_or(n);
-        let target = if forward { (cur + 1).min(n) } else { cur.saturating_sub(1) };
+        let cur = self
+            .active_ai_mut()
+            .map(|a| a.chat_idx.unwrap_or(n))
+            .unwrap_or(n);
+        let target = if forward {
+            (cur + 1).min(n)
+        } else {
+            cur.saturating_sub(1)
+        };
         if target == cur {
-            self.set_status(if forward { "newest chat" } else { "oldest chat" });
+            self.set_status(if forward {
+                "newest chat"
+            } else {
+                "oldest chat"
+            });
             return;
         }
         // Clone the target conversation before re-borrowing the tab mutably.
         let load = (target < n).then(|| self.ai_chats[target].messages.clone());
-        let Some(ai) = self.active_ai_mut() else { return };
+        let Some(ai) = self.active_ai_mut() else {
+            return;
+        };
         match load {
             Some(msgs) => {
                 ai.messages = msgs;
@@ -1024,7 +1156,11 @@ impl App {
             return;
         }
         let n = self.ai_chats.len();
-        let cy = match self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.vim()) {
+        let cy = match self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.vim())
+        {
             Some(b) => b.cy,
             None => return,
         };
@@ -1043,7 +1179,9 @@ impl App {
     /// the first time). Shows it as a navigable vim buffer in Normal mode (press `i`
     /// to continue the conversation). Won't clobber a chat that's mid-request.
     pub(crate) fn open_ai_chat(&mut self, idx: usize) {
-        let Some(chat) = self.ai_chats.get(idx) else { return };
+        let Some(chat) = self.ai_chats.get(idx) else {
+            return;
+        };
         let msgs = chat.messages.clone();
         // Remember where we were so closing the AI tab returns there (unless we're
         // already on it) — same as summoning it with `:ai`.
@@ -1086,14 +1224,36 @@ impl App {
         result: Result<AiStep, String>,
     ) {
         let (calls, assistant_msg) = match result {
-            Ok(AiStep::Done(text)) => return self.ai_finish(id, Some(AiMessage { role: AiRole::Ai, text })),
-            Err(e) => return self.ai_finish(id, Some(AiMessage { role: AiRole::Err, text: e })),
-            Ok(AiStep::Calls { calls, assistant_msg }) => (calls, assistant_msg),
+            Ok(AiStep::Done(text)) => {
+                return self.ai_finish(
+                    id,
+                    Some(AiMessage {
+                        role: AiRole::Ai,
+                        text,
+                    }),
+                )
+            }
+            Err(e) => {
+                return self.ai_finish(
+                    id,
+                    Some(AiMessage {
+                        role: AiRole::Err,
+                        text: e,
+                    }),
+                )
+            }
+            Ok(AiStep::Calls {
+                calls,
+                assistant_msg,
+            }) => (calls, assistant_msg),
         };
         // The AI tab must never be the target of a CONTENT action (open/split would
         // clobber the chat); move to a content tab/pane first. Settings/data actions
         // (theme, install_scheme, alias, …) don't need — or want — the focus dance.
-        if calls.iter().any(|c| crate::actions::targets_content(&c.name)) {
+        if calls
+            .iter()
+            .any(|c| crate::actions::targets_content(&c.name))
+        {
             self.ensure_content_focus();
         }
         // Mark this tab as the actor so an async action (a data wipe) routes its
@@ -1106,8 +1266,12 @@ impl App {
                 Ok(msg) => (msg, AiRole::Ai),
                 Err(e) => (e, AiRole::Err),
             };
-            visible.push(AiMessage { role, text: text.clone() });
-            tool_msgs.push(serde_json::json!({ "role": "tool", "tool_call_id": c.id, "content": text }));
+            visible.push(AiMessage {
+                role,
+                text: text.clone(),
+            });
+            tool_msgs
+                .push(serde_json::json!({ "role": "tool", "tool_call_id": c.id, "content": text }));
         }
         self.acting_ai = None;
         if let Some(ai) = self.ai_by_id_mut(id) {
@@ -1119,7 +1283,10 @@ impl App {
         if round + 1 >= MAX_TOOL_ROUNDS {
             return self.ai_finish(
                 id,
-                Some(AiMessage { role: AiRole::Err, text: "stopped after too many steps".into() }),
+                Some(AiMessage {
+                    role: AiRole::Err,
+                    text: "stopped after too many steps".into(),
+                }),
             );
         }
         let mut next = convo;
@@ -1164,7 +1331,9 @@ impl App {
     /// Mutable access to the AI tab with this id (it may not be the active tab — the
     /// AI tab runs in the background).
     pub(crate) fn ai_by_id_mut(&mut self, id: u64) -> Option<&mut AiState> {
-        self.tabs.iter_mut().find_map(|t| t.ai_mut().filter(|a| a.id == id))
+        self.tabs
+            .iter_mut()
+            .find_map(|t| t.ai_mut().filter(|a| a.id == id))
     }
 
     /// If the active tab is the AI tab, move focus to a fresh blank content tab so a
@@ -1197,10 +1366,20 @@ impl App {
     /// started it — and re-persist the chat. Returns whether that tab is on screen
     /// (the caller can skip the status bar then).
     pub(crate) fn ai_note(&mut self, id: u64, text: &str) -> bool {
-        let active =
-            self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.ai()).is_some_and(|a| a.id == id);
-        if let Some(ai) = self.tabs.iter_mut().find_map(|t| t.ai_mut().filter(|a| a.id == id)) {
-            ai.messages.push(AiMessage { role: AiRole::Ai, text: text.to_string() });
+        let active = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.ai())
+            .is_some_and(|a| a.id == id);
+        if let Some(ai) = self
+            .tabs
+            .iter_mut()
+            .find_map(|t| t.ai_mut().filter(|a| a.id == id))
+        {
+            ai.messages.push(AiMessage {
+                role: AiRole::Ai,
+                text: text.to_string(),
+            });
             ai.follow = true;
         }
         self.commit_ai(id);
@@ -1281,7 +1460,10 @@ mod tests {
         let (v, n) = take_json_object(r#"{"a":{"b":"}"},"c":1} trailing"#).unwrap();
         assert_eq!(v["a"]["b"], "}"); // the brace inside the string isn't a close
         assert_eq!(v["c"], 1);
-        assert_eq!(&r#"{"a":{"b":"}"},"c":1} trailing"#[..n], r#"{"a":{"b":"}"},"c":1}"#);
+        assert_eq!(
+            &r#"{"a":{"b":"}"},"c":1} trailing"#[..n],
+            r#"{"a":{"b":"}"},"c":1}"#
+        );
         assert!(take_json_object("not an object").is_none());
     }
 
@@ -1343,8 +1525,14 @@ mod tests {
         let chat = AiChat {
             created: String::new(),
             messages: vec![
-                AiMessage { role: AiRole::Ai, text: "system-ish".into() },
-                AiMessage { role: AiRole::You, text: "  center  a\n  div  ".into() },
+                AiMessage {
+                    role: AiRole::Ai,
+                    text: "system-ish".into(),
+                },
+                AiMessage {
+                    role: AiRole::You,
+                    text: "  center  a\n  div  ".into(),
+                },
             ],
         };
         assert_eq!(chat.name(), "center a div");
@@ -1361,7 +1549,10 @@ mod tests {
     fn render_input_is_always_last_and_the_key_link_is_its_own_line() {
         // With a key: the input field is the final line, ready for the caret.
         let mut ai = AiState::new(0, None);
-        ai.messages.push(AiMessage { role: AiRole::You, text: "hi".into() });
+        ai.messages.push(AiMessage {
+            role: AiRole::You,
+            text: "hi".into(),
+        });
         ai.input = "562 seconds".into();
         let (lines, _) = render(&ai, "m", true, 40);
         assert_eq!(lines.last().unwrap(), "› 562 seconds");
@@ -1370,6 +1561,8 @@ mod tests {
         // selected/yanked with vim motions.
         let ai = AiState::new(1, None);
         let (lines, _) = render(&ai, "m", false, 60);
-        assert!(lines.iter().any(|l| l == "Get a free key at https://console.groq.com/keys"));
+        assert!(lines
+            .iter()
+            .any(|l| l == "Get a free key at https://console.groq.com/keys"));
     }
 }

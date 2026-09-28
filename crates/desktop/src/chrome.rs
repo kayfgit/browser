@@ -13,23 +13,45 @@ use crate::{pty_term, read_view, App, ModeKind, Tab, TERM_PAD};
 
 /// Partition the shell surface around native web children. The backing buffer
 /// still contains their background for use after a view is hidden or closed.
-fn native_damage(w: u32, h: u32, web_rects: impl IntoIterator<Item = PaneRect>) -> Vec<softbuffer::Rect> {
+fn native_damage(
+    w: u32,
+    h: u32,
+    web_rects: impl IntoIterator<Item = PaneRect>,
+) -> Vec<softbuffer::Rect> {
     let mut regions = vec![(0i64, 0i64, i64::from(w), i64::from(h))];
     for web in web_rects {
         let (wx0, wy0) = (i64::from(web.x), i64::from(web.y));
         let (wx1, wy1) = (wx0 + i64::from(web.w.max(0)), wy0 + i64::from(web.h.max(0)));
-        regions = regions.into_iter().flat_map(|(x0, y0, x1, y1)| {
-            let (l, t, r, b) = (x0.max(wx0), y0.max(wy0), x1.min(wx1), y1.min(wy1));
-            if l >= r || t >= b { return vec![(x0, y0, x1, y1)]; }
-            vec![(x0, y0, x1, t), (x0, b, x1, y1), (x0, t, l, b), (r, t, x1, b)]
-                .into_iter().filter(|&(l, t, r, b)| l < r && t < b).collect()
-        }).collect();
+        regions = regions
+            .into_iter()
+            .flat_map(|(x0, y0, x1, y1)| {
+                let (l, t, r, b) = (x0.max(wx0), y0.max(wy0), x1.min(wx1), y1.min(wy1));
+                if l >= r || t >= b {
+                    return vec![(x0, y0, x1, y1)];
+                }
+                vec![
+                    (x0, y0, x1, t),
+                    (x0, b, x1, y1),
+                    (x0, t, l, b),
+                    (r, t, x1, b),
+                ]
+                .into_iter()
+                .filter(|&(l, t, r, b)| l < r && t < b)
+                .collect()
+            })
+            .collect();
     }
-    regions.into_iter().filter_map(|(x0, y0, x1, y1)| Some(softbuffer::Rect {
-        x: x0 as u32, y: y0 as u32,
-        width: NonZeroU32::new((x1 - x0) as u32)?,
-        height: NonZeroU32::new((y1 - y0) as u32)?,
-    })).collect()
+    regions
+        .into_iter()
+        .filter_map(|(x0, y0, x1, y1)| {
+            Some(softbuffer::Rect {
+                x: x0 as u32,
+                y: y0 as u32,
+                width: NonZeroU32::new((x1 - x0) as u32)?,
+                height: NonZeroU32::new((y1 - y0) as u32)?,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -40,21 +62,57 @@ mod damage_tests {
     fn web_pixels_are_never_presented_but_borders_and_native_panes_are() {
         // Includes adjacent split panes, an overlapping rectangle, and a child
         // extending beyond the surface during a resize. Empty covers frozen mode.
-        for web in [vec![], vec![PaneRect { x: 1, y: 2, w: 4, h: 5 },
-            PaneRect { x: 7, y: 2, w: 4, h: 5 }],
-            vec![PaneRect { x: -2, y: 3, w: 7, h: 9 }, PaneRect { x: 3, y: 2, w: 4, h: 4 }]] {
+        for web in [
+            vec![],
+            vec![
+                PaneRect {
+                    x: 1,
+                    y: 2,
+                    w: 4,
+                    h: 5,
+                },
+                PaneRect {
+                    x: 7,
+                    y: 2,
+                    w: 4,
+                    h: 5,
+                },
+            ],
+            vec![
+                PaneRect {
+                    x: -2,
+                    y: 3,
+                    w: 7,
+                    h: 9,
+                },
+                PaneRect {
+                    x: 3,
+                    y: 2,
+                    w: 4,
+                    h: 4,
+                },
+            ],
+        ] {
             let damage = native_damage(12, 10, web.iter().copied());
             let mut hits = [[0; 12]; 10];
             for r in damage {
                 assert!(r.x + r.width.get() <= 12 && r.y + r.height.get() <= 10);
                 for y in r.y..r.y + r.height.get() {
-                    for x in r.x..r.x + r.width.get() { hits[y as usize][x as usize] += 1; }
+                    for x in r.x..r.x + r.width.get() {
+                        hits[y as usize][x as usize] += 1;
+                    }
                 }
             }
             for y in 0..10i32 {
                 for x in 0..12i32 {
-                    let covered = web.iter().any(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
-                    assert_eq!(hits[y as usize][x as usize], if covered { 0 } else { 1 }, "pixel {x},{y}");
+                    let covered = web
+                        .iter()
+                        .any(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+                    assert_eq!(
+                        hits[y as usize][x as usize],
+                        if covered { 0 } else { 1 },
+                        "pixel {x},{y}"
+                    );
                 }
             }
         }
@@ -86,250 +144,397 @@ pub(crate) fn paint_pane(
     wz: usize,
     hz: usize,
 ) {
-        const MARGIN: i32 = 8;
-        let left = rect.x + MARGIN;
-        let top = rect.y;
-        let bottom = rect.y + rect.h;
-        let right = rect.x + rect.w;
-        let find_on = focused && (find.active || mode == ModeKind::Find);
-        // Fill confined to the pane (clamped on all sides).
-        let fill = |buf: &mut [u32], x0: i32, y0: i32, x1: i32, y1: i32, c: draw::Rgb| {
-            let (x0, y0) = (x0.max(rect.x), y0.max(top));
-            let (x1, y1) = (x1.min(right), y1.min(bottom));
-            if x1 > x0 && y1 > y0 {
-                draw::fill_rect(buf, wz, hz, x0 as usize, y0 as usize, x1 as usize, y1 as usize, c);
-            }
-        };
+    const MARGIN: i32 = 8;
+    let left = rect.x + MARGIN;
+    let top = rect.y;
+    let bottom = rect.y + rect.h;
+    let right = rect.x + rect.w;
+    let find_on = focused && (find.active || mode == ModeKind::Find);
+    // Fill confined to the pane (clamped on all sides).
+    let fill = |buf: &mut [u32], x0: i32, y0: i32, x1: i32, y1: i32, c: draw::Rgb| {
+        let (x0, y0) = (x0.max(rect.x), y0.max(top));
+        let (x1, y1) = (x1.min(right), y1.min(bottom));
+        if x1 > x0 && y1 > y0 {
+            draw::fill_rect(
+                buf,
+                wz,
+                hz,
+                x0 as usize,
+                y0 as usize,
+                x1 as usize,
+                y1 as usize,
+                c,
+            );
+        }
+    };
 
-        if let Some(nr) = t.native() {
-            let line_h = nr.layout.line_h;
-            for (li, line) in nr.layout.lines.iter().enumerate() {
-                let y_top = top - nr.scroll + li as i32 * line_h;
-                if y_top + line_h < top || y_top > bottom {
-                    continue;
+    if let Some(nr) = t.native() {
+        let line_h = nr.layout.line_h;
+        for (li, line) in nr.layout.lines.iter().enumerate() {
+            let y_top = top - nr.scroll + li as i32 * line_h;
+            if y_top + line_h < top || y_top > bottom {
+                continue;
+            }
+            if line.rule {
+                let ry = y_top + line_h / 2;
+                fill(buf, left, ry, right - MARGIN, ry + 1, draw::DIM);
+                continue;
+            }
+            let baseline = y_top + line_h * 3 / 4;
+            // Vim `cursorline`: tint the caret's whole row (under the find/selection
+            // highlights and the text). Steady — only the block itself blinks.
+            if focused && nr.caret.as_ref().is_some_and(|c| c.cy == li) {
+                fill(
+                    buf,
+                    left,
+                    y_top,
+                    right - MARGIN,
+                    y_top + line_h,
+                    draw::CURSORLINE,
+                );
+            }
+            if find_on {
+                let chars: Vec<char> = line.runs.iter().flat_map(|r| r.text.chars()).collect();
+                let base = left + line.indent;
+                for (mi, m) in find.matches.iter().enumerate() {
+                    if m.line != li {
+                        continue;
+                    }
+                    let s = m.start.min(chars.len());
+                    let e = m.end.min(chars.len());
+                    let x0 = line_col_x(&line.runs, s, base, p);
+                    let x1 = line_col_x(&line.runs, e, base, p);
+                    let col = if mi == find.current {
+                        draw::FIND_CUR
+                    } else {
+                        draw::FIND
+                    };
+                    fill(buf, x0, y_top, x1, y_top + line_h, col);
                 }
-                if line.rule {
-                    let ry = y_top + line_h / 2;
-                    fill(buf, left, ry, right - MARGIN, ry + 1, draw::DIM);
-                    continue;
-                }
-                let baseline = y_top + line_h * 3 / 4;
-                // Vim `cursorline`: tint the caret's whole row (under the find/selection
-                // highlights and the text). Steady — only the block itself blinks.
-                if focused && nr.caret.as_ref().is_some_and(|c| c.cy == li) {
-                    fill(buf, left, y_top, right - MARGIN, y_top + line_h, draw::CURSORLINE);
-                }
-                if find_on {
-                    let chars: Vec<char> = line.runs.iter().flat_map(|r| r.text.chars()).collect();
+            }
+            if focused {
+                if let Some((s0, s1)) = nr.caret.as_ref().and_then(|c| c.selection_on_row(li)) {
                     let base = left + line.indent;
-                    for (mi, m) in find.matches.iter().enumerate() {
-                        if m.line != li {
-                            continue;
+                    let x0 = line_col_x(&line.runs, s0, base, p);
+                    let x1 = line_col_x(&line.runs, s1, base, p);
+                    fill(buf, x0, y_top, x1, y_top + line_h, draw::SEL);
+                }
+            }
+            let mut x = left + line.indent;
+            for run in &line.runs {
+                x = p.text_rect(
+                    buf,
+                    wz,
+                    hz,
+                    x,
+                    baseline as usize,
+                    &run.text,
+                    run.color,
+                    left,
+                    right,
+                    top,
+                    bottom,
+                );
+            }
+            if focused && cursor_on {
+                if let Some(caret) = &nr.caret {
+                    if li == caret.cy {
+                        let chars: Vec<char> =
+                            line.runs.iter().flat_map(|r| r.text.chars()).collect();
+                        let cx0 = line_col_x(&line.runs, caret.cx, left + line.indent, p);
+                        // A stable cell width, including on narrow glyphs and
+                        // at the empty end-of-line slot.
+                        let cwid = (p.measure("M") * 3 / 4).max(1) as i32;
+                        fill(buf, cx0, y_top, cx0 + cwid, y_top + line_h, draw::ACCENT);
+                        if let Some(ch) = chars.get(caret.cx) {
+                            p.text_rect(
+                                buf,
+                                wz,
+                                hz,
+                                cx0.max(left),
+                                baseline as usize,
+                                &ch.to_string(),
+                                draw::BG,
+                                left,
+                                right.min(cx0 + cwid),
+                                top,
+                                bottom,
+                            );
                         }
-                        let s = m.start.min(chars.len());
-                        let e = m.end.min(chars.len());
-                        let x0 = line_col_x(&line.runs, s, base, p);
-                        let x1 = line_col_x(&line.runs, e, base, p);
-                        let col = if mi == find.current { draw::FIND_CUR } else { draw::FIND };
-                        fill(buf, x0, y_top, x1, y_top + line_h, col);
                     }
                 }
-                if focused {
-                    if let Some((s0, s1)) = nr.caret.as_ref().and_then(|c| c.selection_on_row(li)) {
-                        let base = left + line.indent;
-                        let x0 = line_col_x(&line.runs, s0, base, p);
-                        let x1 = line_col_x(&line.runs, s1, base, p);
-                        fill(buf, x0, y_top, x1, y_top + line_h, draw::SEL);
-                    }
+            }
+        }
+        if focused && mode == ModeKind::Hint {
+            let lh = p.line_height();
+            for hint in native_hints {
+                if !hint.label.starts_with(hint_input) {
+                    continue;
                 }
-                let mut x = left + line.indent;
-                for run in &line.runs {
-                    x = p.text_rect(
-                        buf, wz, hz, x, baseline as usize, &run.text, run.color, left, right, top,
+                let label = if hint_act.upper() {
+                    hint.label.to_uppercase()
+                } else {
+                    hint.label.clone()
+                };
+                let lw = p.measure(&label);
+                let bx = hint.x.max(0);
+                let by = hint.y - (lh as i32) * 3 / 4;
+                fill(
+                    buf,
+                    bx,
+                    by,
+                    bx + lw as i32 + 4,
+                    by + lh as i32,
+                    hint_act.badge_rgb(),
+                );
+                p.text_rect(
+                    buf,
+                    wz,
+                    hz,
+                    bx + 2,
+                    hint.y.max(0) as usize,
+                    &label,
+                    (0x10, 0x10, 0x10),
+                    left,
+                    right,
+                    top,
+                    bottom,
+                );
+            }
+        }
+        return;
+    }
+
+    if let Some(vb) = t.vim() {
+        let line_h = p.line_height() as i32;
+        let cw = p.measure("M").max(1) as i32;
+        let leftcol = vb.left;
+        let col_x = |line: &[char], col: usize| -> i32 {
+            if col <= leftcol {
+                return left;
+            }
+            let end = col.min(line.len());
+            let slice: String = line[leftcol..end].iter().collect();
+            let mut x = left + p.measure(&slice) as i32;
+            if col > line.len() {
+                x += (col - line.len()) as i32 * cw;
+            }
+            x
+        };
+        for r in vb.top..vb.lines.len() {
+            let y_top = top + (r - vb.top) as i32 * line_h;
+            if y_top >= bottom {
+                break;
+            }
+            let line = &vb.lines[r];
+            if let Some((s0, s1)) = vb.selection_on_row(r) {
+                fill(
+                    buf,
+                    col_x(line, s0),
+                    y_top,
+                    col_x(line, s1),
+                    y_top + line_h,
+                    draw::SEL,
+                );
+            }
+            if find_on {
+                for (mi, m) in find.matches.iter().enumerate() {
+                    if m.line != r {
+                        continue;
+                    }
+                    let col = if mi == find.current {
+                        draw::FIND_CUR
+                    } else {
+                        draw::FIND
+                    };
+                    fill(
+                        buf,
+                        col_x(line, m.start),
+                        y_top,
+                        col_x(line, m.end),
+                        y_top + line_h,
+                        col,
+                    );
+                }
+            }
+            let baseline = (y_top + line_h * 3 / 4) as usize;
+            if vb.left < line.len() {
+                let text: String = line[vb.left..].iter().collect();
+                p.text_rect(
+                    buf,
+                    wz,
+                    hz,
+                    left,
+                    baseline,
+                    &text,
+                    draw::FG,
+                    left,
+                    right,
+                    top,
+                    bottom,
+                );
+            }
+            if focused && r == vb.cy {
+                let cx0 = col_x(line, vb.cx);
+                let cx1 = col_x(line, vb.cx + 1).max(cx0 + cw);
+                fill(buf, cx0, y_top, cx1, y_top + line_h, draw::FG);
+                if let Some(ch) = line.get(vb.cx) {
+                    p.text_rect(
+                        buf,
+                        wz,
+                        hz,
+                        cx0.max(left),
+                        baseline,
+                        &ch.to_string(),
+                        draw::BG,
+                        left,
+                        right,
+                        top,
                         bottom,
                     );
                 }
-                if focused && cursor_on {
-                    if let Some(caret) = &nr.caret {
-                        if li == caret.cy {
-                            let chars: Vec<char> =
-                                line.runs.iter().flat_map(|r| r.text.chars()).collect();
-                            let cx0 = line_col_x(&line.runs, caret.cx, left + line.indent, p);
-                            // A stable cell width, including on narrow glyphs and
-                            // at the empty end-of-line slot.
-                            let cwid = (p.measure("M") * 3 / 4).max(1) as i32;
-                            fill(buf, cx0, y_top, cx0 + cwid, y_top + line_h, draw::ACCENT);
-                            if let Some(ch) = chars.get(caret.cx) {
-                                p.text_rect(
-                                    buf, wz, hz, cx0.max(left), baseline as usize, &ch.to_string(),
-                                    draw::BG, left, right.min(cx0 + cwid), top, bottom,
-                                );
-                            }
-                        }
-                    }
-                }
             }
-            if focused && mode == ModeKind::Hint {
-                let lh = p.line_height();
-                for hint in native_hints {
-                    if !hint.label.starts_with(hint_input) {
+        }
+        return;
+    }
+
+    if let Some(s) = t.term() {
+        let (cw, ch) = (
+            term_p.measure("M").max(1) as i32,
+            term_p.line_height() as i32,
+        );
+        fill(buf, rect.x, top, right, bottom, term_style.bg);
+        pty_term::render(
+            &s.pty,
+            term_p,
+            buf,
+            wz,
+            hz,
+            rect.x + TERM_PAD,
+            top,
+            cw,
+            ch,
+            bottom,
+            term_style,
+        );
+        return;
+    }
+
+    if let Some(ai) = t.ai() {
+        // The AI tab IS a vim buffer (rebuilt each frame by refresh_ai_layout),
+        // so it renders like the pager below but with per-line colour and an
+        // Insert-mode caret at the end of the input (last) line.
+        let vb = &ai.buf;
+        let line_h = p.line_height() as i32;
+        let cw = p.measure("M").max(1) as i32;
+        let leftcol = vb.left;
+        let col_x = |line: &[char], col: usize| -> i32 {
+            if col <= leftcol {
+                return left;
+            }
+            let end = col.min(line.len());
+            let slice: String = line[leftcol..end].iter().collect();
+            let mut x = left + p.measure(&slice) as i32;
+            if col > line.len() {
+                x += (col - line.len()) as i32 * cw;
+            }
+            x
+        };
+        // Typing into the AI field (passthrough) shows a caret at the end of the
+        // input line; in Normal it shows the vim block cursor instead.
+        let typing = mode == ModeKind::Passthrough;
+        for r in vb.top..vb.lines.len() {
+            let y_top = top + (r - vb.top) as i32 * line_h;
+            if y_top >= bottom {
+                break;
+            }
+            let line = &vb.lines[r];
+            let color = ai.colors.get(r).copied().unwrap_or(draw::FG);
+            if let Some((s0, s1)) = vb.selection_on_row(r) {
+                fill(
+                    buf,
+                    col_x(line, s0),
+                    y_top,
+                    col_x(line, s1),
+                    y_top + line_h,
+                    draw::SEL,
+                );
+            }
+            if find_on {
+                for (mi, m) in find.matches.iter().enumerate() {
+                    if m.line != r {
                         continue;
                     }
-                    let label = if hint_act.upper() {
-                        hint.label.to_uppercase()
+                    let c = if mi == find.current {
+                        draw::FIND_CUR
                     } else {
-                        hint.label.clone()
+                        draw::FIND
                     };
-                    let lw = p.measure(&label);
-                    let bx = hint.x.max(0);
-                    let by = hint.y - (lh as i32) * 3 / 4;
-                    fill(buf, bx, by, bx + lw as i32 + 4, by + lh as i32, hint_act.badge_rgb());
-                    p.text_rect(
-                        buf, wz, hz, bx + 2, hint.y.max(0) as usize, &label, (0x10, 0x10, 0x10),
-                        left, right, top, bottom,
+                    fill(
+                        buf,
+                        col_x(line, m.start),
+                        y_top,
+                        col_x(line, m.end),
+                        y_top + line_h,
+                        c,
                     );
                 }
             }
-            return;
-        }
-
-        if let Some(vb) = t.vim() {
-            let line_h = p.line_height() as i32;
-            let cw = p.measure("M").max(1) as i32;
-            let leftcol = vb.left;
-            let col_x = |line: &[char], col: usize| -> i32 {
-                if col <= leftcol {
-                    return left;
-                }
-                let end = col.min(line.len());
-                let slice: String = line[leftcol..end].iter().collect();
-                let mut x = left + p.measure(&slice) as i32;
-                if col > line.len() {
-                    x += (col - line.len()) as i32 * cw;
-                }
-                x
-            };
-            for r in vb.top..vb.lines.len() {
-                let y_top = top + (r - vb.top) as i32 * line_h;
-                if y_top >= bottom {
-                    break;
-                }
-                let line = &vb.lines[r];
-                if let Some((s0, s1)) = vb.selection_on_row(r) {
-                    fill(buf, col_x(line, s0), y_top, col_x(line, s1), y_top + line_h, draw::SEL);
-                }
-                if find_on {
-                    for (mi, m) in find.matches.iter().enumerate() {
-                        if m.line != r {
-                            continue;
-                        }
-                        let col = if mi == find.current { draw::FIND_CUR } else { draw::FIND };
-                        fill(buf, col_x(line, m.start), y_top, col_x(line, m.end), y_top + line_h, col);
-                    }
-                }
-                let baseline = (y_top + line_h * 3 / 4) as usize;
-                if vb.left < line.len() {
-                    let text: String = line[vb.left..].iter().collect();
-                    p.text_rect(buf, wz, hz, left, baseline, &text, draw::FG, left, right, top, bottom);
-                }
-                if focused && r == vb.cy {
-                    let cx0 = col_x(line, vb.cx);
-                    let cx1 = col_x(line, vb.cx + 1).max(cx0 + cw);
-                    fill(buf, cx0, y_top, cx1, y_top + line_h, draw::FG);
-                    if let Some(ch) = line.get(vb.cx) {
-                        p.text_rect(
-                            buf, wz, hz, cx0.max(left), baseline, &ch.to_string(), draw::BG, left,
-                            right, top, bottom,
-                        );
-                    }
+            let baseline = (y_top + line_h * 3 / 4) as usize;
+            if vb.left < line.len() {
+                let text: String = line[vb.left..].iter().collect();
+                p.text_rect(
+                    buf, wz, hz, left, baseline, &text, color, left, right, top, bottom,
+                );
+            }
+            // Typing: a caret at the end of the input line; Normal: the vim block
+            // cursor on the current row (when this pane is focused).
+            if focused && typing && r + 1 == vb.lines.len() {
+                let cx0 = col_x(line, line.len());
+                fill(buf, cx0, y_top, cx0 + cw, y_top + line_h, draw::ACCENT);
+            } else if focused && !typing && r == vb.cy {
+                let cx0 = col_x(line, vb.cx);
+                let cx1 = col_x(line, vb.cx + 1).max(cx0 + cw);
+                fill(buf, cx0, y_top, cx1, y_top + line_h, draw::FG);
+                if let Some(ch) = line.get(vb.cx) {
+                    p.text_rect(
+                        buf,
+                        wz,
+                        hz,
+                        cx0.max(left),
+                        baseline,
+                        &ch.to_string(),
+                        draw::BG,
+                        left,
+                        right,
+                        top,
+                        bottom,
+                    );
                 }
             }
-            return;
         }
-
-        if let Some(s) = t.term() {
-            let (cw, ch) = (term_p.measure("M").max(1) as i32, term_p.line_height() as i32);
-            fill(buf, rect.x, top, right, bottom, term_style.bg);
-            pty_term::render(
-                &s.pty, term_p, buf, wz, hz, rect.x + TERM_PAD, top, cw, ch, bottom, term_style,
-            );
-            return;
-        }
-
-        if let Some(ai) = t.ai() {
-            // The AI tab IS a vim buffer (rebuilt each frame by refresh_ai_layout),
-            // so it renders like the pager below but with per-line colour and an
-            // Insert-mode caret at the end of the input (last) line.
-            let vb = &ai.buf;
-            let line_h = p.line_height() as i32;
-            let cw = p.measure("M").max(1) as i32;
-            let leftcol = vb.left;
-            let col_x = |line: &[char], col: usize| -> i32 {
-                if col <= leftcol {
-                    return left;
-                }
-                let end = col.min(line.len());
-                let slice: String = line[leftcol..end].iter().collect();
-                let mut x = left + p.measure(&slice) as i32;
-                if col > line.len() {
-                    x += (col - line.len()) as i32 * cw;
-                }
-                x
-            };
-            // Typing into the AI field (passthrough) shows a caret at the end of the
-            // input line; in Normal it shows the vim block cursor instead.
-            let typing = mode == ModeKind::Passthrough;
-            for r in vb.top..vb.lines.len() {
-                let y_top = top + (r - vb.top) as i32 * line_h;
-                if y_top >= bottom {
-                    break;
-                }
-                let line = &vb.lines[r];
-                let color = ai.colors.get(r).copied().unwrap_or(draw::FG);
-                if let Some((s0, s1)) = vb.selection_on_row(r) {
-                    fill(buf, col_x(line, s0), y_top, col_x(line, s1), y_top + line_h, draw::SEL);
-                }
-                if find_on {
-                    for (mi, m) in find.matches.iter().enumerate() {
-                        if m.line != r {
-                            continue;
-                        }
-                        let c = if mi == find.current { draw::FIND_CUR } else { draw::FIND };
-                        fill(buf, col_x(line, m.start), y_top, col_x(line, m.end), y_top + line_h, c);
-                    }
-                }
-                let baseline = (y_top + line_h * 3 / 4) as usize;
-                if vb.left < line.len() {
-                    let text: String = line[vb.left..].iter().collect();
-                    p.text_rect(buf, wz, hz, left, baseline, &text, color, left, right, top, bottom);
-                }
-                // Typing: a caret at the end of the input line; Normal: the vim block
-                // cursor on the current row (when this pane is focused).
-                if focused && typing && r + 1 == vb.lines.len() {
-                    let cx0 = col_x(line, line.len());
-                    fill(buf, cx0, y_top, cx0 + cw, y_top + line_h, draw::ACCENT);
-                } else if focused && !typing && r == vb.cy {
-                    let cx0 = col_x(line, vb.cx);
-                    let cx1 = col_x(line, vb.cx + 1).max(cx0 + cw);
-                    fill(buf, cx0, y_top, cx1, y_top + line_h, draw::FG);
-                    if let Some(ch) = line.get(vb.cx) {
-                        p.text_rect(
-                            buf, wz, hz, cx0.max(left), baseline, &ch.to_string(), draw::BG, left,
-                            right, top, bottom,
-                        );
-                    }
-                }
-            }
-            return;
-        }
-
-        // Blank pane: a quiet prompt centred in the rect.
-        let msg = "empty pane — :open a page · :te terminal";
-        let mw = p.measure(msg) as i32;
-        let tx = rect.x + ((rect.w - mw) / 2).max(MARGIN);
-        let ty = top + rect.h / 2;
-        p.text_rect(buf, wz, hz, tx, ty as usize, msg, draw::DIM, left, right, top, bottom);
+        return;
     }
+
+    // Blank pane: a quiet prompt centred in the rect.
+    let msg = "empty pane — :open a page · :te terminal";
+    let mw = p.measure(msg) as i32;
+    let tx = rect.x + ((rect.w - mw) / 2).max(MARGIN);
+    let ty = top + rect.h / 2;
+    p.text_rect(
+        buf,
+        wz,
+        hz,
+        tx,
+        ty as usize,
+        msg,
+        draw::DIM,
+        left,
+        right,
+        top,
+        bottom,
+    );
+}
 
 /// Paint a "frozen" placeholder over a web pane whose webview is hidden+suspended
 /// (`:freeze`). The content band is already cleared to the theme bg by the caller,
@@ -342,7 +547,19 @@ fn paint_frozen_pane(p: &Painter, buf: &mut [u32], wz: usize, hz: usize, rect: P
     let centered = |buf: &mut [u32], y: i32, text: &str, color: draw::Rgb| {
         let tw = p.measure(text) as i32;
         let x = (rect.x + (rect.w - tw) / 2).max(rect.x + MARGIN);
-        p.text_rect(buf, wz, hz, x, y as usize, text, color, rect.x, rect.x + rect.w, rect.y, rect.y + rect.h);
+        p.text_rect(
+            buf,
+            wz,
+            hz,
+            x,
+            y as usize,
+            text,
+            color,
+            rect.x,
+            rect.x + rect.w,
+            rect.y,
+            rect.y + rect.h,
+        );
     };
     centered(buf, cy - lh, "frozen", draw::AI);
     centered(buf, cy + lh, ":unfreeze to resume this tab", draw::DIM);
@@ -350,13 +567,55 @@ fn paint_frozen_pane(p: &Painter, buf: &mut [u32], wz: usize, hz: usize, rect: P
 
 /// Draw a 2px accent outline around the focused pane (only shown while split, as
 /// the cue for which pane the keyboard acts on).
-pub(crate) fn draw_pane_border(r: PaneRect, buf: &mut [u32], wz: usize, hz: usize, accent: draw::Rgb) {
+pub(crate) fn draw_pane_border(
+    r: PaneRect,
+    buf: &mut [u32],
+    wz: usize,
+    hz: usize,
+    accent: draw::Rgb,
+) {
     let (x0, y0, x1, y1) = (r.x.max(0), r.y.max(0), r.x + r.w, r.y + r.h);
     let t = FOCUS_BORDER;
-    draw::fill_rect(buf, wz, hz, x0 as usize, y0 as usize, x1 as usize, (y0 + t) as usize, accent);
-    draw::fill_rect(buf, wz, hz, x0 as usize, (y1 - t).max(y0) as usize, x1 as usize, y1 as usize, accent);
-    draw::fill_rect(buf, wz, hz, x0 as usize, y0 as usize, (x0 + t) as usize, y1 as usize, accent);
-    draw::fill_rect(buf, wz, hz, (x1 - t).max(x0) as usize, y0 as usize, x1 as usize, y1 as usize, accent);
+    draw::fill_rect(
+        buf,
+        wz,
+        hz,
+        x0 as usize,
+        y0 as usize,
+        x1 as usize,
+        (y0 + t) as usize,
+        accent,
+    );
+    draw::fill_rect(
+        buf,
+        wz,
+        hz,
+        x0 as usize,
+        (y1 - t).max(y0) as usize,
+        x1 as usize,
+        y1 as usize,
+        accent,
+    );
+    draw::fill_rect(
+        buf,
+        wz,
+        hz,
+        x0 as usize,
+        y0 as usize,
+        (x0 + t) as usize,
+        y1 as usize,
+        accent,
+    );
+    draw::fill_rect(
+        buf,
+        wz,
+        hz,
+        (x1 - t).max(x0) as usize,
+        y0 as usize,
+        x1 as usize,
+        y1 as usize,
+        accent,
+    );
 }
 
 impl App {
@@ -407,7 +666,11 @@ impl App {
         let (segments, cmd, caret, sel) = if matches!(self.mode, ModeKind::Command | ModeKind::Find)
         {
             // `:` for a command, `/` for a find-in-page search.
-            let pre = if self.mode == ModeKind::Find { '/' } else { ':' };
+            let pre = if self.mode == ModeKind::Find {
+                '/'
+            } else {
+                ':'
+            };
             let line = format!("{pre}{}", self.command);
             let prefix = format!("{pre}{}", &self.command[..self.command_cursor]);
             let caret_un = MARGIN + self.painter.measure(&prefix) as i32;
@@ -425,7 +688,10 @@ impl App {
             let sel = self.sel_range().map(|(a, b)| {
                 let x_of = |k: usize| {
                     MARGIN - scroll
-                        + self.painter.measure(&format!("{pre}{}", &self.command[..k])) as i32
+                        + self
+                            .painter
+                            .measure(&format!("{pre}{}", &self.command[..k]))
+                            as i32
                 };
                 (x_of(a).max(MARGIN).max(0) as usize, x_of(b).max(0) as usize)
             });
@@ -491,8 +757,16 @@ impl App {
                 }
                 // Command line, scrolled left by `scroll` px; clip at the left
                 // margin so scrolled-off text doesn't bleed into the edge.
-                let endx =
-                    p.text_clipped(buf, wz, hz, MARGIN - *scroll, baseline, text, theme.bar_fg, MARGIN);
+                let endx = p.text_clipped(
+                    buf,
+                    wz,
+                    hz,
+                    MARGIN - *scroll,
+                    baseline,
+                    text,
+                    theme.bar_fg,
+                    MARGIN,
+                );
                 // Autocomplete ghost text (dim) continuing from the caret.
                 if let Some(sfx) = &cmd_suffix {
                     p.text_clipped(buf, wz, hz, endx, baseline, sfx, draw::DIM, MARGIN);
@@ -525,7 +799,16 @@ impl App {
                 let lh = p.line_height();
                 let y0 = baseline.saturating_sub(lh * 3 / 4);
                 let y1 = (baseline + lh / 6).min(hz);
-                draw::fill_rect(buf, wz, hz, (x - 6).max(0) as usize, y0, wz, y1, theme.bar_bg);
+                draw::fill_rect(
+                    buf,
+                    wz,
+                    hz,
+                    (x - 6).max(0) as usize,
+                    y0,
+                    wz,
+                    y1,
+                    theme.bar_bg,
+                );
                 p.text(buf, wz, hz, x as usize, baseline, &shown, draw::DIM);
             }
         };
@@ -549,9 +832,21 @@ impl App {
                 let is_web = self.tabs.get(*t).is_some_and(|tb| tb.webview().is_some());
                 if !is_web {
                     paint_pane(
-                        &self.tabs[*t], p, term_p, term_style, &self.find, self.mode,
-                        &self.native_hints, &self.hint_input, self.hint_act,
-                        Some(*t) == self.active, self.cursor_on, *r, &mut buf, wz, hz,
+                        &self.tabs[*t],
+                        p,
+                        term_p,
+                        term_style,
+                        &self.find,
+                        self.mode,
+                        &self.native_hints,
+                        &self.hint_input,
+                        self.hint_act,
+                        Some(*t) == self.active,
+                        self.cursor_on,
+                        *r,
+                        &mut buf,
+                        wz,
+                        hz,
                     );
                 } else if self.frozen {
                     paint_frozen_pane(p, &mut buf, wz, hz, *r);
@@ -559,15 +854,25 @@ impl App {
             }
             for d in &dividers {
                 draw::fill_rect(
-                    &mut buf, wz, hz, d.x.max(0) as usize, d.y.max(0) as usize,
-                    (d.x + d.w) as usize, (d.y + d.h) as usize, draw::DIM,
+                    &mut buf,
+                    wz,
+                    hz,
+                    d.x.max(0) as usize,
+                    d.y.max(0) as usize,
+                    (d.x + d.w) as usize,
+                    (d.y + d.h) as usize,
+                    draw::DIM,
                 );
             }
             if is_split || self.mode == ModeKind::PaneMove {
                 if let Some((_, r)) = panes.iter().find(|(t, _)| Some(*t) == self.active) {
                     // The pane being moved is highlighted yellow; the ordinary focused
                     // pane keeps the theme accent.
-                    let col = if self.mode == ModeKind::PaneMove { draw::GRAB } else { theme.accent };
+                    let col = if self.mode == ModeKind::PaneMove {
+                        draw::GRAB
+                    } else {
+                        theme.accent
+                    };
                     draw_pane_border(*r, &mut buf, wz, hz, col);
                 }
             }
@@ -582,11 +887,16 @@ impl App {
                     return None;
                 }
                 let inset = if is_split { FOCUS_BORDER } else { 0 };
-                Some(PaneRect { x: r.x + inset, y: r.y + inset,
-                    w: (r.w - 2 * inset).max(1), h: (r.h - 2 * inset).max(1) })
+                Some(PaneRect {
+                    x: r.x + inset,
+                    y: r.y + inset,
+                    w: (r.w - 2 * inset).max(1),
+                    h: (r.h - 2 * inset).max(1),
+                })
             });
             let damage = native_damage(w, h, web_rects);
-            buf.present_with_damage(&damage).map_err(|e| anyhow::anyhow!("present: {e}"))?;
+            buf.present_with_damage(&damage)
+                .map_err(|e| anyhow::anyhow!("present: {e}"))?;
         } else {
             // Single web tab: a webview covers the whole content band, so we only
             // repaint the bars and present just those rects — never over the page.
@@ -610,7 +920,8 @@ impl App {
                     height: NonZeroU32::new(bar_h as u32).unwrap(),
                 });
             }
-            buf.present_with_damage(&damage).map_err(|e| anyhow::anyhow!("present: {e}"))?;
+            buf.present_with_damage(&damage)
+                .map_err(|e| anyhow::anyhow!("present: {e}"))?;
         }
         Ok(())
     }
@@ -678,17 +989,25 @@ impl App {
     /// Whether any tab is mid-load — the shell keeps waking to animate the strip's
     /// progress sweep while this holds, and goes back to idle when it doesn't.
     pub(crate) fn any_tab_loading(&self) -> bool {
-        self.tabs.iter().any(|t| t.page_state().is_some_and(|p| p.loading_for().is_some()))
+        self.tabs
+            .iter()
+            .any(|t| t.page_state().is_some_and(|p| p.loading_for().is_some()))
     }
 
     /// Whether the active tab is a read-mode tab.
     pub(crate) fn active_is_read(&self) -> bool {
-        self.active.and_then(|i| self.tabs.get(i)).map(|t| t.read).unwrap_or(false)
+        self.active
+            .and_then(|i| self.tabs.get(i))
+            .map(|t| t.read)
+            .unwrap_or(false)
     }
 
     /// Whether the active tab is a research-mode tab.
     pub(crate) fn active_is_research(&self) -> bool {
-        self.active.and_then(|i| self.tabs.get(i)).map(|t| t.research).unwrap_or(false)
+        self.active
+            .and_then(|i| self.tabs.get(i))
+            .map(|t| t.research)
+            .unwrap_or(false)
     }
 
     /// The command verb that re-opens the active tab in its own mode, for `:edit`.
@@ -757,22 +1076,34 @@ impl App {
             ],
             ModeKind::Scroll => vec![
                 ("[SCROLL]".into(), accent),
-                ("  hjkl · g/G · Ctrl+D/U · PgUp/PgDn · v select · Esc exit".into(), draw::DIM),
+                (
+                    "  hjkl · g/G · Ctrl+D/U · PgUp/PgDn · v select · Esc exit".into(),
+                    draw::DIM,
+                ),
             ],
             ModeKind::ScrollCaret => vec![
                 ("[SCROLL SELECTION]".into(), accent),
-                ("  hjkl/w/b/gg/G move · v/V select · y yank · Esc back".into(), draw::DIM),
+                (
+                    "  hjkl/w/b/gg/G move · v/V select · y yank · Esc back".into(),
+                    draw::DIM,
+                ),
             ],
             ModeKind::Caret => vec![
                 ("[SELECTION]".into(), accent),
-                ("  hjkl/w/b/0/$/gg/G move · v/V select · y yank · Esc exit".into(), draw::DIM),
+                (
+                    "  hjkl/w/b/0/$/gg/G move · v/V select · y yank · Esc exit".into(),
+                    draw::DIM,
+                ),
             ],
             // Light field-typing mode (web only): reads as [INSERT], with the field's
             // page URL and the leave/promote hint.
             ModeKind::Insert => vec![
                 ("[INSERT]".into(), accent),
                 (self.active_url().unwrap_or("").to_string(), fg),
-                ("   type into the field · Esc or click away to leave".into(), draw::DIM),
+                (
+                    "   type into the field · Esc or click away to leave".into(),
+                    draw::DIM,
+                ),
             ],
             // Sticky typing mode — always reads as [PASS], whatever the content; only the
             // trailing hint differs (how to leave / use this content).
@@ -788,14 +1119,20 @@ impl App {
                 if self.active_is_term() {
                     return vec![
                         ("[PASS]".into(), accent),
-                        ("   typing to the shell · Ctrl+V paste · Ctrl+S to leave".into(), draw::DIM),
+                        (
+                            "   typing to the shell · Ctrl+V paste · Ctrl+S to leave".into(),
+                            draw::DIM,
+                        ),
                     ];
                 }
                 let url = self.active_url().unwrap_or("").to_string();
                 vec![
                     ("[PASS]".into(), accent),
                     (url, fg),
-                    ("   every key to the page · Ctrl+S or Shift+Esc to leave".into(), draw::DIM),
+                    (
+                        "   every key to the page · Ctrl+S or Shift+Esc to leave".into(),
+                        draw::DIM,
+                    ),
                 ]
             }
             ModeKind::Normal => {
@@ -854,14 +1191,16 @@ impl App {
                             segs.push((format!("   [{m}]"), draw::AI));
                             segs.push(("  motions select · y yank · Esc".into(), draw::DIM));
                         }
-                        None => segs.push(("   [ai]  i: ask · H/L: chats · v/y select".into(), draw::AI)),
+                        None => segs
+                            .push(("   [ai]  i: ask · H/L: chats · v/y select".into(), draw::AI)),
                     }
                 }
                 // Terminal: [term] live (i types), [COPY] in vi/copy mode.
                 if self.active_is_term() {
                     if self.active_term_vi() {
                         segs.push((
-                            "   [COPY]  hjkl/w/b move · f find · v select · y yank · i resume".into(),
+                            "   [COPY]  hjkl/w/b move · f find · v select · y yank · i resume"
+                                .into(),
                             draw::TERM,
                         ));
                     } else {
@@ -935,7 +1274,10 @@ pub(crate) fn line_col_x(runs: &[read_view::Run], col: usize, base: i32, p: &Pai
 /// slash stripped (e.g. `https://www.youtube.com/` → `youtube.com`). The result is
 /// still openable (`resolve_target` re-adds the scheme).
 pub(crate) fn history_display(url: &str) -> String {
-    let s = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")).unwrap_or(url);
+    let s = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
     let s = s.strip_prefix("www.").unwrap_or(s);
     s.trim_end_matches('/').to_string()
 }
@@ -945,7 +1287,10 @@ pub(crate) fn history_display(url: &str) -> String {
 /// that there's more. The full URL shows again on hover or once the command bar is
 /// open. Non-web URLs (`browser://…`, native tabs) are left untouched.
 pub(crate) fn bar_short_url(url: &str) -> String {
-    let Some(s) = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")) else {
+    let Some(s) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
         return url.to_string();
     };
     let s = s.strip_prefix("www.").unwrap_or(s);
@@ -1000,7 +1345,11 @@ pub(crate) fn term_label(title: &str) -> String {
     // Drop the trailing "(<dir>)" annotation vim appends after the filename.
     let t = t.split(" (").next().unwrap_or(t).trim();
     // A bare path → its last segment; otherwise leave the text alone.
-    let last = t.rsplit(['\\', '/']).next().filter(|s| !s.is_empty()).unwrap_or(t);
+    let last = t
+        .rsplit(['\\', '/'])
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(t);
     truncate_label(if last.is_empty() { t } else { last })
 }
 
@@ -1099,7 +1448,10 @@ pub(crate) fn tab_cells(p: &Painter, w: usize, entries: &[TabEntry]) -> Vec<TabC
         let prefix = format!("{open}{}:", i + 1);
         let slot = if e.web { ic + 3 } else { 0 };
         let frame = format!("{prefix}{close}");
-        let label_px = cell.saturating_sub(6).saturating_sub(slot).saturating_sub(p.measure(&frame));
+        let label_px = cell
+            .saturating_sub(6)
+            .saturating_sub(slot)
+            .saturating_sub(p.measure(&frame));
         let prefix_w = p.measure(&prefix);
         out.push(TabCell {
             label: format!("{}{close}", fit_px(p, &e.label, label_px)),
@@ -1144,7 +1496,10 @@ mod tab_cell_tests {
         // Every cell in a strip has the same width; more tabs → narrower cells.
         assert!(few.iter().all(|c| c.w == few[0].w));
         assert!(many.iter().all(|c| c.w == many[0].w));
-        assert!(many[0].w < few[0].w, "12 tabs should get narrower cells than 3");
+        assert!(
+            many[0].w < few[0].w,
+            "12 tabs should get narrower cells than 3"
+        );
         // Cells tile left-to-right with no gaps or overlaps.
         for c in few.windows(2) {
             assert_eq!(c[0].x + c[0].w, c[1].x);
@@ -1160,8 +1515,14 @@ mod tab_cell_tests {
         let p = Painter::new(15.0).unwrap();
         let cells = tab_cells(&p, 900, &entries(10));
         // The 10th entry still shows its number prefix even at minimum width.
-        assert!(cells.last().unwrap().prefix.contains("10:"), "number prefix lost");
-        assert!(cells.iter().any(|c| c.label.contains('…')), "nothing truncated");
+        assert!(
+            cells.last().unwrap().prefix.contains("10:"),
+            "number prefix lost"
+        );
+        assert!(
+            cells.iter().any(|c| c.label.contains('…')),
+            "nothing truncated"
+        );
     }
 
     #[test]
@@ -1257,7 +1618,14 @@ fn draw_load_sweep(
 
 /// Paint the engine-free welcome screen: title + a key/command cheat-sheet.
 /// `scale` is the global zoom factor so column offsets track the scaled font.
-pub(crate) fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize, _scale: f32, accent: draw::Rgb) {
+pub(crate) fn draw_welcome(
+    p: &Painter,
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    _scale: f32,
+    accent: draw::Rgb,
+) {
     let lh = p.line_height();
     // A clean splash: the name + tagline centered, with one quiet hint below.
     let name = "browser";
@@ -1269,5 +1637,13 @@ pub(crate) fn draw_welcome(p: &Painter, buf: &mut [u32], w: usize, h: usize, _sc
     p.text(buf, w, h, after, ty, tag, draw::DIM);
     let hint = ":open <url> to start   ·   :commands for all keybindings";
     let hint_w = p.measure(hint);
-    p.text(buf, w, h, w.saturating_sub(hint_w) / 2, ty + lh * 2, hint, draw::DIM);
+    p.text(
+        buf,
+        w,
+        h,
+        w.saturating_sub(hint_w) / 2,
+        ty + lh * 2,
+        hint,
+        draw::DIM,
+    );
 }

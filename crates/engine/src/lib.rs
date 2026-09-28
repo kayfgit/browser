@@ -73,7 +73,10 @@ impl ProviderDescriptor {
             return Err(format!("{} cannot disable page JavaScript", self.id));
         }
         if needs.shell_bridge && (!caps.document_scripts || !caps.page_messages) {
-            return Err(format!("{} does not support the required shell bridge", self.id));
+            return Err(format!(
+                "{} does not support the required shell bridge",
+                self.id
+            ));
         }
         Ok(())
     }
@@ -90,7 +93,11 @@ pub fn resolve_provider<'a>(
     providers
         .iter()
         .find(|p| p.id == name)
-        .or_else(|| providers.iter().find(|p| p.family == name && p.id == preferred))
+        .or_else(|| {
+            providers
+                .iter()
+                .find(|p| p.family == name && p.id == preferred)
+        })
         .or_else(|| providers.iter().find(|p| p.family == name))
         .ok_or_else(|| format!("engine '{name}' is not installed; use :engines to list providers"))
 }
@@ -239,13 +246,23 @@ mod provider_tests {
         },
     ];
     fn needs(storage: StorageMode) -> ViewRequirements {
-        ViewRequirements { storage, disable_javascript: false, shell_bridge: true }
+        ViewRequirements {
+            storage,
+            disable_javascript: false,
+            shell_bridge: true,
+        }
     }
 
     #[test]
     fn concrete_ids_and_family_preferences_resolve_without_a_factory() {
-        assert_eq!(resolve_provider(PROVIDERS, "blink", "cef").unwrap().id, "cef");
-        assert_eq!(resolve_provider(PROVIDERS, "WEBVIEW2", "cef").unwrap().id, "webview2");
+        assert_eq!(
+            resolve_provider(PROVIDERS, "blink", "cef").unwrap().id,
+            "cef"
+        );
+        assert_eq!(
+            resolve_provider(PROVIDERS, "WEBVIEW2", "cef").unwrap().id,
+            "webview2"
+        );
         assert!(resolve_provider(PROVIDERS, "servo", "webview2").is_err());
         assert!(resolve_provider(&[], "blink", "webview2").is_err());
     }
@@ -272,7 +289,10 @@ mod provider_tests {
             disable_javascript: true,
             shell_bridge: false,
         };
-        assert!(PROVIDERS[1].validate(needs).unwrap_err().contains("JavaScript"));
+        assert!(PROVIDERS[1]
+            .validate(needs)
+            .unwrap_err()
+            .contains("JavaScript"));
     }
 
     #[test]

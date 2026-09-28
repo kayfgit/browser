@@ -18,7 +18,10 @@ use browser_engine::EngineResult;
 /// process up: suspended, it holds the profile open at close to no renderer cost.
 pub(crate) fn suspend(webview: &WebView) -> EngineResult {
     unsafe {
-        let core = webview.controller().CoreWebView2().map_err(|e| e.to_string())?;
+        let core = webview
+            .controller()
+            .CoreWebView2()
+            .map_err(|e| e.to_string())?;
         if let Ok(c19) = core.cast::<ICoreWebView2_19>() {
             let _ = c19.SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
         }
@@ -35,7 +38,10 @@ pub(crate) fn suspend(webview: &WebView) -> EngineResult {
 /// Resume a previously suspended webview and restore its memory target to NORMAL.
 pub(crate) fn resume(webview: &WebView) -> EngineResult {
     unsafe {
-        let core = webview.controller().CoreWebView2().map_err(|e| e.to_string())?;
+        let core = webview
+            .controller()
+            .CoreWebView2()
+            .map_err(|e| e.to_string())?;
         let c3 = core.cast::<ICoreWebView2_3>().map_err(|e| e.to_string())?;
         {
             c3.Resume().map_err(|e| e.to_string())?;

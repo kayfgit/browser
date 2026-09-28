@@ -24,9 +24,15 @@ use wry::{WebView, WebViewExtWindows};
 #[cfg(windows)]
 pub(crate) fn can_go(webview: &WebView, forward: bool) -> bool {
     unsafe {
-        let Ok(core) = webview.controller().CoreWebView2() else { return false };
+        let Ok(core) = webview.controller().CoreWebView2() else {
+            return false;
+        };
         let mut b = BOOL::default();
-        let ok = if forward { core.CanGoForward(&mut b) } else { core.CanGoBack(&mut b) };
+        let ok = if forward {
+            core.CanGoForward(&mut b)
+        } else {
+            core.CanGoBack(&mut b)
+        };
         ok.is_ok() && b.as_bool()
     }
 }
@@ -37,8 +43,16 @@ pub(crate) fn can_go(webview: &WebView, forward: bool) -> bool {
 #[cfg(windows)]
 pub(crate) fn go(webview: &WebView, forward: bool) -> browser_engine::EngineResult {
     unsafe {
-        let core = webview.controller().CoreWebView2().map_err(|e| e.to_string())?;
-        if forward { core.GoForward() } else { core.GoBack() }.map_err(|e| e.to_string())
+        let core = webview
+            .controller()
+            .CoreWebView2()
+            .map_err(|e| e.to_string())?;
+        if forward {
+            core.GoForward()
+        } else {
+            core.GoBack()
+        }
+        .map_err(|e| e.to_string())
     }
 }
 

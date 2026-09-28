@@ -50,8 +50,8 @@ impl Backend for TextBackend {
     }
 
     async fn fetch(&self, target: &str) -> Result<Document> {
-        let url = intent::normalize_url(target)
-            .ok_or_else(|| anyhow!("not a valid URL: {target}"))?;
+        let url =
+            intent::normalize_url(target).ok_or_else(|| anyhow!("not a valid URL: {target}"))?;
         let (final_url, html) = self.get_html(&url).await?;
         extract(&final_url, &html)
     }
@@ -118,8 +118,8 @@ pub fn fetch_document_blocking(target: &str) -> Result<Document> {
         .build()
         .context("building runtime")?;
     rt.block_on(async move {
-        let url = intent::normalize_url(target)
-            .ok_or_else(|| anyhow!("not a valid URL: {target}"))?;
+        let url =
+            intent::normalize_url(target).ok_or_else(|| anyhow!("not a valid URL: {target}"))?;
         let backend = TextBackend::new()?;
         let (final_url, html) = backend.get_html(&url).await?;
         extract(&final_url, &html)
@@ -134,12 +134,16 @@ pub fn fetch_readable_blocking(target: &str) -> Result<Readable> {
         .build()
         .context("building runtime")?;
     rt.block_on(async move {
-        let url = intent::normalize_url(target)
-            .ok_or_else(|| anyhow!("not a valid URL: {target}"))?;
+        let url =
+            intent::normalize_url(target).ok_or_else(|| anyhow!("not a valid URL: {target}"))?;
         let backend = TextBackend::new()?;
         let (final_url, html) = backend.get_html(&url).await?;
         let (title, article_html) = extract_article(&final_url, &html)?;
-        Ok(Readable { url: final_url, title, html: article_html })
+        Ok(Readable {
+            url: final_url,
+            title,
+            html: article_html,
+        })
     })
 }
 
@@ -161,9 +165,6 @@ mod tests {
         let doc = extract("https://example.com/", html).unwrap();
         assert!(!doc.blocks.is_empty());
         assert!(doc.links.iter().any(|l| l.url.contains("example.com/more")));
-        assert!(doc
-            .blocks
-            .iter()
-            .any(|b| matches!(b, Block::Code { .. })));
+        assert!(doc.blocks.iter().any(|b| matches!(b, Block::Code { .. })));
     }
 }

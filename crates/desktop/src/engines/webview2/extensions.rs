@@ -41,7 +41,9 @@ fn read_list(list: &ICoreWebView2BrowserExtensionList) -> Vec<ExtInfo> {
         return out;
     }
     for i in 0..count {
-        let Ok(ext) = (unsafe { list.GetValueAtIndex(i) }) else { continue };
+        let Ok(ext) = (unsafe { list.GetValueAtIndex(i) }) else {
+            continue;
+        };
         let id = pwstr_of(|p| unsafe { ext.Id(p) });
         let name = pwstr_of(|p| unsafe { ext.Name(p) });
         let mut b = BOOL::default();
@@ -56,7 +58,9 @@ pub(crate) fn list(webview: &WebView, done: Completion<Vec<ExtInfo>>) -> EngineR
     let profile = profile7(webview).ok_or("extension APIs unavailable in this runtime")?;
     let handler = ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(move |hr, list| {
         done(hr.map_err(|e| e.to_string()).and_then(|()| {
-            list.as_ref().map(read_list).ok_or_else(|| "engine returned no extension list".into())
+            list.as_ref()
+                .map(read_list)
+                .ok_or_else(|| "engine returned no extension list".into())
         }));
         Ok(())
     }));
@@ -106,7 +110,9 @@ fn apply(
                 let mut count = 0u32;
                 let _ = unsafe { list.Count(&mut count) };
                 for i in 0..count {
-                    let Ok(ext) = (unsafe { list.GetValueAtIndex(i) }) else { continue };
+                    let Ok(ext) = (unsafe { list.GetValueAtIndex(i) }) else {
+                        continue;
+                    };
                     let id = pwstr_of(|p| unsafe { ext.Id(p) });
                     if want(&ext, &id) {
                         let done =

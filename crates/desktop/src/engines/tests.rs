@@ -82,10 +82,27 @@ fn shell_tab_owns_an_independent_engine_and_releases_it_on_replacement() {
     let view = tab.webview().unwrap();
     view.load_url("https://example.org").unwrap();
     assert_eq!(view.url().unwrap(), "https://example.org");
-    assert_eq!(view.load_url("test:failure").unwrap_err(), "navigation rejected");
+    assert_eq!(
+        view.load_url("test:failure").unwrap_err(),
+        "navigation rejected"
+    );
     assert_eq!(view.url().unwrap(), "https://example.org");
-    view.set_bounds(engine_rect(PaneRect { x: 17, y: 29, w: 300, h: 200 })).unwrap();
-    assert_eq!(bounds.get(), Some(RectPx { x: 17, y: 29, w: 300, h: 200 }));
+    view.set_bounds(engine_rect(PaneRect {
+        x: 17,
+        y: 29,
+        w: 300,
+        h: 200,
+    }))
+    .unwrap();
+    assert_eq!(
+        bounds.get(),
+        Some(RectPx {
+            x: 17,
+            y: 29,
+            w: 300,
+            h: 200
+        })
+    );
     assert!(view.history().is_none());
     assert!(view.extensions().is_none());
     assert!(view.browsing_data().is_none());
@@ -126,8 +143,18 @@ fn shell_history_keeps_private_and_research_flags_with_an_erased_engine() {
 #[test]
 fn collapsed_pane_bounds_stay_valid_for_child_surfaces() {
     assert_eq!(
-        engine_rect(PaneRect { x: -2, y: 10, w: 0, h: -4 }),
-        RectPx { x: -2, y: 10, w: 1, h: 1 }
+        engine_rect(PaneRect {
+            x: -2,
+            y: 10,
+            w: 0,
+            h: -4
+        }),
+        RectPx {
+            x: -2,
+            y: 10,
+            w: 1,
+            h: 1
+        }
     );
 }
 
@@ -187,7 +214,9 @@ fn unavailable_location_keeps_provider_metadata_and_can_be_recovered() {
     assert!(tab.webview().is_none());
     assert!(tab.vim().is_some());
     assert_eq!(nav_entry(&tab).unwrap().provider, "servo");
-    let TabContent::Web(view, page) = fake_tab().content else { unreachable!() };
+    let TabContent::Web(view, page) = fake_tab().content else {
+        unreachable!()
+    };
     tab.replace_engine(Ok((view, page))).unwrap();
     assert!(tab.unavailable().is_none());
     assert_eq!(tab.provider(), Some("fake"));
@@ -210,7 +239,10 @@ fn native_engine_access_stays_inside_the_provider() {
                 continue;
             }
             let source = std::fs::read_to_string(&path).unwrap();
-            for line in source.lines().filter(|line| !line.trim_start().starts_with("//")) {
+            for line in source
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+            {
                 // Restrict imports/paths, not explanatory references in comments.
                 for native in ["wry::", "webview2_com::", "windows061::"] {
                     assert!(
@@ -224,5 +256,9 @@ fn native_engine_access_stays_inside_the_provider() {
     }
     // This file contains the forbidden tokens as test data, so scan the other files.
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    check(&src, &src.join("engines/webview2"), &src.join("engines/tests.rs"));
+    check(
+        &src,
+        &src.join("engines/webview2"),
+        &src.join("engines/tests.rs"),
+    );
 }

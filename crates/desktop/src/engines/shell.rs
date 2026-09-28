@@ -10,8 +10,10 @@ impl App {
 
     pub(crate) fn provider_for_open(&self, new_tab: bool) -> String {
         if !new_tab {
-            if let Some(provider) =
-                self.active.and_then(|i| self.tabs.get(i)).and_then(Tab::provider)
+            if let Some(provider) = self
+                .active
+                .and_then(|i| self.tabs.get(i))
+                .and_then(Tab::provider)
             {
                 return provider.into();
             }
@@ -28,7 +30,10 @@ impl App {
                     .and_then(|i| self.tabs.get(i))
                     .and_then(Tab::provider)
                     .unwrap_or("none");
-                self.set_status(format!("engine: {active}; default: {}", self.default_engine()));
+                self.set_status(format!(
+                    "engine: {active}; default: {}",
+                    self.default_engine()
+                ));
             }
             ["default", name] => match super::resolve(name, self.default_engine()) {
                 Ok(provider) => {
@@ -49,7 +54,11 @@ impl App {
     pub(crate) fn list_engines(&mut self) {
         let mut lines = vec!["Installed engines".into(), String::new()];
         for provider in super::PROVIDERS {
-            let default = if provider.id == self.default_engine() { " (default)" } else { "" };
+            let default = if provider.id == self.default_engine() {
+                " (default)"
+            } else {
+                ""
+            };
             lines.push(format!(
                 "{} — {} — {}{default}",
                 provider.id, provider.family, provider.display_name
@@ -107,7 +116,10 @@ impl App {
                         research,
                         private,
                         read: false,
-                        nav: TabNav { settling: true, ..TabNav::default() },
+                        nav: TabNav {
+                            settling: true,
+                            ..TabNav::default()
+                        },
                     },
                     new_tab,
                 );
@@ -120,7 +132,10 @@ impl App {
                     ""
                 };
                 self.set_status(if private {
-                    format!("(private{sep}{mode})", sep = if mode.is_empty() { "" } else { ", " })
+                    format!(
+                        "(private{sep}{mode})",
+                        sep = if mode.is_empty() { "" } else { ", " }
+                    )
                 } else if mode.is_empty() {
                     String::new()
                 } else {
@@ -160,7 +175,10 @@ impl App {
                 research,
                 private: false,
                 read: false,
-                nav: TabNav { settling: true, ..TabNav::default() },
+                nav: TabNav {
+                    settling: true,
+                    ..TabNav::default()
+                },
             },
             true,
         );
@@ -188,7 +206,10 @@ impl App {
             return;
         }
         if tab.webview().is_some() && tab.provider() == Some(provider.id) {
-            self.set_status(format!("already using {} ({})", provider.id, provider.family));
+            self.set_status(format!(
+                "already using {} ({})",
+                provider.id, provider.family
+            ));
             return;
         }
         // Only reopen ordinary GET-style locations. Other schemes need provider-specific handling.

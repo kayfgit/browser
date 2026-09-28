@@ -2,29 +2,84 @@
 //! (bangs / queries / URLs), and the `:search` template resolver.
 
 use crate::panes::SplitDir;
-use crate::{
-    commands_document, parse_open_flags, parse_tab_flag, program_exists, App, ModeKind,
-};
+use crate::{commands_document, parse_open_flags, parse_tab_flag, program_exists, App, ModeKind};
 
 /// Command verbs offered by command-bar autocomplete (`:ver`→`:version`). Longest-
 /// useful canonical spellings; ordered so the first prefix match is the best one.
 pub(crate) const COMMANDS: &[&str] = &[
-    "open", "tabopen", "edit", "yank", "read", "research", "reload", "resize", "res", "resources", "reopen", "ai",
-    "error", "errors", "te", "term", "shell", "search", "js", "nojs", "ads", "adblock", "extensions", "downloads",
-    "mute", "audio", "css", "video", "scrollbar", "model", "history", "aihist", "aihistory", "clear", "alias", "unalias", "theme", "restore",
+    "open",
+    "tabopen",
+    "edit",
+    "yank",
+    "read",
+    "research",
+    "reload",
+    "resize",
+    "res",
+    "resources",
+    "reopen",
+    "ai",
+    "error",
+    "errors",
+    "te",
+    "term",
+    "shell",
+    "search",
+    "js",
+    "nojs",
+    "ads",
+    "adblock",
+    "extensions",
+    "downloads",
+    "mute",
+    "audio",
+    "css",
+    "video",
+    "scrollbar",
+    "model",
+    "history",
+    "aihist",
+    "aihistory",
+    "clear",
+    "alias",
+    "unalias",
+    "theme",
+    "restore",
     // After "search"/"scratch"-style verbs above so `:s`/`:sc` keep their old
     // completions; "save" precedes "saved" so `:sav` completes to the common one.
-    "save", "saved", "unsave",
-    "next", "tabnext", "tabprev",
-    "prev", "back", "forward", "freeze", "unfreeze", "fullscreen", "move", "commands", "help", "version", "close",
-    "vsplit", "split",
+    "save",
+    "saved",
+    "unsave",
+    "next",
+    "tabnext",
+    "tabprev",
+    "prev",
+    "back",
+    "forward",
+    "freeze",
+    "unfreeze",
+    "fullscreen",
+    "move",
+    "commands",
+    "help",
+    "version",
+    "close",
+    "vsplit",
+    "split",
     // After "prev"/"reload" above, so `:p`/`:r` still complete to those first.
-    "profile", "profiles", "saveprofile", "delprofile", "scratch",
-    "write", "wq", "quit",
+    "profile",
+    "profiles",
+    "saveprofile",
+    "delprofile",
+    "scratch",
+    "write",
+    "wq",
+    "quit",
     // Last, so it can't shadow `:f`/`:fo`… (fullscreen/forward/freeze) — `:fa` is
     // unambiguous and reaches it.
     "favorites",
-    "engine", "engines",
+    "engine",
+    "engines",
 ];
 
 impl App {
@@ -32,7 +87,11 @@ impl App {
         let line = line.trim();
         // Attribute any failure raised below to this command in the error log (keep the
         // line the user actually typed, before alias expansion).
-        self.current_command = if line.is_empty() { None } else { Some(format!(":{line}")) };
+        self.current_command = if line.is_empty() {
+            None
+        } else {
+            Some(format!(":{line}"))
+        };
         // Expand a leading command alias (`gh` → `open github.com`), appending any
         // typed args. Resolved here so aliases work everywhere `:` commands run.
         let expanded = self.expand_alias(line);
@@ -314,9 +373,15 @@ impl App {
                 let r = rest.trim();
                 if r == "clear" || r.starts_with("clear ") {
                     let period = r["clear".len()..].trim();
-                    let line =
-                        if period.is_empty() { "history".to_string() } else { format!("history {period}") };
-                    self.run_action("clear", crate::actions::positional(&["what", "period"], &line));
+                    let line = if period.is_empty() {
+                        "history".to_string()
+                    } else {
+                        format!("history {period}")
+                    };
+                    self.run_action(
+                        "clear",
+                        crate::actions::positional(&["what", "period"], &line),
+                    );
                 } else {
                     self.open_history_page();
                 }
@@ -327,7 +392,10 @@ impl App {
             // 15m`, `:clear cookies`, `:clear all`). A single verb (not one per kind)
             // keeps the command surface small; the same actions are what the AI
             // assistant drives. See `actions.rs`.
-            "clear" => self.run_action("clear", crate::actions::positional(&["what", "period"], rest)),
+            "clear" => self.run_action(
+                "clear",
+                crate::actions::positional(&["what", "period"], rest),
+            ),
             // Customization: `:alias` (list / set), `:unalias`, and the brick-proof
             // `:restore`. These run through the same action layer the AI drives.
             "alias" => {
@@ -339,7 +407,10 @@ impl App {
                         Some((n, e)) => (n, e.trim()),
                         None => (r, ""),
                     };
-                    self.run_action("alias", serde_json::json!({ "name": name, "expansion": exp }));
+                    self.run_action(
+                        "alias",
+                        serde_json::json!({ "name": name, "expansion": exp }),
+                    );
                 }
             }
             "unalias" => self.run_action("unalias", serde_json::json!({ "name": rest.trim() })),
@@ -360,7 +431,9 @@ impl App {
                 } else if let Some(name) = r.strip_prefix("install") {
                     let name = name.trim();
                     if name.is_empty() {
-                        self.set_error("usage: :theme install <scheme name>  (e.g. :theme install 3270-Dark)");
+                        self.set_error(
+                            "usage: :theme install <scheme name>  (e.g. :theme install 3270-Dark)",
+                        );
                     } else {
                         self.run_action("install_scheme", serde_json::json!({ "name": name }));
                     }
@@ -462,14 +535,26 @@ pub(crate) fn arg_candidates(app: &App, verb: &str, prior: &[&str]) -> Option<Ve
         ("history" | "hist", []) => own(&["clear"]),
         ("history" | "hist", ["clear"]) => own(PERIODS),
         ("theme", []) => own(&[
-            "accent", "bar_bg", "bar_fg", "bar_height_pct", "bg", "term_bg", "term_fg",
-            "term_font", "term_font_px", "term_scheme", "install", "reload", "show",
+            "accent",
+            "bar_bg",
+            "bar_fg",
+            "bar_height_pct",
+            "bg",
+            "term_bg",
+            "term_fg",
+            "term_font",
+            "term_font_px",
+            "term_scheme",
+            "install",
+            "reload",
+            "show",
         ]),
         // `:search` engine names come from the bang table's canonical keys, so the
         // cycle always matches what `search_template_for` below actually accepts.
-        ("search", []) => {
-            browser_core::bang_list().into_iter().map(|(k, _)| k.to_string()).collect()
-        }
+        ("search", []) => browser_core::bang_list()
+            .into_iter()
+            .map(|(k, _)| k.to_string())
+            .collect(),
         ("help" | "commands", []) => crate::pages::help_topics(),
         // Saved profile names (plus the two always-there targets), so `:profile <Tab>`
         // cycles what you can actually switch to.
@@ -486,9 +571,12 @@ pub(crate) fn arg_candidates(app: &App, verb: &str, prior: &[&str]) -> Option<Ve
         }
         // The saved pages' own names, so `:unsave <Tab>` cycles what can be removed
         // (in list order — newest first, matching the `:saved` picker).
-        ("unsave" | "unfav" | "delsave" | "unbookmark", []) => {
-            app.saved.iter().map(|b| b.name.clone()).filter(|n| !n.trim().is_empty()).collect()
-        }
+        ("unsave" | "unfav" | "delsave" | "unbookmark", []) => app
+            .saved
+            .iter()
+            .map(|b| b.name.clone())
+            .filter(|n| !n.trim().is_empty())
+            .collect(),
         // Alias names are the user's own — sorted so the cycle order is stable.
         ("alias" | "unalias", []) => {
             let mut v: Vec<String> = app.config.aliases.keys().cloned().collect();

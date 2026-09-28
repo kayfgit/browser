@@ -54,7 +54,13 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Theme { bar_scale: 1.0, bar_bg: BAR_BG, bar_fg: BAR_FG, accent: ACCENT, bg: BG }
+        Theme {
+            bar_scale: 1.0,
+            bar_bg: BAR_BG,
+            bar_fg: BAR_FG,
+            accent: ACCENT,
+            bg: BG,
+        }
     }
 }
 
@@ -65,9 +71,17 @@ pub fn parse_color(s: &str) -> Option<Rgb> {
     let hex = s.trim().trim_start_matches('#');
     if hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         let n = u32::from_str_radix(hex, 16).ok()?;
-        return Some((((n >> 16) & 0xff) as u8, ((n >> 8) & 0xff) as u8, (n & 0xff) as u8));
+        return Some((
+            ((n >> 16) & 0xff) as u8,
+            ((n >> 8) & 0xff) as u8,
+            (n & 0xff) as u8,
+        ));
     }
-    let name: String = s.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_ascii_lowercase();
+    let name: String = s
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
     Some(match name.as_str() {
         "black" => (0x10, 0x10, 0x10),
         "white" => (0xf0, 0xf0, 0xf0),
@@ -113,8 +127,8 @@ impl Painter {
     pub fn with_primary(primary: Option<&std::path::Path>, px: f32) -> Result<Self> {
         let mut fonts = Vec::new();
         if let Some(path) = primary {
-            let bytes = std::fs::read(path)
-                .map_err(|e| anyhow!("reading font {}: {e}", path.display()))?;
+            let bytes =
+                std::fs::read(path).map_err(|e| anyhow!("reading font {}: {e}", path.display()))?;
             fonts.push(
                 Font::from_bytes(bytes, FontSettings::default())
                     .map_err(|e| anyhow!("parsing font {}: {e}", path.display()))?,
@@ -125,14 +139,21 @@ impl Painter {
                 .map_err(|e| anyhow!("parsing font: {e}"))?,
         );
         // Optional fallbacks — skipped silently if a face isn't installed.
-        for path in [r"C:\Windows\Fonts\seguisym.ttf", r"C:\Windows\Fonts\arial.ttf"] {
+        for path in [
+            r"C:\Windows\Fonts\seguisym.ttf",
+            r"C:\Windows\Fonts\arial.ttf",
+        ] {
             if let Ok(bytes) = std::fs::read(path) {
                 if let Ok(f) = Font::from_bytes(bytes, FontSettings::default()) {
                     fonts.push(f);
                 }
             }
         }
-        Ok(Painter { fonts, cjk: OnceLock::new(), px })
+        Ok(Painter {
+            fonts,
+            cjk: OnceLock::new(),
+            px,
+        })
     }
 
     /// The first loaded font that has a glyph for `ch` (else the primary, which
@@ -199,7 +220,8 @@ impl Painter {
         s: &str,
         color: Rgb,
     ) -> usize {
-        self.text_clipped(buf, w, h, x as i32, baseline, s, color, 0).max(0) as usize
+        self.text_clipped(buf, w, h, x as i32, baseline, s, color, 0)
+            .max(0) as usize
     }
 
     /// Like [`Painter::text`] but the start `x` may be negative (for horizontal
@@ -218,7 +240,9 @@ impl Painter {
         color: Rgb,
         clip_x0: i32,
     ) -> i32 {
-        self.text_rect(buf, w, h, x, baseline, s, color, clip_x0, w as i32, 0, h as i32)
+        self.text_rect(
+            buf, w, h, x, baseline, s, color, clip_x0, w as i32, 0, h as i32,
+        )
     }
 
     /// Like [`Painter::text_clipped`] but confined to a sub-rect: pixels outside
@@ -329,11 +353,11 @@ fn blend(bg: u32, fg: Rgb, cov: u8) -> u32 {
 /// `.ttc` collections load their first face (fontdue's default `collection_index`).
 fn load_cjk_fonts() -> Vec<Font> {
     const PATHS: &[&str] = &[
-        r"C:\Windows\Fonts\YuGothR.ttc",   // Yu Gothic — Japanese (kana + kanji)
-        r"C:\Windows\Fonts\msgothic.ttc",  // MS Gothic — Japanese fallback
-        r"C:\Windows\Fonts\malgun.ttf",    // Malgun Gothic — Korean (Hangul)
-        r"C:\Windows\Fonts\msyh.ttc",      // Microsoft YaHei — Simplified Chinese
-        r"C:\Windows\Fonts\simsun.ttc",    // SimSun — Chinese fallback
+        r"C:\Windows\Fonts\YuGothR.ttc", // Yu Gothic — Japanese (kana + kanji)
+        r"C:\Windows\Fonts\msgothic.ttc", // MS Gothic — Japanese fallback
+        r"C:\Windows\Fonts\malgun.ttf",  // Malgun Gothic — Korean (Hangul)
+        r"C:\Windows\Fonts\msyh.ttc",    // Microsoft YaHei — Simplified Chinese
+        r"C:\Windows\Fonts\simsun.ttc",  // SimSun — Chinese fallback
     ];
     let mut fonts = Vec::new();
     for path in PATHS {
@@ -357,7 +381,9 @@ fn load_system_font() -> Result<Vec<u8>> {
             return Ok(bytes);
         }
     }
-    Err(anyhow!("no system font found (looked for Consolas/Segoe UI/Arial)"))
+    Err(anyhow!(
+        "no system font found (looked for Consolas/Segoe UI/Arial)"
+    ))
 }
 
 /// Resolve a font NAME (e.g. "Cascadia Code", "jetbrains mono") or explicit file
@@ -374,7 +400,10 @@ pub fn find_font(query: &str) -> Option<std::path::PathBuf> {
         return p.is_file().then_some(p);
     }
     let norm = |s: &str| -> String {
-        s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase()
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase()
     };
     let q = norm(query);
     if q.is_empty() {
@@ -387,14 +416,21 @@ pub fn find_font(query: &str) -> Option<std::path::PathBuf> {
     }
     let mut best: Option<(u32, usize, PathBuf)> = None;
     for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
-            let ext = path.extension().and_then(|s| s.to_str()).map(str::to_ascii_lowercase);
+            let ext = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(str::to_ascii_lowercase);
             if !matches!(ext.as_deref(), Some("ttf" | "otf" | "ttc")) {
                 continue;
             }
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
             let ns = norm(stem);
             let score = if ns == q {
                 0
@@ -405,7 +441,10 @@ pub fn find_font(query: &str) -> Option<std::path::PathBuf> {
             } else {
                 continue;
             };
-            if best.as_ref().is_none_or(|(s, l, _)| (score, ns.len()) < (*s, *l)) {
+            if best
+                .as_ref()
+                .is_none_or(|(s, l, _)| (score, ns.len()) < (*s, *l))
+            {
                 best = Some((score, ns.len(), path));
             }
         }

@@ -26,8 +26,19 @@ pub fn build_blocks(html: &str, base_url: &str, builder: &mut DocumentBuilder) {
 fn is_skipped(name: &str) -> bool {
     matches!(
         name,
-        "head" | "title" | "script" | "style" | "noscript" | "svg" | "iframe"
-            | "form" | "button" | "input" | "select" | "textarea" | "nav"
+        "head"
+            | "title"
+            | "script"
+            | "style"
+            | "noscript"
+            | "svg"
+            | "iframe"
+            | "form"
+            | "button"
+            | "input"
+            | "select"
+            | "textarea"
+            | "nav"
     )
 }
 
@@ -35,8 +46,24 @@ fn is_skipped(name: &str) -> bool {
 fn is_inline(name: &str) -> bool {
     matches!(
         name,
-        "a" | "em" | "i" | "strong" | "b" | "code" | "span" | "small" | "mark"
-            | "sub" | "sup" | "u" | "abbr" | "time" | "cite" | "q" | "s" | "del" | "ins"
+        "a" | "em"
+            | "i"
+            | "strong"
+            | "b"
+            | "code"
+            | "span"
+            | "small"
+            | "mark"
+            | "sub"
+            | "sup"
+            | "u"
+            | "abbr"
+            | "time"
+            | "cite"
+            | "q"
+            | "s"
+            | "del"
+            | "ins"
     )
 }
 
@@ -78,8 +105,11 @@ fn walk(
                     }
                     "pre" => {
                         let text = raw_text(child);
-                        let lines: Vec<String> =
-                            text.trim_matches('\n').split('\n').map(str::to_string).collect();
+                        let lines: Vec<String> = text
+                            .trim_matches('\n')
+                            .split('\n')
+                            .map(str::to_string)
+                            .collect();
                         if !lines.iter().all(|l| l.trim().is_empty()) {
                             out.push(Block::Code { lines });
                         }
@@ -119,8 +149,16 @@ fn emit_list(
                 if is_blank(&spans) {
                     continue;
                 }
-                let marker = if ordered { format!("{index}.") } else { "•".to_string() };
-                out.push(Block::ListItem { ordered, marker, spans });
+                let marker = if ordered {
+                    format!("{index}.")
+                } else {
+                    "•".to_string()
+                };
+                out.push(Block::ListItem {
+                    ordered,
+                    marker,
+                    spans,
+                });
             }
         }
     }
@@ -150,7 +188,9 @@ fn collect_inline(
     builder: &mut DocumentBuilder,
     spans: &mut Vec<Span>,
 ) {
-    let Node::Element(el) = node.value() else { return };
+    let Node::Element(el) = node.value() else {
+        return;
+    };
     let name = el.name();
     if is_skipped(name) {
         return;
@@ -245,7 +285,10 @@ fn collapse(s: &str) -> String {
 
 fn resolve(base: &Option<Url>, href: &str) -> String {
     match base {
-        Some(b) => b.join(href).map(|u| u.to_string()).unwrap_or_else(|_| href.to_string()),
+        Some(b) => b
+            .join(href)
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| href.to_string()),
         None => href.to_string(),
     }
 }

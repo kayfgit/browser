@@ -28,7 +28,9 @@ pub(crate) fn list(view: &dyn EngineView, request: u64, proxy: EventLoopProxy<Us
 }
 
 pub(crate) fn set_enabled(view: &dyn EngineView, id: String, enabled: bool) -> Result<(), String> {
-    view.extensions().ok_or("this engine does not support extensions")?.set_enabled(id, enabled)
+    view.extensions()
+        .ok_or("this engine does not support extensions")?
+        .set_enabled(id, enabled)
 }
 pub(crate) fn set_all_enabled(view: &dyn EngineView, enabled: bool) {
     if let Some(service) = view.extensions() {

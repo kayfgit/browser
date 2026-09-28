@@ -97,7 +97,9 @@ mod imp {
         HWND_VAL.store(hwnd, Ordering::Relaxed);
         PROXY.with(|p| *p.borrow_mut() = Some(proxy));
         unsafe {
-            let hmod = GetModuleHandleW(None).map(|h| HINSTANCE(h.0)).unwrap_or_default();
+            let hmod = GetModuleHandleW(None)
+                .map(|h| HINSTANCE(h.0))
+                .unwrap_or_default();
             // The HHOOK lives for the whole process; the OS frees it at exit, so we
             // intentionally don't store/unhook it (which would need a Sync wrapper).
             let _ = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), Some(hmod), 0);
@@ -234,4 +236,8 @@ pub(crate) fn set_mode(_code: u8) {}
 pub(crate) fn note_focus_gain() {}
 
 #[cfg(not(windows))]
-pub(crate) fn install(_hwnd: isize, _proxy: tao::event_loop::EventLoopProxy<crate::app::UserEvent>) {}
+pub(crate) fn install(
+    _hwnd: isize,
+    _proxy: tao::event_loop::EventLoopProxy<crate::app::UserEvent>,
+) {
+}

@@ -43,7 +43,8 @@ pub(crate) struct ActionSpec {
 pub(crate) const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "clear",
-        summary: "Erase stored browsing data, optionally only from a recent time window. \
+        summary:
+            "Erase stored browsing data, optionally only from a recent time window. \
                   Use when the user asks to clear/delete/wipe history, cookies, cache, or \
                   everything (e.g. \"clear the last 24h history\", \"wipe the last 15 min cache\").",
         params: &[
@@ -371,7 +372,10 @@ pub(crate) fn is_action(name: &str) -> bool {
 /// clobber the chat). Settings/data actions (theme, alias, clear, install_scheme, …)
 /// don't touch the pane layout and must NOT trigger that blank-tab dance.
 pub(crate) fn targets_content(name: &str) -> bool {
-    matches!(name, "open" | "split" | "close" | "reopen" | "tab" | "navigate")
+    matches!(
+        name,
+        "open" | "split" | "close" | "reopen" | "tab" | "navigate"
+    )
 }
 
 /// Build an args object by zipping whitespace tokens in `rest` onto `names`, so a
@@ -411,7 +415,11 @@ impl App {
             // Profiles. `do` is a keyword in Rust but a natural name for the model;
             // `action` is accepted as a synonym since models reach for it.
             "profile" => {
-                let verb = if str_arg("do").is_empty() { str_arg("action") } else { str_arg("do") };
+                let verb = if str_arg("do").is_empty() {
+                    str_arg("action")
+                } else {
+                    str_arg("do")
+                };
                 let name = str_arg("name");
                 match verb.to_ascii_lowercase().as_str() {
                     "save" | "saveprofile" => self.save_profile(name),
@@ -442,7 +450,11 @@ impl App {
             // Saved pages. Same `do`-verb shape as `profile` (models reach for
             // `action` too, so both spellings are accepted).
             "bookmark" => {
-                let verb = if str_arg("do").is_empty() { str_arg("action") } else { str_arg("do") };
+                let verb = if str_arg("do").is_empty() {
+                    str_arg("action")
+                } else {
+                    str_arg("do")
+                };
                 let name = str_arg("name");
                 match verb.to_ascii_lowercase().as_str() {
                     "save" | "add" | "keep" | "" => self.save_current_page(name),
@@ -495,14 +507,25 @@ impl App {
                 }
                 let new_tab = str_arg("where") == "new";
                 self.open_tab(target, self.nojs, new_tab);
-                Ok(format!("opened {target}{}", if new_tab { " in a new tab" } else { "" }))
+                Ok(format!(
+                    "opened {target}{}",
+                    if new_tab { " in a new tab" } else { "" }
+                ))
             }
             "split" => {
                 let horizontal = matches!(str_arg("direction"), "horizontal" | "stacked");
-                self.split_pane(if horizontal { SplitDir::Col } else { SplitDir::Row });
+                self.split_pane(if horizontal {
+                    SplitDir::Col
+                } else {
+                    SplitDir::Row
+                });
                 Ok(format!(
                     "split the layout {}",
-                    if horizontal { "top/bottom" } else { "side by side" }
+                    if horizontal {
+                        "top/bottom"
+                    } else {
+                        "side by side"
+                    }
                 ))
             }
             "close" => {
@@ -516,7 +539,10 @@ impl App {
             "tab" => {
                 let prev = matches!(str_arg("to"), "previous" | "prev" | "left" | "back");
                 self.switch_tab(if prev { -1 } else { 1 });
-                Ok(format!("switched to the {} tab", if prev { "previous" } else { "next" }))
+                Ok(format!(
+                    "switched to the {} tab",
+                    if prev { "previous" } else { "next" }
+                ))
             }
             "navigate" => match str_arg("direction") {
                 "forward" => {
@@ -531,7 +557,9 @@ impl App {
                     self.history(false);
                     Ok("went back".into())
                 }
-                other => Err(format!("can't navigate '{other}' — try back, forward, or reload")),
+                other => Err(format!(
+                    "can't navigate '{other}' — try back, forward, or reload"
+                )),
             },
             other => Err(format!("unknown action: {other}")),
         }
@@ -552,7 +580,9 @@ impl App {
         if name == "restore" {
             return Err("'restore' is reserved — it's the reset-to-defaults command".into());
         }
-        self.config.aliases.insert(name.to_string(), expansion.to_string());
+        self.config
+            .aliases
+            .insert(name.to_string(), expansion.to_string());
         crate::config::save(&self.config);
         Ok(format!("alias :{name} → {expansion}"))
     }
@@ -591,10 +621,17 @@ impl App {
     /// choice turns out unreadable.
     pub(crate) fn set_theme(&mut self, args: &Value) -> Result<String, String> {
         let arg = |k: &str| {
-            args.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty())
+            args.get(k)
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
         };
-        let is_default =
-            |s: &str| matches!(s.to_ascii_lowercase().as_str(), "default" | "reset" | "none");
+        let is_default = |s: &str| {
+            matches!(
+                s.to_ascii_lowercase().as_str(),
+                "default" | "reset" | "none"
+            )
+        };
         // Validate everything BEFORE mutating, so a bad value aborts cleanly.
         for key in ["bar_bg", "bar_fg", "accent", "bg", "term_bg", "term_fg"] {
             if let Some(s) = arg(key) {
@@ -629,8 +666,10 @@ impl App {
             if !is_default(s) {
                 match crate::draw::find_font(s) {
                     Some(p) => {
-                        term_font_file =
-                            p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+                        term_font_file = p
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default()
                     }
                     None => {
                         return Err(format!(
@@ -651,9 +690,10 @@ impl App {
         if let Some(v) = args.get("bar_height_pct") {
             // Accept a JSON number, a string like "125" / "125%", or `default`.
             let s = v.as_str().map(str::trim).unwrap_or("");
-            let pct = v.as_u64().map(|n| n as u32).or_else(|| {
-                s.trim_end_matches('%').trim().parse().ok()
-            });
+            let pct = v
+                .as_u64()
+                .map(|n| n as u32)
+                .or_else(|| s.trim_end_matches('%').trim().parse().ok());
             if !s.is_empty() && is_default(s) {
                 self.config.theme.bar_height_pct = None;
                 changed.push("bar height to default".into());
@@ -699,7 +739,10 @@ impl App {
                 self.config.term.font_px = None;
                 changed.push("terminal font size to default".into());
             } else {
-                match v.as_f64().or_else(|| s.trim_end_matches("px").trim().parse().ok()) {
+                match v
+                    .as_f64()
+                    .or_else(|| s.trim_end_matches("px").trim().parse().ok())
+                {
                     Some(px) => {
                         let px = (px as f32).clamp(6.0, 72.0);
                         self.config.term.font_px = Some(px);
@@ -712,7 +755,11 @@ impl App {
         }
         if let Some(s) = arg("term_scheme") {
             let name = s.to_ascii_lowercase();
-            set_opt(&mut self.config.term.scheme, &name, is_default(s) || name == "campbell");
+            set_opt(
+                &mut self.config.term.scheme,
+                &name,
+                is_default(s) || name == "campbell",
+            );
             changed.push(format!("terminal scheme to {name}"));
             term_changed = true;
         }
@@ -727,9 +774,11 @@ impl App {
             term_changed = true;
         }
         if changed.is_empty() {
-            return Err("tell me what to change — bar height, bar background/text, accent, \
+            return Err(
+                "tell me what to change — bar height, bar background/text, accent, \
                         background, or the terminal's font/font size/scheme/colours"
-                .into());
+                    .into(),
+            );
         }
         crate::config::save(&self.config);
         self.rebuild_theme();
@@ -777,7 +826,9 @@ impl App {
             }
             None => {
                 let _ = std::process::Command::new("notepad").arg(&path).spawn();
-                self.set_status("opened config.toml in notepad — save, then :theme reload to apply");
+                self.set_status(
+                    "opened config.toml in notepad — save, then :theme reload to apply",
+                );
             }
         }
         self.window.request_redraw();
@@ -808,15 +859,19 @@ impl App {
                 self.config.term.scheme = Some(crate::config::scheme_key(&name));
                 crate::config::save(&self.config);
                 self.rebuild_term_style();
-                let in_chat = ai_id
-                    .is_some_and(|id| self.ai_note(id, &format!("Done — installed the {name} terminal scheme and applied it.")));
+                let in_chat = ai_id.is_some_and(|id| {
+                    self.ai_note(
+                        id,
+                        &format!("Done — installed the {name} terminal scheme and applied it."),
+                    )
+                });
                 if !in_chat {
                     self.set_status(format!("installed terminal scheme {name} and applied it"));
                 }
             }
             Err(e) => {
-                let in_chat =
-                    ai_id.is_some_and(|id| self.ai_note(id, &format!("Scheme install failed: {e}")));
+                let in_chat = ai_id
+                    .is_some_and(|id| self.ai_note(id, &format!("Scheme install failed: {e}")));
                 if !in_chat {
                     self.set_error(format!("scheme install: {e}"));
                 }
@@ -869,8 +924,14 @@ impl App {
                 Some((v, r)) => (v.to_string(), r.trim().to_string()),
                 None => (cur.clone(), String::new()),
             };
-            let Some(exp) = self.config.aliases.get(&verb) else { break };
-            cur = if rest.is_empty() { exp.clone() } else { format!("{exp} {rest}") };
+            let Some(exp) = self.config.aliases.get(&verb) else {
+                break;
+            };
+            cur = if rest.is_empty() {
+                exp.clone()
+            } else {
+                format!("{exp} {rest}")
+            };
             changed = true;
         }
         changed.then_some(cur)
@@ -908,8 +969,12 @@ impl App {
                 let plural = if removed == 1 { "entry" } else { "entries" };
                 Ok(format!("cleared {removed} history {plural} ({disp})"))
             }
-            "cookies" => self.clear_engine_required(DataKind::Cookies, range, &format!("cookies ({disp})")),
-            "cache" => self.clear_engine_required(DataKind::Cache, range, &format!("cache ({disp})")),
+            "cookies" => {
+                self.clear_engine_required(DataKind::Cookies, range, &format!("cookies ({disp})"))
+            }
+            "cache" => {
+                self.clear_engine_required(DataKind::Cache, range, &format!("cache ({disp})"))
+            }
             "all" | "everything" => {
                 // A full wipe takes the shell's own lists with it (windowed too), then
                 // the engine profile. With no web tab we can't reach the engine, but
@@ -924,7 +989,9 @@ impl App {
                 }
             }
             "" => Err("clear what? — history, cookies, cache, or all".into()),
-            other => Err(format!("can't clear '{other}' — try history, cookies, cache, or all")),
+            other => Err(format!(
+                "can't clear '{other}' — try history, cookies, cache, or all"
+            )),
         }
     }
 
@@ -965,7 +1032,14 @@ impl App {
     /// (used for the bonus engine-history wipe alongside the shell's own list).
     fn clear_engine(&self, kind: DataKind, range: Option<(f64, f64)>) {
         if let Some(wv) = self.any_webview() {
-            let _ = crate::data::clear(wv, kind, range, String::new(), self.acting_ai, self.proxy.clone());
+            let _ = crate::data::clear(
+                wv,
+                kind,
+                range,
+                String::new(),
+                self.acting_ai,
+                self.proxy.clone(),
+            );
         }
     }
 
@@ -981,7 +1055,14 @@ impl App {
         let Some(wv) = self.any_webview() else {
             return Err(format!("open a page first, then clear {label}"));
         };
-        crate::data::clear(wv, kind, range, label.to_string(), self.acting_ai, self.proxy.clone())?;
+        crate::data::clear(
+            wv,
+            kind,
+            range,
+            label.to_string(),
+            self.acting_ai,
+            self.proxy.clone(),
+        )?;
         Ok(format!("clearing {label}…"))
     }
 }
@@ -1016,7 +1097,9 @@ fn parse_duration(p: &str) -> Result<u64, String> {
     }
     let split = p.find(|c: char| !c.is_ascii_digit()).unwrap_or(p.len());
     let (num, unit) = p.split_at(split);
-    let n: u64 = num.parse().map_err(|_| format!("don't understand the time period '{p}'"))?;
+    let n: u64 = num
+        .parse()
+        .map_err(|_| format!("don't understand the time period '{p}'"))?;
     let mult = match unit {
         "m" | "min" | "mins" | "minute" | "minutes" => 60,
         "h" | "hr" | "hrs" | "hour" | "hours" => 3600,
@@ -1024,7 +1107,8 @@ fn parse_duration(p: &str) -> Result<u64, String> {
         "w" | "wk" | "week" | "weeks" => 604_800,
         other => return Err(format!("unknown time unit '{other}' — use m, h, d, or w")),
     };
-    n.checked_mul(mult).ok_or_else(|| "that time period is too large".to_string())
+    n.checked_mul(mult)
+        .ok_or_else(|| "that time period is too large".to_string())
 }
 
 #[cfg(test)]
@@ -1037,10 +1121,16 @@ mod tests {
         // ACTIONS; sanity-check the param shapes they rely on.
         let spec = |name: &str| ACTIONS.iter().find(|a| a.name == name).unwrap();
         let clear = spec("clear");
-        assert!(clear.params[0].required && clear.params[0].values == ["history", "cookies", "cache", "all"]);
+        assert!(
+            clear.params[0].required
+                && clear.params[0].values == ["history", "cookies", "cache", "all"]
+        );
         assert!(!clear.params[1].required);
         // Free-text params have no fixed values; their NAME is the placeholder.
-        assert!(spec("alias").params.iter().all(|p| p.values.is_empty() && p.required));
+        assert!(spec("alias")
+            .params
+            .iter()
+            .all(|p| p.values.is_empty() && p.required));
         assert!(spec("restore").params.is_empty());
     }
 
@@ -1070,7 +1160,12 @@ mod tests {
         assert_eq!(resolve_period(Some("1h")).unwrap().0, Some(3600));
         assert_eq!(resolve_period(Some("24h")).unwrap().0, Some(86_400));
         assert_eq!(resolve_period(Some("7d")).unwrap().0, Some(604_800));
-        assert_eq!(resolve_period(Some("2 hours".replace(' ', "").as_str())).unwrap().0, Some(7200));
+        assert_eq!(
+            resolve_period(Some("2 hours".replace(' ', "").as_str()))
+                .unwrap()
+                .0,
+            Some(7200)
+        );
         assert!(resolve_period(Some("banana")).is_err());
     }
 

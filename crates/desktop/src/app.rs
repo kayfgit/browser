@@ -7,11 +7,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub(crate) use browser_engine::ExtensionInfo as ExtInfo;
+use browser_engine::{EngineView, RectPx};
 use tao::event_loop::EventLoopProxy;
 use tao::keyboard::ModifiersState;
 use tao::window::Window;
-use browser_engine::{EngineView, RectPx};
-pub(crate) use browser_engine::ExtensionInfo as ExtInfo;
 
 use crate::draw::Painter;
 use crate::find::FindState;
@@ -19,7 +19,9 @@ use crate::hints::NativeHint;
 use crate::pages::{now_hms, ErrorEntry, ERROR_LOG_CAP};
 use crate::panes::{PaneNode, PaneRect};
 use crate::tabs::{NativeRead, Tab};
-use crate::{read_view, session, BAR_H, BASE_PX, HISTORY_CAP, TAB_BAR_H, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP};
+use crate::{
+    read_view, session, BAR_H, BASE_PX, HISTORY_CAP, TAB_BAR_H, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
+};
 
 /// How long any status message stays on the command bar before it auto-clears.
 /// The bar shouldn't hold stale text indefinitely; every status (info, warning, or
@@ -62,7 +64,10 @@ pub(crate) enum UserEvent {
     #[cfg(all(windows, feature = "servo-engine"))]
     Servo(crate::engines::servo::Event),
     /// Callback from one live view incarnation; never a tab index.
-    Engine { view: browser_engine::ViewId, event: Box<UserEvent> },
+    Engine {
+        view: browser_engine::ViewId,
+        event: Box<UserEvent>,
+    },
     /// Leave insert/passthrough: move focus from the page back to the shell.
     ExitToNormal,
     /// Reclaim keyboard focus for the shell (e.g. after a page finishes loading
@@ -99,7 +104,11 @@ pub(crate) enum UserEvent {
     /// tab. `replace` swaps the active read tab's doc in place (link-follow/reload)
     /// instead of opening a new tab. `record` adds a back-stack step for the page
     /// being left (false for reloads and `H`/`L` history replays).
-    ReadReady { doc: Box<browser_core::Document>, replace: bool, record: bool },
+    ReadReady {
+        doc: Box<browser_core::Document>,
+        replace: bool,
+        record: bool,
+    },
     /// A `:read` extraction failed.
     ReadFailed(String),
     /// Redirect the active tab to this URL (e.g. de-proxying a `translate.goog`
@@ -125,13 +134,26 @@ pub(crate) enum UserEvent {
     BlocklistReady,
     /// The async `GetBrowserExtensions` query finished — carries the installed extensions
     /// (id/name/enabled). The shell caches them and (re)renders the `:extensions` picker.
-    ExtensionsListed { request: u64, view: browser_engine::ViewId, result: Result<Vec<ExtInfo>, String> },
+    ExtensionsListed {
+        request: u64,
+        view: browser_engine::ViewId,
+        result: Result<Vec<ExtInfo>, String>,
+    },
     /// A `:te` command finished: combined output and exit code.
-    TermDone { cmd: String, output: String, code: Option<i32> },
+    TermDone {
+        cmd: String,
+        output: String,
+        code: Option<i32>,
+    },
     /// Raw output bytes from a terminal's PTY → feed to its native VT engine.
-    TermOutput { id: u64, data: Vec<u8> },
+    TermOutput {
+        id: u64,
+        data: Vec<u8>,
+    },
     /// The terminal's shell exited (pty-host stdout EOF) → close that tab.
-    TermClosed { id: u64 },
+    TermClosed {
+        id: u64,
+    },
     /// Web selection mode yanked text → copy it and return the shell to Normal.
     CaretYank(String),
     /// A page's right-click menu copied something (the selection, a link or image
@@ -169,18 +191,27 @@ pub(crate) enum UserEvent {
     /// (`history.pushState`, back/forward `popstate`, hash jump). Sync the shell's
     /// stored URL; `record` pushes the page being left onto the back stack so `H`
     /// returns to it (false for `replaceState`, which adds no history entry).
-    UrlChanged { record: bool },
+    UrlChanged {
+        record: bool,
+    },
     /// A WebView2 browsing-data clear finished (`:clear cookies`/`cache`/`all`).
     /// `label` describes the requested clear (empty suppresses successful bonus
     /// reports). `ai_id` is the `:ai` tab that initiated it, if any: the
     /// confirmation goes into that chat, and the status bar is used only when that tab
     /// isn't the one on screen.
-    DataCleared { label: String, ai_id: Option<u64>, result: Result<(), String> },
+    DataCleared {
+        label: String,
+        ai_id: Option<u64>,
+        result: Result<(), String>,
+    },
     /// A background terminal-scheme download (`install_scheme` / `:theme install`)
     /// finished: `Ok` carries the installed scheme's display name (the shell applies
     /// it), `Err` a human-readable reason — possibly a "did you mean …" candidate
     /// list. `ai_id` routes the outcome into the initiating `:ai` chat.
-    SchemeInstalled { ai_id: Option<u64>, result: Result<String, String> },
+    SchemeInstalled {
+        ai_id: Option<u64>,
+        result: Result<String, String>,
+    },
     /// Something painted outside the event loop changed (a favicon finished decoding):
     /// repaint. Carries nothing — the state is already in the tab it belongs to.
     Redraw,
@@ -650,7 +681,6 @@ pub(crate) fn format_number(n: f64) -> String {
 }
 
 impl App {
-
     pub(crate) fn inner(&self) -> (u32, u32) {
         let s = self.window.inner_size();
         (s.width.max(1), s.height.max(1))
@@ -731,7 +761,9 @@ impl App {
         let mut st = tc
             .scheme
             .as_deref()
-            .and_then(|n| crate::pty_term::scheme(n).or_else(|| crate::config::load_custom_scheme(n)))
+            .and_then(|n| {
+                crate::pty_term::scheme(n).or_else(|| crate::config::load_custom_scheme(n))
+            })
             .unwrap_or_default();
         if let Some(c) = tc.bg.as_deref().and_then(crate::draw::parse_color) {
             st.bg = c;
@@ -769,7 +801,12 @@ impl App {
     pub(crate) fn content_rect(&self) -> RectPx {
         let (w, h) = self.inner();
         let top = self.tab_bar_h();
-        RectPx { x: 0, y: top as i32, w, h: h.saturating_sub(top + self.bar_h()) }
+        RectPx {
+            x: 0,
+            y: top as i32,
+            w,
+            h: h.saturating_sub(top + self.bar_h()),
+        }
     }
 
     pub(crate) fn on_resize(&mut self, _w: u32, _h: u32) {
@@ -937,7 +974,10 @@ impl App {
         // decides who should hold the keyboard a few ms later, so just stand down until
         // then — this poll is only the backstop for pages the bridge can't reach
         // (cross-origin iframes, no-JS tabs), and those never report a gesture at all.
-        if self.page_gesture_at.is_some_and(|t| t.elapsed() < GESTURE_GRACE) {
+        if self
+            .page_gesture_at
+            .is_some_and(|t| t.elapsed() < GESTURE_GRACE)
+        {
             return;
         }
         let hwnd = HWND(self.window.hwnd() as *mut core::ffi::c_void);
@@ -1022,31 +1062,41 @@ impl App {
     // --- tab access -----------------------------------------------------------
 
     pub(crate) fn active_webview(&self) -> Option<&dyn EngineView> {
-        self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.webview())
+        self.active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.webview())
     }
 
     /// Select the active web context, or the default provider's persistent context
     /// when a native page initiates a profile operation. Never fall through to a
     /// private view or an unrelated provider.
     pub(crate) fn any_webview(&self) -> Option<&dyn EngineView> {
-        self.active_webview().or_else(|| self.tabs.iter().filter_map(|t| t.webview()).find(|view| {
-            view.identity().provider == self.default_engine()
-                && view.identity().storage == browser_engine::StorageMode::Persistent
-        }))
+        self.active_webview().or_else(|| {
+            self.tabs.iter().filter_map(|t| t.webview()).find(|view| {
+                view.identity().provider == self.default_engine()
+                    && view.identity().storage == browser_engine::StorageMode::Persistent
+            })
+        })
     }
 
     /// Mutable access to the active engine-free read tab's state, if any.
     pub(crate) fn active_native_mut(&mut self) -> Option<&mut NativeRead> {
-        self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.native_mut())
+        self.active
+            .and_then(|i| self.tabs.get_mut(i))
+            .and_then(|t| t.native_mut())
     }
 
     /// Whether the active tab is an engine-free `:error`/`:errors` vim tab.
     pub(crate) fn active_is_vim(&self) -> bool {
-        self.active.and_then(|i| self.tabs.get(i)).is_some_and(|t| t.vim().is_some())
+        self.active
+            .and_then(|i| self.tabs.get(i))
+            .is_some_and(|t| t.vim().is_some())
     }
 
     pub(crate) fn active_url(&self) -> Option<&str> {
-        self.active.and_then(|i| self.tabs.get(i)).map(|t| t.url.as_str())
+        self.active
+            .and_then(|i| self.tabs.get(i))
+            .map(|t| t.url.as_str())
     }
 
     /// The live URL of the active web tab (from WebView2, so it reflects in-page
@@ -1079,7 +1129,9 @@ impl App {
     /// recording: `record = false` only syncs the shown URL (a `replaceState` rewrite
     /// isn't a page worth returning to).
     pub(crate) fn refresh_active_url_record(&mut self, record: bool) {
-        if let Some(index) = self.active { self.refresh_tab_url_record(index, record); }
+        if let Some(index) = self.active {
+            self.refresh_tab_url_record(index, record);
+        }
     }
 
     pub(crate) fn refresh_tab_url_record(&mut self, index: usize, record: bool) {
@@ -1149,7 +1201,8 @@ impl App {
         let s = self.window.inner_size();
         let w = (s.width as i32 + dw).max(240) as u32;
         let h = (s.height as i32 + dh).max(160) as u32;
-        self.window.set_inner_size(tao::dpi::PhysicalSize::new(w, h));
+        self.window
+            .set_inner_size(tao::dpi::PhysicalSize::new(w, h));
     }
 
     pub(crate) fn move_window(&self, dx: i32, dy: i32) {
@@ -1164,7 +1217,8 @@ impl App {
         if self.window.fullscreen().is_some() {
             self.window.set_fullscreen(None);
         } else {
-            self.window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+            self.window
+                .set_fullscreen(Some(Fullscreen::Borderless(None)));
         }
         // A manual toggle owns the fullscreen state — clear the page-initiated flag
         // so a later page fs-exit doesn't fight it.
@@ -1183,7 +1237,8 @@ impl App {
         use tao::window::Fullscreen;
         if on {
             if !self.is_fullscreen() {
-                self.window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                self.window
+                    .set_fullscreen(Some(Fullscreen::Borderless(None)));
                 self.fs_from_page = true;
                 self.relayout_active();
             }
@@ -1366,7 +1421,9 @@ impl App {
         if std::env::var("BROWSER_TEST_QUIT_MS").is_ok() {
             return;
         }
-        let Some(path) = self.current_session_path() else { return };
+        let Some(path) = self.current_session_path() else {
+            return;
+        };
         session::save_to(&path, &self.snapshot_session());
     }
 
@@ -1383,7 +1440,10 @@ impl App {
         let mut live_to_saved = vec![None; self.tabs.len()];
         for (i, tab) in self.tabs.iter().enumerate() {
             // Internal pages are session-specific; private tabs must leave no trace.
-            if tab.url.starts_with("browser://") || (tab.vim().is_some() && tab.unavailable().is_none()) || tab.private {
+            if tab.url.starts_with("browser://")
+                || (tab.vim().is_some() && tab.unavailable().is_none())
+                || tab.private
+            {
                 continue;
             }
             let kind = if tab.term().is_some() {
@@ -1404,7 +1464,12 @@ impl App {
             // A terminal remembers its shell's working directory (OSC report or
             // live process read — see TermSession::cwd) so restore reopens it there.
             let cwd = tab.term().and_then(|s| s.cwd()).unwrap_or_default();
-            tabs.push(session::SavedTab { provider: tab.provider().unwrap_or("webview2").into(), kind: kind.to_string(), url: tab.url.clone(), cwd });
+            tabs.push(session::SavedTab {
+                provider: tab.provider().unwrap_or("webview2").into(),
+                kind: kind.to_string(),
+                url: tab.url.clone(),
+                cwd,
+            });
         }
         // Encode each window's split tree (dropping windows whose tabs were all skipped),
         // so `:wq` remembers the layout and reopening restores it.
@@ -1417,7 +1482,12 @@ impl App {
         // exactly where it was.
         let window = self.window.outer_position().ok().map(|p| {
             let s = self.window.inner_size();
-            session::WindowGeom { x: p.x, y: p.y, w: s.width, h: s.height }
+            session::WindowGeom {
+                x: p.x,
+                y: p.y,
+                w: s.width,
+                h: s.height,
+            }
         });
         session::Session {
             // The profile this file belongs to (empty for the default session and
@@ -1555,5 +1625,4 @@ impl App {
         self.clear_status();
         self.window.request_redraw();
     }
-
 }

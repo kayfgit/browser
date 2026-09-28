@@ -56,7 +56,11 @@ pub(crate) fn mark(intent: &NavIntent) {
 /// user gesture just asked to leave/open a link. Shared with the popup guard in
 /// `tabs.rs`, which uses the same signal to tell a real "open in new tab" from a popunder.
 pub(crate) fn recent(intent: &NavIntent) -> bool {
-    intent.lock().ok().and_then(|g| *g).is_some_and(|t| t.elapsed() < INTENT_WINDOW)
+    intent
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .is_some_and(|t| t.elapsed() < INTENT_WINDOW)
 }
 
 /// The registrable domain ("eTLD+1") of an http(s) URL, lower-cased — e.g.
@@ -65,7 +69,9 @@ pub(crate) fn recent(intent: &NavIntent) -> bool {
 /// a real cross-site jump (`animepahe.pw` → `searchapp.space`) from a benign same-site
 /// one (apex ↔ `www.` ↔ `m.`, http ↔ https), so it never fights a site's own subdomains.
 pub(crate) fn site_of(url: &str) -> String {
-    let Ok(u) = url::Url::parse(url) else { return String::new() };
+    let Ok(u) = url::Url::parse(url) else {
+        return String::new();
+    };
     if !matches!(u.scheme(), "http" | "https") {
         return String::new();
     }
@@ -90,17 +96,21 @@ fn registrable_domain(host: &str) -> String {
         return labels.join(".");
     }
     let last_two = format!("{}.{}", labels[n - 2], labels[n - 1]);
-    let take = if MULTI_SUFFIXES.contains(&last_two.as_str()) { 3 } else { 2 };
+    let take = if MULTI_SUFFIXES.contains(&last_two.as_str()) {
+        3
+    } else {
+        2
+    };
     labels[n - take..].join(".")
 }
 
 /// Common two-label public suffixes, so `foo.co.uk` resolves to `foo.co.uk` (not the
 /// bare `co.uk`). Not exhaustive — just the ccTLD second levels seen most in practice.
 const MULTI_SUFFIXES: &[&str] = &[
-    "co.uk", "org.uk", "gov.uk", "ac.uk", "co.jp", "or.jp", "ne.jp", "co.kr", "co.in",
-    "co.nz", "co.za", "com.au", "net.au", "org.au", "com.br", "com.mx", "com.ar",
-    "com.tr", "com.cn", "com.tw", "com.hk", "com.sg", "com.my", "com.ph", "com.pk",
-    "com.ua", "com.pl", "com.ng", "com.eg", "com.sa", "co.id", "co.il", "co.th",
+    "co.uk", "org.uk", "gov.uk", "ac.uk", "co.jp", "or.jp", "ne.jp", "co.kr", "co.in", "co.nz",
+    "co.za", "com.au", "net.au", "org.au", "com.br", "com.mx", "com.ar", "com.tr", "com.cn",
+    "com.tw", "com.hk", "com.sg", "com.my", "com.ph", "com.pk", "com.ua", "com.pl", "com.ng",
+    "com.eg", "com.sa", "co.id", "co.il", "co.th",
 ];
 
 #[cfg(test)]
@@ -114,10 +124,16 @@ mod tests {
         assert_eq!(site_of("https://www.youtube.com/watch?v=1"), "youtube.com");
         assert_eq!(site_of("http://m.youtube.com/"), "youtube.com");
         // A genuine forced-redirect jump is a different registrable domain.
-        assert_ne!(site_of("https://animepahe.pw/play"), site_of("https://searchapp.space/?z=3"));
+        assert_ne!(
+            site_of("https://animepahe.pw/play"),
+            site_of("https://searchapp.space/?z=3")
+        );
         // Multi-level ccTLDs keep the third label so two .co.uk sites stay distinct.
         assert_eq!(site_of("https://news.bbc.co.uk/x"), "bbc.co.uk");
-        assert_ne!(site_of("https://bbc.co.uk/"), site_of("https://evil.co.uk/"));
+        assert_ne!(
+            site_of("https://bbc.co.uk/"),
+            site_of("https://evil.co.uk/")
+        );
     }
 
     #[test]

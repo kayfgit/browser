@@ -315,7 +315,12 @@ impl App {
             self.status = "invalid link number".into();
             return;
         };
-        match self.doc.as_ref().and_then(|d| d.link_url(n)).map(str::to_string) {
+        match self
+            .doc
+            .as_ref()
+            .and_then(|d| d.link_url(n))
+            .map(str::to_string)
+        {
             Some(url) => {
                 let mode = self.dispatcher.resolve_mode(&url);
                 self.navigate_new(mode, url);
@@ -336,7 +341,12 @@ impl App {
             .filter(|(_, l)| line_text(l).to_lowercase().contains(&q))
             .map(|(i, _)| i)
             .collect();
-        match self.find_matches.iter().find(|&&i| i > self.scroll).or(self.find_matches.first()) {
+        match self
+            .find_matches
+            .iter()
+            .find(|&&i| i > self.scroll)
+            .or(self.find_matches.first())
+        {
             Some(&i) => {
                 self.scroll = i.min(self.max_scroll());
                 self.status = format!("{} match(es) for \"{query}\"", self.find_matches.len());
@@ -350,7 +360,11 @@ impl App {
         if !self.history.is_empty() {
             self.history.truncate(self.hist_pos + 1);
         }
-        self.history.push(HistEntry { mode, target: target.clone(), doc: None });
+        self.history.push(HistEntry {
+            mode,
+            target: target.clone(),
+            doc: None,
+        });
         self.hist_pos = self.history.len() - 1;
         self.start_fetch(mode, target);
     }
@@ -383,7 +397,9 @@ impl App {
 
     /// Load the current history entry from cache, or fetch it if not cached.
     fn load_current(&mut self) {
-        let Some(entry) = self.history.get(self.hist_pos) else { return };
+        let Some(entry) = self.history.get(self.hist_pos) else {
+            return;
+        };
         match entry.doc.clone() {
             Some(doc) => {
                 self.status.clear();
@@ -437,7 +453,10 @@ impl App {
     fn show_welcome(&mut self) {
         let mut b = DocumentBuilder::new("about:welcome");
         b.title("browser");
-        b.push(Block::Heading { level: 1, spans: vec![Span::Text("A modal terminal browser".into())] });
+        b.push(Block::Heading {
+            level: 1,
+            spans: vec![Span::Text("A modal terminal browser".into())],
+        });
         b.push(Block::Blank);
         b.push(Block::Paragraph {
             spans: vec![Span::Text(
@@ -458,7 +477,10 @@ impl App {
             });
         }
         b.push(Block::Blank);
-        b.push(Block::Heading { level: 2, spans: vec![Span::Text("Keys".into())] });
+        b.push(Block::Heading {
+            level: 2,
+            spans: vec![Span::Text("Keys".into())],
+        });
         for (key, desc) in [
             ("j / k, Space, PgUp/PgDn", "scroll"),
             ("g / G", "top / bottom"),

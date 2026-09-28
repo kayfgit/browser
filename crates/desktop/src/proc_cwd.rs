@@ -21,7 +21,10 @@ pub(crate) fn shell_cwd(host_pid: u32) -> Option<String> {
     let procs = snapshot();
     let mut children: HashMap<u32, Vec<(u32, &str)>> = HashMap::new();
     for (pid, parent, name) in &procs {
-        children.entry(*parent).or_default().push((*pid, name.as_str()));
+        children
+            .entry(*parent)
+            .or_default()
+            .push((*pid, name.as_str()));
     }
 
     // Collect the host's descendants with their depth (a visited set guards
@@ -65,12 +68,17 @@ fn snapshot() -> Vec<(u32, u32, String)> {
         let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
             return procs;
         };
-        let mut entry =
-            PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
         if Process32FirstW(snap, &mut entry).is_ok() {
             loop {
-                let end =
-                    entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+                let end = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(entry.szExeFile.len());
                 let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
                 procs.push((entry.th32ProcessID, entry.th32ParentProcessID, name));
                 if Process32NextW(snap, &mut entry).is_err() {
@@ -170,8 +178,10 @@ fn process_cwd(pid: u32) -> Option<String> {
             if !read(buf_ptr, &mut raw) {
                 return None;
             }
-            let wide: Vec<u16> =
-                raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+            let wide: Vec<u16> = raw
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
             let mut path = String::from_utf16_lossy(&wide);
             // The PEB stores "C:\dir\" with a trailing slash; drop it (but keep
             // a drive root's — "C:\" wouldn't be a valid dir without it).
@@ -209,6 +219,9 @@ mod tests {
         let got = shell_cwd(std::process::id());
         let _ = child.kill();
         let _ = child.wait();
-        assert_eq!(got.as_deref().map(str::to_ascii_lowercase), Some(dir.to_ascii_lowercase()));
+        assert_eq!(
+            got.as_deref().map(str::to_ascii_lowercase),
+            Some(dir.to_ascii_lowercase())
+        );
     }
 }

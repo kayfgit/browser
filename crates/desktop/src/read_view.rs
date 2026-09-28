@@ -85,7 +85,13 @@ pub fn layout(doc: &Document, width: i32, p: &Painter) -> Layout {
             Block::Heading { level, spans } => {
                 let color = heading_color(*level);
                 lines.push(blank());
-                wrap_into(&mut lines, spans_to_words(spans, color, p), width, 0, space_w);
+                wrap_into(
+                    &mut lines,
+                    spans_to_words(spans, color, p),
+                    width,
+                    0,
+                    space_w,
+                );
             }
             Block::Paragraph { spans } => {
                 wrap_into(&mut lines, spans_to_words(spans, FG, p), width, 0, space_w);
@@ -99,7 +105,11 @@ pub fn layout(doc: &Document, width: i32, p: &Painter) -> Layout {
                 for line in &mut lines[start..] {
                     line.runs.insert(
                         0,
-                        Run { text: "\u{2502} ".into(), color: MUTED, link_id: None },
+                        Run {
+                            text: "\u{2502} ".into(),
+                            color: MUTED,
+                            link_id: None,
+                        },
                     );
                     line.indent = indent / 2;
                 }
@@ -114,13 +124,21 @@ pub fn layout(doc: &Document, width: i32, p: &Painter) -> Layout {
                 for src in code {
                     lines.push(VLine {
                         indent,
-                        runs: vec![Run { text: src.clone(), color: CODE, link_id: None }],
+                        runs: vec![Run {
+                            text: src.clone(),
+                            color: CODE,
+                            link_id: None,
+                        }],
                         rule: false,
                     });
                 }
                 lines.push(blank());
             }
-            Block::Rule => lines.push(VLine { indent: 0, runs: Vec::new(), rule: true }),
+            Block::Rule => lines.push(VLine {
+                indent: 0,
+                runs: Vec::new(),
+                rule: true,
+            }),
             Block::Blank => lines.push(blank()),
         }
     }
@@ -130,7 +148,12 @@ pub fn layout(doc: &Document, width: i32, p: &Painter) -> Layout {
         .iter()
         .map(|vl| vl.runs.iter().map(|r| r.text.as_str()).collect::<String>())
         .collect();
-    Layout { lines, line_h, height, text }
+    Layout {
+        lines,
+        line_h,
+        height,
+        text,
+    }
 }
 
 /// First on-screen occurrence of each link, as `(link_id, x_px, baseline_y_px)`,
@@ -173,11 +196,20 @@ fn heading_color(level: u8) -> Rgb {
 }
 
 fn blank() -> VLine {
-    VLine { indent: 0, runs: Vec::new(), rule: false }
+    VLine {
+        indent: 0,
+        runs: Vec::new(),
+        rule: false,
+    }
 }
 
 fn word(text: &str, color: Rgb, link_id: Option<usize>, p: &Painter) -> Word {
-    Word { text: text.to_string(), color, link_id, width: p.measure(text) as i32 }
+    Word {
+        text: text.to_string(),
+        color,
+        link_id,
+        width: p.measure(text) as i32,
+    }
 }
 
 /// Flatten spans into wrappable words, coloring per span kind (links keep their id).
@@ -205,17 +237,33 @@ fn wrap_into(out: &mut Vec<VLine>, words: Vec<Word>, width: i32, indent: i32, sp
     for w in words {
         let extra = if cur_w == 0 { 0 } else { space_w };
         if cur_w > 0 && cur_w + extra + w.width > avail {
-            out.push(VLine { indent, runs: std::mem::take(&mut runs), rule: false });
+            out.push(VLine {
+                indent,
+                runs: std::mem::take(&mut runs),
+                rule: false,
+            });
             cur_w = 0;
         }
         if cur_w > 0 {
-            runs.push(Run { text: " ".into(), color: FG, link_id: None });
+            runs.push(Run {
+                text: " ".into(),
+                color: FG,
+                link_id: None,
+            });
             cur_w += space_w;
         }
-        runs.push(Run { text: w.text, color: w.color, link_id: w.link_id });
+        runs.push(Run {
+            text: w.text,
+            color: w.color,
+            link_id: w.link_id,
+        });
         cur_w += w.width;
     }
     if !runs.is_empty() {
-        out.push(VLine { indent, runs, rule: false });
+        out.push(VLine {
+            indent,
+            runs,
+            rule: false,
+        });
     }
 }

@@ -134,29 +134,25 @@ mod tests {
     #[test]
     fn malformed_batch_is_rejected_before_delivery() {
         let mut receiver = Receiver::default();
-        assert!(
-            receiver
-                .accept(
-                    0,
-                    &batch(
-                        "doc",
-                        serde_json::json!([[1, "page-ready"], [1, "insert-escape"]])
-                    )
+        assert!(receiver
+            .accept(
+                0,
+                &batch(
+                    "doc",
+                    serde_json::json!([[1, "page-ready"], [1, "insert-escape"]])
                 )
-                .is_err()
-        );
+            )
+            .is_err());
         assert_eq!(receiver.ack, 0);
-        assert!(
-            receiver
-                .accept(
-                    0,
-                    &batch(
-                        "doc",
-                        serde_json::json!([[1, "page-ready"], [3, "hint-exit"]])
-                    )
+        assert!(receiver
+            .accept(
+                0,
+                &batch(
+                    "doc",
+                    serde_json::json!([[1, "page-ready"], [3, "hint-exit"]])
                 )
-                .is_err()
-        );
+            )
+            .is_err());
         assert_eq!(receiver.ack, 0);
     }
     #[test]

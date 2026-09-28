@@ -19,8 +19,12 @@ pub(crate) fn install(
     use windows_core::Interface;
     use wry::WebViewExtWindows;
 
-    let Ok(core) = (unsafe { webview.controller().CoreWebView2() }) else { return };
-    let Ok(c15) = core.cast::<ICoreWebView2_15>() else { return };
+    let Ok(core) = (unsafe { webview.controller().CoreWebView2() }) else {
+        return;
+    };
+    let Ok(c15) = core.cast::<ICoreWebView2_15>() else {
+        return;
+    };
     // The page may already have one (a restored/cached document fires no change event).
     fetch(&c15, &slot, &proxy);
     let handler =
@@ -65,8 +69,11 @@ fn fetch(
     }
     let (slot, proxy) = (slot.clone(), proxy.clone());
     let handler = GetFaviconCompletedHandler::create(Box::new(move |hr, stream| {
-        let Some(icon) =
-            hr.is_ok().then_some(stream).flatten().and_then(|s| decode_png(&read_stream(&s)))
+        let Some(icon) = hr
+            .is_ok()
+            .then_some(stream)
+            .flatten()
+            .and_then(|s| decode_png(&read_stream(&s)))
         else {
             return Ok(());
         };

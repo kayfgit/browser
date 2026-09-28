@@ -78,7 +78,9 @@ impl App {
 
     /// Whether the active tab is the `:res` resource monitor.
     pub(crate) fn active_is_res(&self) -> bool {
-        self.active.and_then(|i| self.tabs.get(i)).is_some_and(|t| t.url == "browser://res")
+        self.active
+            .and_then(|i| self.tabs.get(i))
+            .is_some_and(|t| t.url == "browser://res")
     }
 
     /// If the active tab is the resource monitor, re-sample and update its buffer
@@ -100,7 +102,10 @@ impl App {
             return;
         }
         let lines = self.sample_res_lines();
-        if let Some(buf) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.vim_mut())
+        if let Some(buf) = self
+            .active
+            .and_then(|i| self.tabs.get_mut(i))
+            .and_then(|t| t.vim_mut())
         {
             buf.set_lines(lines);
         }
@@ -124,9 +129,8 @@ impl App {
             }
             match self.res_prev.get(&s.pid) {
                 Some(&(pc, pio)) => {
-                    let cpu = (s.cpu_100ns.saturating_sub(pc)) as f64
-                        / (elapsed * 1e7 * ncores)
-                        * 100.0;
+                    let cpu =
+                        (s.cpu_100ns.saturating_sub(pc)) as f64 / (elapsed * 1e7 * ncores) * 100.0;
                     let disk = (s.io_bytes.saturating_sub(pio)) as f64 / elapsed;
                     (Some(cpu), Some(disk))
                 }
@@ -141,7 +145,9 @@ impl App {
             let (cpu, disk) = rate(p);
             total_cpu += cpu.unwrap_or(0.0);
             total_disk += disk.unwrap_or(0.0);
-            let cpu_s = cpu.map(|c| format!("{c:.1}%")).unwrap_or_else(|| "—".into());
+            let cpu_s = cpu
+                .map(|c| format!("{c:.1}%"))
+                .unwrap_or_else(|| "—".into());
             let disk_s = disk.map(procmon::fmt_rate).unwrap_or_else(|| "—".into());
             rows.push(format!(
                 "{:>9}  {:>6}  {:>9}  {:<22} {}",
@@ -153,26 +159,53 @@ impl App {
             ));
         }
 
-        let cpu_total = if have_prev { format!("CPU {total_cpu:.1}%") } else { "CPU —".into() };
-        let disk_total =
-            if have_prev { format!("disk {}", procmon::fmt_rate(total_disk)) } else { "disk —".into() };
+        let cpu_total = if have_prev {
+            format!("CPU {total_cpu:.1}%")
+        } else {
+            "CPU —".into()
+        };
+        let disk_total = if have_prev {
+            format!("disk {}", procmon::fmt_rate(total_disk))
+        } else {
+            "disk —".into()
+        };
         let mut lines = Vec::with_capacity(rows.len() + 5);
-        lines.push(format!("browser — {} processes    (live; select to freeze)", sample.len()));
-        lines.push(format!("{} · {} · {}", procmon::fmt_bytes(total_mem), cpu_total, disk_total));
+        lines.push(format!(
+            "browser — {} processes    (live; select to freeze)",
+            sample.len()
+        ));
+        lines.push(format!(
+            "{} · {} · {}",
+            procmon::fmt_bytes(total_mem),
+            cpu_total,
+            disk_total
+        ));
         lines.push(String::new());
-        lines.push(format!("{:>9}  {:>6}  {:>9}  {:<22} {}", "MEM", "CPU", "DISK", "PROCESS", "PID"));
+        lines.push(format!(
+            "{:>9}  {:>6}  {:>9}  {:<22} {}",
+            "MEM", "CPU", "DISK", "PROCESS", "PID"
+        ));
         lines.extend(rows);
 
         #[cfg(all(windows, feature = "servo-engine"))]
         if let Some(views) = crate::engines::servo::runtime_view_count() {
             lines.push(String::new());
             lines.push(format!("Servo: {views} open views; shared runtime loaded."));
-            lines.push(format!("Servo CPU/memory/I/O are included in browser-desktop (PID {}).", std::process::id()));
-            lines.push("The shell and Servo share this process; separate engine totals are unavailable.".into());
+            lines.push(format!(
+                "Servo CPU/memory/I/O are included in browser-desktop (PID {}).",
+                std::process::id()
+            ));
+            lines.push(
+                "The shell and Servo share this process; separate engine totals are unavailable."
+                    .into(),
+            );
         }
 
         // Roll the sample forward for the next delta.
-        self.res_prev = sample.iter().map(|p| (p.pid, (p.cpu_100ns, p.io_bytes))).collect();
+        self.res_prev = sample
+            .iter()
+            .map(|p| (p.pid, (p.cpu_100ns, p.io_bytes)))
+            .collect();
         self.res_at = Instant::now();
         lines
     }
@@ -228,22 +261,40 @@ impl App {
     /// [`show_extensions_page`](Self::show_extensions_page)). Extensions hang off the webview
     /// profile, so this needs a live web engine — it asks you to open a page first if none.
     pub(crate) fn open_extensions_page(&mut self) {
-        self.extension_request = self.extension_request.checked_add(1).expect("extension request space exhausted");
+        self.extension_request = self
+            .extension_request
+            .checked_add(1)
+            .expect("extension request space exhausted");
         match self.any_webview() {
             Some(view) => {
                 crate::extensions::list(view, self.extension_request, self.proxy.clone());
                 self.set_status("loading extensions…");
             }
-            None => self.set_status("open a web page first — extensions need a live storage context"),
+            None => {
+                self.set_status("open a web page first — extensions need a live storage context")
+            }
         }
     }
 
     /// A picker owns its source view and cached items, even after another picker
     /// queries a different provider or storage context.
-    pub(crate) fn show_extensions_page(&mut self, view: browser_engine::ViewId, items: Vec<crate::ExtInfo>) {
+    pub(crate) fn show_extensions_page(
+        &mut self,
+        view: browser_engine::ViewId,
+        items: Vec<crate::ExtInfo>,
+    ) {
         let lines = ext_lines(&items);
         let current = self.active.and_then(|i| self.tabs.get_mut(i));
-        if let Some(Tab { content: TabContent::Extensions { view: target, items: cached, buffer }, .. }) = current {
+        if let Some(Tab {
+            content:
+                TabContent::Extensions {
+                    view: target,
+                    items: cached,
+                    buffer,
+                },
+            ..
+        }) = current
+        {
             *target = view;
             *cached = items;
             let cy = buffer.cy;
@@ -254,7 +305,11 @@ impl App {
         } else {
             let mut tab = Tab::blank();
             tab.url = "browser://extensions".into();
-            tab.content = TabContent::Extensions { view, items, buffer: vim::TextBuffer::new(lines) };
+            tab.content = TabContent::Extensions {
+                view,
+                items,
+                buffer: vim::TextBuffer::new(lines),
+            };
             // Keep the source pane alive even when this command comes from a split.
             self.place_tab_escaping_split(tab, true);
             self.window.set_focus();
@@ -298,8 +353,16 @@ impl App {
             self.config.scratch_return.as_deref(),
         );
         if self.active_url() == Some("browser://profiles") {
-            let cy = self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.vim()).map_or(0, |b| b.cy);
-            if let Some(buf) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.vim_mut()) {
+            let cy = self
+                .active
+                .and_then(|i| self.tabs.get(i))
+                .and_then(|t| t.vim())
+                .map_or(0, |b| b.cy);
+            if let Some(buf) = self
+                .active
+                .and_then(|i| self.tabs.get_mut(i))
+                .and_then(|t| t.vim_mut())
+            {
                 buf.set_lines(lines);
                 buf.anchor = None;
                 buf.cy = cy.min(buf.lines.len().saturating_sub(1));
@@ -388,7 +451,9 @@ code{border:none;padding:1px 5px;color:#9ec7ee}";
 
 /// Minimal HTML-escaping for text interpolated into the internal pages.
 pub(crate) fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Render rows of (key, description) into a `<table>`, escaping both columns.
@@ -447,7 +512,10 @@ pub(crate) fn now_hms() -> String {
 #[cfg(not(windows))]
 pub(crate) fn now_hms() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let s = secs % 86_400;
     format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
 }
@@ -458,14 +526,19 @@ pub(crate) fn now_hms() -> String {
 pub(crate) fn now_stamp() -> String {
     use windows::Win32::System::SystemInformation::GetLocalTime;
     let st = unsafe { GetLocalTime() };
-    format!("{:04}-{:02}-{:02} {:02}:{:02}", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute)
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute
+    )
 }
 
 #[cfg(not(windows))]
 pub(crate) fn now_stamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs =
-        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
     let (days, tod) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // Howard Hinnant's days-from-civil, inverted: civil date from days since epoch (UTC).
     let z = days + 719_468;
@@ -478,7 +551,14 @@ pub(crate) fn now_stamp() -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
-    format!("{:04}-{:02}-{:02} {:02}:{:02}", y, m, d, tod / 3600, (tod % 3600) / 60)
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        y,
+        m,
+        d,
+        tod / 3600,
+        (tod % 3600) / 60
+    )
 }
 
 /// The `:commands` command table as (anchor key, signature, description) — the
@@ -544,21 +624,55 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
 /// Help sections: element id, TOC label, and the extra `:help` aliases that reach
 /// them (beyond words already caught by a command row or action name).
 const HELP_SECTIONS: &[(&str, &str, &[&str])] = &[
-    ("sec-normal", "Normal mode", &["normal", "keys", "keybinds", "keybindings", "bindings", "keyboard", "caret", "selection", "hints", "panes"]),
-    ("sec-cmdline", "Command line", &["cmdline", "commandline", "editing", "bar", "commandbar"]),
-    ("sec-modes", "Modes", &["modes", "mode", "passthrough", "hint", "insert"]),
-    ("sec-pager", "Vim pager", &["pager", "vim", "vimpager", "visual", "motions"]),
+    (
+        "sec-normal",
+        "Normal mode",
+        &[
+            "normal",
+            "keys",
+            "keybinds",
+            "keybindings",
+            "bindings",
+            "keyboard",
+            "caret",
+            "selection",
+            "hints",
+            "panes",
+        ],
+    ),
+    (
+        "sec-cmdline",
+        "Command line",
+        &["cmdline", "commandline", "editing", "bar", "commandbar"],
+    ),
+    (
+        "sec-modes",
+        "Modes",
+        &["modes", "mode", "passthrough", "hint", "insert"],
+    ),
+    (
+        "sec-pager",
+        "Vim pager",
+        &["pager", "vim", "vimpager", "visual", "motions"],
+    ),
     ("sec-commands", "Commands", &["commands", "command"]),
     ("sec-actions", "AI actions", &["actions", "action"]),
     ("sec-bangs", "Bangs", &["bangs", "bang"]),
-    ("sec-maths", "Quick maths", &["maths", "math", "calc", "calculator"]),
+    (
+        "sec-maths",
+        "Quick maths",
+        &["maths", "math", "calc", "calculator"],
+    ),
 ];
 
 /// Every `:help <topic>` value worth Tab-cycling in the command bar: command
 /// anchors first (the most common jump), then action names and each section's
 /// primary alias. All of them resolve through [`help_anchor`].
 pub(crate) fn help_topics() -> Vec<String> {
-    let mut v: Vec<String> = CMD_ROWS.iter().map(|(id, _, _)| (*id).to_string()).collect();
+    let mut v: Vec<String> = CMD_ROWS
+        .iter()
+        .map(|(id, _, _)| (*id).to_string())
+        .collect();
     for a in crate::actions::ACTIONS {
         if !v.iter().any(|x| x == a.name) {
             v.push(a.name.to_string());
@@ -622,8 +736,16 @@ fn action_cards() -> String {
     for a in crate::actions::ACTIONS {
         let mut sig = html_escape(a.name);
         for p in a.params {
-            let slot = if p.values.is_empty() { p.name.to_string() } else { p.values.join("|") };
-            let slot = if p.required { format!("&lt;{}&gt;", html_escape(&slot)) } else { format!("[{}]", html_escape(&slot)) };
+            let slot = if p.values.is_empty() {
+                p.name.to_string()
+            } else {
+                p.values.join("|")
+            };
+            let slot = if p.required {
+                format!("&lt;{}&gt;", html_escape(&slot))
+            } else {
+                format!("[{}]", html_escape(&slot))
+            };
             sig.push_str(&format!("<span class=\"p\">{slot}</span>"));
         }
         s.push_str(&format!(
@@ -692,21 +814,35 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
         ("h j k l · arrows", "move the cursor"),
         ("w / b / e", "next / previous / end of word"),
         ("0 / ^ / $", "start / first non-blank / end of line"),
-        ("f / t  (F / T)", "jump to / before a char forward (back); ; , repeat"),
+        (
+            "f / t  (F / T)",
+            "jump to / before a char forward (back); ; , repeat",
+        ),
         ("gg / G", "top / bottom; Ctrl+D / Ctrl+U half-page"),
         ("v / V", "charwise / linewise visual select"),
-        ("y", "yank: the selection, or with a motion (yy, yw, y$, yf), yt;)"),
-        ("yiw · yi( · ya\"", "yank inner/around a text object (word, (), {}, [], <>, quotes)"),
+        (
+            "y",
+            "yank: the selection, or with a motion (yy, yw, y$, yf), yt;)",
+        ),
+        (
+            "yiw · yi( · ya\"",
+            "yank inner/around a text object (word, (), {}, [], <>, quotes)",
+        ),
     ]);
     // Commands come from CMD_ROWS (anchored rows); actions render as cards straight
     // from the one action registry, so help and AI never drift.
     let cmds = cmd_table();
     let actions = action_cards();
     // Bangs: build `!key → description` rows from the core table.
-    let bang_rows: Vec<(String, &str)> =
-        browser_core::bang_list().into_iter().map(|(k, d)| (format!("!{k} <query>"), d)).collect();
+    let bang_rows: Vec<(String, &str)> = browser_core::bang_list()
+        .into_iter()
+        .map(|(k, d)| (format!("!{k} <query>"), d))
+        .collect();
     let bangs = help_table(
-        &bang_rows.iter().map(|(k, d)| (k.as_str(), *d)).collect::<Vec<_>>(),
+        &bang_rows
+            .iter()
+            .map(|(k, d)| (k.as_str(), *d))
+            .collect::<Vec<_>>(),
     );
     let toc: String = HELP_SECTIONS
         .iter()
@@ -773,7 +909,11 @@ pub(crate) fn ext_lines(exts: &[crate::ExtInfo]) -> Vec<String> {
     }
     for e in exts {
         let mark = if e.enabled { "[on ]" } else { "[off]" };
-        let name = if e.name.trim().is_empty() { "(unnamed extension)" } else { e.name.trim() };
+        let name = if e.name.trim().is_empty() {
+            "(unnamed extension)"
+        } else {
+            e.name.trim()
+        };
         lines.push(format!("{mark}  {name}    {}", e.id));
     }
     lines
@@ -802,9 +942,16 @@ pub(crate) fn ai_history_lines(chats: &[crate::ai::AiChat]) -> Vec<String> {
     ));
     lines.push(String::new());
     for chat in chats.iter().rev() {
-        let when = if chat.created.is_empty() { "—".to_string() } else { chat.created.clone() };
+        let when = if chat.created.is_empty() {
+            "—".to_string()
+        } else {
+            chat.created.clone()
+        };
         let size = fmt_chat_size(chat.size_bytes());
-        lines.push(format!("{when:<16}  {size:>8}  {}", truncate_name(&chat.name(), 80)));
+        lines.push(format!(
+            "{when:<16}  {size:>8}  {}",
+            truncate_name(&chat.name(), 80)
+        ));
     }
     lines
 }
@@ -825,7 +972,10 @@ pub(crate) fn aihist_rows_to_chat_range(n: usize, lo: usize, hi: usize) -> Optio
     if lo_row > hi_row {
         return None;
     }
-    Some((n - 1 - (hi_row - AIHIST_HEADER), n - 1 - (lo_row - AIHIST_HEADER)))
+    Some((
+        n - 1 - (hi_row - AIHIST_HEADER),
+        n - 1 - (lo_row - AIHIST_HEADER),
+    ))
 }
 
 /// Compact chat size: KB up to 1 MB, then MB — so a few-KB chat doesn't read `0.0 MB`.
@@ -852,7 +1002,10 @@ pub(crate) fn truncate_name(s: &str, max: usize) -> String {
 /// rows (sorted, since the source is a BTreeMap).
 pub(crate) fn alias_lines(aliases: &std::collections::BTreeMap<String, String>) -> Vec<String> {
     let mut lines = Vec::with_capacity(aliases.len() + 2);
-    lines.push(format!("aliases — {} defined    (:unalias <name> to remove)", aliases.len()));
+    lines.push(format!(
+        "aliases — {} defined    (:unalias <name> to remove)",
+        aliases.len()
+    ));
     lines.push(String::new());
     lines.extend(aliases.iter().map(|(k, v)| format!(":{k} → {v}")));
     lines
@@ -866,9 +1019,15 @@ pub(crate) fn version_lines() -> Vec<String> {
         ("Version", env!("CARGO_PKG_VERSION")),
         ("Description", env!("CARGO_PKG_DESCRIPTION")),
         ("Authors", env!("CARGO_PKG_AUTHORS")),
-        ("Engine", "WebView2 (Chromium) via wry 0.55 — loaded on demand"),
+        (
+            "Engine",
+            "WebView2 (Chromium) via wry 0.55 — loaded on demand",
+        ),
         ("Windowing", "tao 0.35 + softbuffer/fontdue native chrome"),
-        ("Terminal", "native alacritty_terminal VT engine + a browser-pty-host companion (ConPTY)"),
+        (
+            "Terminal",
+            "native alacritty_terminal VT engine + a browser-pty-host companion (ConPTY)",
+        ),
         ("Platform", std::env::consts::OS),
         ("Architecture", std::env::consts::ARCH),
     ];
@@ -894,8 +1053,11 @@ mod tests {
         assert_eq!(help_anchor("theme").as_deref(), Some("cmd-theme"));
         assert_eq!(help_anchor(":open").as_deref(), Some("cmd-open"));
         assert_eq!(help_anchor("t").as_deref(), Some("cmd-tabopen")); // ":tabopen · :t"
-        // Actions not shadowed by a command resolve to their card.
-        assert_eq!(help_anchor("install_scheme").as_deref(), Some("act-install_scheme"));
+                                                                      // Actions not shadowed by a command resolve to their card.
+        assert_eq!(
+            help_anchor("install_scheme").as_deref(),
+            Some("act-install_scheme")
+        );
         // Section names and aliases.
         assert_eq!(help_anchor("caret").as_deref(), Some("sec-normal"));
         assert_eq!(help_anchor("selection").as_deref(), Some("sec-normal"));
@@ -911,7 +1073,10 @@ mod tests {
         // The `:help` Tab-cycle candidates must all be real jump targets, or the
         // cycle would offer a topic that falls back to the full page.
         for topic in help_topics() {
-            assert!(help_anchor(&topic).is_some(), "help topic '{topic}' doesn't resolve");
+            assert!(
+                help_anchor(&topic).is_some(),
+                "help topic '{topic}' doesn't resolve"
+            );
         }
     }
 
@@ -920,7 +1085,10 @@ mod tests {
         let plain = commands_document(None);
         // Every section, command row, and action card is addressable.
         for (id, _, _) in HELP_SECTIONS {
-            assert!(plain.contains(&format!("id=\"{id}\"")), "missing section {id}");
+            assert!(
+                plain.contains(&format!("id=\"{id}\"")),
+                "missing section {id}"
+            );
         }
         assert!(plain.contains("id=\"cmd-theme\""));
         assert!(plain.contains("id=\"act-theme\""));
@@ -928,10 +1096,16 @@ mod tests {
         // so the long `theme` signature wraps instead of stretching a table column.
         assert!(plain.contains("<span class=\"p\">&lt;history|cookies|cache|all&gt;</span>"));
         assert!(plain.contains("<span class=\"p\">[term_scheme]</span>"));
-        assert!(!plain.contains("<script>"), "no jump script without a topic");
+        assert!(
+            !plain.contains("<script>"),
+            "no jump script without a topic"
+        );
         // With a topic, the jump script targets exactly that id.
         let jumped = commands_document(Some("cmd-theme"));
-        assert!(jumped.contains("getElementById('cmd-theme')"), "jump script missing");
+        assert!(
+            jumped.contains("getElementById('cmd-theme')"),
+            "jump script missing"
+        );
     }
 
     fn entry(time: &str, command: Option<&str>, message: &str) -> ErrorEntry {
@@ -958,9 +1132,15 @@ mod tests {
         use crate::ai::{AiChat, AiMessage, AiRole};
         let mk = |created: &str, prompt: &str| AiChat {
             created: created.into(),
-            messages: vec![AiMessage { role: AiRole::You, text: prompt.into() }],
+            messages: vec![AiMessage {
+                role: AiRole::You,
+                text: prompt.into(),
+            }],
         };
-        let chats = vec![mk("2026-06-20 10:00", "first"), mk("2026-06-21 11:00", "second")];
+        let chats = vec![
+            mk("2026-06-20 10:00", "first"),
+            mk("2026-06-21 11:00", "second"),
+        ];
         let lines = ai_history_lines(&chats);
         assert!(lines[0].starts_with("ai chats — 2 saved"));
         assert_eq!(lines[1], "");
@@ -979,7 +1159,7 @@ mod tests {
         assert_eq!(aihist_rows_to_chat_range(3, 4, 4), Some((0, 0))); // oldest row → chat 0
         assert_eq!(aihist_rows_to_chat_range(3, 2, 3), Some((1, 2))); // two newest rows
         assert_eq!(aihist_rows_to_chat_range(3, 2, 4), Some((0, 2))); // all rows
-        // A header-only or out-of-range span deletes nothing.
+                                                                      // A header-only or out-of-range span deletes nothing.
         assert_eq!(aihist_rows_to_chat_range(3, 0, 1), None);
         assert_eq!(aihist_rows_to_chat_range(0, 2, 2), None);
         // A span starting in the header clamps to the chat rows.
@@ -988,16 +1168,28 @@ mod tests {
 
     #[test]
     fn history_lines_keep_order_with_a_count_header() {
-        let h = vec!["https://a.test/".to_string(), "https://b.test/x".to_string()];
+        let h = vec![
+            "https://a.test/".to_string(),
+            "https://b.test/x".to_string(),
+        ];
         let lines = history_lines(&h);
         assert!(lines[0].starts_with("history — 2 entries"));
         assert_eq!(lines[1], ""); // blank under the header
-        assert_eq!(&lines[2..], &["https://a.test/".to_string(), "https://b.test/x".to_string()]);
+        assert_eq!(
+            &lines[2..],
+            &[
+                "https://a.test/".to_string(),
+                "https://b.test/x".to_string()
+            ]
+        );
     }
 
     #[test]
     fn all_errors_are_oldest_first_with_command_and_time() {
-        let errs = vec![entry("00:00:01", Some(":open a"), "e1"), entry("00:00:09", Some(":bad"), "e2")];
+        let errs = vec![
+            entry("00:00:01", Some(":open a"), "e1"),
+            entry("00:00:09", Some(":bad"), "e2"),
+        ];
         let lines = error_lines(&errs, true);
         assert_eq!(lines[0], "[00:00:01] :open a — error 1");
         assert_eq!(lines[1], "e1");

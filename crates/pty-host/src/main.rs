@@ -49,7 +49,12 @@ fn main() {
     let prog_args = &args[at + 1..];
 
     let pair = native_pty_system()
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .expect("openpty");
 
     let mut cmd = CommandBuilder::new(program);
@@ -113,7 +118,12 @@ fn main() {
             1 if payload.len() == 4 => {
                 let cols = u16::from_le_bytes([payload[0], payload[1]]);
                 let rows = u16::from_le_bytes([payload[2], payload[3]]);
-                let _ = master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+                let _ = master.resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                });
             }
             _ => {}
         }

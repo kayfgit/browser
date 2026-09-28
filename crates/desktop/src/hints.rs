@@ -131,14 +131,21 @@ impl App {
         let pane = self.focused_pane_rect();
         let (top, bottom) = (pane.y, pane.y + pane.h);
         let painter = &self.painter;
-        let Some(nr) = self.tabs[i].native() else { return };
+        let Some(nr) = self.tabs[i].native() else {
+            return;
+        };
         let links = read_view::visible_links(&nr.layout, nr.scroll, top, bottom, painter);
         let labels = hint_labels(links.len());
         let mut hints = Vec::with_capacity(links.len());
         for ((id, x, y), label) in links.into_iter().zip(labels) {
             if let Some(url) = nr.doc.link_url(id) {
                 // +8 to match the content's left draw margin; +pane.x for the column.
-                hints.push(NativeHint { label, url: url.to_string(), x: pane.x + x + 8, y });
+                hints.push(NativeHint {
+                    label,
+                    url: url.to_string(),
+                    x: pane.x + x + 8,
+                    y,
+                });
             }
         }
         self.native_hints = hints;
@@ -191,7 +198,11 @@ impl App {
         if shift == (self.hint_act == HintAct::NewTab) {
             return;
         }
-        self.hint_act = if shift { HintAct::NewTab } else { HintAct::Follow };
+        self.hint_act = if shift {
+            HintAct::NewTab
+        } else {
+            HintAct::Follow
+        };
         if self.native_hints.is_empty() {
             self.hint_send(); // repaint the page's badges in the new case
         } else {
@@ -220,7 +231,11 @@ impl App {
     /// address, or re-extract it into a read tab); reset if the typed prefix
     /// matches nothing.
     pub(crate) fn hint_match_native(&mut self) {
-        if let Some(h) = self.native_hints.iter().find(|h| h.label == self.hint_input) {
+        if let Some(h) = self
+            .native_hints
+            .iter()
+            .find(|h| h.label == self.hint_input)
+        {
             let url = h.url.clone();
             let act = self.hint_act;
             self.exit_hint();
@@ -233,7 +248,11 @@ impl App {
             }
             return;
         }
-        if !self.native_hints.iter().any(|h| h.label.starts_with(&self.hint_input)) {
+        if !self
+            .native_hints
+            .iter()
+            .any(|h| h.label.starts_with(&self.hint_input))
+        {
             self.hint_input.clear();
         }
         self.window.request_redraw();

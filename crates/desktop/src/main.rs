@@ -61,13 +61,13 @@ mod session;
 mod tabs;
 mod term;
 mod vim;
-use draw::Painter;
 use app::{clipboard_get, clipboard_set, AdblockMode, App, ExtInfo, ModeKind, UserEvent};
 use commands::COMMANDS;
+use draw::Painter;
 use find::FindState;
 use hints::HintAct;
-use tabs::{js_string, parse_open_flags, parse_tab_flag, Source, Tab};
 use pages::commands_document;
+use tabs::{js_string, parse_open_flags, parse_tab_flag, Source, Tab};
 use term::program_exists;
 
 /// Height of the bottom command/status bar, in physical pixels (at zoom 1.0).
@@ -182,23 +182,78 @@ const RESEARCH_JS: &str = r#"
 /// there, and sub-resources are uBlock Origin Lite's job. Matched as a host substring, so
 /// `adservice.google.` catches `adservice.google.com`.
 pub(crate) const AD_HOSTS: &[&str] = &[
-    "doubleclick.net", "googlesyndication.com", "googleadservices.com",
-    "google-analytics.com", "googletagmanager.com", "googletagservices.com",
-    "adservice.google.", "pagead2.googlesyndication", "amazon-adsystem.com",
-    "adnxs.com", "adsrvr.org", "rubiconproject.com", "pubmatic.com", "openx.net",
-    "criteo.com", "criteo.net", "taboola.com", "outbrain.com", "scorecardresearch.com",
-    "quantserve.com", "moatads.com", "adcolony.com", "applovin.com", "zedo.com",
-    "bidswitch.net", "casalemedia.com", "sharethrough.com", "smartadserver.com",
-    "teads.tv", "3lift.com", "yieldmo.com", "contextweb.com", "gumgum.com",
-    "indexww.com", "media.net", "mgid.com", "revcontent.com", "adform.net",
-    "adroll.com", "bluekai.com", "demdex.net", "everesttech.net", "rlcdn.com",
-    "agkn.com", "crwdcntrl.net", "mathtag.com", "adsafeprotected.com",
-    "serving-sys.com", "flashtalking.com", "servedbyadbutler.com",
-    "hotjar.com", "mixpanel.com", "segment.io", "amplitude.com", "branch.io",
-    "onesignal.com", "clarity.ms", "fullstory.com", "heap.io", "nr-data.net",
-    "bugsnag.com", "optimizely.com", "chartbeat.com", "parsely.com",
-    "permutive.com", "cxense.com", "nitropay.com", "nitrocnct.com", "analytics.tiktok",
-    "ads.linkedin.com", "ads.pinterest.com", "ads.yahoo.com",
+    "doubleclick.net",
+    "googlesyndication.com",
+    "googleadservices.com",
+    "google-analytics.com",
+    "googletagmanager.com",
+    "googletagservices.com",
+    "adservice.google.",
+    "pagead2.googlesyndication",
+    "amazon-adsystem.com",
+    "adnxs.com",
+    "adsrvr.org",
+    "rubiconproject.com",
+    "pubmatic.com",
+    "openx.net",
+    "criteo.com",
+    "criteo.net",
+    "taboola.com",
+    "outbrain.com",
+    "scorecardresearch.com",
+    "quantserve.com",
+    "moatads.com",
+    "adcolony.com",
+    "applovin.com",
+    "zedo.com",
+    "bidswitch.net",
+    "casalemedia.com",
+    "sharethrough.com",
+    "smartadserver.com",
+    "teads.tv",
+    "3lift.com",
+    "yieldmo.com",
+    "contextweb.com",
+    "gumgum.com",
+    "indexww.com",
+    "media.net",
+    "mgid.com",
+    "revcontent.com",
+    "adform.net",
+    "adroll.com",
+    "bluekai.com",
+    "demdex.net",
+    "everesttech.net",
+    "rlcdn.com",
+    "agkn.com",
+    "crwdcntrl.net",
+    "mathtag.com",
+    "adsafeprotected.com",
+    "serving-sys.com",
+    "flashtalking.com",
+    "servedbyadbutler.com",
+    "hotjar.com",
+    "mixpanel.com",
+    "segment.io",
+    "amplitude.com",
+    "branch.io",
+    "onesignal.com",
+    "clarity.ms",
+    "fullstory.com",
+    "heap.io",
+    "nr-data.net",
+    "bugsnag.com",
+    "optimizely.com",
+    "chartbeat.com",
+    "parsely.com",
+    "permutive.com",
+    "cxense.com",
+    "nitropay.com",
+    "nitrocnct.com",
+    "analytics.tiktok",
+    "ads.linkedin.com",
+    "ads.pinterest.com",
+    "ads.yahoo.com",
     // NOTE: YouTube's own first-party ad telemetry (`/api/stats/ads`, `/ptracking`,
     // `/get_midroll_`) is DELIBERATELY absent — blocking it trips YouTube's anti-adblock
     // detector, which then serves the "Ad blockers violate ToS" enforcement wall. The ads
@@ -996,8 +1051,7 @@ fn main() -> Result<()> {
     // CLI target takes precedence over (and skips) session restore. With no
     // argument, restore the previous session's tabs + UI state (window geometry was
     // already applied at build time above).
-    engines::with_window_target(&event_loop, || {
-    match cli_arg {
+    engines::with_window_target(&event_loop, || match cli_arg {
         Some(target) => {
             let t = target.trim_start();
             if let Some(cmd) = t.strip_prefix(':') {
@@ -1011,8 +1065,6 @@ fn main() -> Result<()> {
                 app.restore_session(s);
             }
         }
-    }
-
     });
 
     #[cfg(all(windows, feature = "servo-engine"))]

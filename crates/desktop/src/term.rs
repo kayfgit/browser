@@ -3,9 +3,9 @@
 //! terminal, and the PTY key/mouse encoders.
 
 use std::io::{Read as _, Write as _};
-use std::time::Duration;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use tao::event::KeyEvent;
 use tao::keyboard::{Key, KeyCode};
@@ -82,8 +82,8 @@ mod job {
     use std::mem::size_of;
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
-        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
 
@@ -238,7 +238,9 @@ impl App {
                 ShellKind::Other => typed = Some(format!("{script}\r")),
             }
         }
-        let Some(id) = self.open_terminal_cmd_at(shell, spawn_dir.as_deref()) else { return };
+        let Some(id) = self.open_terminal_cmd_at(shell, spawn_dir.as_deref()) else {
+            return;
+        };
         if let Some(line) = typed {
             if let Some(s) = self.term_session_mut(id) {
                 s.send(0, line.as_bytes());
@@ -326,7 +328,10 @@ impl App {
                     }
                     Ok(n) => {
                         let data = buf[..n].to_vec();
-                        if proxy.send_event(UserEvent::TermOutput { id, data }).is_err() {
+                        if proxy
+                            .send_event(UserEvent::TermOutput { id, data })
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -362,7 +367,9 @@ impl App {
     }
 
     pub(crate) fn term_session_mut(&mut self, id: u64) -> Option<&mut TermSession> {
-        self.tabs.iter_mut().find_map(|t| t.term_mut().filter(|s| s.id == id))
+        self.tabs
+            .iter_mut()
+            .find_map(|t| t.term_mut().filter(|s| s.id == id))
     }
 
     /// Feed raw PTY output bytes to a terminal's VT engine and repaint it. Any reply
@@ -454,7 +461,10 @@ impl App {
         let alt = self.modifiers.alt_key();
         let shift = self.modifiers.shift_key();
         if let Some(bytes) = encode_term_key(&key.logical_key, ctrl, alt, shift, app_cursor) {
-            if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut())
+            if let Some(s) = self
+                .active
+                .and_then(|i| self.tabs.get_mut(i))
+                .and_then(|t| t.term_mut())
             {
                 // Typing dismisses a mouse selection's highlight, as terminals do —
                 // it was copied on release, and leaving it lit over shifting output
@@ -476,7 +486,10 @@ impl App {
             return;
         }
         let text = text.replace("\r\n", "\r").replace('\n', "\r");
-        let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut())
+        let Some(s) = self
+            .active
+            .and_then(|i| self.tabs.get_mut(i))
+            .and_then(|t| t.term_mut())
         else {
             return;
         };
@@ -510,7 +523,11 @@ impl App {
         if self.mode != ModeKind::Normal {
             return;
         }
-        if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut()) {
+        if let Some(s) = self
+            .active
+            .and_then(|i| self.tabs.get_mut(i))
+            .and_then(|t| t.term_mut())
+        {
             if !s.pty.is_vi() {
                 s.pty.toggle_vi();
             }
@@ -527,8 +544,10 @@ impl App {
         if let Some((forward, till)) = self.term_find_pending.take() {
             if let Key::Character(c) = &key.logical_key {
                 if let Some(ch) = c.chars().next() {
-                    if let Some(s) =
-                        self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut())
+                    if let Some(s) = self
+                        .active
+                        .and_then(|i| self.tabs.get_mut(i))
+                        .and_then(|t| t.term_mut())
                     {
                         s.pty.vi_find_char(ch, forward, till);
                     }
@@ -545,7 +564,10 @@ impl App {
         // An f/F/t/T that needs to wait for its target char (applied after the borrow).
         let mut pending: Option<(bool, bool)> = None;
         {
-            let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut())
+            let Some(s) = self
+                .active
+                .and_then(|i| self.tabs.get_mut(i))
+                .and_then(|t| t.term_mut())
             else {
                 return false;
             };
@@ -663,7 +685,10 @@ impl App {
         if was_config_edit {
             self.config_edit_term = None;
         }
-        let Some(i) = self.tabs.iter().position(|t| t.term().map(|s| s.id) == Some(id))
+        let Some(i) = self
+            .tabs
+            .iter()
+            .position(|t| t.term().map(|s| s.id) == Some(id))
         else {
             if was_config_edit {
                 self.reload_config();
@@ -696,7 +721,13 @@ impl App {
     /// VIEWPORT's (row 0 = the pane's top line) and clamped to the grid, so dragging
     /// past an edge selects to it. Mirrors the renderer's origin exactly: the grid
     /// starts at `rect.x + TERM_PAD`, `rect.y` (see `chrome.rs`).
-    fn term_cell_at(&self, tab: usize, rect: PaneRect, x: f64, y: f64) -> Option<(usize, usize, bool)> {
+    fn term_cell_at(
+        &self,
+        tab: usize,
+        rect: PaneRect,
+        x: f64,
+        y: f64,
+    ) -> Option<(usize, usize, bool)> {
         let s = self.tabs.get(tab)?.term()?;
         let (cw, ch) = self.term_cell();
         let dx = (x as i32 - rect.x - TERM_PAD).max(0);
@@ -716,7 +747,13 @@ impl App {
             return false;
         };
         let shift = self.modifiers.shift_key();
-        if self.tabs.get(tab).and_then(|t| t.term()).is_some_and(|s| s.pty.mouse_mode()) && !shift {
+        if self
+            .tabs
+            .get(tab)
+            .and_then(|t| t.term())
+            .is_some_and(|s| s.pty.mouse_mode())
+            && !shift
+        {
             return false;
         }
         // A press within the streak window AND on the same cell continues the streak;
@@ -750,7 +787,9 @@ impl App {
 
     /// Pointer moved with the button down: extend the selection to the cell under it.
     pub(crate) fn term_select_drag(&mut self, x: f64, y: f64) {
-        let Some((tab, rect)) = self.term_drag else { return };
+        let Some((tab, rect)) = self.term_drag else {
+            return;
+        };
         let Some((col, row, right)) = self.term_cell_at(tab, rect, x, y) else {
             return;
         };
@@ -764,8 +803,14 @@ impl App {
     /// (the selection stays highlighted — `y` in copy mode still works too). A press
     /// that selected nothing just clears, leaving the clipboard alone.
     pub(crate) fn term_select_end(&mut self) {
-        let Some((tab, _)) = self.term_drag.take() else { return };
-        let text = self.tabs.get(tab).and_then(|t| t.term()).and_then(|s| s.pty.selection_text());
+        let Some((tab, _)) = self.term_drag.take() else {
+            return;
+        };
+        let text = self
+            .tabs
+            .get(tab)
+            .and_then(|t| t.term())
+            .and_then(|s| s.pty.selection_text());
         match text {
             Some(text) => {
                 let chars = text.chars().count();
@@ -857,7 +902,11 @@ pub(crate) fn program_exists(program: &str) -> bool {
     let exts: Vec<String> = if cfg!(windows) {
         let mut v = vec![String::new()];
         let pe = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
-        v.extend(pe.split(';').filter(|s| !s.is_empty()).map(|s| s.to_lowercase()));
+        v.extend(
+            pe.split(';')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_lowercase()),
+        );
         v
     } else {
         vec![String::new()]
@@ -952,7 +1001,13 @@ fn encode_mouse_wheel(sgr: bool, button: u8, col: i32, row: i32) -> Vec<u8> {
 /// used to do). Covers printable input, Ctrl-combos → control codes, Enter/Tab/
 /// Backspace/Esc, and the cursor/navigation keys (honoring DECCKM app-cursor mode).
 /// `None` for keys with no terminal meaning. Alt prefixes the sequence with ESC.
-fn encode_term_key(key: &Key, ctrl: bool, alt: bool, shift: bool, app_cursor: bool) -> Option<Vec<u8>> {
+fn encode_term_key(
+    key: &Key,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    app_cursor: bool,
+) -> Option<Vec<u8>> {
     // xterm modifier digit: 1 + shift(1) + alt(2) + ctrl(4). When any modifier is
     // held, arrows/nav keys use the modified CSI forms (`ESC[1;5C` = Ctrl+Right) —
     // that's what makes Ctrl+arrows jump WORDS in the shell instead of one char
@@ -1048,7 +1103,10 @@ mod tests {
             Some((Some("Ubuntu-22.04".into()), "/home/x".into()))
         );
         // Distro root with no path → "/".
-        assert_eq!(wsl_target("\\\\wsl$\\Debian"), Some((Some("Debian".into()), "/".into())));
+        assert_eq!(
+            wsl_target("\\\\wsl$\\Debian"),
+            Some((Some("Debian".into()), "/".into()))
+        );
         // A bare Linux path (OSC 7 from inside WSL) → default distro.
         assert_eq!(wsl_target("/home/kayf"), Some((None, "/home/kayf".into())));
         // Ordinary Windows dirs are not WSL.
@@ -1061,12 +1119,22 @@ mod tests {
     /// instead of jumping words.
     #[test]
     fn modified_keys_use_xterm_csi() {
-        let enc = |key, ctrl, alt, shift, app| encode_term_key(&key, ctrl, alt, shift, app).unwrap();
+        let enc =
+            |key, ctrl, alt, shift, app| encode_term_key(&key, ctrl, alt, shift, app).unwrap();
         assert_eq!(enc(Key::ArrowRight, false, false, false, false), b"\x1b[C");
-        assert_eq!(enc(Key::ArrowRight, true, false, false, false), b"\x1b[1;5C");
+        assert_eq!(
+            enc(Key::ArrowRight, true, false, false, false),
+            b"\x1b[1;5C"
+        );
         assert_eq!(enc(Key::ArrowLeft, true, false, false, false), b"\x1b[1;5D");
-        assert_eq!(enc(Key::ArrowRight, false, false, true, false), b"\x1b[1;2C");
-        assert_eq!(enc(Key::ArrowRight, false, true, false, false), b"\x1b[1;3C");
+        assert_eq!(
+            enc(Key::ArrowRight, false, false, true, false),
+            b"\x1b[1;2C"
+        );
+        assert_eq!(
+            enc(Key::ArrowRight, false, true, false, false),
+            b"\x1b[1;3C"
+        );
         assert_eq!(enc(Key::ArrowRight, true, false, true, false), b"\x1b[1;6C");
         // Application-cursor mode (DECCKM) only changes the UNmodified form.
         assert_eq!(enc(Key::ArrowRight, false, false, false, true), b"\x1bOC");
