@@ -1,0 +1,56 @@
+# Versioning and releases, driven by Conventional Commit messages on main.
+#
+# * release-please keeps a "chore(main): release x.y.z" pull request open that bumps
+#   the version in Cargo.toml and updates CHANGELOG.md.
+# * Merging that PR makes release-please tag the version and create the GitHub
+#   Release, and this workflow then starts release.yml (cargo-dist), which builds
+#   the installers and uploads them to that release.
+#
+# (A tag pushed with GITHUB_TOKEN can't trigger other workflows, but a
+# workflow_dispatch can, hence the explicit `gh workflow run`.)
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # release-please bumps Cargo.toml but can't update Cargo.lock, whose workspace
+      # entries carry the version too; without this, `cargo build --locked` fails.
+      - name: Check out the release PR
+        if: steps.release.outputs.pr
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+
+      - name: Sync Cargo.lock with the new version
+        if: steps.release.outputs.pr
+        run: |
+          cargo update --workspace
+          if ! git diff --quiet -- Cargo.lock; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "chore: sync Cargo.lock with the release version" -- Cargo.lock
+            git push
+          fi
+
+      - name: Build and upload the installers
+        if: steps.release.outputs.release_created
+        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG" -f tag="$TAG"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag_name }}
