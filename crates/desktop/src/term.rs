@@ -894,6 +894,21 @@ pub(crate) fn exec_command(cmd: &str) -> (String, Option<i32>) {
     }
 }
 
+/// The shell `:te` starts until `:shell` picks another: PowerShell 7 (`pwsh`) when
+/// it's installed, else Windows PowerShell, which every Windows install has. `-NoLogo`
+/// skips the copyright banner. Elsewhere, `sh`.
+pub(crate) fn default_shell() -> Vec<String> {
+    if !cfg!(windows) {
+        return vec!["sh".into()];
+    }
+    let program = if program_exists("pwsh") {
+        "pwsh"
+    } else {
+        "powershell"
+    };
+    vec![program.into(), "-NoLogo".into()]
+}
+
 /// Whether `program` resolves to an executable: an explicit path that exists, or a
 /// bare name found on `PATH` (trying `PATHEXT` extensions on Windows, so `:shell nu`
 /// matches `nu.exe`). Used to reject a `:shell` typo before it breaks `:te`.
@@ -1112,6 +1127,15 @@ mod tests {
         // Ordinary Windows dirs are not WSL.
         assert_eq!(wsl_target("C:\\projects\\browser"), None);
         assert_eq!(wsl_target("\\\\server\\share\\dir"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_shell_is_an_installed_powershell() {
+        let shell = default_shell();
+        assert!(matches!(shell[0].as_str(), "pwsh" | "powershell"));
+        assert!(program_exists(&shell[0]));
+        assert!(matches!(shell_kind(&shell[0]), ShellKind::Pwsh));
     }
 
     /// Modified arrows/nav keys must use the xterm CSI forms (`ESC[1;5C` =

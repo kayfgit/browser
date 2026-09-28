@@ -578,7 +578,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("model", ":model [id]", "show/set the :ai model (Tab cycles the model list); persisted"),
     ("te", ":te", "native terminal (Ctrl+V pastes · drag to select and copy, double/triple-click takes a word/line · Ctrl+S → vim copy-mode: hjkl/w/b/f-find navigate, v/y yank, i resumes) · :w/:wq remembers the cwd and restores it — cmd/nushell automatic; pwsh and WSL need a one-line prompt hook (see the user guide, docs/user-guide.md, or ask :ai)"),
     ("terun", ":te <command>", "run a local command, result in the command bar"),
-    ("shell", ":shell <program>", "set the terminal shell (e.g. :shell nu, :shell bash)"),
+    ("shell", ":shell <program>", "set the terminal shell (e.g. :shell nu, :shell cmd; default: PowerShell)"),
     ("theme", ":theme [key value]", "appearance: no args opens config.toml in an editor (closing it applies); a key + value sets one field (bar_bg, bar_fg, accent, bg, bar_height_pct, term_font, term_font_px, term_scheme, term_bg, term_fg — 'default' resets); :theme install <scheme> downloads a terminal scheme; :theme reload / show"),
     ("engine", ":engine [provider] · :engine default <provider>", "inspect or select the web engine; changes reopen the URL"),
     ("engines", ":engines", "list installed providers and supported view options"),

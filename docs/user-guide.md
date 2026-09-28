@@ -146,7 +146,9 @@ profiles or `:restore`.
 
 `:te` opens a native terminal tab running your shell. It uses Alacritty's terminal
 engine and needs no web engine. Change the shell with `:shell <program>` (for example
-`:shell pwsh`, `:shell cmd`, `:shell wsl`); the default is `nu` (nushell).
+`:shell nu`, `:shell cmd`, `:shell wsl`). The default is PowerShell: `pwsh` if
+PowerShell 7 is installed, otherwise Windows PowerShell. `:shell` on its own shows the
+current one, and `:w` saves your choice with the session.
 
 - `i` enters Passthrough so keys go to the shell (`Esc` included).
 - `Ctrl+S` gives the keyboard back to the browser and enters copy mode: a vim cursor

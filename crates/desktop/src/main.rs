@@ -994,7 +994,7 @@ fn main() -> Result<()> {
         no_css: false,
         no_video: false,
         no_scrollbar: false,
-        term_command: vec!["nu".to_string()],
+        term_command: term::default_shell(),
         search_template: browser_core::DEFAULT_SEARCH_URL.to_string(),
         next_term_id: 0,
         groq_key: ai::load_key(),
