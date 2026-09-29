@@ -26,6 +26,3 @@ create-release = false
 # crates/desktop/wix/main.wxs is hand-edited (Start Menu shortcut, license files),
 # so `dist generate` must not overwrite it.
 allow-dirty = ["msi"]
-# TEMPORARY: build the installers on pull requests to test the MSI. Remove before
-# merging (the default, "plan", only checks the release plan).
-pr-run-mode = "upload"
