@@ -15,12 +15,20 @@ impl App {
         // Alt+Tab straggler: switching INTO the browser can (re)deliver the Tab that
         // completed the switch — sometimes with Alt still reported held. Nothing in
         // the shell wants a Tab that soon after an app switch (or one with Alt down),
-        // so swallow it in EVERY mode. Pages that hold OS focus don't come through
-        // here; those are guarded in `khook`.
+        // so swallow it in EVERY mode. A page that holds focus never sends its keys
+        // here; the page script has the same guard (`strayTab` in bridge.js).
         if matches!(key.logical_key, Key::Tab)
             && (self.modifiers.alt_key()
                 || self.last_focus_gain.elapsed() < std::time::Duration::from_millis(300))
         {
+            return;
+        }
+        // The panic button: Ctrl+Alt+Shift+R resets all customization, in any mode and
+        // ahead of every binding. A focused page gets the same through WebView2's
+        // accelerator event (see `shellkeys`).
+        let m = self.modifiers;
+        if key.physical_key == KeyCode::KeyR && m.control_key() && m.alt_key() && m.shift_key() {
+            self.run_action("restore", serde_json::json!({}));
             return;
         }
         // Receiving a key here means the shell holds the keyboard, so any prior
@@ -45,7 +53,8 @@ impl App {
                 }
             }
             // Sticky typing mode. The content normally has focus (web page) or the shell
-            // forwards to it (terminal / AI), and the injected bridge + keyboard hook own
+            // forwards to it (terminal / AI), and the page script + WebView2 accelerator
+            // handler (see `shellkeys`) own
             // the leave chords; these arms are the shell-side fallbacks.
             ModeKind::Passthrough => {
                 if self.active_is_ai() {

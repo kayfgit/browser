@@ -9,7 +9,7 @@ use tao::event_loop::ControlFlow;
 
 #[cfg(all(windows, feature = "servo-engine"))]
 use crate::engines;
-use crate::{clipboard_set, khook, App, HintAct, ModeKind, UserEvent};
+use crate::{clipboard_set, shellkeys, App, HintAct, ModeKind, UserEvent};
 
 /// Handle one event from the tao event loop.
 pub(crate) fn handle(app: &mut App, event: Event<'_, UserEvent>, control_flow: &mut ControlFlow) {
@@ -38,11 +38,11 @@ pub(crate) fn handle(app: &mut App, event: Event<'_, UserEvent>, control_flow: &
         }
         _ => {}
     }
-    // Keep the keyboard hook's view of the mode current, so it intercepts the
-    // right chords (leave passthrough/insert, Esc out of a page-focus yield).
+    // Publish the key mode, so keys pressed in a focused page are routed for the
+    // shell's current state (see `shellkeys`).
     #[cfg(all(windows, feature = "servo-engine"))]
     let servo_smoke = engines::servo::smoke::tick(app);
-    khook::set_mode(app.hook_mode_code());
+    shellkeys::set_mode(app.key_mode());
     if app.quit {
         app.teardown();
         *control_flow = ControlFlow::Exit;
@@ -117,9 +117,6 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
         WindowEvent::Focused(focused) => {
             if focused {
                 app.last_focus_gain = Instant::now();
-                // Let the keyboard hook swallow the Alt+Tab straggler `Tab` on a
-                // focused web page too (the terminal is guarded in `key_term`).
-                khook::note_focus_gain();
             }
         }
         WindowEvent::CursorMoved { position, .. } => {
@@ -329,11 +326,11 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
             // shell, which holds focus by then.
             if app.mode == ModeKind::Normal {
                 app.reclaim_from_page();
-                // Update the hook now, so keys typed right behind this one aren't
-                // taken from the page a second time.
-                khook::set_mode(app.hook_mode_code());
+                // Publish the mode now, so keys typed right behind this one see
+                // the shell's new state.
+                shellkeys::set_mode(app.key_mode());
             }
-            khook::replay(key);
+            shellkeys::replay(key);
         }
         UserEvent::PaneClick => {
             // A gesture is under way in the page: hold the focus-reclaim poll off
@@ -510,8 +507,8 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
             app.finish_scheme_install(ai_id, result);
         }
         UserEvent::RestoreDefaults => {
-            // The Ctrl+Alt+Shift+R panic chord (caught by the keyboard hook below
-            // the keybind layer). Route through the same action so it's one path.
+            // The Ctrl+Alt+Shift+R panic chord, pressed in a focused page (WebView2's
+            // accelerator event, ahead of the page). Same action as `:restore`.
             app.run_action("restore", serde_json::json!({}));
         }
         UserEvent::TermDone { cmd, output, code } => {

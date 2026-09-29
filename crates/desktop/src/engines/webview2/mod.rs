@@ -5,6 +5,7 @@
 mod data;
 mod extensions;
 mod favicon;
+mod keys;
 mod navigation;
 mod suspension;
 
@@ -336,7 +337,7 @@ pub(crate) fn build(
                     let shift = parts.next() == Some("1");
                     let ctrl = parts.next() == Some("1");
                     if let Some(vk) = vk.filter(|&v| v != 0) {
-                        let key = crate::khook::KeyReplay::from_vk(vk, shift, ctrl);
+                        let key = crate::shellkeys::KeyReplay::from_vk(vk, shift, ctrl);
                         let _ = ipc_proxy.send_event(UserEvent::ReplayToShell(key));
                     }
                 } else if let Some(text) = body.strip_prefix("clip:") {
@@ -491,6 +492,8 @@ pub(crate) fn build(
         nav_intent.clone(),
         proxy.clone(),
     );
+    // The shell's leave/reclaim keys and the reset chord, inside iframes too.
+    keys::install(&webview, proxy.clone());
     // NOTE: there is deliberately no `WebResourceRequested` sub-resource blocker here.
     // One used to run the full EasyList engine over every script/iframe/XHR, but
     // registering that filter routes every sub-resource through a handler on the HOST's

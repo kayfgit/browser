@@ -165,7 +165,21 @@
     if (e.key === 'Escape') { post('reclaim'); return; }
     post('shell-key:' + e.keyCode + ',' + (e.shiftKey ? 1 : 0) + ',' + (e.ctrlKey ? 1 : 0));
   }
-  if (firstRun) window.addEventListener('keydown', shellKey, true);
+  // Alt+Tab back into the browser can deliver the Tab that finished the switch to the
+  // page, moving its focus. Swallow a lone Tab right after the window regains focus
+  // (the shell has the same guard for keys it receives itself).
+  var __focusAt = 0;
+  function strayTab(e) {
+    if (e.key === 'Tab' && !e.altKey && !e.ctrlKey && Date.now() - __focusAt < 300) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  }
+  if (firstRun) {
+    window.addEventListener('focus', function () { __focusAt = Date.now(); });
+    window.addEventListener('keydown', strayTab, true);
+    window.addEventListener('keydown', shellKey, true);
+  }
   // Link-hover readout: report the href under the pointer so the shell can show it
   // on the right of the command bar (like a browser status bar). Posted only when
   // the target link CHANGES (mouseover bubbles, so this is event-delegated and
