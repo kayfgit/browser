@@ -7,7 +7,6 @@
 
 * add :news to show what changed in each release ([4d8f9e9](https://github.com/kayfgit/browser/commit/4d8f9e910ca968ff8a51af2dfb80591b7955fc5d))
 * leave the :ai field with Ctrl+S ([b40c9e9](https://github.com/kayfgit/browser/commit/b40c9e949ed955903df9fe9b4a2ac00c10441b8b))
-* markdown in :ai, :news, Ctrl+S in :ai; aliases can't replace built-ins ([7a3090e](https://github.com/kayfgit/browser/commit/7a3090e3fbaae2d339d96fba80adb7b10dc3783d))
 * render markdown in :ai replies ([d664925](https://github.com/kayfgit/browser/commit/d66492553a5e32bfdc0681f8730c6847147c2806))
 
 
