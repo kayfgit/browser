@@ -5,7 +5,7 @@
 use std::io::{Read as _, Write as _};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tao::event::KeyEvent;
 use tao::keyboard::{Key, KeyCode};
@@ -18,6 +18,53 @@ use crate::{clipboard_get, clipboard_set, App, ModeKind, Tab, UserEvent, TERM_PA
 /// How close together two presses must be to count as a double/triple click when
 /// selecting with the mouse. Windows' own default is 500 ms.
 pub(crate) const MULTI_CLICK: Duration = Duration::from_millis(500);
+
+/// Coalesce terminal PTY resizes: a grid-size change only applies once the target size
+/// has been stable this long, and every further change restarts the clock — so a whole
+/// zoom sequence or window drag costs exactly one PTY resize. Longer bridges slower
+/// zoom taps; shorter refits the grid sooner.
+pub(crate) const TERM_RESIZE_DEBOUNCE: Duration = Duration::from_millis(300);
+
+/// A terminal grid size a pane wants: `(tab, cols, rows)`.
+pub(crate) type GridWant = (usize, usize, usize);
+
+/// Holds back terminal resizes until the wanted sizes stop changing for
+/// [`TERM_RESIZE_DEBOUNCE`].
+#[derive(Default)]
+pub(crate) struct ResizeDebounce {
+    want: Vec<GridWant>,
+    since: Option<Instant>,
+}
+
+impl ResizeDebounce {
+    /// Feed the sizes the visible terminals want right now. Returns them once they've
+    /// been the same for [`TERM_RESIZE_DEBOUNCE`]; a change restarts the wait, and an
+    /// empty list drops anything pending.
+    pub(crate) fn settle(&mut self, wants: Vec<GridWant>, now: Instant) -> Option<Vec<GridWant>> {
+        if wants.is_empty() {
+            *self = Self::default();
+            return None;
+        }
+        if wants != self.want {
+            self.want = wants;
+            self.since = Some(now);
+            return None;
+        }
+        if self
+            .since
+            .is_none_or(|at| now.duration_since(at) < TERM_RESIZE_DEBOUNCE)
+        {
+            return None;
+        }
+        *self = Self::default();
+        Some(wants)
+    }
+
+    /// When the pending resize settles, if one is waiting.
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        self.since.map(|at| at + TERM_RESIZE_DEBOUNCE)
+    }
+}
 
 /// A terminal tab's link to its companion `browser-pty-host` process. The ConPTY
 /// lives entirely in that process; here we only hold a normal pipe + the process,
@@ -393,14 +440,14 @@ impl App {
     ///
     /// Resize bursts (repeated Ctrl+-/+ zoom steps, live window drags) are COALESCED
     /// into a single PTY resize: nothing applies until the TARGET grid size has been
-    /// stable for [`TERM_RESIZE_DEBOUNCE`](crate::app::TERM_RESIZE_DEBOUNCE) — every
+    /// stable for [`TERM_RESIZE_DEBOUNCE`] — every
     /// size change restarts the clock. Each PTY resize makes ConPTY reflow and re-emit
     /// the viewport (tearing the grid when frames land after we resized again, and
     /// making the shell reprint its prompt into scrollback), so a whole zoom sequence
     /// must cost exactly one resize, however slowly the steps are tapped.
     pub(crate) fn sync_active_term_size(&mut self) {
         let (panes, _) = self.pane_layout();
-        let mut wants: Vec<(usize, usize, usize)> = Vec::new();
+        let mut wants: Vec<GridWant> = Vec::new();
         for (tab, rect) in panes {
             let (cols, rows) = self.term_grid_for_rect(rect);
             if let Some(s) = self.tabs.get(tab).and_then(|t| t.term()) {
@@ -409,27 +456,10 @@ impl App {
                 }
             }
         }
-        if wants.is_empty() {
-            self.term_resize_want.clear();
-            self.term_resize_want_at = None;
+        // Until the target settles, the event loop wakes us at its deadline to try again.
+        let Some(wants) = self.term_resize.settle(wants, Instant::now()) else {
             return;
-        }
-        let now = std::time::Instant::now();
-        if wants != self.term_resize_want {
-            // The target size moved again: (re)start the settle window. The event
-            // loop wakes us at its deadline to apply the final size.
-            self.term_resize_want = wants;
-            self.term_resize_want_at = Some(now);
-            return;
-        }
-        if self
-            .term_resize_want_at
-            .is_none_or(|at| now.duration_since(at) < crate::app::TERM_RESIZE_DEBOUNCE)
-        {
-            return;
-        }
-        self.term_resize_want = Vec::new();
-        self.term_resize_want_at = None;
+        };
         for (tab, cols, rows) in wants {
             let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) else {
                 continue;
@@ -1105,6 +1135,32 @@ fn ctrl_byte(c: char) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_resize_waits_until_the_wanted_size_stops_changing() {
+        let t0 = Instant::now();
+        let step = TERM_RESIZE_DEBOUNCE / 2;
+        let mut d = ResizeDebounce::default();
+        assert_eq!(d.settle(vec![(0, 80, 24)], t0), None);
+        assert_eq!(d.deadline(), Some(t0 + TERM_RESIZE_DEBOUNCE));
+        // A new size restarts the wait.
+        assert_eq!(d.settle(vec![(0, 90, 24)], t0 + step), None);
+        assert_eq!(d.settle(vec![(0, 90, 24)], t0 + step * 2), None);
+        assert_eq!(
+            d.settle(vec![(0, 90, 24)], t0 + step * 3),
+            Some(vec![(0, 90, 24)])
+        );
+        assert_eq!(d.deadline(), None);
+    }
+
+    #[test]
+    fn nothing_to_resize_drops_a_pending_one() {
+        let t0 = Instant::now();
+        let mut d = ResizeDebounce::default();
+        d.settle(vec![(1, 80, 24)], t0);
+        assert_eq!(d.settle(Vec::new(), t0), None);
+        assert_eq!(d.deadline(), None);
+    }
 
     #[test]
     fn wsl_target_classifies_saved_cwds() {
