@@ -697,8 +697,9 @@ impl App {
             } else {
                 ':'
             };
-            let line = format!("{pre}{}", self.command);
-            let prefix = format!("{pre}{}", &self.command[..self.command_cursor]);
+            let text = self.cmdline.text();
+            let line = format!("{pre}{text}");
+            let prefix = format!("{pre}{}", &text[..self.cmdline.cursor()]);
             let caret_un = MARGIN + self.painter.measure(&prefix) as i32;
             // Keep the caret a hair inside the right edge; scroll only when it would
             // otherwise fall off the end of the bar.
@@ -711,13 +712,9 @@ impl App {
             };
             // Selection highlight rect (x range), in the same scrolled coordinates,
             // clipped to the left margin.
-            let sel = self.sel_range().map(|(a, b)| {
+            let sel = self.cmdline.selection().map(|(a, b)| {
                 let x_of = |k: usize| {
-                    MARGIN - scroll
-                        + self
-                            .painter
-                            .measure(&format!("{pre}{}", &self.command[..k]))
-                            as i32
+                    MARGIN - scroll + self.painter.measure(&format!("{pre}{}", &text[..k])) as i32
                 };
                 (x_of(a).max(MARGIN).max(0) as usize, x_of(b).max(0) as usize)
             });
@@ -737,7 +734,7 @@ impl App {
         // the command text (Tab / Ctrl+Right accepts it).
         let cmd_suffix = self
             .command_suggestion()
-            .and_then(|s| s.strip_prefix(self.command.as_str()).map(str::to_string))
+            .and_then(|s| s.strip_prefix(self.cmdline.text()).map(str::to_string))
             .filter(|t| !t.is_empty());
         // Hovered-link target, shown right-aligned in the Normal-mode bar (like a
         // browser status bar). Only for a live web page; mutually exclusive with the
@@ -1058,8 +1055,8 @@ impl App {
             // The blinking caret is drawn separately (at the byte cursor), so the
             // text segment is just the literal command line. (Command/Find are drawn
             // via the dedicated caret path in `draw`, so these arms are unreached.)
-            ModeKind::Command => vec![(format!(":{}", self.command), fg)],
-            ModeKind::Find => vec![(format!("/{}", self.command), fg)],
+            ModeKind::Command => vec![(format!(":{}", self.cmdline.text()), fg)],
+            ModeKind::Find => vec![(format!("/{}", self.cmdline.text()), fg)],
             ModeKind::Resize => vec![
                 ("[RESIZE]".into(), accent),
                 ("  hjkl resize window · Esc done".into(), draw::DIM),

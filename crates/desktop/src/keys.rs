@@ -837,52 +837,41 @@ impl App {
                 // Clipboard. Ctrl+C copies the selection (or, with nothing selected,
                 // cancels — the old behavior); Ctrl+X cuts; Ctrl+V pastes.
                 KeyCode::KeyC => {
-                    if let Some((a, b)) = self.sel_range() {
-                        clipboard_set(&self.command[a..b]);
+                    if let Some(text) = self.cmdline.selected() {
+                        clipboard_set(text);
                     } else {
                         self.cancel_command();
                         return;
                     }
                 }
                 KeyCode::KeyX => {
-                    if let Some((a, b)) = self.sel_range() {
-                        clipboard_set(&self.command[a..b]);
-                        self.delete_selection();
+                    if let Some(text) = self.cmdline.selected() {
+                        clipboard_set(text);
+                        self.cmdline.delete_selection();
                     }
                 }
                 KeyCode::KeyV => {
                     if let Some(text) = clipboard_get() {
-                        self.cmd_insert(&text);
+                        self.cmdline.insert(&text);
                     }
                 }
-                KeyCode::KeyA => {
-                    self.command_anchor = Some(0);
-                    self.command_cursor = self.command.len();
-                }
+                KeyCode::KeyA => self.cmdline.select_all(),
                 // Word-wise caret movement (Ctrl+Shift extends the selection).
-                KeyCode::ArrowLeft => {
-                    let p = self.prev_word(self.command_cursor);
-                    self.move_caret(p, shift);
-                }
+                KeyCode::ArrowLeft => self.cmdline.word_left(shift),
                 // Ctrl+Right accepts the autocomplete suggestion (if any) — else moves
                 // a word, as before.
                 KeyCode::ArrowRight => {
                     if !self.accept_suggestion(true) {
-                        let p = self.next_word(self.command_cursor);
-                        self.move_caret(p, shift);
+                        self.cmdline.word_right(shift);
                     }
                 }
                 // Ctrl+W / Ctrl+Backspace: delete the word before the caret.
-                KeyCode::KeyW | KeyCode::Backspace => self.cmd_delete_word(),
+                KeyCode::KeyW | KeyCode::Backspace => self.cmdline.delete_word_back(),
                 // Ctrl+Delete: delete the word after the caret.
-                KeyCode::Delete => self.cmd_delete_word_forward(),
+                KeyCode::Delete => self.cmdline.delete_word_forward(),
                 // Ctrl+U: delete from the caret back to the start of the line.
-                KeyCode::KeyU => {
-                    self.command.replace_range(0..self.command_cursor, "");
-                    self.command_cursor = 0;
-                    self.command_anchor = None;
-                }
-                KeyCode::KeyH => self.cmd_backspace(),
+                KeyCode::KeyU => self.cmdline.delete_to_start(),
+                KeyCode::KeyH => self.cmdline.backspace(),
                 _ => {}
             }
             self.cursor_on = true;
@@ -893,7 +882,7 @@ impl App {
         }
         // Alt+Backspace: delete the word before the caret (a common alias).
         if self.modifiers.alt_key() && key.physical_key == KeyCode::Backspace {
-            self.cmd_delete_word();
+            self.cmdline.delete_word_back();
             self.cursor_on = true;
             if self.mode == ModeKind::Find {
                 self.find_update();
@@ -917,62 +906,28 @@ impl App {
                 // it or keep calculating (`20*8` → `160` → `160+10`) instead of
                 // running it as a command.
                 if let Some(result) = self.math_preview() {
-                    self.command = result;
-                    self.command_cursor = self.command.len();
-                    self.command_anchor = None;
+                    self.cmdline.set(result);
                     self.cursor_on = true;
                     self.clear_status();
                     return;
                 }
-                let line = std::mem::take(&mut self.command);
-                self.command_cursor = 0;
-                self.command_anchor = None;
+                let line = self.cmdline.take();
                 self.mode = ModeKind::Normal;
                 self.run_command(&line);
                 // Back to Normal re-hides the bar over a fullscreen page; refit it.
                 self.relayout_active();
             }
             Key::Escape => self.cancel_command(),
-            Key::Backspace => {
-                if !self.delete_selection() {
-                    self.cmd_backspace();
-                }
-            }
-            Key::Delete => {
-                if !self.delete_selection() {
-                    self.cmd_delete_forward();
-                }
-            }
+            Key::Backspace => self.cmdline.backspace(),
+            Key::Delete => self.cmdline.delete_forward(),
             // Plain arrow with a selection collapses to that edge; otherwise moves a
             // character. Shift extends (or starts) the selection.
-            Key::ArrowLeft => {
-                if !shift {
-                    if let Some((a, _)) = self.sel_range() {
-                        self.command_cursor = a;
-                        self.command_anchor = None;
-                    } else {
-                        self.move_caret(self.prev_char(self.command_cursor), false);
-                    }
-                } else {
-                    self.move_caret(self.prev_char(self.command_cursor), true);
-                }
-            }
-            Key::ArrowRight => {
-                if !shift {
-                    if let Some((_, b)) = self.sel_range() {
-                        self.command_cursor = b;
-                        self.command_anchor = None;
-                    } else {
-                        self.move_caret(self.next_char(self.command_cursor), false);
-                    }
-                } else {
-                    self.move_caret(self.next_char(self.command_cursor), true);
-                }
-            }
-            Key::Home => self.move_caret(0, shift),
-            Key::End => self.move_caret(self.command.len(), shift),
-            Key::Space => self.cmd_insert(" "),
-            Key::Character(s) => self.cmd_insert(s),
+            Key::ArrowLeft => self.cmdline.left(shift),
+            Key::ArrowRight => self.cmdline.right(shift),
+            Key::Home => self.cmdline.home(shift),
+            Key::End => self.cmdline.end(shift),
+            Key::Space => self.cmdline.insert(" "),
+            Key::Character(s) => self.cmdline.insert(s),
             _ => {}
         }
         // Any edit should show the cursor immediately (don't wait for the blink).
@@ -986,9 +941,7 @@ impl App {
     /// Leave the command bar, discarding the line (Esc / Ctrl+C with no selection).
     /// In Find mode this also drops the search and its highlights.
     pub(crate) fn cancel_command(&mut self) {
-        self.command.clear();
-        self.command_cursor = 0;
-        self.command_anchor = None;
+        self.cmdline.clear();
         if self.mode == ModeKind::Find {
             self.find_clear();
         }
@@ -997,15 +950,8 @@ impl App {
         self.relayout_active();
     }
 
-    /// The current selection as an ordered byte range, or `None` if empty.
-    pub(crate) fn sel_range(&self) -> Option<(usize, usize)> {
-        let a = self.command_anchor?;
-        let c = self.command_cursor;
-        (a != c).then(|| (a.min(c), a.max(c)))
-    }
-
     /// Map a physical x pixel in the command bar to the nearest caret byte offset
-    /// in `self.command`, replicating the draw layout: the line is `<pre><command>`
+    /// in the command line, replicating the draw layout: the line is `<pre><command>`
     /// drawn at `MARGIN - bar_cmd_scroll`, so boundary `k` sits at that origin plus
     /// the measured width of the prefix up to `k`. Picks the boundary whose midpoint
     /// the click falls before (so clicking a glyph's left/right half lands sensibly).
@@ -1016,15 +962,14 @@ impl App {
         } else {
             ':'
         };
+        let text = self.cmdline.text();
         let x_of = |k: usize| -> f64 {
             (MARGIN - self.bar_cmd_scroll) as f64
-                + self
-                    .painter
-                    .measure(&format!("{pre}{}", &self.command[..k])) as f64
+                + self.painter.measure(&format!("{pre}{}", &text[..k])) as f64
         };
         let mut best = 0;
         let mut prev = x_of(0);
-        for (i, ch) in self.command.char_indices() {
+        for (i, ch) in text.char_indices() {
             let k = i + ch.len_utf8();
             let cur = x_of(k);
             if x < (prev + cur) / 2.0 {
@@ -1043,8 +988,8 @@ impl App {
     pub(crate) fn bar_click(&mut self, x: f64) {
         match self.mode {
             ModeKind::Command | ModeKind::Find => {
-                self.command_cursor = self.bar_caret_at_x(x);
-                self.command_anchor = None;
+                let pos = self.bar_caret_at_x(x);
+                self.cmdline.move_to(pos, false);
                 self.bar_dragging = true;
                 self.cursor_on = true;
             }
@@ -1077,8 +1022,7 @@ impl App {
         // The command/status bar owns the strip along the bottom.
         let (_, h) = self.inner();
         if self.bar_h() > 0 && y >= h as f64 - self.bar_h() as f64 {
-            if let Some((a, b)) = self.sel_range() {
-                let text = self.command[a..b].to_string();
+            if let Some(text) = self.cmdline.selected().map(str::to_string) {
                 self.copy_text(&text);
                 self.window.request_redraw();
             }
@@ -1138,122 +1082,14 @@ impl App {
             return;
         }
         let off = self.bar_caret_at_x(x);
-        self.move_caret(off, true);
+        self.cmdline.move_to(off, true);
         self.cursor_on = true;
         self.window.request_redraw();
     }
 
-    /// Move the caret to `pos`. `extend` keeps/starts a selection (Shift held);
-    /// otherwise the selection is dropped. A zero-width selection is normalized away.
-    pub(crate) fn move_caret(&mut self, pos: usize, extend: bool) {
-        if extend {
-            if self.command_anchor.is_none() {
-                self.command_anchor = Some(self.command_cursor);
-            }
-        } else {
-            self.command_anchor = None;
-        }
-        self.command_cursor = pos;
-        if self.command_anchor == Some(pos) {
-            self.command_anchor = None;
-        }
-    }
-
-    /// Replace the selection (if any) with `text`, then place the caret after it.
-    /// Control characters (e.g. newlines from a paste) are dropped — it's one line.
-    pub(crate) fn cmd_insert(&mut self, text: &str) {
-        self.delete_selection();
-        let clean: String = text.chars().filter(|c| !c.is_control()).collect();
-        self.command.insert_str(self.command_cursor, &clean);
-        self.command_cursor += clean.len();
-    }
-
-    /// Remove the selection if there is one; returns whether anything was deleted.
-    pub(crate) fn delete_selection(&mut self) -> bool {
-        if let Some((a, b)) = self.sel_range() {
-            self.command.replace_range(a..b, "");
-            self.command_cursor = a;
-            self.command_anchor = None;
-            true
-        } else {
-            self.command_anchor = None;
-            false
-        }
-    }
-
-    /// Byte offset of the char before `pos` (or `pos` if at the start).
-    pub(crate) fn prev_char(&self, pos: usize) -> usize {
-        self.command[..pos]
-            .char_indices()
-            .next_back()
-            .map(|(i, _)| i)
-            .unwrap_or(pos)
-    }
-
-    /// Byte offset just after the char at `pos` (or `pos` if at the end).
-    pub(crate) fn next_char(&self, pos: usize) -> usize {
-        self.command[pos..]
-            .chars()
-            .next()
-            .map(|c| pos + c.len_utf8())
-            .unwrap_or(pos)
-    }
-
-    /// Start of the word before `pos` in the command line (see [`prev_word_boundary`]).
-    pub(crate) fn prev_word(&self, pos: usize) -> usize {
-        prev_word_boundary(&self.command, pos)
-    }
-
-    /// End of the word after `pos` in the command line (see [`next_word_boundary`]).
-    pub(crate) fn next_word(&self, pos: usize) -> usize {
-        next_word_boundary(&self.command, pos)
-    }
-
-    /// Delete the character before the caret (or the selection, if any).
-    pub(crate) fn cmd_backspace(&mut self) {
-        if self.delete_selection() {
-            return;
-        }
-        let start = self.prev_char(self.command_cursor);
-        if start != self.command_cursor {
-            self.command.replace_range(start..self.command_cursor, "");
-            self.command_cursor = start;
-        }
-    }
-
-    /// Delete the character after the caret (or the selection, if any).
-    pub(crate) fn cmd_delete_forward(&mut self) {
-        if self.delete_selection() {
-            return;
-        }
-        let end = self.next_char(self.command_cursor);
-        self.command.replace_range(self.command_cursor..end, "");
-    }
-
-    /// Delete the word before the caret (or the selection, if any).
-    pub(crate) fn cmd_delete_word(&mut self) {
-        if self.delete_selection() {
-            return;
-        }
-        let start = self.prev_word(self.command_cursor);
-        self.command.replace_range(start..self.command_cursor, "");
-        self.command_cursor = start;
-    }
-
-    /// Delete the word after the caret (or the selection, if any).
-    pub(crate) fn cmd_delete_word_forward(&mut self) {
-        if self.delete_selection() {
-            return;
-        }
-        let end = self.next_word(self.command_cursor);
-        self.command.replace_range(self.command_cursor..end, "");
-    }
-
     pub(crate) fn enter_command(&mut self, prefill: &str) {
         self.mode = ModeKind::Command;
-        self.command = prefill.to_string();
-        self.command_cursor = self.command.len();
-        self.command_anchor = None;
+        self.cmdline.set(prefill);
         self.cursor_on = true;
         self.clear_status();
         // In fullscreen the bars were hidden; showing the command bar shrinks the page.
@@ -1265,13 +1101,10 @@ impl App {
     /// an `:open`-style argument from visited history (`open yout`→`open youtube.com`).
     /// Only when in Command mode with the caret at the end and no selection.
     pub(crate) fn command_suggestion(&self) -> Option<String> {
-        if self.mode != ModeKind::Command
-            || self.command_cursor != self.command.len()
-            || self.command_anchor.is_some()
-        {
+        if self.mode != ModeKind::Command || !self.cmdline.at_end() {
             return None;
         }
-        let cmd = &self.command;
+        let cmd = self.cmdline.text();
         if cmd.is_empty() {
             return None;
         }
@@ -1279,7 +1112,7 @@ impl App {
             // Verb completion.
             None => COMMANDS
                 .iter()
-                .find(|c| c.len() > cmd.len() && c.starts_with(cmd.as_str()))
+                .find(|c| c.len() > cmd.len() && c.starts_with(cmd))
                 .map(|c| (*c).to_string()),
             // Argument completion.
             Some((verb, rest)) => {
@@ -1322,7 +1155,7 @@ impl App {
     /// next/previous one (wrapping, `forward` = Tab vs Shift+Tab), so you can
     /// flick through the options in either direction and Enter the one you want.
     pub(crate) fn accept_suggestion(&mut self, forward: bool) -> bool {
-        if let Some((verb, prior, prefix)) = completion_parts(&self.command) {
+        if let Some((verb, prior, prefix)) = completion_parts(self.cmdline.text()) {
             if let Some(cands) = crate::commands::arg_candidates(self, verb, &prior) {
                 let len = cands.len();
                 let next = if let Some(i) = cands.iter().position(|c| c == prefix) {
@@ -1345,13 +1178,12 @@ impl App {
                 };
                 // Swap just the token being completed, keeping the line as typed
                 // before it (inserting the separating space after a bare verb).
-                let mut base = self.command[..self.command.len() - prefix.len()].to_string();
+                let text = self.cmdline.text();
+                let mut base = text[..text.len() - prefix.len()].to_string();
                 if !base.ends_with(char::is_whitespace) {
                     base.push(' ');
                 }
-                self.command = base + &cands[next];
-                self.command_cursor = self.command.len();
-                self.command_anchor = None;
+                self.cmdline.set(base + &cands[next]);
                 self.cursor_on = true;
                 return true;
             }
@@ -1359,9 +1191,7 @@ impl App {
         let Some(sug) = self.command_suggestion() else {
             return false;
         };
-        self.command = sug;
-        self.command_cursor = self.command.len();
-        self.command_anchor = None;
+        self.cmdline.set(sug);
         self.cursor_on = true;
         true
     }
@@ -1606,41 +1436,9 @@ fn digit_index(code: KeyCode) -> Option<usize> {
     })
 }
 
-/// A "word" character for command-bar word motions (`Ctrl+W`, `Ctrl+←/→`):
-/// alphanumerics and `_`. Everything else — `/ . : - ? & = # @ ~ + …` — is a
-/// separator, so word jumps/deletes stop at URL and path boundaries.
-pub(crate) fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-/// Byte offset of the start of the word before `pos`: skip trailing separators,
-/// then the word run. So `Ctrl+W` on `…/foo/bar` erases `bar` (then `/`, then
-/// `foo`), not the entire URL.
-pub(crate) fn prev_word_boundary(s: &str, pos: usize) -> usize {
-    let trimmed = s[..pos].trim_end_matches(|c| !is_word_char(c));
-    trimmed
-        .char_indices()
-        .rev()
-        .find(|(_, c)| !is_word_char(*c))
-        .map(|(i, c)| i + c.len_utf8())
-        .unwrap_or(0)
-}
-
-/// Byte offset of the end of the word after `pos`: skip leading separators, then
-/// the word run.
-pub(crate) fn next_word_boundary(s: &str, pos: usize) -> usize {
-    let rest = &s[pos..];
-    let after_sep = rest.trim_start_matches(|c| !is_word_char(c));
-    let sep = rest.len() - after_sep.len();
-    let word = after_sep
-        .find(|c| !is_word_char(c))
-        .unwrap_or(after_sep.len());
-    pos + sep + word
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{completion_parts, next_word_boundary, prev_word_boundary};
+    use super::completion_parts;
 
     #[test]
     fn completion_parts_splits_verb_args_and_completed_token() {
@@ -1660,26 +1458,5 @@ mod tests {
         // Empty / whitespace-only lines complete nothing.
         assert_eq!(completion_parts(""), None);
         assert_eq!(completion_parts("   "), None);
-    }
-
-    #[test]
-    fn ctrl_w_deletes_one_url_segment_at_a_time() {
-        let url = "https://example.com/foo/bar";
-        // Caret at the end: prev word is `bar`, leaving the trailing slash.
-        let p1 = prev_word_boundary(url, url.len());
-        assert_eq!(&url[..p1], "https://example.com/foo/");
-        // Again from there: skip the `/`, delete `foo`.
-        let p2 = prev_word_boundary(url, p1);
-        assert_eq!(&url[..p2], "https://example.com/");
-        // Not the whole thing in one go.
-        assert_ne!(p1, 0);
-    }
-
-    #[test]
-    fn word_motions_step_over_separators() {
-        let s = "ab.cd";
-        assert_eq!(next_word_boundary(s, 0), 2); // end of `ab`
-        assert_eq!(next_word_boundary(s, 2), 5); // skip `.`, end of `cd`
-        assert_eq!(prev_word_boundary(s, 5), 3); // start of `cd`
     }
 }
