@@ -4,6 +4,131 @@
 use crate::panes::SplitDir;
 use crate::{commands_document, parse_open_flags, parse_tab_flag, program_exists, App, ModeKind};
 
+/// Every verb [`App::run_command`] handles itself, short forms included. Aliases can't
+/// take these names: an alias named `open` would silently change what `:open` does.
+/// A test checks this list against the dispatcher's `match`, so it can't drift.
+pub(crate) const BUILTIN_VERBS: &[&str] = &[
+    "engine",
+    "engines",
+    "open",
+    "o",
+    "tabopen",
+    "t",
+    "edit",
+    "e",
+    "y",
+    "yank",
+    "read",
+    "error",
+    "err",
+    "errors",
+    "errs",
+    "research",
+    "rs",
+    "te",
+    "term",
+    "ai",
+    "model",
+    "shell",
+    "search",
+    "js",
+    "nojs",
+    "save",
+    "sv",
+    "favorite",
+    "fav",
+    "bookmark",
+    "bm",
+    "saved",
+    "favorites",
+    "favs",
+    "bookmarks",
+    "unsave",
+    "unfav",
+    "delsave",
+    "unbookmark",
+    "reopen",
+    "undo",
+    "ads",
+    "adblock",
+    "extensions",
+    "ext",
+    "exts",
+    "downloads",
+    "dl",
+    "mute",
+    "audio",
+    "css",
+    "scrollbar",
+    "scrollbars",
+    "sb",
+    "video",
+    "vid",
+    "close",
+    "tabclose",
+    "bd",
+    "vsplit",
+    "vs",
+    "vsp",
+    "split",
+    "hsplit",
+    "sp",
+    "write",
+    "w",
+    "wq",
+    "x",
+    "quit",
+    "q",
+    "q!",
+    "saveprofile",
+    "savep",
+    "saveprof",
+    "sprofile",
+    "delprofile",
+    "delprof",
+    "rmprofile",
+    "dp",
+    "profile",
+    "prof",
+    "p",
+    "profiles",
+    "profs",
+    "scratch",
+    "scr",
+    "sc",
+    "freeze",
+    "unfreeze",
+    "thaw",
+    "reload",
+    "r",
+    "next",
+    "tabnext",
+    "tn",
+    "prev",
+    "tabprev",
+    "tp",
+    "back",
+    "forward",
+    "f",
+    "fullscreen",
+    "resize",
+    "move",
+    "history",
+    "hist",
+    "aihist",
+    "aihistory",
+    "clear",
+    "alias",
+    "unalias",
+    "theme",
+    "restore",
+    "commands",
+    "help",
+    "version",
+    "res",
+    "resources",
+];
+
 /// Command verbs offered by command-bar autocomplete (`:ver`→`:version`). Longest-
 /// useful canonical spellings; ordered so the first prefix match is the best one.
 pub(crate) const COMMANDS: &[&str] = &[
@@ -598,4 +723,60 @@ pub(crate) fn search_template_for(arg: &str) -> Option<String> {
         return Some(a.to_string());
     }
     browser_core::bang_search_template(a).map(|t| t.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BUILTIN_VERBS;
+    use std::collections::BTreeSet;
+
+    /// The verbs `run_command` matches on, read from its source: the string literals
+    /// before `=>` on each top-level arm of `match verb`.
+    fn dispatched_verbs() -> BTreeSet<String> {
+        let src = include_str!("commands.rs");
+        let start = src
+            .find("        match verb {")
+            .expect("run_command's match");
+        let end = start
+            + src[start..]
+                .find("other if other.starts_with('!')")
+                .expect("the bang arm ends the verb arms");
+        let mut verbs = BTreeSet::new();
+        for line in src[start..end].lines() {
+            // Top-level arms sit at exactly 12 spaces; nested matches are deeper.
+            let Some(arm) = line.strip_prefix("            ") else {
+                continue;
+            };
+            if !arm.starts_with('"') {
+                continue;
+            }
+            let pattern = arm
+                .split("=>")
+                .next()
+                .filter(|_| arm.contains("=>"))
+                .unwrap_or_else(|| panic!("keep each verb pattern on one line: {line}"));
+            for literal in pattern.split('"').skip(1).step_by(2) {
+                if !literal.is_empty() {
+                    verbs.insert(literal.to_string());
+                }
+            }
+        }
+        verbs
+    }
+
+    #[test]
+    fn builtin_verbs_match_the_dispatcher() {
+        let listed: BTreeSet<String> = BUILTIN_VERBS.iter().map(|v| v.to_string()).collect();
+        let dispatched = dispatched_verbs();
+        assert!(
+            dispatched.len() > 100,
+            "parsed too few verbs: {dispatched:?}"
+        );
+        let missing: Vec<_> = dispatched.difference(&listed).collect();
+        let extra: Vec<_> = listed.difference(&dispatched).collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "BUILTIN_VERBS is out of sync with run_command: add {missing:?}, remove {extra:?}"
+        );
+    }
 }

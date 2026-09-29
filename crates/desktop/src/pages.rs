@@ -1009,7 +1009,13 @@ pub(crate) fn alias_lines(aliases: &std::collections::BTreeMap<String, String>) 
         aliases.len()
     ));
     lines.push(String::new());
-    lines.extend(aliases.iter().map(|(k, v)| format!(":{k} → {v}")));
+    lines.extend(aliases.iter().map(|(k, v)| {
+        if crate::actions::shadows_builtin(k) {
+            format!(":{k} → {v}    (ignored: :{k} is a built-in command)")
+        } else {
+            format!(":{k} → {v}")
+        }
+    }));
     lines
 }
 

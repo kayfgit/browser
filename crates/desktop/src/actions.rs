@@ -68,13 +68,17 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         name: "alias",
         summary: "Create or update a command alias — a short name typed after ':' that \
                   expands to a full command line (e.g. name 'gh' → 'open github.com', so \
-                  ':gh' opens GitHub). Use when the user asks for a shortcut/alias.",
+                  ':gh' opens GitHub). Use when the user asks for a shortcut/alias. \
+                  Aliases can't reuse a built-in command's name, and you can't create \
+                  one that runs a terminal command (te/term) or changes the shell; \
+                  tell the user to add those themselves with :alias.",
         params: &[
             ParamSpec {
                 name: "name",
                 values: &[],
                 required: true,
-                desc: "The alias name: a single word, no spaces, typed after ':'.",
+                desc: "The alias name: a single word, no spaces, typed after ':', and \
+                       not the name of a built-in command.",
             },
             ParamSpec {
                 name: "expansion",
@@ -395,6 +399,82 @@ pub(crate) fn positional(names: &[&str], rest: &str) -> Value {
     Value::Object(map)
 }
 
+/// Verbs an alias created by the assistant may not reach: they run programs on this
+/// machine (`:te <cmd>` runs a shell command, `:shell` picks the program `:te` starts).
+/// A page the assistant reads could otherwise talk it into planting one.
+const AI_FORBIDDEN_VERBS: &[&str] = &["te", "term", "shell"];
+
+/// Whether an alias may be named `name`: never after a built-in command (it would
+/// silently change what that command does) or a `!bang`.
+pub(crate) fn shadows_builtin(name: &str) -> bool {
+    name.starts_with('!') || crate::commands::BUILTIN_VERBS.contains(&name)
+}
+
+/// Expand a leading alias in `line`, following chains up to a small depth so a loop
+/// can't hang. Typed args after the alias are appended to its expansion. Returns
+/// `None` when the first word isn't an alias. An alias named after a built-in (only
+/// possible in a config written before that was refused) is ignored.
+pub(crate) fn expand_alias_in(
+    aliases: &std::collections::BTreeMap<String, String>,
+    line: &str,
+) -> Option<String> {
+    let mut cur = line.to_string();
+    let mut changed = false;
+    for _ in 0..8 {
+        let (verb, rest) = match cur.split_once(char::is_whitespace) {
+            Some((v, r)) => (v.to_string(), r.trim().to_string()),
+            None => (cur.clone(), String::new()),
+        };
+        if shadows_builtin(&verb) {
+            break;
+        }
+        let Some(exp) = aliases.get(&verb) else {
+            break;
+        };
+        cur = if rest.is_empty() {
+            exp.clone()
+        } else {
+            format!("{exp} {rest}")
+        };
+        changed = true;
+    }
+    changed.then_some(cur)
+}
+
+/// Why the alias `name` → `expansion` can't be created, or `None` if it can. Both are
+/// expected trimmed, the expansion without a leading `:`. `by_ai` applies the extra
+/// rule for the assistant: nothing that ends up running a program, even through
+/// other aliases.
+pub(crate) fn alias_rejection(
+    aliases: &std::collections::BTreeMap<String, String>,
+    name: &str,
+    expansion: &str,
+    by_ai: bool,
+) -> Option<String> {
+    if name.is_empty() || expansion.is_empty() {
+        return Some("usage: :alias <name> <command>  (e.g. :alias gh open github.com)".into());
+    }
+    if name.split_whitespace().count() != 1 {
+        return Some("an alias name must be a single word (no spaces)".into());
+    }
+    if shadows_builtin(name) {
+        return Some(format!(
+            "':{name}' is a built-in command — an alias can't replace it; pick another name"
+        ));
+    }
+    if by_ai {
+        let resolved = expand_alias_in(aliases, expansion).unwrap_or_else(|| expansion.into());
+        let verb = resolved.split_whitespace().next().unwrap_or("");
+        if AI_FORBIDDEN_VERBS.contains(&verb) {
+            return Some(format!(
+                "the assistant can't create aliases that run programs (:{verb}); \
+                 add it yourself with :alias {name} {expansion}"
+            ));
+        }
+    }
+    None
+}
+
 impl App {
     /// Run an action by `name` with a JSON `args` object — the one entry point shared
     /// by the command bar and the assistant. Returns a status line on success or a
@@ -565,20 +645,16 @@ impl App {
         }
     }
 
-    /// Define/replace a command alias `name` → `expansion` and persist it. Guards the
-    /// name (single word; never `restore`, so the panic button can't be shadowed) and
-    /// requires a non-empty expansion. The expansion is stored without a leading `:`.
+    /// Define/replace a command alias `name` → `expansion` and persist it, unless
+    /// [`alias_rejection`] refuses it: a single-word name that isn't a built-in
+    /// command, and, when the assistant is the one asking, an expansion that doesn't
+    /// run programs. The expansion is stored without a leading `:`.
     pub(crate) fn set_alias(&mut self, name: &str, expansion: &str) -> Result<String, String> {
         let name = name.trim();
         let expansion = expansion.trim().trim_start_matches(':').trim();
-        if name.is_empty() || expansion.is_empty() {
-            return Err("usage: :alias <name> <command>  (e.g. :alias gh open github.com)".into());
-        }
-        if name.split_whitespace().count() != 1 {
-            return Err("an alias name must be a single word (no spaces)".into());
-        }
-        if name == "restore" {
-            return Err("'restore' is reserved — it's the reset-to-defaults command".into());
+        let by_ai = self.acting_ai.is_some();
+        if let Some(reason) = alias_rejection(&self.config.aliases, name, expansion, by_ai) {
+            return Err(reason);
         }
         self.config
             .aliases
@@ -913,28 +989,9 @@ impl App {
         }
     }
 
-    /// Expand a leading command alias, up to a small depth so chained aliases work
-    /// without an infinite loop. Returns the rewritten line, or `None` if the head
-    /// word isn't an alias. Typed args after the alias are appended to its expansion.
+    /// Expand a leading command alias in `line` (see [`expand_alias_in`]).
     pub(crate) fn expand_alias(&self, line: &str) -> Option<String> {
-        let mut cur = line.to_string();
-        let mut changed = false;
-        for _ in 0..8 {
-            let (verb, rest) = match cur.split_once(char::is_whitespace) {
-                Some((v, r)) => (v.to_string(), r.trim().to_string()),
-                None => (cur.clone(), String::new()),
-            };
-            let Some(exp) = self.config.aliases.get(&verb) else {
-                break;
-            };
-            cur = if rest.is_empty() {
-                exp.clone()
-            } else {
-                format!("{exp} {rest}")
-            };
-            changed = true;
-        }
-        changed.then_some(cur)
+        expand_alias_in(&self.config.aliases, line)
     }
 
     /// Run an action and report the outcome in the status bar — the command-bar
@@ -1114,6 +1171,51 @@ fn parse_duration(p: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn aliases(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn aliases_cannot_take_a_builtin_or_bang_name() {
+        let none = aliases(&[]);
+        for name in ["open", "o", "q!", "restore", "te", "!yt"] {
+            assert!(
+                alias_rejection(&none, name, "open example.com", false).is_some(),
+                "{name} should be refused"
+            );
+        }
+        assert!(alias_rejection(&none, "gh", "open github.com", false).is_none());
+        assert!(alias_rejection(&none, "two words", "open x", false).is_some());
+        assert!(alias_rejection(&none, "gh", "", false).is_some());
+    }
+
+    #[test]
+    fn a_builtin_named_alias_left_in_config_is_ignored() {
+        let map = aliases(&[("open", "te calc"), ("gh", "open github.com")]);
+        assert_eq!(expand_alias_in(&map, "open example.com"), None);
+        assert_eq!(
+            expand_alias_in(&map, "gh").as_deref(),
+            Some("open github.com")
+        );
+    }
+
+    #[test]
+    fn the_assistant_cannot_alias_its_way_to_running_programs() {
+        let map = aliases(&[("build", "te cargo build"), ("b", "build")]);
+        for expansion in ["te calc", "term", "shell cmd", "build", "b --release"] {
+            assert!(
+                alias_rejection(&map, "mk", expansion, true).is_some(),
+                "{expansion} should be refused for the assistant"
+            );
+            // The user may still create these deliberately.
+            assert!(alias_rejection(&map, "mk", expansion, false).is_none());
+        }
+        assert!(alias_rejection(&map, "gh", "open github.com", true).is_none());
+    }
 
     #[test]
     fn action_specs_expose_params_for_rendering() {
