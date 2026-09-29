@@ -49,6 +49,7 @@ mod freeze;
 mod hints;
 mod keys;
 mod khook;
+mod markdown;
 mod navguard;
 mod pages;
 mod panes;

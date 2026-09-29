@@ -13,6 +13,7 @@ use tao::keyboard::{Key, KeyCode};
 
 use std::path::PathBuf;
 
+use crate::markdown::LineStyle;
 use crate::tabs::{TabContent, TabNav};
 use crate::{clipboard_get, clipboard_set, draw, vim};
 use crate::{App, ModeKind, Tab, UserEvent};
@@ -166,8 +167,8 @@ pub(crate) const MAX_TOOL_ROUNDS: u32 = 16;
 
 /// State for a `:ai` tab. The conversation is rendered into `buf` (a vim text
 /// buffer) every draw, so Normal-mode motions/visual/yank/find operate on it just
-/// like a `:read`/`:res` tab; `colors` is the parallel per-line colour used only at
-/// paint time. `input` is the field being typed in Insert mode.
+/// like a `:read`/`:res` tab; `styles` holds each line's colours, used only at paint
+/// time. `input` is the field being typed in Insert mode.
 pub(crate) struct AiState {
     /// Stable id so an async reply finds its tab even if the tab order changed.
     pub(crate) id: u64,
@@ -178,8 +179,9 @@ pub(crate) struct AiState {
     pub(crate) pending_prompt: Option<String>,
     /// The rendered conversation as a navigable read-only vim buffer.
     pub(crate) buf: vim::TextBuffer,
-    /// Per-line colour, parallel to `buf.lines` (rebuilt with it each draw).
-    pub(crate) colors: Vec<draw::Rgb>,
+    /// Per-line colour runs and background, parallel to `buf.lines` (rebuilt with it
+    /// each draw).
+    pub(crate) styles: Vec<LineStyle>,
     /// Chat-style "stick to the bottom" on new content; cleared when the cursor
     /// leaves the last line, re-armed when it returns there (or on a new message).
     pub(crate) follow: bool,
@@ -197,7 +199,7 @@ impl AiState {
             pending: false,
             pending_prompt,
             buf: vim::TextBuffer::new(Vec::new()),
-            colors: Vec::new(),
+            styles: Vec::new(),
             follow: true,
             chat_idx: None,
         }
@@ -586,10 +588,10 @@ fn wrap(text: &str, cols: usize, out: &mut Vec<String>) {
     }
 }
 
-/// Append `text` to `lines`/`colors` as `cols`-wrapped lines, all in `color`.
+/// Append `text` to `lines`/`styles` as `cols`-wrapped lines, all in `color`.
 fn push_line(
     lines: &mut Vec<String>,
-    colors: &mut Vec<draw::Rgb>,
+    styles: &mut Vec<LineStyle>,
     text: &str,
     color: draw::Rgb,
     cols: usize,
@@ -600,104 +602,104 @@ fn push_line(
         w.push(String::new());
     }
     for l in w {
+        styles.push(LineStyle::solid(color, l.chars().count()));
         lines.push(l);
-        colors.push(color);
     }
 }
 
-/// Build the wrapped (line, colour) pairs for a `:ai` tab at `cols` columns: a
-/// header, then the key-entry prompt (no key yet) or the conversation. The LAST
-/// line is always the live input field (or the "thinking" indicator), so the caret
-/// renderer can find it.
-fn render(ai: &AiState, model: &str, has_key: bool, cols: usize) -> (Vec<String>, Vec<draw::Rgb>) {
+/// Build the wrapped lines and their styles for a `:ai` tab at `cols` columns: a
+/// header, then the key-entry prompt (no key yet) or the conversation, with the
+/// assistant's replies rendered as markdown. The LAST line is always the live input
+/// field (or the "thinking" indicator), so the caret renderer can find it.
+fn render(ai: &AiState, model: &str, has_key: bool, cols: usize) -> (Vec<String>, Vec<LineStyle>) {
     let mut lines = Vec::new();
-    let mut colors = Vec::new();
+    let mut styles = Vec::new();
     push_line(
         &mut lines,
-        &mut colors,
+        &mut styles,
         &format!("ai — {model}"),
         draw::AI,
         cols,
     );
-    push_line(&mut lines, &mut colors, "", draw::DIM, cols);
+    push_line(&mut lines, &mut styles, "", draw::DIM, cols);
 
     if !has_key {
         push_line(
             &mut lines,
-            &mut colors,
+            &mut styles,
             "Paste your Groq API key to begin.",
             draw::FG,
             cols,
         );
         push_line(
             &mut lines,
-            &mut colors,
+            &mut styles,
             "Press i to type/paste, then Enter to save.",
             draw::DIM,
             cols,
         );
         push_line(
             &mut lines,
-            &mut colors,
+            &mut styles,
             "Get a free key at https://console.groq.com/keys",
             draw::DIM,
             cols,
         );
-        push_line(&mut lines, &mut colors, "", draw::DIM, cols);
+        push_line(&mut lines, &mut styles, "", draw::DIM, cols);
         // Mask the key as it's pasted/typed.
         let masked: String = "•".repeat(ai.input.chars().count());
         push_line(
             &mut lines,
-            &mut colors,
+            &mut styles,
             &format!("› {masked}"),
             draw::ACCENT,
             cols,
         );
-        return (lines, colors);
+        return (lines, styles);
     }
 
     if ai.messages.is_empty() {
         push_line(
             &mut lines,
-            &mut colors,
+            &mut styles,
             "Press i, ask a question, Enter to send.",
             draw::DIM,
             cols,
         );
-        push_line(&mut lines, &mut colors, "", draw::DIM, cols);
+        push_line(&mut lines, &mut styles, "", draw::DIM, cols);
     }
     for m in &ai.messages {
         match m.role {
             AiRole::You => push_line(
                 &mut lines,
-                &mut colors,
+                &mut styles,
                 &format!("you › {}", m.text),
                 draw::ACCENT,
                 cols,
             ),
-            AiRole::Ai => push_line(&mut lines, &mut colors, &m.text, draw::FG, cols),
+            AiRole::Ai => crate::markdown::render(&m.text, cols, &mut lines, &mut styles),
             AiRole::Err => push_line(
                 &mut lines,
-                &mut colors,
+                &mut styles,
                 &format!("⚠ {}", m.text),
                 draw::ERR,
                 cols,
             ),
         }
-        push_line(&mut lines, &mut colors, "", draw::DIM, cols);
+        push_line(&mut lines, &mut styles, "", draw::DIM, cols);
     }
     if ai.pending {
-        push_line(&mut lines, &mut colors, "· thinking…", draw::DIM, cols);
+        push_line(&mut lines, &mut styles, "· thinking…", draw::DIM, cols);
     } else {
         push_line(
             &mut lines,
-            &mut colors,
+            &mut styles,
             &format!("› {}", ai.input),
             draw::ACCENT,
             cols,
         );
     }
-    (lines, colors)
+    (lines, styles)
 }
 
 impl App {
@@ -1406,10 +1408,10 @@ impl App {
             }
             let cols = (((rect.w as usize).saturating_sub(16)) / cw).max(1);
             let rows = ((rect.h as usize) / line_h).max(1);
-            let (lines, colors) = render(self.tabs[tab].ai().unwrap(), &model, has_key, cols);
+            let (lines, styles) = render(self.tabs[tab].ai().unwrap(), &model, has_key, cols);
             let ai = self.tabs[tab].ai_mut().unwrap();
             ai.buf.set_lines(lines);
-            ai.colors = colors;
+            ai.styles = styles;
             // Follow the bottom (chat-style) unless the user is mid-selection.
             if ai.follow && ai.buf.anchor.is_none() {
                 let n = ai.buf.lines.len();

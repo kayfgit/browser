@@ -56,6 +56,8 @@ arboard = { version = "3", default-features = false }
 alacritty_terminal = "0.26.0"
 # Only used by the browser-pty-host binary.
 portable-pty = "0.9"
+# Renders markdown in `:ai` replies and the `:news` page (markdown.rs).
+pulldown-cmark = { version = "0.13", default-features = false }
 # default-features off drops `single-thread` (which makes Engine !Send via Rc) so the
 # engine is Send+Sync — we build it off-thread and share it. We only need network
 # blocking, not the cosmetic/CSS machinery.
