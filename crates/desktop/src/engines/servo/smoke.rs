@@ -52,8 +52,7 @@ pub(crate) fn start(app: &mut App) -> anyhow::Result<()> {
     // These settings stay in memory; no config/session write occurs in this test.
     app.config.engine = Some("webview2".into());
     if split.is_empty() || split == "Default" {
-        app.adblock = false;
-        app.adblock_mode = crate::AdblockMode::Off;
+        app.adblock.set(crate::AdblockMode::Off);
     }
     app.open_web_provider(&url, false, false, true, false, "webview2");
     SMOKE.with(|s| {

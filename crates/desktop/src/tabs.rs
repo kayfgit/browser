@@ -644,14 +644,14 @@ impl App {
                     browser_engine::StorageMode::Persistent
                 },
                 bounds: self.content_rect(),
-                adblock: self.adblock,
-                adblock_mode: self.adblock_mode,
+                adblock: self.adblock.blocking(),
+                adblock_mode: self.adblock.mode(),
                 mute: self.mute,
                 no_css: self.no_css,
                 no_video: self.no_video,
                 no_scrollbar: self.no_scrollbar,
                 proxy: self.proxy.clone(),
-                adblock_on: self.adblock_on.clone(),
+                adblock_on: self.adblock.shared_flag(),
                 blocker: self.blocker.clone(),
                 allow_risky_downloads: self.allow_risky_downloads.clone(),
             },
@@ -1275,16 +1275,11 @@ impl App {
 
     /// Bare `:ads`/`:adblock` — a quick on/off toggle for whichever engine you're
     /// running: off when one is active, otherwise back on with the SAME engine
-    /// ([`adblock_prev`](App::adblock_prev)), so native → off → native rather than
+    /// ([`Adblock::toggled`](crate::adblock::Adblock::toggled)), so native → off → native rather than
     /// silently landing on the uBlock default. Use `:adblock native|ubo|off` to switch
     /// engines outright.
     pub(crate) fn toggle_adblock(&mut self) {
-        let mode = if self.adblock_mode == AdblockMode::Off {
-            self.adblock_prev
-        } else {
-            AdblockMode::Off
-        };
-        self.set_adblock_mode(mode);
+        self.set_adblock_mode(self.adblock.toggled());
     }
 
     /// Turn ad blocking on or off across every layer at once.
@@ -1296,20 +1291,15 @@ impl App {
     /// extension's profile-wide enable. Persisted on the next session write; re-applied to
     /// newly built webviews (see `build_content_webview`).
     pub(crate) fn set_adblock_mode(&mut self, mode: AdblockMode) {
-        // Remember what we're leaving (never `Off`) so a later bare `:ads` turns it back on.
-        // Recorded here rather than in `toggle_adblock` so an explicit `:adblock off` is
-        // remembered the same way a toggle-off is.
-        if self.adblock_mode != AdblockMode::Off {
-            self.adblock_prev = self.adblock_mode;
-        }
-        self.adblock_mode = mode;
+        // Also remembers what we're leaving, so a later bare `:ads` (or one after an
+        // explicit `:adblock off`) turns it back on.
+        self.adblock.set(mode);
         let on = mode.blocking();
         let ext = mode.extension();
-        self.set_adblock(on); // keeps the native guards' shared flag in lock-step
-                              // A session whose webviews were built in another mode never added the bundled
-                              // extension, and a fresh profile may never have had it installed — so add it
-                              // (profile-wide, idempotent) before the enable sweep below. Any one webview
-                              // reaches the shared profile.
+        // A session whose webviews were built in another mode never added the bundled
+        // extension, and a fresh profile may never have had it installed — so add it
+        // (profile-wide, idempotent) before the enable sweep below. Any one webview
+        // reaches the shared profile.
         #[cfg(windows)]
         if ext {
             if let (Some(dir), Some(wv)) = (
@@ -1347,7 +1337,7 @@ impl App {
     /// every document load ([`UserEvent::SyncAdblock`]) so a tab whose webview was built
     /// in a different mode converges instead of staying frozen at its creation-time value.
     pub(crate) fn broadcast_adblock(&self) {
-        let on = self.adblock_mode.blocking();
+        let on = self.adblock.blocking();
         for tab in &self.tabs {
             if let Some(wv) = tab.webview() {
                 let _ =

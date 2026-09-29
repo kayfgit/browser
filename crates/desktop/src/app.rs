@@ -3,7 +3,7 @@
 //! status/error reporting, wheel routing, teardown, and session save/restore.
 
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -266,81 +266,6 @@ pub(crate) enum ModeKind {
     Caret,
 }
 
-/// Whether ad blocking is on, and which halves run.
-///
-/// There used to be two rival ENGINES here, mutually exclusive so only one ran. That
-/// framing was wrong: neither one is a whole ad blocker, and running either alone left a
-/// hole the other would have covered.
-///
-///   * uBlock Origin Lite filters at the NETWORK level, inside Chromium's own stack — fast,
-///     and free of any host-process cost. But under WebView2 it doesn't see its `<all_urls>`
-///     grant, so it demotes itself to "Basic" (`js/mode-manager.js`), which does no COSMETIC
-///     filtering at all. It cannot hide YouTube's own ad slots, and never will here.
-///   * `ADBLOCK_JS` plus the blocklist engine is exactly the other half: cosmetic hiding,
-///     YouTube player-response pruning, popunder neutering, and the redirect guard. It runs
-///     as an initialization script, so it can't lose a race with an extension service
-///     worker, and it toggles live with no reload.
-///
-/// Neither is a whole ad blocker alone, so "on" means both.
-///
-/// HISTORY, because two innocent suspects were convicted here before the real one was
-/// found. YouTube watch pages used to render as skeletons and videos used to sit black
-/// while the playlist auto-advanced. Blame fell first on the `WebResourceRequested`
-/// sub-resource blocker, then on uBO Lite. Both were wrong: the cause was `ADBLOCK_JS`
-/// monkey-patching `JSON.parse` and `Response.prototype.json`, which YouTube's integrity
-/// checks act on (see the note in `ADBLOCK_JS`). With those wrappers gone, uBO Lite and
-/// the native layers coexist fine — measured on the same watch URL, both modes reach
-/// `readyState == complete` and play with zero spurious navigations.
-///
-/// (The sub-resource blocker is still gone, on its own merits: it intercepted on the host
-/// UI thread, which Microsoft's own docs say pauses page loads. See git history.)
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum AdblockMode {
-    /// Both halves: uBlock Origin Lite for network filtering plus the native layers. The
-    /// default, and the best coverage available.
-    Ubo,
-    /// Native layers only, extension disabled. Kept as an escape hatch — if a site
-    /// misbehaves, this rules the extension out in one command without losing cosmetic
-    /// filtering, YouTube handling or the redirect guard.
-    Native,
-    /// No ad blocking: extension disabled, `ADBLOCK_JS` inert, guards stood down.
-    Off,
-}
-
-impl AdblockMode {
-    /// The `:adblock <mode>` spelling, also the session key.
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            AdblockMode::Ubo => "ubo",
-            AdblockMode::Native => "native",
-            AdblockMode::Off => "off",
-        }
-    }
-
-    /// Parse a session key, defaulting to `Ubo` (both halves) for anything unknown,
-    /// including sessions written before the field existed.
-    pub(crate) fn parse(s: &str) -> Self {
-        match s {
-            "native" => AdblockMode::Native,
-            "off" => AdblockMode::Off,
-            _ => AdblockMode::Ubo,
-        }
-    }
-
-    /// Whether ad blocking is on at all. The native layers — `ADBLOCK_JS` and the
-    /// redirect/popup guards — follow this, so they can't disagree about whether blocking
-    /// is active. The extension is separate: see [`extension`](Self::extension).
-    pub(crate) fn blocking(self) -> bool {
-        !matches!(self, AdblockMode::Off)
-    }
-
-    /// Whether the uBlock Origin Lite extension should be loaded and enabled. Only in
-    /// [`Ubo`](Self::Ubo), and only because the user asked for it — see [`AdblockMode`].
-    pub(crate) fn extension(self) -> bool {
-        matches!(self, AdblockMode::Ubo)
-    }
-}
-
 pub(crate) struct App {
     pub(crate) window: Rc<Window>,
     // Kept alive for the lifetime of `surface`, which is created from it.
@@ -386,27 +311,13 @@ pub(crate) struct App {
     pub(crate) modifiers: ModifiersState,
     /// When true, new tabs are opened with JavaScript disabled.
     pub(crate) nojs: bool,
-    /// Whether ad blocking is on. When it is, the uBlock Origin Lite extension (network)
-    /// and the native layers (`ADBLOCK_JS` cosmetic/YouTube + redirect/popup guards) run
-    /// TOGETHER — see [`AdblockMode`] for why neither is a whole blocker alone. Set via
-    /// `:adblock on|off`; persisted. See [`set_adblock_mode`](Self::set_adblock_mode).
-    pub(crate) adblock_mode: AdblockMode,
-    /// The last non-`Off` state — what a bare `:ads` switches back on. Retained (rather
-    /// than always returning to the default) so the toggle round-trips exactly, including
-    /// for sessions written when `ubo`/`native` still named different engines.
-    pub(crate) adblock_prev: AdblockMode,
+    /// Ad blocking: the mode, what a bare `:ads` returns to, and the flag shared with
+    /// every tab. Changed through [`set_adblock_mode`](Self::set_adblock_mode) so open
+    /// tabs follow; persisted.
+    pub(crate) adblock: crate::adblock::Adblock,
     /// Monotonic request token: stale extension-list responses must not replace a
     /// newer picker. Each picker owns its source view and its own cached items.
     pub(crate) extension_request: u64,
-    /// Whether the native layers ([`ADBLOCK_JS`](crate::ADBLOCK_JS) and the redirect/popup
-    /// guards) are active: [`AdblockMode::blocking`] of [`adblock_mode`](Self::adblock_mode),
-    /// so true in both `Ubo` and `Native`.
-    pub(crate) adblock: bool,
-    /// A live mirror of [`adblock`](Self::adblock) shared (cloned `Arc`) into every
-    /// web tab's navigation handler, so the native top-level redirect guard
-    /// (ad-host navigations) honours `:ads` without rebuilding the webviews. Kept in
-    /// lock-step via [`set_adblock`](Self::set_adblock).
-    pub(crate) adblock_on: Arc<AtomicBool>,
     /// Whether to allow downloads of executable/installer file types. Off by default:
     /// a drive-by `.exe`/`.msi` (the "you almost clicked install" trap) is blocked with
     /// a warning. Toggled with `:downloads`. Shared into every tab's download handler.
@@ -1204,13 +1115,6 @@ impl App {
 
     // --- commands -------------------------------------------------------------
 
-    /// Set the adblock flag, keeping the shared atomic (read by every tab's
-    /// navigation handler) in lock-step with the canonical bool.
-    pub(crate) fn set_adblock(&mut self, on: bool) {
-        self.adblock = on;
-        self.adblock_on.store(on, Ordering::Relaxed);
-    }
-
     /// Set an informational status message (rendered dim). Like every status, it
     /// clears itself after [`STATUS_TIMEOUT`](crate::status::STATUS_TIMEOUT).
     pub(crate) fn set_status(&mut self, msg: impl Into<String>) {
@@ -1440,9 +1344,9 @@ impl App {
             content_zoom: self.content_zoom,
             nojs: self.nojs,
             no_scrollbar: self.no_scrollbar,
-            adblock: self.adblock,
-            adblock_mode: self.adblock_mode.name().to_string(),
-            adblock_prev: self.adblock_prev.name().to_string(),
+            adblock: self.adblock.blocking(),
+            adblock_mode: self.adblock.mode().name().to_string(),
+            adblock_prev: self.adblock.prev().name().to_string(),
             search_template: self.search_template.clone(),
             term_command: self.term_command.clone(),
             active,
@@ -1470,18 +1374,7 @@ impl App {
         // Adopt the saved ad-blocker state (default: on). Tabs restored below enforce the
         // extension state as they're built; here we just set the mode + shared flag (no
         // webviews exist yet, so the full `set_adblock_mode` sweep would be a no-op).
-        self.adblock_mode = AdblockMode::parse(&s.adblock_mode);
-        // What a bare `:ads` turns back on. `Off` isn't a state to return TO (it would make
-        // the toggle a no-op), so a session that recorded one falls back to the mode
-        // itself, then to the default.
-        self.adblock_prev = match AdblockMode::parse(&s.adblock_prev) {
-            AdblockMode::Off => match self.adblock_mode {
-                AdblockMode::Off => AdblockMode::Ubo,
-                on => on,
-            },
-            on => on,
-        };
-        self.set_adblock(self.adblock_mode.blocking());
+        self.adblock.restore(&s.adblock_mode, &s.adblock_prev);
         // Compared against the LIVE zoom, not 1.0: at startup that's the same thing,
         // but a profile switch must also step a zoomed-in chrome back DOWN to a
         // profile saved at 100%.
