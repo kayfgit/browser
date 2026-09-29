@@ -44,6 +44,11 @@ The browser is modal, like vim or qutebrowser. The mode decides where your keys 
   back/forward, `r` reloads. `n`/`p` switch tabs, `1`–`9` jump to a tab
   (`Shift+1`–`9` for tabs 11–19), `<`/`>` move the current tab, `x` closes it and
   `u` (or `Ctrl+Shift+T`) reopens the last closed one. `yy` copies the page address.
+  Clicking a button, link or menu on a page lets the page keep the keyboard so its
+  menu stays usable: arrow keys, Enter, Space and Tab operate it. Any other key hands
+  the keyboard back to the browser and still counts, so `:` opens the command bar
+  right away; `Esc` just hands it back. If the button opens a text field (a search
+  icon, say), you're put in Insert mode to type there.
 - **Command**: `:` opens the command bar. `o`/`O` prefill `open` (this tab) or
   `open -t` (new tab).
 - **Insert**: `i`, or clicking/hinting a text field, lets you type into a page field.

@@ -1377,6 +1377,18 @@ fn main() -> Result<()> {
                 }
             }
             Event::UserEvent(UserEvent::ReclaimNormal) => app.reclaim_from_page(),
+            Event::UserEvent(UserEvent::ReplayToShell(key)) => {
+                // Only while still in Normal: a key queued behind one that changed
+                // mode (`:` opening the command bar) is already on its way to the
+                // shell, which holds focus by then.
+                if app.mode == ModeKind::Normal {
+                    app.reclaim_from_page();
+                    // Update the hook now, so keys typed right behind this one aren't
+                    // taken from the page a second time.
+                    khook::set_mode(app.hook_mode_code());
+                }
+                khook::replay(key);
+            }
             Event::UserEvent(UserEvent::PaneClick) => {
                 // A gesture is under way in the page: hold the focus-reclaim poll off
                 // until it has finished and the bridge has said who should keep the

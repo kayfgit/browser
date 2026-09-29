@@ -96,8 +96,8 @@
     return ctrl ? 'ctrl' : '';
   }
   // Act on the click (the END of the gesture, so the page's own handlers run first).
-  // Esc (caught by the keyboard hook) snaps the shell back from a hold/edit. A script
-  // `.focus()` with no click is still caught by the shell's periodic reclaim tick.
+  // The keyboard hook takes the keyboard back from a hold on Esc or on any shell key,
+  // and from a script `.focus()` (no click) on the next key.
   function onClick(e) {
     if (window.__mode && window.__mode !== 'normal') return;
     var kind = classify(e.target);
@@ -124,7 +124,19 @@
     // fetches its menu before showing it) lost focus in that window and the popover
     // never appeared: the button looked dead. Posting at pointerdown closes it.
     if (window.__mode && window.__mode !== 'normal') return;
-    if (classify(e.target) === 'ctrl') post('page-hold');
+    if (classify(e.target) === 'ctrl') { __ctrlPressAt = Date.now(); post('page-hold'); }
+  }, true);
+  // A control that moves focus into a text field (a search icon that opens a search
+  // box) means the user is about to type there: enter Insert, exactly as if the field
+  // had been clicked. Otherwise the keyboard hook would treat those keystrokes as shell
+  // commands. Limited to just after a real press on a control, so a page autofocusing
+  // an input by itself never flips the mode.
+  var __ctrlPressAt = 0;
+  document.addEventListener('focusin', function (e) {
+    if (window.__mode && window.__mode !== 'normal') return;
+    if (Date.now() - __ctrlPressAt > 1500 || !editable(e.target)) return;
+    __ctrlPressAt = 0;
+    post('page-edit');
   }, true);
   // Link-hover readout: report the href under the pointer so the shell can show it
   // on the right of the command bar (like a browser status bar). Posted only when

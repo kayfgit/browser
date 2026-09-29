@@ -179,6 +179,9 @@ pub(crate) enum UserEvent {
     /// The keyboard hook saw Esc while the page held focus in Normal mode (a click
     /// yielded the keyboard to a page control): pull keyboard focus back to the shell.
     ReclaimNormal,
+    /// The keyboard hook took a shell key from the page, which was holding keyboard
+    /// focus in Normal mode: take focus back, then replay the key into the shell.
+    ReplayToShell(crate::khook::KeyReplay),
     /// A Normal-mode click hit a page control (button/menu/link): let the page keep
     /// keyboard focus so its popover stays open (don't bounce focus back).
     PageHold,
@@ -496,8 +499,9 @@ pub(crate) struct App {
     pub(crate) bar_cmd_scroll: i32,
     /// Normal mode, but a click on a page control (button/menu/link) left keyboard
     /// focus in the page so its popover stays open instead of being blurred shut.
-    /// While set, the shell stops reclaiming focus and the keyboard hook watches for
-    /// Esc to snap control back. Cleared the moment the shell next holds the keyboard.
+    /// While set, the shell stops reclaiming focus and the keyboard hook lets menu keys
+    /// (arrows, Enter, Space, Tab) reach the page; Esc or any other key takes the
+    /// keyboard back. Cleared the moment the shell next holds the keyboard.
     pub(crate) page_focus_yielded: bool,
     /// When the page last reported a pointer press. For a short grace after it the
     /// focus-reclaim poll stands down — see [`reclaim_focus_tick`](Self::reclaim_focus_tick).
@@ -951,7 +955,8 @@ impl App {
         use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
         use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
         // A click on a page control deliberately left focus in the page so its menu
-        // stays open; don't fight that. The keyboard hook restores the shell on Esc.
+        // stays open; don't fight that. The keyboard hook takes the keyboard back on
+        // the first key that isn't for the menu.
         if self.page_focus_yielded {
             return;
         }
@@ -984,19 +989,23 @@ impl App {
     #[cfg(not(windows))]
     pub(crate) fn reclaim_focus_tick(&self) {}
 
-    /// The mode code the keyboard hook should run under (see [`crate::khook`]). Only the
-    /// web Insert/Passthrough states (the page holds OS focus, so the hook catches the
-    /// leave chords even inside cross-origin iframes) and a click-yielded Normal need
-    /// interception; terminal/AI passthrough keep shell focus, and everything else maps
-    /// to `OTHER` (inert).
+    /// The mode code the keyboard hook should run under (see [`crate::khook`]). The
+    /// web Insert/Passthrough states need their leave chords caught even inside
+    /// cross-origin iframes, and Normal on a web tab needs shell keys taken back from a
+    /// page that holds the keyboard. Terminal/AI passthrough keep shell focus, and
+    /// everything else maps to `OTHER` (inert).
     pub(crate) fn hook_mode_code(&self) -> u8 {
         use crate::khook::*;
         match self.mode {
             // Insert is web-only, so the page always holds focus here.
             ModeKind::Insert => MODE_INSERT,
             ModeKind::Passthrough if self.active_webview().is_some() => MODE_PASSTHROUGH,
-            ModeKind::Normal if self.page_focus_yielded && self.active_webview().is_some() => {
-                MODE_NORMAL_YIELDED
+            ModeKind::Normal if self.active_webview().is_some() => {
+                if self.page_focus_yielded {
+                    MODE_NORMAL_YIELDED
+                } else {
+                    MODE_NORMAL_WEB
+                }
             }
             _ => MODE_OTHER,
         }

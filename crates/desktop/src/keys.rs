@@ -24,7 +24,7 @@ impl App {
             return;
         }
         // Receiving a key here means the shell holds the keyboard, so any prior
-        // page-focus yield is over (the hook only forwards Esc as ReclaimNormal).
+        // page-focus yield is over.
         self.page_focus_yielded = false;
         match self.mode {
             ModeKind::Command | ModeKind::Find => self.key_command(key),

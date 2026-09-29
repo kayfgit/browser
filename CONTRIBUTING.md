@@ -37,6 +37,7 @@ Useful environment variables:
 | `BROWSER_WEBVIEW2_DATA_DIR` | use an isolated WebView2 profile directory (recommended when testing release builds) |
 | `BROWSER_TEST_QUIT_MS` | quit after N ms without saving (for headless start/stop checks) |
 | `BROWSER_YT_DEBUG=1` | log YouTube page-lifecycle probes to the console |
+| `BROWSER_HOOK_DEBUG=1` | log every keyboard-hook decision to `%TEMP%\browser-hook.log` |
 
 ## Checks
 
@@ -125,6 +126,12 @@ Things worth knowing before changing them:
   starts with `r`).
 - **Any draw path must tolerate a window smaller than the chrome**: a minimized
   window can be shorter than the tab and command bars.
+- **The keyboard hook (`khook.rs`) runs on its own thread.** Windows silently removes
+  a low-level hook whose thread is slow to answer, and the UI thread blocks in
+  WebView2 calls. It enforces Normal mode's "the shell owns the keyboard" rule by
+  replaying shell keys the page grabbed, so test focus changes with a real keyboard:
+  keystrokes injected by automation tools may skip low-level hooks entirely while a
+  WebView2 page is in front, which makes the hook look broken when it isn't.
 
 ## The Servo engine (experimental)
 
