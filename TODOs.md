@@ -39,6 +39,8 @@ issues:
 [] - if i scroll up and start typing on claude code, the screen stays up there when its supposed to go down the second i start typing.
 [] - update :ai, it types in markdown but the renderer doesnt really know what markdown is, so it just prints "**hi**" "#test" and stuff like that
 [] - add a way for users to freely install extensions
+[] - closing a split always makes the left-most split the highlighted one instead of the previously added split
+[] - fix :freeze, doesnt really do what its supposed to (its supposed to completely freeze everything thats using resources and drop the :resources to 60-100 mb, but it only reduces like 10%, so if the browser is using 1gb and i freeze everything it drops to 900mb instead of 60-100mb)
 
 feats:
 [] - make ";" toggle browser hud visibility
@@ -47,6 +49,7 @@ feats:
 [] - maybe change ":q" to ":quit"? i keep quitting the browser accidently when i want to quit vim because i think im in passthrough when im in normal
 [] - add vertical sidebar like zen browser
 [] - make it so every browser related error is shown in :error/:errors
+[] - allow the easy addition of bangs via the AI "could you add a !osrs bang that searches the old school runescape wiki please?"
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
