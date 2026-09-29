@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.0](https://github.com/kayfgit/browser/compare/v0.1.0...v0.2.0) (2026-09-29)
+
+
+### Features
+
+* add :news to show what changed in each release ([4d8f9e9](https://github.com/kayfgit/browser/commit/4d8f9e910ca968ff8a51af2dfb80591b7955fc5d))
+* leave the :ai field with Ctrl+S ([b40c9e9](https://github.com/kayfgit/browser/commit/b40c9e949ed955903df9fe9b4a2ac00c10441b8b))
+* markdown in :ai, :news, Ctrl+S in :ai; aliases can't replace built-ins ([7a3090e](https://github.com/kayfgit/browser/commit/7a3090e3fbaae2d339d96fba80adb7b10dc3783d))
+* render markdown in :ai replies ([d664925](https://github.com/kayfgit/browser/commit/d66492553a5e32bfdc0681f8730c6847147c2806))
+
+
+### Bug Fixes
+
+* keep the active profile when restoring default settings ([0951462](https://github.com/kayfgit/browser/commit/09514623b37876d7a3e514fcb67229c69ecbd92f))
+* no stray spaces around links and code in read mode ([fe12ba1](https://github.com/kayfgit/browser/commit/fe12ba147077e9ead3c57191c5c04bd0f213067d))
+* stop aliases from replacing built-in commands ([fe492dc](https://github.com/kayfgit/browser/commit/fe492dc17d90a28f6726ae910a73c86340ad765d))
+
 ## 0.1.0 (2026-09-29)
 
 
