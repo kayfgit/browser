@@ -30,6 +30,7 @@ use tao::keyboard::ModifiersState;
 use tao::window::WindowBuilder;
 
 mod actions;
+mod adblock;
 mod ai;
 mod app;
 mod blocklist;
@@ -68,7 +69,8 @@ mod term;
 mod vim;
 mod visited;
 // Re-exported so modules (and the Servo engine) can keep using `crate::ADBLOCK_JS`.
-use app::{clipboard_get, clipboard_set, AdblockMode, App, ExtInfo, ModeKind, UserEvent};
+use adblock::AdblockMode;
+use app::{clipboard_get, clipboard_set, App, ExtInfo, ModeKind, UserEvent};
 use commands::COMMANDS;
 use draw::Painter;
 use find::FindState;
@@ -218,13 +220,10 @@ fn main() -> Result<()> {
         nojs: false,
         // Blocking on by default: uBO Lite (network) plus the native layers, which cover
         // different halves of the job (see `AdblockMode`). Session restore may override.
-        adblock_mode: AdblockMode::Ubo,
-        adblock_prev: AdblockMode::Ubo,
+        adblock: adblock::Adblock::default(),
         term_drag: None,
         term_clicks: None,
         extension_request: 0,
-        adblock: true,
-        adblock_on: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         allow_risky_downloads: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         blocker: blocklist::new_shared(),
         mute: false,
