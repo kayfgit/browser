@@ -93,51 +93,11 @@ The pieces:
 After changing `dist-workspace.toml`, run `dist generate` (install it with
 `cargo install cargo-dist --locked`) and commit the result.
 
-## Layout
+## Finding your way around
 
-```
-crates/
-  desktop/        the browser (tao + wry/WebView2, softbuffer/fontdue native UI)
-    src/main.rs   startup: builds the window and the App, then runs the event loop
-    src/events.rs the event loop: what each window event and UserEvent does
-    src/app.rs    the App state, UserEvent and the modes
-    src/engines/  engine adapters behind the browser-engine contract (WebView2, Servo)
-    scripts/      JavaScript injected into pages (bridge, hints, selection, adblock,
-                  features, find, research, scroll), indexed in src/scripts.rs
-    assets/       filter lists compiled into the executable
-    src/bin/      browser-pty-host: owns the ConPTY and shell for terminal tabs
-    extensions/   bundled uBlock Origin Lite (packed into the exe by build.rs)
-  engine/         engine-agnostic view/provider contract
-  core/           shared Document model, config, bangs, maths, search routing
-  backend-text/   readability extraction for :read (reqwest + dom_smoothie)
-  backend-search/ DuckDuckGo-lite / SearXNG results for :read <query>
-  tui/, cli/      the original terminal-only reader (legacy, not in releases)
-docs/             user guide and engine design notes
-experiments/servo standalone Servo/WebView2 qualification lab
-```
-
-Things worth knowing before changing them:
-
-- **Every WebView2 environment must use identical options.** All webviews share one
-  user-data folder, and WebView2 refuses (`0x8007139F`) to create a second environment
-  with different arguments. Any new webview must use `BROWSER_ARGS`.
-- **Only the user can run shell commands.** `:te` must never become reachable from
-  page content (IPC, injected scripts).
-- **Don't monkey-patch `JSON.parse` or `Response.prototype.json` in page scripts.**
-  YouTube's integrity checks detect it and refuse to play. Use `Object.defineProperty`
-  on the specific properties instead.
-- **Match exact IPC strings before single-letter prefixes** in IPC handlers (`"ready"`
-  starts with `r`).
-- **Any draw path must tolerate a window smaller than the chrome**: a minimized
-  window can be shorter than the tab and command bars.
-- **Keys the shell needs while a page has focus** go through `shellkeys.rs`: WebView2's
-  `AcceleratorKeyPressed` (`engines/webview2/keys.rs`) catches Esc and Ctrl/Alt chords
-  anywhere in the page, iframes included; `shellKey` in `scripts/bridge.js` hands
-  other keys back from the main frame, and the shell replays them. Don't use a
-  low-level keyboard hook (`WH_KEYBOARD_LL`): once WebView2 runs in the process,
-  Windows stops calling the process's hooks. Page messages that change focus or mode
-  must also be allowed through `active_ui_event` in `engines/events.rs`, which drops
-  everything it doesn't list.
+[ARCHITECTURE.md](ARCHITECTURE.md) is the map: what the pieces are, which files to
+read first, the rules that aren't obvious from the code, and where to start for
+common changes (a new `:command`, a key binding, a message from a page).
 
 ## The Servo engine (experimental)
 

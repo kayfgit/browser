@@ -1,5 +1,5 @@
-//! Input handling: per-mode key dispatch, the command-line editor (motions,
-//! selection, word ops, autocomplete), the read/web caret modes, and the
+//! Input handling: per-mode key dispatch, the command bar's keys and autocomplete
+//! (the line editing itself is in `cmdline.rs`), the read/web caret modes, and the
 //! Insert/Passthrough mode transitions.
 
 use tao::event::KeyEvent;

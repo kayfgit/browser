@@ -81,7 +81,8 @@ Launch **browser** from the Start Menu, or run `browser <url>` in a terminal.
 
 ## Building from source
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). To find your way around the code, start with
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## License
 
