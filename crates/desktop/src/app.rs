@@ -36,6 +36,28 @@ pub(crate) const WINDOW_PREFIX_TIMEOUT: Duration = Duration::from_millis(500);
 /// later key — and the command bar shows the prefix while it's live.
 pub(crate) const YANK_PREFIX_TIMEOUT: Duration = Duration::from_millis(2000);
 
+/// A Normal-mode prefix key waiting for the key that completes it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum KeyPrefix {
+    /// `Ctrl+W`: the next key picks a pane action — h/j/k/l move focus, Shift+H/J/K/L
+    /// resize, s/v split (vim-window style).
+    Window,
+    /// `y`: the next key picks what to yank — `f` hints the links and copies the
+    /// picked address, `y` copies this page's URL.
+    Yank,
+}
+
+impl KeyPrefix {
+    /// How long the prefix stays armed; a stale one is dropped so it can't eat a
+    /// later key.
+    pub(crate) fn timeout(self) -> Duration {
+        match self {
+            KeyPrefix::Window => WINDOW_PREFIX_TIMEOUT,
+            KeyPrefix::Yank => YANK_PREFIX_TIMEOUT,
+        }
+    }
+}
+
 /// Auto-leave the repeatable pane-resize mode after this much keyboard inactivity, so
 /// a later `j`/`k` (meant to scroll) doesn't silently resize instead.
 pub(crate) const PANE_RESIZE_TIMEOUT: Duration = Duration::from_millis(1000);
@@ -444,20 +466,10 @@ pub(crate) struct App {
     pub(crate) windows: Vec<PaneNode>,
     /// Last focused pane in each window, retained while another window is shown.
     pub(crate) pane_focus: crate::panes::PaneFocus,
-    /// True after Ctrl+W in Normal mode: the next h/j/k/l moves pane focus, Shift+H/J/K/L
-    /// resizes, and s/v splits (vim-window style). Cleared by the following key, or
-    /// dropped as stale once [`pending_window_at`](Self::pending_window_at) ages past
-    /// [`WINDOW_PREFIX_TIMEOUT`].
-    pub(crate) pending_window_key: bool,
-    /// When [`pending_window_key`](Self::pending_window_key) was armed — the Ctrl+W
-    /// prefix expires this long after so a forgotten prefix can't eat a later key.
-    pub(crate) pending_window_at: Instant,
-    /// True after `y` in Normal mode: the next key picks what to yank — `f` hints the
-    /// links and copies the picked address, `y` copies this page's URL. Expires like
-    /// the Ctrl+W prefix, but on the roomier [`YANK_PREFIX_TIMEOUT`].
-    pub(crate) pending_yank_key: bool,
-    /// When [`pending_yank_key`](Self::pending_yank_key) was armed.
-    pub(crate) pending_yank_at: Instant,
+    /// The Normal-mode prefix key (`Ctrl+W` or `y`) waiting for its second key, and
+    /// when it was pressed. The next key consumes it, or it's dropped once older than
+    /// [`KeyPrefix::timeout`].
+    pub(crate) pending_prefix: Option<(KeyPrefix, Instant)>,
     /// This process was launched with `--scratch`: a throwaway slate for poking at a
     /// dev build. Run-scoped and never persisted — it redirects
     /// [`current_session_path`](Self::current_session_path) to its own file, so
