@@ -615,7 +615,7 @@ fn schedule_wakeup(app: &App, control_flow: &mut ControlFlow, servo_smoke: bool)
         }
         // A pending status-flash auto-clear: wake at its deadline (or sooner, if
         // another timer above already wins).
-        if let Some(clear_at) = app.status_clear_at {
+        if let Some(clear_at) = app.status.clear_at() {
             let next = match *control_flow {
                 ControlFlow::WaitUntil(t) => t.min(clear_at),
                 _ => clear_at,

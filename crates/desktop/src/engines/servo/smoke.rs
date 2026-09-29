@@ -124,7 +124,7 @@ impl Smoke {
     }
     fn tick(&mut self, app: &mut App) -> Result<(), String> {
         if Instant::now() > self.deadline {
-            return Err(format!("Timed out; shell status: {}", app.status));
+            return Err(format!("Timed out; shell status: {}", app.status.text()));
         }
         if Instant::now() < self.due {
             return Ok(());
@@ -330,7 +330,7 @@ fn require_provider(app: &App, provider: &str) -> Result<(), String> {
     {
         Ok(())
     } else {
-        Err(format!("Expected {provider}: {}", app.status))
+        Err(format!("Expected {provider}: {}", app.status.text()))
     }
 }
 fn check_geometry(app: &App) -> Result<(), String> {
