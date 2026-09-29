@@ -281,6 +281,10 @@ pub(crate) fn build(
             "page-edit" => {
                 let _ = ipc_proxy.send_event(UserEvent::PageEdit);
             }
+            // Esc reached the page in Normal mode: give the keyboard back to the shell.
+            "reclaim" => {
+                let _ = ipc_proxy.send_event(UserEvent::ReclaimNormal);
+            }
             "pane-click" => {
                 let _ = ipc_proxy.send_event(UserEvent::PaneClick);
             }
@@ -311,6 +315,17 @@ pub(crate) fn build(
                     let _ = ipc_proxy.send_event(UserEvent::CaretYank(text.to_string()));
                 // A right-click menu item copied something: `clip:<text>` (the
                 // selection, a link address, an image address).
+                // A shell key reached the page in Normal mode (see `shellKey` in
+                // bridge.js): `shell-key:<keyCode>,<shift>,<ctrl>`.
+                } else if let Some(spec) = body.strip_prefix("shell-key:") {
+                    let mut parts = spec.split(',');
+                    let vk = parts.next().and_then(|v| v.parse::<u16>().ok());
+                    let shift = parts.next() == Some("1");
+                    let ctrl = parts.next() == Some("1");
+                    if let Some(vk) = vk.filter(|&v| v != 0) {
+                        let key = crate::khook::KeyReplay::from_vk(vk, shift, ctrl);
+                        let _ = ipc_proxy.send_event(UserEvent::ReplayToShell(key));
+                    }
                 } else if let Some(text) = body.strip_prefix("clip:") {
                     let _ = ipc_proxy.send_event(UserEvent::ClipCopy(text.to_string()));
                 // A hint in new-tab mode resolved to a link: `hint-open:<href>`.

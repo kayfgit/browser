@@ -39,6 +39,8 @@ fn active_ui_event(event: UserEvent, source: usize, active: Option<usize>) -> Op
         | UserEvent::GrabFocus
         | UserEvent::PageHold
         | UserEvent::PageEdit
+        | UserEvent::ReclaimNormal
+        | UserEvent::ReplayToShell(_)
         | UserEvent::LinkHover(_)
         | UserEvent::ExitHint
         | UserEvent::HintEdit
@@ -154,5 +156,19 @@ mod tests {
             Some(UserEvent::HintEdit)
         ));
         assert!(active_ui_event(UserEvent::Quit, 1, Some(1)).is_none());
+    }
+
+    #[test]
+    fn only_the_active_page_can_hand_keys_back_to_the_shell() {
+        let key = crate::khook::KeyReplay::from_vk(0xBA, true, false);
+        assert!(matches!(
+            active_ui_event(UserEvent::ReplayToShell(key), 1, Some(1)),
+            Some(UserEvent::ReplayToShell(k)) if k == key
+        ));
+        assert!(active_ui_event(UserEvent::ReplayToShell(key), 1, Some(0)).is_none());
+        assert!(matches!(
+            active_ui_event(UserEvent::ReclaimNormal, 1, Some(1)),
+            Some(UserEvent::ReclaimNormal)
+        ));
     }
 }

@@ -8,13 +8,18 @@
 //! acts ONLY while our own window is the foreground window, so other apps are never
 //! touched.
 //!
-//! It also enforces Normal mode's rule that the shell owns the keyboard on a web tab.
-//! When the page holds keyboard focus in Normal mode (a click on one of its controls,
-//! a script `.focus()`, a click inside an iframe), a shell key is swallowed and sent
-//! back as [`UserEvent::ReplayToShell`](crate::app::UserEvent::ReplayToShell): the
-//! shell takes focus back, then [`replay`] re-injects the same keystroke so it lands
-//! in the shell. Without this, `:` and friends went to the page until the user
-//! alt-tabbed (the "frozen command bar after clicking a page button" bug).
+//! **Limitation:** once a WebView2 page exists in this process, Windows stops calling
+//! this process's low-level hooks (see [`install`]), so in practice the hook only acts
+//! while no page is up. The in-page bridge is what reliably returns keys to the shell.
+//!
+//! This module also owns [`replay`]. When a page holds keyboard focus in Normal mode
+//! (a click on one of its controls, a script `.focus()`, an SPA navigation), the
+//! bridge (`shellKey` in `scripts/bridge.js`) hands each shell key to the shell as
+//! [`UserEvent::ReplayToShell`](crate::app::UserEvent::ReplayToShell); the shell takes
+//! focus back, then [`replay`] re-injects the keystroke so it lands in the shell.
+//! Without this, `:` and friends went to the page until the user alt-tabbed (the
+//! "frozen command bar after clicking a page button" bug). The hook's own Normal-mode
+//! rules ([`MODE_NORMAL_WEB`], [`MODE_NORMAL_YIELDED`]) mirror the bridge's.
 
 /// Mode codes the hook reads (lock-free) to decide what to intercept. Kept in sync
 /// from the event loop via [`set_mode`]. `OTHER` means the shell owns the keyboard
@@ -45,6 +50,31 @@ pub(crate) struct KeyReplay {
     pub extended: bool,
     pub shift: bool,
     pub ctrl: bool,
+}
+
+impl KeyReplay {
+    /// A key reported by a page (the DOM `keyCode`, which on Windows is the virtual-key
+    /// code) with the modifiers it was pressed with. The scan code is looked up, since
+    /// the shell matches some bindings on the physical key.
+    pub(crate) fn from_vk(vk: u16, shift: bool, ctrl: bool) -> Self {
+        #[cfg(windows)]
+        let scan = {
+            use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VK_TO_VSC};
+            // SAFETY: a pure keyboard-layout lookup.
+            unsafe { MapVirtualKeyW(u32::from(vk), MAPVK_VK_TO_VSC) as u16 }
+        };
+        #[cfg(not(windows))]
+        let scan = 0;
+        // Insert/Delete, Home/End, Page Up/Down, the arrows, Win keys, numpad divide.
+        let extended = matches!(vk, 0x21..=0x28 | 0x2D | 0x2E | 0x5B | 0x5C | 0x6F);
+        KeyReplay {
+            vk,
+            scan,
+            extended,
+            shift,
+            ctrl,
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -131,12 +161,15 @@ mod imp {
     /// Install the hook on a dedicated thread with its own message loop.
     ///
     /// Windows calls a low-level hook by sending a message to the thread that installed
-    /// it, and silently REMOVES the hook if that thread doesn't answer in time. On the
-    /// UI thread, which blocks in WebView2/COM calls and was observed never to receive
-    /// the calls at all, the hook was dead: every chord it exists for (leaving
-    /// passthrough from an iframe, Esc out of a page-focus yield) silently stopped
-    /// working, leaving alt-tab as the only way out. A thread that does nothing but pump
-    /// messages always answers immediately.
+    /// it, and silently removes a hook that doesn't answer in time; a thread that only
+    /// pumps messages always answers, whatever the UI thread is doing.
+    ///
+    /// Known limitation, measured on Windows 11 with WebView2: once a WebView2 page
+    /// exists in this process, Windows stops calling this process's low-level hooks
+    /// altogether (a hook in a separate process keeps working, and re-installing ours
+    /// on top of the chain doesn't help). So everything here is a backstop for when no
+    /// page is up. The primary way the shell gets its keys back from a page is the
+    /// page-side bridge (`scripts/bridge.js`, `shell-key:`).
     pub(crate) fn install(hwnd: isize, proxy: EventLoopProxy<UserEvent>) {
         HWND_VAL.store(hwnd, Ordering::Relaxed);
         // SAFETY: always-safe thread id read.
@@ -145,6 +178,7 @@ mod imp {
             .name("keyboard-hook".into())
             .spawn(move || {
                 PROXY.with(|p| *p.borrow_mut() = Some(proxy));
+                // SAFETY: plain Win32 calls on this thread's own hook and queue.
                 unsafe {
                     let hmod = GetModuleHandleW(None)
                         .map(|h| HINSTANCE(h.0))
@@ -290,8 +324,8 @@ mod imp {
     }
 
     /// With `BROWSER_HOOK_DEBUG` set, append a line to `%TEMP%\browser-hook.log`: the
-    /// install result and every key decision. For diagnosing focus problems on a
-    /// user's machine, where physical keystrokes are the only faithful test.
+    /// install result, every hook decision and every key replay. For diagnosing focus
+    /// problems on a user's machine.
     fn debug_log(line: String) {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if !*ON.get_or_init(|| std::env::var_os("BROWSER_HOOK_DEBUG").is_some()) {
@@ -446,7 +480,13 @@ mod imp {
             inputs.push(input(VK_LSHIFT, 0, KEYEVENTF_KEYUP));
         }
         // SAFETY: `inputs` is a valid slice of initialised INPUT structs.
-        unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+        let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+        debug_log(format!(
+            "replay vk={:#x}: sent {sent}/{} inputs, page still focused: {}",
+            key.vk,
+            inputs.len(),
+            page_has_focus()
+        ));
     }
 
     #[cfg(test)]
