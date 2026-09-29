@@ -65,7 +65,7 @@ fn on_timer(app: &mut App) {
     }
     // A held-back terminal resize (zoom/drag burst settling): repaint —
     // the draw's sync_active_term_size applies it once the target settles.
-    if app.term_resize_want_at.is_some() {
+    if app.term_resize.deadline().is_some() {
         app.window.request_redraw();
     }
     // Repeatable pane-resize auto-leaves after a spell of no resize key, so a
@@ -623,8 +623,7 @@ fn schedule_wakeup(app: &App, control_flow: &mut ControlFlow, servo_smoke: bool)
             *control_flow = ControlFlow::WaitUntil(next);
         }
         // A held-back terminal resize: wake when its settle window closes.
-        if let Some(at) = app.term_resize_want_at {
-            let deadline = at + crate::app::TERM_RESIZE_DEBOUNCE;
+        if let Some(deadline) = app.term_resize.deadline() {
             let next = match *control_flow {
                 ControlFlow::WaitUntil(t) => t.min(deadline),
                 _ => deadline,

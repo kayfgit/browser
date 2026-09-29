@@ -69,12 +69,6 @@ pub(crate) const PANE_RESIZE_TIMEOUT: Duration = Duration::from_millis(1000);
 /// later. See [`App::reclaim_focus_tick`].
 pub(crate) const GESTURE_GRACE: Duration = Duration::from_millis(600);
 
-/// Coalesce terminal PTY resizes: a grid-size change only applies once the target size
-/// has been stable this long, and every further change restarts the clock (see
-/// `sync_active_term_size`) — so a whole zoom sequence or window drag costs exactly one
-/// PTY resize. Longer bridges slower zoom taps; shorter refits the grid sooner.
-pub(crate) const TERM_RESIZE_DEBOUNCE: Duration = Duration::from_millis(300);
-
 /// Events posted from webview IPC back into the event loop.
 pub(crate) enum UserEvent {
     #[cfg(all(windows, feature = "servo-engine"))]
@@ -382,12 +376,10 @@ pub(crate) struct App {
     pub(crate) content_zoom: f64,
     /// Blink state for the command-bar cursor (toggled on a timer in Command mode).
     pub(crate) cursor_on: bool,
-    /// Terminal PTY resize coalescing (`sync_active_term_size`): the target grid
-    /// sizes `(tab, cols, rows)` still waiting to apply, and when that target last
-    /// changed. The resize applies only once the target has been stable for
-    /// [`TERM_RESIZE_DEBOUNCE`]; the event loop wakes at that deadline.
-    pub(crate) term_resize_want: Vec<(usize, usize, usize)>,
-    pub(crate) term_resize_want_at: Option<Instant>,
+    /// Terminal grid resizes waiting to settle (see
+    /// [`sync_active_term_size`](Self::sync_active_term_size)); the event loop wakes
+    /// at its deadline.
+    pub(crate) term_resize: crate::term::ResizeDebounce,
     pub(crate) quit: bool,
     /// Whether `teardown` has already run. It fires from multiple places (window
     /// close, `:q`, then `LoopDestroyed`); without this guard the second call would
