@@ -46,6 +46,7 @@ feats:
 [] - make the "U" button undo the layout, for example if i accidently close something, or move something around, U will undo it (maybe add R to redo it aswell) 
 [] - maybe change ":q" to ":quit"? i keep quitting the browser accidently when i want to quit vim because i think im in passthrough when im in normal
 [] - add vertical sidebar like zen browser
+[] - make it so every browser related error is shown in :error/:errors
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
