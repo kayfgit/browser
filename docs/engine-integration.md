@@ -223,7 +223,8 @@ reported by the factory leave the outgoing pane intact.
 
 The normal shell bridge, hints, find, caret and feature scripts run in top-level
 Servo documents. Navigation, native history, zoom, focus and layout use `EngineView`.
-The normal keyboard hook continues to provide mode recovery. Servo storage lives
+WebView2's accelerator-key handling (`shellkeys.rs`) doesn't apply to Servo views;
+the shell's focus reclaim provides mode recovery there. Servo storage lives
 under the browser data directory in `engines/servo`, separate from WebView2 cookies
 and sign-ins. Private/no-JavaScript creation is rejected before building a view.
 

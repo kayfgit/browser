@@ -48,7 +48,6 @@ mod find;
 mod freeze;
 mod hints;
 mod keys;
-mod khook;
 mod markdown;
 mod navguard;
 mod news;
@@ -62,6 +61,7 @@ mod read_view;
 mod schemes;
 mod scripts;
 mod session;
+mod shellkeys;
 mod tabs;
 mod term;
 mod vim;
@@ -340,16 +340,6 @@ fn main() -> Result<()> {
                 let _ = proxy.send_event(UserEvent::Quit);
             });
         }
-    }
-
-    // Install the low-level keyboard hook so the shell can always reclaim control
-    // (leave passthrough/insert, or snap back from a click that yielded focus to the
-    // page) regardless of which HWND/iframe holds keyboard focus. Must run on the
-    // event-loop thread (here) so the hook proc fires from its message pump.
-    #[cfg(windows)]
-    {
-        use tao::platform::windows::WindowExtWindows;
-        khook::install(app.window.hwnd() as isize, app.proxy.clone());
     }
 
     window.request_redraw();
