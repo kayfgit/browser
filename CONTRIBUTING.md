@@ -98,8 +98,12 @@ After changing `dist-workspace.toml`, run `dist generate` (install it with
 ```
 crates/
   desktop/        the browser (tao + wry/WebView2, softbuffer/fontdue native UI)
+    src/main.rs   startup: builds the window and the App, then runs the event loop
+    src/events.rs the event loop: what each window event and UserEvent does
+    src/app.rs    the App state, UserEvent and the modes
     src/engines/  engine adapters behind the browser-engine contract (WebView2, Servo)
-    scripts/      JavaScript injected into pages (bridge, hints, selection, scroll)
+    scripts/      JavaScript injected into pages (bridge, hints, selection, adblock,
+                  features, find, research, scroll), indexed in src/scripts.rs
     assets/       filter lists compiled into the executable
     src/bin/      browser-pty-host: owns the ConPTY and shell for terminal tabs
     extensions/   bundled uBlock Origin Lite (packed into the exe by build.rs)
