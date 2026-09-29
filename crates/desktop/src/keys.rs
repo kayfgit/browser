@@ -5,6 +5,7 @@
 use tao::event::KeyEvent;
 use tao::keyboard::{Key, KeyCode};
 
+use crate::app::KeyPrefix;
 use crate::chrome::history_display;
 use crate::hints::HintAct;
 use crate::panes::SplitDir;
@@ -101,56 +102,54 @@ impl App {
         // whether or not Ctrl is still held. A prefix left dangling past the timeout is
         // dropped so a forgotten Ctrl+W can't hijack a later key (that key falls through
         // to its normal binding).
-        if self.pending_window_key {
-            self.pending_window_key = false;
-            if self.pending_window_at.elapsed() <= crate::app::WINDOW_PREFIX_TIMEOUT {
-                let resize = self.modifiers.shift_key();
-                match key.physical_key {
-                    KeyCode::KeyH if resize => self.enter_pane_resize('h'),
-                    KeyCode::KeyJ if resize => self.enter_pane_resize('j'),
-                    KeyCode::KeyK if resize => self.enter_pane_resize('k'),
-                    KeyCode::KeyL if resize => self.enter_pane_resize('l'),
-                    KeyCode::KeyH => self.move_pane_focus('h'),
-                    KeyCode::KeyJ => self.move_pane_focus('j'),
-                    KeyCode::KeyK => self.move_pane_focus('k'),
-                    KeyCode::KeyL => self.move_pane_focus('l'),
-                    KeyCode::KeyS => self.split_pane(SplitDir::Col),
-                    KeyCode::KeyV => self.split_pane(SplitDir::Row),
-                    KeyCode::KeyC | KeyCode::KeyQ => self.close_active(),
-                    // Grab a pane to move it: `m` grabs the focused pane, a digit pulls
-                    // that tab-bar entry into the split. `b` breaks the focused pane out.
-                    KeyCode::KeyM => self.grab_focused_pane_move(),
-                    KeyCode::KeyB => self.break_pane(),
-                    // Flip the focused pane's split between side-by-side and stacked.
-                    KeyCode::KeyR => self.toggle_pane_orientation(),
-                    _ => {
-                        if let Some(n) = digit_index(key.physical_key) {
-                            self.grab_pane_move(n);
-                        }
+        let prefix = self
+            .pending_prefix
+            .take()
+            .filter(|(p, at)| at.elapsed() <= p.timeout())
+            .map(|(p, _)| p);
+        if prefix == Some(KeyPrefix::Window) {
+            let resize = self.modifiers.shift_key();
+            match key.physical_key {
+                KeyCode::KeyH if resize => self.enter_pane_resize('h'),
+                KeyCode::KeyJ if resize => self.enter_pane_resize('j'),
+                KeyCode::KeyK if resize => self.enter_pane_resize('k'),
+                KeyCode::KeyL if resize => self.enter_pane_resize('l'),
+                KeyCode::KeyH => self.move_pane_focus('h'),
+                KeyCode::KeyJ => self.move_pane_focus('j'),
+                KeyCode::KeyK => self.move_pane_focus('k'),
+                KeyCode::KeyL => self.move_pane_focus('l'),
+                KeyCode::KeyS => self.split_pane(SplitDir::Col),
+                KeyCode::KeyV => self.split_pane(SplitDir::Row),
+                KeyCode::KeyC | KeyCode::KeyQ => self.close_active(),
+                // Grab a pane to move it: `m` grabs the focused pane, a digit pulls
+                // that tab-bar entry into the split. `b` breaks the focused pane out.
+                KeyCode::KeyM => self.grab_focused_pane_move(),
+                KeyCode::KeyB => self.break_pane(),
+                // Flip the focused pane's split between side-by-side and stacked.
+                KeyCode::KeyR => self.toggle_pane_orientation(),
+                _ => {
+                    if let Some(n) = digit_index(key.physical_key) {
+                        self.grab_pane_move(n);
                     }
                 }
-                return;
             }
-            // else: stale prefix — fall through and handle this key normally.
+            return;
         }
         // `y` yank prefix (vimium/qutebrowser style): `yf` hints the links and copies
         // the picked address instead of going there, `yy` copies this page's URL
         // (same as `:y`). Like Ctrl+W it's dropped once stale, so a stray `y` can't
         // eat a later key. Note `y` only ever arms here — the pagers, the caret modes
         // and terminal vi-mode all claim `y` as their own yank before we get this far.
-        if self.pending_yank_key {
-            self.pending_yank_key = false;
-            if self.pending_yank_at.elapsed() <= crate::app::YANK_PREFIX_TIMEOUT {
-                match key.physical_key {
-                    KeyCode::KeyF if !self.active_is_term() => self.enter_hint(HintAct::Copy),
-                    KeyCode::KeyF => self.set_status("no links to yank in a terminal"),
-                    KeyCode::KeyY => self.yank_url(),
-                    // Esc backs out of the prefix without complaining.
-                    KeyCode::Escape => self.set_status(""),
-                    _ => self.set_status("y: f copies a link · y copies the page URL"),
-                }
-                return;
+        if prefix == Some(KeyPrefix::Yank) {
+            match key.physical_key {
+                KeyCode::KeyF if !self.active_is_term() => self.enter_hint(HintAct::Copy),
+                KeyCode::KeyF => self.set_status("no links to yank in a terminal"),
+                KeyCode::KeyY => self.yank_url(),
+                // Esc backs out of the prefix without complaining.
+                KeyCode::Escape => self.set_status(""),
+                _ => self.set_status("y: f copies a link · y copies the page URL"),
             }
+            return;
         }
         // Once a `/` search is live, `n`/`N` step through matches and Esc clears it
         // (qutebrowser-style) — in every tab type, so this takes precedence over both
@@ -235,8 +234,7 @@ impl App {
                 // Ctrl+W: arm the window/pane prefix (next key picks the action), with a
                 // timestamp so a dangling prefix expires instead of eating a later key.
                 KeyCode::KeyW => {
-                    self.pending_window_key = true;
-                    self.pending_window_at = std::time::Instant::now();
+                    self.pending_prefix = Some((KeyPrefix::Window, std::time::Instant::now()));
                 }
                 // Reopen the last closed tab (the familiar browser shortcut).
                 KeyCode::KeyT if self.modifiers.shift_key() => self.reopen_closed(),
@@ -305,8 +303,7 @@ impl App {
                 // `y` is a prefix, not an action — the next key says what to yank
                 // (see the handler at the top of `key_normal`).
                 "y" => {
-                    self.pending_yank_key = true;
-                    self.pending_yank_at = std::time::Instant::now();
+                    self.pending_prefix = Some((KeyPrefix::Yank, std::time::Instant::now()));
                     self.set_status("y — f: copy a link · y: copy the page URL");
                 }
                 // Caret mode — a vim cursor on the page; a second v/V starts the
