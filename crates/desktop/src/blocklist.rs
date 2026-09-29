@@ -23,6 +23,92 @@ use tao::event_loop::EventLoopProxy;
 
 use crate::UserEvent;
 
+/// Well-known ad-exchange / analytics / tracker hostnames, lower-cased. Consulted by the
+/// native navigation guard ([`url_is_ad_host`](crate::tabs::url_is_ad_host)) as the tiny always-on fallback that stops
+/// a forced top-level redirect to one of these hosts during the brief window before the
+/// full EasyList [`Engine`](crate::blocklist) finishes compiling off-thread at startup.
+/// The page-side cosmetic layer doesn't read this list — the engine is the source of truth
+/// there, and sub-resources are uBlock Origin Lite's job. Matched as a host substring, so
+/// `adservice.google.` catches `adservice.google.com`.
+pub(crate) const AD_HOSTS: &[&str] = &[
+    "doubleclick.net",
+    "googlesyndication.com",
+    "googleadservices.com",
+    "google-analytics.com",
+    "googletagmanager.com",
+    "googletagservices.com",
+    "adservice.google.",
+    "pagead2.googlesyndication",
+    "amazon-adsystem.com",
+    "adnxs.com",
+    "adsrvr.org",
+    "rubiconproject.com",
+    "pubmatic.com",
+    "openx.net",
+    "criteo.com",
+    "criteo.net",
+    "taboola.com",
+    "outbrain.com",
+    "scorecardresearch.com",
+    "quantserve.com",
+    "moatads.com",
+    "adcolony.com",
+    "applovin.com",
+    "zedo.com",
+    "bidswitch.net",
+    "casalemedia.com",
+    "sharethrough.com",
+    "smartadserver.com",
+    "teads.tv",
+    "3lift.com",
+    "yieldmo.com",
+    "contextweb.com",
+    "gumgum.com",
+    "indexww.com",
+    "media.net",
+    "mgid.com",
+    "revcontent.com",
+    "adform.net",
+    "adroll.com",
+    "bluekai.com",
+    "demdex.net",
+    "everesttech.net",
+    "rlcdn.com",
+    "agkn.com",
+    "crwdcntrl.net",
+    "mathtag.com",
+    "adsafeprotected.com",
+    "serving-sys.com",
+    "flashtalking.com",
+    "servedbyadbutler.com",
+    "hotjar.com",
+    "mixpanel.com",
+    "segment.io",
+    "amplitude.com",
+    "branch.io",
+    "onesignal.com",
+    "clarity.ms",
+    "fullstory.com",
+    "heap.io",
+    "nr-data.net",
+    "bugsnag.com",
+    "optimizely.com",
+    "chartbeat.com",
+    "parsely.com",
+    "permutive.com",
+    "cxense.com",
+    "nitropay.com",
+    "nitrocnct.com",
+    "analytics.tiktok",
+    "ads.linkedin.com",
+    "ads.pinterest.com",
+    "ads.yahoo.com",
+    // NOTE: YouTube's own first-party ad telemetry (`/api/stats/ads`, `/ptracking`,
+    // `/get_midroll_`) is DELIBERATELY absent — blocking it trips YouTube's anti-adblock
+    // detector, which then serves the "Ad blockers violate ToS" enforcement wall. The ads
+    // are killed by pruning the player-response JSON instead (see ADBLOCK_JS).
+];
+
 const SUPPLEMENT: &str = include_str!("../assets/blocklist-extra.txt");
 const EASYLIST: &str = include_str!("../assets/easylist.txt");
 const EASYPRIVACY: &str = include_str!("../assets/easyprivacy.txt");
