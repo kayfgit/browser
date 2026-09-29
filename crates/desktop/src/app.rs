@@ -241,7 +241,7 @@ pub(crate) enum ModeKind {
     /// native terminal (keys → PTY), or the `:ai` field. Unlike [`Insert`](ModeKind::Insert)
     /// it persists through clicks, focus changes, fullscreen and navigation — the point
     /// is full app control (e.g. a YouTube player). It leaves ONLY on Ctrl+S or Shift+Esc
-    /// (a terminal also keeps plain Esc for the shell; the AI field leaves on Esc).
+    /// (a terminal also keeps plain Esc for the shell; the AI field also leaves on Esc).
     /// Entered with `Ctrl+V` (or `i` on a terminal / the `:ai` field).
     Passthrough,
     /// hjkl resize the window; Esc exits. Entered with `:resize`.

@@ -449,7 +449,10 @@ pub(crate) fn paint_pane(
                 break;
             }
             let line = &vb.lines[r];
-            let color = ai.colors.get(r).copied().unwrap_or(draw::FG);
+            let style = ai.styles.get(r);
+            if let Some(bg) = style.and_then(|s| s.bg) {
+                fill(buf, left, y_top, right, y_top + line_h, bg);
+            }
             if let Some((s0, s1)) = vb.selection_on_row(r) {
                 fill(
                     buf,
@@ -481,10 +484,33 @@ pub(crate) fn paint_pane(
                 }
             }
             let baseline = (y_top + line_h * 3 / 4) as usize;
-            if vb.left < line.len() {
-                let text: String = line[vb.left..].iter().collect();
+            // Each colour run from its own column (a line with no runs, or text past
+            // the last run, is drawn in the default colour). Columns left of the
+            // horizontal scroll are skipped.
+            let runs = style.map(|s| s.runs.as_slice()).unwrap_or(&[]);
+            let covered = runs.last().map_or(0, |r| r.end).min(line.len());
+            let segments = runs
+                .iter()
+                .map(|r| (r.start, r.end.min(line.len()), r.color))
+                .chain(std::iter::once((covered, line.len(), draw::FG)));
+            for (start, end, color) in segments {
+                let start = start.max(vb.left);
+                if start >= end {
+                    continue;
+                }
+                let text: String = line[start..end].iter().collect();
                 p.text_rect(
-                    buf, wz, hz, left, baseline, &text, color, left, right, top, bottom,
+                    buf,
+                    wz,
+                    hz,
+                    col_x(line, start),
+                    baseline,
+                    &text,
+                    color,
+                    left,
+                    right,
+                    top,
+                    bottom,
                 );
             }
             // Typing: a caret at the end of the input line; Normal: the vim block

@@ -10,18 +10,19 @@ use browser_core::content::{Block, Document, Span};
 
 use crate::draw::{self, Painter, Rgb};
 
+// The document palette, shared with the `:ai` markdown renderer (`markdown.rs`).
 /// Body text.
-const FG: Rgb = draw::FG;
+pub(crate) const FG: Rgb = draw::FG;
 /// Brighter foreground for headings / strong text.
-const STRONG: Rgb = draw::BAR_FG;
+pub(crate) const STRONG: Rgb = draw::BAR_FG;
 /// Inline / block code.
-const CODE: Rgb = (0x9c, 0xd9, 0x7c);
+pub(crate) const CODE: Rgb = (0x9c, 0xd9, 0x7c);
 /// Links (followed via hint mode).
-const LINK: Rgb = draw::ACCENT;
+pub(crate) const LINK: Rgb = draw::ACCENT;
 /// Quote text and the quote bar / rule color.
-const MUTED: Rgb = draw::DIM;
+pub(crate) const MUTED: Rgb = draw::DIM;
 /// List-item markers.
-const MARKER: Rgb = (0xe6, 0xc7, 0x5e);
+pub(crate) const MARKER: Rgb = (0xe6, 0xc7, 0x5e);
 
 /// A styled fragment within a line. Adjacent runs are drawn left to right.
 pub struct Run {
@@ -75,7 +76,11 @@ pub fn layout(doc: &Document, width: i32, p: &Painter) -> Layout {
 
     // Title as a top heading, then a blank line.
     if !doc.title.is_empty() {
-        let words = vec![word(&doc.title, STRONG, None, p)];
+        let words = doc
+            .title
+            .split_whitespace()
+            .map(|w| vec![word(w, STRONG, None, p)])
+            .collect();
         wrap_into(&mut lines, words, width, 0, space_w);
         lines.push(blank());
     }
@@ -84,7 +89,10 @@ pub fn layout(doc: &Document, width: i32, p: &Painter) -> Layout {
         match block {
             Block::Heading { level, spans } => {
                 let color = heading_color(*level);
-                lines.push(blank());
+                // Space above a heading, unless the previous block left some.
+                if lines.last().is_some_and(|l| !l.runs.is_empty() || l.rule) {
+                    lines.push(blank());
+                }
                 wrap_into(
                     &mut lines,
                     spans_to_words(spans, color, p),
@@ -116,7 +124,7 @@ pub fn layout(doc: &Document, width: i32, p: &Painter) -> Layout {
                 lines.push(blank());
             }
             Block::ListItem { marker, spans, .. } => {
-                let mut words = vec![word(marker, MARKER, None, p)];
+                let mut words = vec![vec![word(marker, MARKER, None, p)]];
                 words.extend(spans_to_words(spans, FG, p));
                 wrap_into(&mut lines, words, width - indent, indent, space_w);
             }
@@ -212,9 +220,15 @@ fn word(text: &str, color: Rgb, link_id: Option<usize>, p: &Painter) -> Word {
     }
 }
 
-/// Flatten spans into wrappable words, coloring per span kind (links keep their id).
-fn spans_to_words(spans: &[Span], base: Rgb, p: &Painter) -> Vec<Word> {
-    let mut words = Vec::new();
+/// Flatten spans into wrappable units, coloring per span kind (links keep their id).
+/// A unit is a whitespace-delimited word, possibly made of fragments from several
+/// spans: text that continues straight from the previous span with no whitespace in
+/// between (the `(` and `)` around a link, a `.` after inline code) stays attached
+/// instead of gaining a space.
+fn spans_to_words(spans: &[Span], base: Rgb, p: &Painter) -> Vec<Vec<Word>> {
+    let mut units: Vec<Vec<Word>> = Vec::new();
+    // Whether the text so far ends at a word boundary.
+    let mut boundary = true;
     for span in spans {
         let (color, id) = match span {
             Span::Text(_) | Span::Emphasis(_) => (base, None),
@@ -222,21 +236,30 @@ fn spans_to_words(spans: &[Span], base: Rgb, p: &Painter) -> Vec<Word> {
             Span::Code(_) => (CODE, None),
             Span::Link { link_id, .. } => (LINK, Some(*link_id)),
         };
-        for piece in span.plain().split_whitespace() {
-            words.push(word(piece, color, id, p));
+        let text = span.plain();
+        for (i, piece) in text.split_whitespace().enumerate() {
+            let glued = i == 0 && !boundary && !text.starts_with(char::is_whitespace);
+            match units.last_mut() {
+                Some(unit) if glued => unit.push(word(piece, color, id, p)),
+                _ => units.push(vec![word(piece, color, id, p)]),
+            }
+        }
+        if !text.is_empty() {
+            boundary = text.ends_with(char::is_whitespace);
         }
     }
-    words
+    units
 }
 
-/// Greedily pack words into lines no wider than `width`, with a left `indent`.
-fn wrap_into(out: &mut Vec<VLine>, words: Vec<Word>, width: i32, indent: i32, space_w: i32) {
+/// Greedily pack word units into lines no wider than `width`, with a left `indent`.
+fn wrap_into(out: &mut Vec<VLine>, units: Vec<Vec<Word>>, width: i32, indent: i32, space_w: i32) {
     let avail = (width - indent).max(space_w * 4);
     let mut runs: Vec<Run> = Vec::new();
     let mut cur_w = 0i32;
-    for w in words {
+    for unit in units {
+        let unit_w: i32 = unit.iter().map(|w| w.width).sum();
         let extra = if cur_w == 0 { 0 } else { space_w };
-        if cur_w > 0 && cur_w + extra + w.width > avail {
+        if cur_w > 0 && cur_w + extra + unit_w > avail {
             out.push(VLine {
                 indent,
                 runs: std::mem::take(&mut runs),
@@ -252,12 +275,14 @@ fn wrap_into(out: &mut Vec<VLine>, words: Vec<Word>, width: i32, indent: i32, sp
             });
             cur_w += space_w;
         }
-        runs.push(Run {
-            text: w.text,
-            color: w.color,
-            link_id: w.link_id,
-        });
-        cur_w += w.width;
+        for w in unit {
+            runs.push(Run {
+                text: w.text,
+                color: w.color,
+                link_id: w.link_id,
+            });
+        }
+        cur_w += unit_w;
     }
     if !runs.is_empty() {
         out.push(VLine {

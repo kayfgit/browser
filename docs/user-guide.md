@@ -16,6 +16,7 @@ and `:help <topic>` jumps to one (`:help theme`, `:help selection`, `:help bangs
 - [Resource monitor](#resource-monitor)
 - [Errors](#errors)
 - [The `:ai` assistant](#the-ai-assistant)
+- [What's new](#whats-new)
 - [Experimental: the Servo engine](#experimental-the-servo-engine)
 
 ## The window
@@ -249,6 +250,16 @@ by side", "wipe my cookies from the last hour", "make the command bar taller and
 It uses [Groq](https://groq.com/); the first time, it asks for your API key, which is
 stored in the browser's data folder. `:model` picks the model, and `:aihist` lists past
 chats. The `:commands` page lists everything it can do.
+
+`i` starts typing a question, Enter sends it, and Esc or Ctrl+S leaves the field.
+Answers are rendered: headings, lists, tables, links and code blocks show formatted,
+and `v`/`y` select and copy the text without the markdown syntax. `H`/`L` step
+through saved chats.
+
+## What's new
+
+`:news` (or `:changelog`) shows what changed in each release, newest first; `f`
+follows a commit link. The first launch after an update says so in the status bar.
 
 ## Experimental: the Servo engine
 
