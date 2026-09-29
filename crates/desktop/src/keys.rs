@@ -519,23 +519,17 @@ impl App {
         // The page is a 2-line header (title + blank) followed by the URLs in the
         // same order as `history`, so row r maps to history index r - HEADER.
         const HEADER: usize = 2;
-        if self.history.is_empty() || hi < HEADER {
+        if hi < HEADER {
             return;
         }
-        let start = lo.max(HEADER) - HEADER;
-        let end = (hi - HEADER).min(self.history.len() - 1);
-        if start > end {
+        let removed = self
+            .visited
+            .remove_range(lo.max(HEADER) - HEADER, hi - HEADER);
+        if removed == 0 {
             return;
-        }
-        let removed = end - start + 1;
-        // Drop the slice from both parallel vecs, keeping them aligned.
-        self.history.drain(start..=end);
-        let end_at = end.min(self.history_at.len().saturating_sub(1));
-        if start <= end_at && start < self.history_at.len() {
-            self.history_at.drain(start..=end_at);
         }
         // Rebuild and park the cursor on whatever slid up into the deleted row.
-        let lines = crate::pages::history_lines(&self.history);
+        let lines = crate::pages::history_lines(&self.visited);
         if let Some(buf) = self.tabs.get_mut(i).and_then(|t| t.vim_mut()) {
             buf.set_lines(lines);
             buf.anchor = None;
@@ -1314,7 +1308,7 @@ impl App {
                     return None;
                 }
                 let needle = rest.to_ascii_lowercase();
-                let disp = self.history.iter().map(|u| history_display(u)).find(|d| {
+                let disp = self.visited.urls().map(history_display).find(|d| {
                     let dl = d.to_ascii_lowercase();
                     dl.starts_with(&needle) || dl.contains(&format!("/{needle}"))
                 })?;

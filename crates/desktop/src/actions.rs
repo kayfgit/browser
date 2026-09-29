@@ -1063,32 +1063,14 @@ impl App {
     /// everything (and the reopen stack); `Some(cutoff)` removes only entries
     /// stamped at-or-after `cutoff` (entries with an unknown time of `0`, e.g.
     /// restored from an old session, survive any windowed clear). Returns the count
-    /// removed; keeps [`history`](App::history)/[`history_at`](App::history_at) aligned.
+    /// removed.
     fn clear_history_window(&mut self, cutoff: Option<u64>) -> usize {
         match cutoff {
             None => {
-                let n = self.history.len();
-                self.history.clear();
-                self.history_at.clear();
                 self.closed_tabs.clear();
-                n
+                self.visited.clear()
             }
-            Some(c) => {
-                let mut urls = Vec::with_capacity(self.history.len());
-                let mut times = Vec::with_capacity(self.history_at.len());
-                let mut removed = 0;
-                for (u, &at) in self.history.iter().zip(self.history_at.iter()) {
-                    if at >= c {
-                        removed += 1;
-                    } else {
-                        urls.push(u.clone());
-                        times.push(at);
-                    }
-                }
-                self.history = urls;
-                self.history_at = times;
-                removed
-            }
+            Some(c) => self.visited.clear_since(c),
         }
     }
 

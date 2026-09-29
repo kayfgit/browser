@@ -288,11 +288,9 @@ impl App {
             self.window
                 .set_inner_size(tao::dpi::PhysicalSize::new(g.w, g.h));
         }
-        let history = std::mem::take(&mut self.history);
-        let history_at = std::mem::take(&mut self.history_at);
+        let visited = std::mem::take(&mut self.visited);
         self.restore_session(s);
-        self.history = history;
-        self.history_at = history_at;
+        self.visited = visited;
     }
 
     /// Close every tab and forget the layout, leaving the welcome screen — the live
