@@ -62,6 +62,7 @@ mod schemes;
 mod scripts;
 mod session;
 mod shellkeys;
+mod status;
 mod tabs;
 mod term;
 mod vim;
@@ -206,10 +207,7 @@ fn main() -> Result<()> {
         hint_input: String::new(),
         hint_act: HintAct::Follow,
         native_hints: Vec::new(),
-        status: String::new(),
-        status_is_error: false,
-        status_color: None,
-        status_clear_at: None,
+        status: status::Status::default(),
         ai_prev_active: None,
         errors: Vec::new(),
         current_command: None,

@@ -18,13 +18,9 @@ use crate::find::FindState;
 use crate::hints::NativeHint;
 use crate::pages::{now_hms, ErrorEntry, ERROR_LOG_CAP};
 use crate::panes::{PaneNode, PaneRect};
+use crate::status::Tone;
 use crate::tabs::{NativeRead, Tab};
 use crate::{read_view, session, BAR_H, BASE_PX, TAB_BAR_H, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP};
-
-/// How long any status message stays on the command bar before it auto-clears.
-/// The bar shouldn't hold stale text indefinitely; every status (info, warning, or
-/// error — errors also persist in `:errors`) disappears after this.
-pub(crate) const STATUS_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// How long the `Ctrl+W` pane prefix stays armed for its follow-up key. Past this a
 /// stale prefix is dropped and the next key is handled normally, so a forgotten
@@ -368,17 +364,9 @@ pub(crate) struct App {
     pub(crate) hint_act: crate::hints::HintAct,
     /// Placed hint labels for an engine-free read tab (web tabs hint via JS).
     pub(crate) native_hints: Vec<NativeHint>,
-    pub(crate) status: String,
-    /// Whether the current `status` is an error (rendered red instead of dim).
-    pub(crate) status_is_error: bool,
-    /// Optional colour override for the status text (e.g. the `:ai` answer flashes in
-    /// purple so it stands out from ordinary dim status). `None` = the default dim
-    /// (or red when `status_is_error`). Reset by every [`set_status`](Self::set_status).
-    pub(crate) status_color: Option<crate::draw::Rgb>,
-    /// When the current status auto-clears. EVERY status now self-expires after a few
-    /// seconds (see [`STATUS_TIMEOUT`]) so the command bar doesn't keep stale text —
-    /// the event loop wakes at this deadline and calls [`expire_status_flash`](Self::expire_status_flash).
-    pub(crate) status_clear_at: Option<Instant>,
+    /// The command bar's status message; it clears itself after a few seconds (the
+    /// event loop wakes then and calls [`expire_status_flash`](Self::expire_status_flash)).
+    pub(crate) status: crate::status::Status,
     /// The tab that was active just before the `:ai` tab was summoned, so closing the
     /// AI tab returns there (rather than to a stray blank pane). `None` = the welcome
     /// screen. See [`hide_ai_tab`](Self::hide_ai_tab).
@@ -1223,35 +1211,30 @@ impl App {
         self.adblock_on.store(on, Ordering::Relaxed);
     }
 
-    /// Set an informational status message (rendered dim). Clears the error flag and
-    /// any colour override, and arms the auto-clear so it disappears after
-    /// [`STATUS_TIMEOUT`] rather than lingering until the next status replaces it.
+    /// Set an informational status message (rendered dim). Like every status, it
+    /// clears itself after [`STATUS_TIMEOUT`](crate::status::STATUS_TIMEOUT).
     pub(crate) fn set_status(&mut self, msg: impl Into<String>) {
-        self.status = msg.into();
-        self.status_is_error = false;
-        self.status_color = None;
-        self.status_clear_at = Some(Instant::now() + STATUS_TIMEOUT);
+        self.status.show(msg.into(), Tone::Info, Instant::now());
     }
 
     /// Like [`set_status`](Self::set_status) but paints the status in `color` instead
     /// of the default dim — used for the background `:ai` answer so it reads as the
     /// AI's reply (purple) rather than a generic status line. Auto-clears like the rest.
     pub(crate) fn flash_status_colored(&mut self, msg: impl Into<String>, color: crate::draw::Rgb) {
-        self.set_status(msg);
-        self.status_color = Some(color);
+        self.status
+            .show(msg.into(), Tone::Color(color), Instant::now());
     }
 
-    /// Show a warning (red). Like the others it auto-clears after [`STATUS_TIMEOUT`].
-    /// Used for a background `:ai` failure whose detail already lives in the chat.
+    /// Show a warning (red) that isn't logged to `:errors`. Used for a background
+    /// `:ai` failure whose detail already lives in the chat.
     pub(crate) fn warn_status(&mut self, msg: impl Into<String>) {
-        self.set_status(msg);
-        self.status_is_error = true;
+        self.status.show(msg.into(), Tone::Error, Instant::now());
     }
 
     /// Clear a transient status flash once its deadline has passed. Called on the
     /// event-loop timer wake; a no-op until then or when no flash is pending.
     pub(crate) fn expire_status_flash(&mut self) {
-        if self.status_clear_at.is_some_and(|t| Instant::now() >= t) {
+        if self.status.expired(Instant::now()) {
             self.clear_status();
             self.window.request_redraw();
         }
@@ -1271,9 +1254,6 @@ impl App {
     /// Clear the status line.
     pub(crate) fn clear_status(&mut self) {
         self.status.clear();
-        self.status_is_error = false;
-        self.status_color = None;
-        self.status_clear_at = None;
     }
 
     /// Record a failure: show it in the status bar (red) and append it to the
@@ -1289,10 +1269,7 @@ impl App {
             let overflow = self.errors.len() - ERROR_LOG_CAP;
             self.errors.drain(0..overflow);
         }
-        self.status = msg;
-        self.status_is_error = true;
-        self.status_color = None;
-        self.status_clear_at = Some(Instant::now() + STATUS_TIMEOUT);
+        self.status.show(msg, Tone::Error, Instant::now());
     }
 
     /// Mouse-wheel scroll. `dy_lines` > 0 means the wheel rolled up (toward older
