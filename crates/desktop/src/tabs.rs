@@ -698,6 +698,12 @@ impl App {
     /// / reload) rather than opening a new tab. `record` adds a back-stack step for
     /// the page being left (false for reloads and `H`/`L` history replays).
     pub(crate) fn start_read(&mut self, target: &str, replace: bool, record: bool) {
+        // Built-in pages have no network source; reloading or going back to one
+        // rebuilds it.
+        if target == crate::news::NEWS_URL {
+            self.show_read_document(crate::news::document(), replace, record);
+            return;
+        }
         let proxy = self.proxy.clone();
         // A plain query (no `!bang`, not a URL) is run through the SEARCH backend,
         // which returns a clean, followable results document — readability can't parse

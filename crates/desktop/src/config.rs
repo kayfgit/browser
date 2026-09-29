@@ -53,6 +53,10 @@ pub(crate) struct Config {
     /// off (`None` = the default session).
     #[serde(default)]
     pub(crate) scratch_return: Option<String>,
+    /// The browser version last launched, so the first launch after an update can
+    /// point at `:news`. State, not customization: [`restore_defaults`](crate::App::restore_defaults) keeps it.
+    #[serde(default)]
+    pub(crate) seen_version: Option<String>,
 }
 
 /// Appearance overrides for the shell chrome — the command/status bar height and the

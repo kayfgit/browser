@@ -611,6 +611,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("restore", ":restore", "reset all customization to defaults — also Ctrl+Alt+Shift+R, which works in any mode"),
     ("help", ":commands · :help [topic]", "this page; a topic jumps to its section (e.g. :help theme, :help selection)"),
     ("version", ":version", "version and build information"),
+    ("news", ":news · :changelog [-t]", "what changed in each release, newest first (f follows a commit link)"),
     ("saveprofile", ":saveprofile <name> · :sp <name>", "snapshot the open tabs, splits, window and UI state as a named profile — the ONLY thing that writes a profile (:w saves the session, never a profile)"),
     ("profile", ":profile <name> · :p", "load a saved profile (no args: the picker — Enter switches, d deletes); :profile default returns to the live session. What you had open is written to the session first, so it's never lost"),
     ("profiles", ":profiles · :profs", "list the saved profiles in a vim tab (same picker as bare :profile)"),

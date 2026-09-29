@@ -51,6 +51,7 @@ mod keys;
 mod khook;
 mod markdown;
 mod navguard;
+mod news;
 mod pages;
 mod panes;
 mod proc_cwd;
@@ -1078,6 +1079,15 @@ fn main() -> Result<()> {
             }
         }
     });
+
+    // First launch of a new version: point at what changed. Not in throwaway runs,
+    // which must not write the real config.
+    if !cli_scratch && !is_test {
+        if let Some(note) = news::note_launch(&mut app.config.seen_version) {
+            config::save(&app.config);
+            app.set_status(note);
+        }
+    }
 
     #[cfg(all(windows, feature = "servo-engine"))]
     engines::with_window_target(&event_loop, || engines::servo::smoke::start(&mut app))?;
