@@ -35,13 +35,17 @@ pub(crate) fn clear(
     done: Completion,
 ) -> Result<(), String> {
     unsafe {
-        let core = webview.controller().CoreWebView2().map_err(|e| e.to_string())?;
+        let core = webview
+            .controller()
+            .CoreWebView2()
+            .map_err(|e| e.to_string())?;
         let core13: ICoreWebView2_13 = core
             .cast()
             .map_err(|_| "this WebView2 runtime is too old to clear browsing data".to_string())?;
         let profile = core13.Profile().map_err(|e| e.to_string())?;
-        let profile2: ICoreWebView2Profile2 =
-            profile.cast().map_err(|e: windows_core::Error| e.to_string())?;
+        let profile2: ICoreWebView2Profile2 = profile
+            .cast()
+            .map_err(|e: windows_core::Error| e.to_string())?;
         let handler = ClearBrowsingDataCompletedHandler::create(Box::new(move |hr| {
             done(hr.map_err(|e| e.to_string()));
             Ok(())
@@ -50,7 +54,9 @@ pub(crate) fn clear(
             Some((start, end)) => profile2
                 .ClearBrowsingDataInTimeRange(flags(kind), start, end, &handler)
                 .map_err(|e| e.to_string())?,
-            None => profile2.ClearBrowsingData(flags(kind), &handler).map_err(|e| e.to_string())?,
+            None => profile2
+                .ClearBrowsingData(flags(kind), &handler)
+                .map_err(|e| e.to_string())?,
         }
     }
     Ok(())

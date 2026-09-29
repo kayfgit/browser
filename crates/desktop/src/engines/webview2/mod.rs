@@ -47,12 +47,80 @@ pub(crate) struct BuildOptions<'a> {
     pub allow_risky_downloads: Arc<AtomicBool>,
 }
 
+/// The WebView2 user-data folder (cookies, cache, extensions) every view shares.
+///
+/// `BROWSER_WEBVIEW2_DATA_DIR` overrides it. Debug builds keep WebView2's default, a
+/// folder next to the executable, so development never touches the real profile.
+/// Release builds use `%LOCALAPPDATA%\browser\data\WebView2`: the default would put
+/// it beside `browser.exe`, which an installer may place in a read-only folder.
+///
+/// Before that location existed, the profile lived next to the executable. The first
+/// run moves such a folder over so users stay signed in, or, if it can't be moved
+/// (another copy of the browser is using it), keeps using it where it is.
+pub(crate) fn data_dir() -> Option<std::path::PathBuf> {
+    static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        if let Some(dir) = std::env::var_os("BROWSER_WEBVIEW2_DATA_DIR") {
+            return Some(dir.into());
+        }
+        if cfg!(debug_assertions) {
+            return None;
+        }
+        let target = crate::session::local_data_dir()?.join("WebView2");
+        if target.exists() {
+            return Some(target);
+        }
+        for legacy in legacy_data_dirs() {
+            if !legacy.is_dir() {
+                continue;
+            }
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            return Some(match std::fs::rename(&legacy, &target) {
+                Ok(()) => target,
+                Err(_) => legacy,
+            });
+        }
+        Some(target)
+    })
+    .clone()
+}
+
+/// Where older builds kept the WebView2 profile: WebView2's default beside the running
+/// executable, and beside the `browser.exe` the old `install.ps1` put in
+/// `%LOCALAPPDATA%\Programs\browser`.
+fn legacy_data_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(name) = exe.file_name() {
+            let mut folder = name.to_os_string();
+            folder.push(".WebView2");
+            dirs.push(exe.with_file_name(folder));
+        }
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        dirs.push(
+            std::path::PathBuf::from(local)
+                .join("Programs")
+                .join("browser")
+                .join("browser.exe.WebView2"),
+        );
+    }
+    dirs
+}
+
 pub(crate) fn build(
     parent: &Window,
     opts: BuildOptions<'_>,
     identity: browser_engine::ViewIdentity,
 ) -> Result<(Box<dyn EngineView>, PageState)> {
-    let BuildOptions { source, disable_js, extra_init, .. } = opts;
+    let BuildOptions {
+        source,
+        disable_js,
+        extra_init,
+        ..
+    } = opts;
     let private = identity.storage == browser_engine::StorageMode::Private;
     let proxy = super::PageEventProxy::new(opts.proxy.clone(), identity.id);
     let nav_intent: crate::navguard::NavIntent = Arc::new(Mutex::new(None));
@@ -92,11 +160,12 @@ pub(crate) fn build(
     let dl_proxy = proxy.clone();
     // Wry falls back to a regular controller on runtimes without Environment10.
     // Build blank, verify the real storage mode, and only then load user content.
-    let mut isolated_context = std::env::var_os("BROWSER_WEBVIEW2_DATA_DIR")
-        .map(|dir| wry::WebContext::new(Some(dir.into())));
+    let mut isolated_context = data_dir().map(|dir| wry::WebContext::new(Some(dir)));
     let mut builder = if let Some(context) = isolated_context.as_mut() {
         WebViewBuilder::new_with_web_context(context)
-    } else { WebViewBuilder::new() };
+    } else {
+        WebViewBuilder::new()
+    };
     // Load uBlock Origin (any unpacked extension in the dir) into WebView2's own
     // Chromium engine. The extension does network + cosmetic + scriptlet ad-blocking
     // natively — far more capable than a hand-rolled blocker, and it doesn't depend on
@@ -212,6 +281,10 @@ pub(crate) fn build(
             "page-edit" => {
                 let _ = ipc_proxy.send_event(UserEvent::PageEdit);
             }
+            // Esc reached the page in Normal mode: give the keyboard back to the shell.
+            "reclaim" => {
+                let _ = ipc_proxy.send_event(UserEvent::ReclaimNormal);
+            }
             "pane-click" => {
                 let _ = ipc_proxy.send_event(UserEvent::PaneClick);
             }
@@ -242,6 +315,17 @@ pub(crate) fn build(
                     let _ = ipc_proxy.send_event(UserEvent::CaretYank(text.to_string()));
                 // A right-click menu item copied something: `clip:<text>` (the
                 // selection, a link address, an image address).
+                // A shell key reached the page in Normal mode (see `shellKey` in
+                // bridge.js): `shell-key:<keyCode>,<shift>,<ctrl>`.
+                } else if let Some(spec) = body.strip_prefix("shell-key:") {
+                    let mut parts = spec.split(',');
+                    let vk = parts.next().and_then(|v| v.parse::<u16>().ok());
+                    let shift = parts.next() == Some("1");
+                    let ctrl = parts.next() == Some("1");
+                    if let Some(vk) = vk.filter(|&v| v != 0) {
+                        let key = crate::khook::KeyReplay::from_vk(vk, shift, ctrl);
+                        let _ = ipc_proxy.send_event(UserEvent::ReplayToShell(key));
+                    }
                 } else if let Some(text) = body.strip_prefix("clip:") {
                     let _ = ipc_proxy.send_event(UserEvent::ClipCopy(text.to_string()));
                 // A hint in new-tab mode resolved to a link: `hint-open:<href>`.
@@ -368,17 +452,32 @@ pub(crate) fn build(
     if disable_js {
         builder = builder.with_javascript_disabled();
     }
-    let webview = builder.build_as_child(parent).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let webview = builder
+        .build_as_child(parent)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     verify_storage(&webview, identity.storage)?;
     if private && opts.adblock_mode.extension() {
         if let Some(dir) = ublock_extensions_dir() {
             let _ = extensions::install_dir(&webview, &dir);
         }
     }
+    // Once per run, drop stale copies of the bundled extensions left in the profile
+    // by an older install location (see `install_dir_replacing`).
+    static DEDUPED: AtomicBool = AtomicBool::new(false);
+    if !private && opts.adblock_mode.extension() && !DEDUPED.swap(true, Ordering::Relaxed) {
+        if let Some(dir) = ublock_extensions_dir() {
+            let _ = extensions::install_dir_replacing(&webview, &dir);
+        }
+    }
     // The native redirect guard: cancels forced (non-user-initiated) cross-site top
     // navigations via WebView2's own `IsUserInitiated` — the structural fix the
     // URL-only wry handler above can't be. Best-effort; the wry guards still stand.
-    navigation::install(&webview, opts.adblock_on.clone(), nav_intent.clone(), proxy.clone());
+    navigation::install(
+        &webview,
+        opts.adblock_on.clone(),
+        nav_intent.clone(),
+        proxy.clone(),
+    );
     // NOTE: there is deliberately no `WebResourceRequested` sub-resource blocker here.
     // One used to run the full EasyList engine over every script/iframe/XHR, but
     // registering that filter routes every sub-resource through a handler on the HOST's
@@ -405,7 +504,15 @@ pub(crate) fn build(
         Source::Url(url) => webview.load_url(&url)?,
         Source::Html(html) => webview.load_html(&html)?,
     }
-    Ok((Box::new(WebView2View { inner: webview, identity, nav_intent, _context: isolated_context }), page))
+    Ok((
+        Box::new(WebView2View {
+            inner: webview,
+            identity,
+            nav_intent,
+            _context: isolated_context,
+        }),
+        page,
+    ))
 }
 
 fn verify_storage(view: &WebView, expected: browser_engine::StorageMode) -> Result<()> {
@@ -554,11 +661,13 @@ fn native_rect(rect: RectPx) -> Rect {
 }
 
 pub(crate) fn keep_alive(parent: &Window) -> Result<Box<dyn EngineView>> {
-    let mut isolated_context = std::env::var_os("BROWSER_WEBVIEW2_DATA_DIR")
-        .map(|dir| wry::WebContext::new(Some(dir.into())));
+    let mut isolated_context = data_dir().map(|dir| wry::WebContext::new(Some(dir)));
     let mut builder = if let Some(context) = isolated_context.as_mut() {
         WebViewBuilder::new_with_web_context(context)
-    } else { WebViewBuilder::new() }.with_html("");
+    } else {
+        WebViewBuilder::new()
+    }
+    .with_html("");
     // Match the content views' environment options, without reinstalling extensions.
     if ublock_extensions_dir().is_some() {
         builder = builder.with_browser_extensions_enabled(true);
@@ -567,7 +676,12 @@ pub(crate) fn keep_alive(parent: &Window) -> Result<Box<dyn EngineView>> {
         .with_additional_browser_args(BROWSER_ARGS)
         .with_visible(false)
         .with_focused(false)
-        .with_bounds(native_rect(RectPx { x: 0, y: 0, w: 1, h: 1 }))
+        .with_bounds(native_rect(RectPx {
+            x: 0,
+            y: 0,
+            w: 1,
+            h: 1,
+        }))
         .build_as_child(parent)?;
     let _ = suspension::suspend(&inner);
     Ok(Box::new(WebView2View {
@@ -600,7 +714,9 @@ impl EngineView for WebView2View {
         self.inner.url().map_err(|e| e.to_string())
     }
     fn set_bounds(&self, rect: RectPx) -> EngineResult {
-        self.inner.set_bounds(native_rect(rect)).map_err(|e| e.to_string())
+        self.inner
+            .set_bounds(native_rect(rect))
+            .map_err(|e| e.to_string())
     }
     fn set_visible(&self, visible: bool) -> EngineResult {
         self.inner.set_visible(visible).map_err(|e| e.to_string())
@@ -615,7 +731,9 @@ impl EngineView for WebView2View {
         self.inner.focus_parent().map_err(|e| e.to_string())
     }
     fn evaluate_script(&self, script: &str) -> EngineResult {
-        self.inner.evaluate_script(script).map_err(|e| e.to_string())
+        self.inner
+            .evaluate_script(script)
+            .map_err(|e| e.to_string())
     }
     fn history(&self) -> Option<&dyn History> {
         Some(self)
@@ -679,10 +797,14 @@ mod runtime_tests {
         let mut builder = tao::event_loop::EventLoopBuilder::<()>::new();
         builder.with_any_thread(true);
         let event_loop = builder.build();
-        let window =
-            tao::window::WindowBuilder::new().with_visible(false).build(&event_loop).unwrap();
-        let stamp =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let window = tao::window::WindowBuilder::new()
+            .with_visible(false)
+            .build(&event_loop)
+            .unwrap();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/engine-tests")
             .join(format!("{}-{stamp}", std::process::id()));

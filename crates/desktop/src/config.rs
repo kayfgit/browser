@@ -131,7 +131,10 @@ pub(crate) struct SchemeFile {
 /// The canonical on-disk key for a scheme name: lowercase alphanumerics only, so
 /// "IBM 3270", "3270-Dark" and "3270 dark" all address the same file.
 pub(crate) fn scheme_key(name: &str) -> String {
-    name.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase()
+    name.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 /// Load an installed (downloaded) scheme by name, resolving colours to a live
@@ -140,9 +143,11 @@ pub(crate) fn scheme_key(name: &str) -> String {
 pub(crate) fn load_custom_scheme(name: &str) -> Option<crate::pty_term::TermStyle> {
     let path = schemes_dir()?.join(format!("{}.toml", scheme_key(name)));
     let file: SchemeFile = toml::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-    let mut st = crate::pty_term::TermStyle::default();
-    st.fg = crate::draw::parse_color(&file.fg)?;
-    st.bg = crate::draw::parse_color(&file.bg)?;
+    let mut st = crate::pty_term::TermStyle {
+        fg: crate::draw::parse_color(&file.fg)?,
+        bg: crate::draw::parse_color(&file.bg)?,
+        ..Default::default()
+    };
     if file.ansi.len() != 16 {
         return None;
     }
@@ -164,8 +169,12 @@ pub(crate) fn save_custom_scheme(file: &SchemeFile) -> Result<String, String> {
 
 /// Display names of every installed (downloaded) scheme, sorted.
 pub(crate) fn custom_scheme_names() -> Vec<String> {
-    let Some(dir) = schemes_dir() else { return Vec::new() };
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Some(dir) = schemes_dir() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut names: Vec<String> = entries
         .flatten()
         .filter_map(|e| {
@@ -180,8 +189,13 @@ pub(crate) fn custom_scheme_names() -> Vec<String> {
 /// Load the saved config, or defaults if there's none / it can't be read or parsed.
 /// Never fails: a broken file falls back to defaults rather than blocking startup.
 pub(crate) fn load() -> Config {
-    let Some(path) = config_path() else { return Config::default() };
-    std::fs::read_to_string(path).ok().and_then(|s| toml::from_str(&s).ok()).unwrap_or_default()
+    let Some(path) = config_path() else {
+        return Config::default();
+    };
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| toml::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 /// Persist the config (best-effort; failures are ignored, like the session writer).

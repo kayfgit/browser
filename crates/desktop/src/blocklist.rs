@@ -194,11 +194,27 @@ mod tests {
     fn supplement_blocks_scam_and_popunder_domains() {
         let b = engine_from(&[SUPPLEMENT]);
         // The exact forced-redirect domain from the bug report — and its subdomains.
-        assert!(blocks_navigation(&b, "https://proceedflow.com/click?key=abc", "https://animepahe.pw/"));
-        assert!(blocks_navigation(&b, "https://www.popads.net/foo", "https://stream.test/"));
+        assert!(blocks_navigation(
+            &b,
+            "https://proceedflow.com/click?key=abc",
+            "https://animepahe.pw/"
+        ));
+        assert!(blocks_navigation(
+            &b,
+            "https://www.popads.net/foo",
+            "https://stream.test/"
+        ));
         // A normal destination is left alone.
-        assert!(!blocks_navigation(&b, "https://example.com/", "https://animepahe.pw/"));
-        assert!(!blocks_navigation(&b, "https://github.com/rust-lang/rust", ""));
+        assert!(!blocks_navigation(
+            &b,
+            "https://example.com/",
+            "https://animepahe.pw/"
+        ));
+        assert!(!blocks_navigation(
+            &b,
+            "https://github.com/rust-lang/rust",
+            ""
+        ));
     }
 
     #[test]
@@ -209,8 +225,12 @@ mod tests {
             serde_json::from_str(RESOURCES).expect("adblock-resources.json must parse");
         assert!(!resources.is_empty());
         // The aliases the bundled rules actually reference must be resolvable.
-        let names: Vec<&str> =
-            resources.iter().flat_map(|r| std::iter::once(r.name.as_str()).chain(r.aliases.iter().map(String::as_str))).collect();
+        let names: Vec<&str> = resources
+            .iter()
+            .flat_map(|r| {
+                std::iter::once(r.name.as_str()).chain(r.aliases.iter().map(String::as_str))
+            })
+            .collect();
         for needed in ["noopjs", "google-ima.js", "google-analytics_analytics.js"] {
             assert!(names.contains(&needed), "missing surrogate: {needed}");
         }
@@ -249,24 +269,45 @@ mod tests {
     /// suspect was a filter rule killing the request that populates it. It isn't: with all
     /// five lists compiled, every request that menu depends on passes — the lazy
     /// `/youtubei/v1/*` fetches, the avatar images, and the `accounts.google.com` /
-    /// `ogs.google.com` frames it embeds. (The cause was the INTERCEPTION itself; see the
-    /// YouTube filter gate in `netblock`.) This test exists so a future list refresh that
+    /// `ogs.google.com` frames it embeds. (The cause was the INTERCEPTION itself — the
+    /// since-removed `WebResourceRequested` sub-resource blocker.) This test exists so a future list refresh that
     /// does start blocking one of these is caught here rather than as a dead button.
     #[test]
     fn nothing_bundled_blocks_the_youtube_account_menu() {
         let b = engine_from(&[SUPPLEMENT, EASYLIST, EASYPRIVACY, YOYO, UBLOCK]);
         let yt = "https://www.youtube.com/";
         for (url, kind) in [
-            ("https://www.youtube.com/youtubei/v1/account/account_menu?prettyPrint=false", "xmlhttprequest"),
-            ("https://www.youtube.com/youtubei/v1/notification/get_notification_menu", "xmlhttprequest"),
-            ("https://www.youtube.com/youtubei/v1/guide?prettyPrint=false", "xmlhttprequest"),
-            ("https://yt3.ggpht.com/ytc/AOPolaQabc=s88-c-k-c0x00ffffff-no-rj", "image"),
+            (
+                "https://www.youtube.com/youtubei/v1/account/account_menu?prettyPrint=false",
+                "xmlhttprequest",
+            ),
+            (
+                "https://www.youtube.com/youtubei/v1/notification/get_notification_menu",
+                "xmlhttprequest",
+            ),
+            (
+                "https://www.youtube.com/youtubei/v1/guide?prettyPrint=false",
+                "xmlhttprequest",
+            ),
+            (
+                "https://yt3.ggpht.com/ytc/AOPolaQabc=s88-c-k-c0x00ffffff-no-rj",
+                "image",
+            ),
             ("https://lh3.googleusercontent.com/a/abc=s96-c", "image"),
-            ("https://accounts.google.com/RotateCookiesPage?og_pid=1", "subdocument"),
-            ("https://ogs.google.com/u/0/widget/app?origin=https://www.youtube.com", "subdocument"),
+            (
+                "https://accounts.google.com/RotateCookiesPage?og_pid=1",
+                "subdocument",
+            ),
+            (
+                "https://ogs.google.com/u/0/widget/app?origin=https://www.youtube.com",
+                "subdocument",
+            ),
             ("https://apis.google.com/js/api.js", "script"),
         ] {
-            assert!(!blocks_request(&b, url, yt, kind), "the account menu needs [{kind}] {url}");
+            assert!(
+                !blocks_request(&b, url, yt, kind),
+                "the account menu needs [{kind}] {url}"
+            );
         }
     }
 
@@ -274,8 +315,8 @@ mod tests {
     ///
     /// The account-menu test above covers the lazy UI fetches; this one covers the
     /// resources the video itself needs. They matter more, and they're less obvious:
-    /// unlike `youtubei`, most of them are NOT on a `youtube.com` host, so the
-    /// `is_youtube_host` carve-out in `netblock` does not spare them — the player JS
+    /// unlike `youtubei`, most of them are NOT on a `youtube.com` host, so a
+    /// `youtube.com` carve-out would not spare them — the player JS
     /// comes from `s.ytimg.com` and the audio/video segments from `*.googlevideo.com`.
     /// A rule that catches one of those reads as a black player with no sound.
     #[test]
@@ -284,18 +325,45 @@ mod tests {
         let yt = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
         for (url, kind) in [
             // The player itself.
-            ("https://s.ytimg.com/yts/jsbin/player_ias-vfl/en_US/base.js", "script"),
-            ("https://www.youtube.com/s/player/abc123/player_ias.vflset/en_US/base.js", "script"),
-            ("https://s.ytimg.com/yts/cssbin/www-player.css", "stylesheet"),
+            (
+                "https://s.ytimg.com/yts/jsbin/player_ias-vfl/en_US/base.js",
+                "script",
+            ),
+            (
+                "https://www.youtube.com/s/player/abc123/player_ias.vflset/en_US/base.js",
+                "script",
+            ),
+            (
+                "https://s.ytimg.com/yts/cssbin/www-player.css",
+                "stylesheet",
+            ),
             // The media segments — fetched as XHR/fetch by the MSE player, NOT as media.
-            ("https://rr3---sn-4g5e6nsz.googlevideo.com/videoplayback?expire=1&itag=248", "xmlhttprequest"),
-            ("https://rr3---sn-4g5e6nsz.googlevideo.com/videoplayback?expire=1&itag=251", "xmlhttprequest"),
-            ("https://rr3---sn-4g5e6nsz.googlevideo.com/initplayback?source=youtube", "xmlhttprequest"),
+            (
+                "https://rr3---sn-4g5e6nsz.googlevideo.com/videoplayback?expire=1&itag=248",
+                "xmlhttprequest",
+            ),
+            (
+                "https://rr3---sn-4g5e6nsz.googlevideo.com/videoplayback?expire=1&itag=251",
+                "xmlhttprequest",
+            ),
+            (
+                "https://rr3---sn-4g5e6nsz.googlevideo.com/initplayback?source=youtube",
+                "xmlhttprequest",
+            ),
             // Thumbnails / storyboards the player and page render.
-            ("https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg", "image"),
-            ("https://i9.ytimg.com/sb/dQw4w9WgXcQ/storyboard3_L2/M0.jpg", "image"),
+            (
+                "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
+                "image",
+            ),
+            (
+                "https://i9.ytimg.com/sb/dQw4w9WgXcQ/storyboard3_L2/M0.jpg",
+                "image",
+            ),
         ] {
-            assert!(!blocks_request(&b, url, yt, kind), "playback needs [{kind}] {url}");
+            assert!(
+                !blocks_request(&b, url, yt, kind),
+                "playback needs [{kind}] {url}"
+            );
         }
     }
 
@@ -304,7 +372,15 @@ mod tests {
         // Proves the bundled EasyList is parsed and that a top-level "document"
         // navigation to a listed domain (`||searchapp.space^`) is actually blocked.
         let b = engine_from(&[EASYLIST]);
-        assert!(blocks_navigation(&b, "https://best.searchapp.space/abc?zoneid=3", "https://animepahe.pw/"));
-        assert!(!blocks_navigation(&b, "https://en.wikipedia.org/wiki/Rust", "https://animepahe.pw/"));
+        assert!(blocks_navigation(
+            &b,
+            "https://best.searchapp.space/abc?zoneid=3",
+            "https://animepahe.pw/"
+        ));
+        assert!(!blocks_navigation(
+            &b,
+            "https://en.wikipedia.org/wiki/Rust",
+            "https://animepahe.pw/"
+        ));
     }
 }

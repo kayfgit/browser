@@ -28,7 +28,9 @@ pub struct ProcSample {
 /// Number of logical processors, for turning CPU-time deltas into a percentage of
 /// total machine CPU (matching Task Manager's column).
 pub fn cpu_count() -> u64 {
-    std::thread::available_parallelism().map(|n| n.get() as u64).unwrap_or(1)
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u64)
+        .unwrap_or(1)
 }
 
 /// Sample every process in this process's tree (self + all descendants), sorted
@@ -90,13 +92,19 @@ pub fn tree_sample() -> Vec<ProcSample> {
         }
         if let Some(name) = name_of.get(&pid) {
             let (working_set, cpu_100ns, io_bytes) = metrics(pid).unwrap_or((0, 0, 0));
-            out.push(ProcSample { name: (*name).to_string(), pid, working_set, cpu_100ns, io_bytes });
+            out.push(ProcSample {
+                name: (*name).to_string(),
+                pid,
+                working_set,
+                cpu_100ns,
+                io_bytes,
+            });
         }
         if let Some(kids) = children.get(&pid) {
             stack.extend(kids.iter().copied());
         }
     }
-    out.sort_by(|a, b| b.working_set.cmp(&a.working_set));
+    out.sort_by_key(|p| std::cmp::Reverse(p.working_set));
     out
 }
 
@@ -134,7 +142,11 @@ fn metrics(pid: u32) -> Option<(u64, u64, u64)> {
             ex2.PrivateWorkingSetSize as u64
         } else {
             let mut mem = PROCESS_MEMORY_COUNTERS::default();
-            match GetProcessMemoryInfo(handle, &mut mem, size_of::<PROCESS_MEMORY_COUNTERS>() as u32) {
+            match GetProcessMemoryInfo(
+                handle,
+                &mut mem,
+                size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            ) {
                 Ok(()) => mem.WorkingSetSize as u64,
                 Err(_) => 0,
             }
@@ -205,7 +217,10 @@ mod tests {
     #[test]
     fn sample_includes_self_with_memory() {
         let sample = tree_sample();
-        let me = sample.iter().find(|p| p.pid == std::process::id()).expect("self in sample");
+        let me = sample
+            .iter()
+            .find(|p| p.pid == std::process::id())
+            .expect("self in sample");
         assert!(me.working_set > 0, "own working set should be > 0");
     }
 }

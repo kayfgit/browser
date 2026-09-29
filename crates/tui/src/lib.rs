@@ -1,5 +1,5 @@
 //! Terminal UI front end: sets up the terminal, pumps input events, and runs the
-//! [`App`] event loop. Public entry point is [`run`].
+//! `App` event loop. Public entry point is [`run`].
 
 use std::io;
 use std::sync::Arc;
@@ -8,7 +8,9 @@ use anyhow::{Context, Result};
 use browser_core::Config;
 use crossterm::event::Event;
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 

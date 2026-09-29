@@ -65,14 +65,14 @@ Currently the only live-to-live selection is WebView2-to-WebView2, which is a no
 
 Validation:
 
-- `cargo test -p browser-desktop -p browser-engine --locked --offline`: 115 desktop tests
+- `cargo test -p browser -p browser-engine --locked --offline`: 115 desktop tests
   and four contract tests passed; the opt-in native-runtime test is excluded by default.
-- `cargo test -p browser-desktop --locked --offline runtime_storage_mode_is_verified_before_user_content -- --ignored --test-threads=1`:
+- `cargo test -p browser --locked --offline runtime_storage_mode_is_verified_before_user_content -- --ignored --test-threads=1`:
   the native-runtime test passed separately. It creates hidden ordinary/private views
   in an isolated directory under `target/engine-tests`, verifies each mode, and rejects
   both mismatches. These temporary profiles are retained for diagnostics.
 - `node --test crates/desktop/tests/bridge-hints.cjs`: all three regressions passed.
-- `cargo build -p browser-desktop --locked --offline`: passed.
+- `cargo build -p browser --locked --offline`: passed.
 - The existing Windows manifest `maxversiontested` linker warning remains.
 
 The user verified live browser behavior after both stages and reported that everything

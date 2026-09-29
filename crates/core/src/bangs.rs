@@ -188,7 +188,10 @@ mod tests {
 
     #[test]
     fn bang_without_query_opens_home() {
-        assert_eq!(expand_bang("!osrs"), Some("https://oldschool.runescape.wiki/".into()));
+        assert_eq!(
+            expand_bang("!osrs"),
+            Some("https://oldschool.runescape.wiki/".into())
+        );
     }
 
     #[test]

@@ -37,7 +37,10 @@ impl Mode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// Open a target; `mode == None` means "let the router decide".
-    Open { mode: Option<Mode>, target: String },
+    Open {
+        mode: Option<Mode>,
+        target: String,
+    },
     Reload,
     Back,
     Forward,
@@ -68,7 +71,10 @@ pub fn parse_command(input: &str) -> Command {
         "video" | "v" => open_with(Some(Mode::Video), rest),
         "open" | "o" => open_with(Some(Mode::Full), rest),
         // No recognized verb: treat the whole line as a target for the router.
-        _ => Command::Open { mode: None, target: line.to_string() },
+        _ => Command::Open {
+            mode: None,
+            target: line.to_string(),
+        },
     }
 }
 
@@ -76,7 +82,10 @@ fn open_with(mode: Option<Mode>, target: &str) -> Command {
     if target.is_empty() {
         Command::Unknown("missing target".into())
     } else {
-        Command::Open { mode, target: target.to_string() }
+        Command::Open {
+            mode,
+            target: target.to_string(),
+        }
     }
 }
 
@@ -131,7 +140,10 @@ pub fn host_of(target: &str) -> Option<String> {
     } else {
         format!("https://{target}")
     };
-    url::Url::parse(&with_scheme).ok()?.host_str().map(|h| h.to_lowercase())
+    url::Url::parse(&with_scheme)
+        .ok()?
+        .host_str()
+        .map(|h| h.to_lowercase())
 }
 
 /// Normalize a target into a fetchable absolute URL (adds https:// if missing).
@@ -154,11 +166,17 @@ mod tests {
         assert_eq!(parse_command("quit"), Command::Quit);
         assert_eq!(
             parse_command(":s rust crate"),
-            Command::Open { mode: Some(Mode::Search), target: "rust crate".into() }
+            Command::Open {
+                mode: Some(Mode::Search),
+                target: "rust crate".into()
+            }
         );
         assert_eq!(
             parse_command(":text docs.rs"),
-            Command::Open { mode: Some(Mode::Text), target: "docs.rs".into() }
+            Command::Open {
+                mode: Some(Mode::Text),
+                target: "docs.rs".into()
+            }
         );
     }
 
@@ -166,7 +184,10 @@ mod tests {
     fn bare_target_defers_to_router() {
         assert_eq!(
             parse_command("example.com"),
-            Command::Open { mode: None, target: "example.com".into() }
+            Command::Open {
+                mode: None,
+                target: "example.com".into()
+            }
         );
     }
 
@@ -193,7 +214,10 @@ mod tests {
 
     #[test]
     fn host_extraction() {
-        assert_eq!(host_of("https://www.example.com/x"), Some("www.example.com".into()));
+        assert_eq!(
+            host_of("https://www.example.com/x"),
+            Some("www.example.com".into())
+        );
         assert_eq!(host_of("example.com/x"), Some("example.com".into()));
     }
 }

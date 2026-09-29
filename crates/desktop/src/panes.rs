@@ -29,7 +29,12 @@ pub(crate) enum SplitDir {
 #[derive(Clone)]
 pub(crate) enum PaneNode {
     Leaf(usize),
-    Split { dir: SplitDir, ratio: f32, a: Box<PaneNode>, b: Box<PaneNode> },
+    Split {
+        dir: SplitDir,
+        ratio: f32,
+        a: Box<PaneNode>,
+        b: Box<PaneNode>,
+    },
 }
 
 /// Most recently focused tabs. Resolve against the current tree so moving or
@@ -47,7 +52,11 @@ impl PaneFocus {
     }
 
     pub(crate) fn target(&self, tree: &PaneNode) -> usize {
-        self.0.iter().rev().copied().find(|&t| tree.contains_leaf(t))
+        self.0
+            .iter()
+            .rev()
+            .copied()
+            .find(|&t| tree.contains_leaf(t))
             .unwrap_or_else(|| tree.first_leaf())
     }
 
@@ -129,7 +138,12 @@ impl PaneNode {
                 b: Box::new(PaneNode::Leaf(new)),
             },
             PaneNode::Leaf(t) => PaneNode::Leaf(t),
-            PaneNode::Split { dir: d, ratio, a, b } => PaneNode::Split {
+            PaneNode::Split {
+                dir: d,
+                ratio,
+                a,
+                b,
+            } => PaneNode::Split {
                 dir: d,
                 ratio,
                 a: Box::new(a.insert_split(target, dir, new)),
@@ -226,7 +240,12 @@ impl PaneNode {
 
     /// Tile `r` across this tree, pushing each leaf's `(tab, rect)` into `panes` and
     /// each split's divider rect into `divs`.
-    pub(crate) fn layout(&self, r: PaneRect, panes: &mut Vec<(usize, PaneRect)>, divs: &mut Vec<PaneRect>) {
+    pub(crate) fn layout(
+        &self,
+        r: PaneRect,
+        panes: &mut Vec<(usize, PaneRect)>,
+        divs: &mut Vec<PaneRect>,
+    ) {
         match self {
             PaneNode::Leaf(t) => panes.push((*t, r)),
             PaneNode::Split { dir, ratio, a, b } => match dir {
@@ -235,17 +254,41 @@ impl PaneNode {
                     let avail = (r.w - DIVIDER).max(2);
                     let first = ((avail as f32 * ratio).round() as i32).clamp(1, avail - 1);
                     a.layout(PaneRect { w: first, ..r }, panes, divs);
-                    divs.push(PaneRect { x: r.x + first, w: DIVIDER, ..r });
+                    divs.push(PaneRect {
+                        x: r.x + first,
+                        w: DIVIDER,
+                        ..r
+                    });
                     let bx = r.x + first + DIVIDER;
-                    b.layout(PaneRect { x: bx, w: (r.x + r.w - bx).max(1), ..r }, panes, divs);
+                    b.layout(
+                        PaneRect {
+                            x: bx,
+                            w: (r.x + r.w - bx).max(1),
+                            ..r
+                        },
+                        panes,
+                        divs,
+                    );
                 }
                 SplitDir::Col => {
                     let avail = (r.h - DIVIDER).max(2);
                     let first = ((avail as f32 * ratio).round() as i32).clamp(1, avail - 1);
                     a.layout(PaneRect { h: first, ..r }, panes, divs);
-                    divs.push(PaneRect { y: r.y + first, h: DIVIDER, ..r });
+                    divs.push(PaneRect {
+                        y: r.y + first,
+                        h: DIVIDER,
+                        ..r
+                    });
                     let by = r.y + first + DIVIDER;
-                    b.layout(PaneRect { y: by, h: (r.y + r.h - by).max(1), ..r }, panes, divs);
+                    b.layout(
+                        PaneRect {
+                            y: by,
+                            h: (r.y + r.h - by).max(1),
+                            ..r
+                        },
+                        panes,
+                        divs,
+                    );
                 }
             },
         }
@@ -258,7 +301,12 @@ impl App {
         let (w, h) = self.inner();
         let top = self.tab_bar_h() as i32;
         let bot = h as i32 - self.bar_h() as i32;
-        PaneRect { x: 0, y: top, w: w as i32, h: (bot - top).max(1) }
+        PaneRect {
+            x: 0,
+            y: top,
+            w: w as i32,
+            h: (bot - top).max(1),
+        }
     }
 
     /// Index into [`windows`](Self::windows) of the active window — the one whose pane
@@ -308,7 +356,9 @@ impl App {
     /// (keys → page) or a native terminal (keys → PTY). A `:read`/vim/blank pane has
     /// nothing to pass keys *to*, so passthrough must not follow focus onto one.
     fn pane_takes_passthrough(&self, tab: usize) -> bool {
-        self.tabs.get(tab).is_some_and(|t| t.term().is_some() || t.webview().is_some())
+        self.tabs
+            .get(tab)
+            .is_some_and(|t| t.term().is_some() || t.webview().is_some())
     }
 
     /// Let go of the pane we're leaving before focus moves to another one. The old
@@ -374,8 +424,7 @@ impl App {
             return;
         }
         let to_web = self.tabs.get(tab).is_some_and(|t| t.webview().is_some());
-        let keep_pass =
-            self.mode == ModeKind::Passthrough && self.pane_takes_passthrough(tab);
+        let keep_pass = self.mode == ModeKind::Passthrough && self.pane_takes_passthrough(tab);
         self.release_focused_pane(!to_web);
         self.active = Some(tab);
         self.find_reset();
@@ -446,7 +495,9 @@ impl App {
     /// (with a hint) when nothing lies along that axis to resize.
     pub(crate) fn resize_pane(&mut self, dir: char) {
         let Some(a) = self.active else { return };
-        let Some(w) = self.active_window() else { return };
+        let Some(w) = self.active_window() else {
+            return;
+        };
         // `h`/`l` move a Row split's divider (delta on the left child's width); `j`/`k`
         // a Col split's (delta on the top child's height). Right/down grow the first
         // child (+), left/up shrink it (−).
@@ -573,8 +624,12 @@ impl App {
     /// yellow highlight follows it. A no-op when nothing lies that direction.
     pub(crate) fn pane_move_swap(&mut self, dir: char) {
         let Some(a) = self.active else { return };
-        let Some(t) = self.pane_neighbor(dir) else { return };
-        let Some(aw) = self.active_window() else { return };
+        let Some(t) = self.pane_neighbor(dir) else {
+            return;
+        };
+        let Some(aw) = self.active_window() else {
+            return;
+        };
         self.windows[aw].swap_leaves(a, t);
         self.refresh_visibility();
         self.window.set_focus();
@@ -610,7 +665,9 @@ impl App {
     /// the pane is already standalone.
     pub(crate) fn break_pane(&mut self) {
         let Some(a) = self.active else { return };
-        let Some(aw) = self.active_window() else { return };
+        let Some(aw) = self.active_window() else {
+            return;
+        };
         if !matches!(self.windows[aw], PaneNode::Split { .. }) {
             self.set_status("pane isn't split — nothing to break out");
             return;
@@ -669,10 +726,17 @@ impl App {
 /// `None` when the whole tree maps away (every leaf was unsaved).
 pub(crate) fn encode_window(tree: &PaneNode, live_to_saved: &[Option<usize>]) -> Option<String> {
     match tree {
-        PaneNode::Leaf(t) => live_to_saved.get(*t).copied().flatten().map(|s| s.to_string()),
+        PaneNode::Leaf(t) => live_to_saved
+            .get(*t)
+            .copied()
+            .flatten()
+            .map(|s| s.to_string()),
         PaneNode::Split { dir, ratio, a, b } => {
             let dc = if *dir == SplitDir::Row { 'R' } else { 'C' };
-            match (encode_window(a, live_to_saved), encode_window(b, live_to_saved)) {
+            match (
+                encode_window(a, live_to_saved),
+                encode_window(b, live_to_saved),
+            ) {
                 (Some(a), Some(b)) => Some(format!("{dc}{ratio:.4}({a}|{b})")),
                 (Some(x), None) | (None, Some(x)) => Some(x),
                 (None, None) => None,
@@ -698,14 +762,26 @@ fn parse_node(s: &str) -> Option<(PaneNode, &str)> {
     let first = s.as_bytes().first()?;
     match first {
         b'R' | b'C' => {
-            let dir = if *first == b'R' { SplitDir::Row } else { SplitDir::Col };
+            let dir = if *first == b'R' {
+                SplitDir::Row
+            } else {
+                SplitDir::Col
+            };
             let rest = &s[1..];
             let open = rest.find('(')?;
             let ratio: f32 = rest[..open].parse().ok()?;
             let (a, rest) = parse_node(&rest[open + 1..])?;
             let (b, rest) = parse_node(rest.strip_prefix('|')?)?;
             let rest = rest.strip_prefix(')')?;
-            Some((PaneNode::Split { dir, ratio, a: Box::new(a), b: Box::new(b) }, rest))
+            Some((
+                PaneNode::Split {
+                    dir,
+                    ratio,
+                    a: Box::new(a),
+                    b: Box::new(b),
+                },
+                rest,
+            ))
         }
         _ => {
             let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
@@ -721,9 +797,12 @@ fn remap_window(node: PaneNode, map: &[Option<usize>]) -> Option<PaneNode> {
         PaneNode::Leaf(s) => map.get(s).copied().flatten().map(PaneNode::Leaf),
         PaneNode::Split { dir, ratio, a, b } => {
             match (remap_window(*a, map), remap_window(*b, map)) {
-                (Some(a), Some(b)) => {
-                    Some(PaneNode::Split { dir, ratio, a: Box::new(a), b: Box::new(b) })
-                }
+                (Some(a), Some(b)) => Some(PaneNode::Split {
+                    dir,
+                    ratio,
+                    a: Box::new(a),
+                    b: Box::new(b),
+                }),
                 (Some(x), None) | (None, Some(x)) => Some(x),
                 (None, None) => None,
             }
@@ -956,7 +1035,9 @@ mod tests {
         };
         assert!(t.resize_split(1, SplitDir::Row, RESIZE_STEP));
         match &t {
-            PaneNode::Split { ratio: outer, b, .. } => {
+            PaneNode::Split {
+                ratio: outer, b, ..
+            } => {
                 assert!((*outer - 0.5).abs() < 1e-5, "outer divider untouched");
                 match b.as_ref() {
                     PaneNode::Split { ratio: innr, .. } => {
@@ -972,7 +1053,12 @@ mod tests {
     #[test]
     fn layout_tiles_without_overlap_and_inside_the_band() {
         // A row split of a 100×40 band: two side-by-side panes plus a 1px divider.
-        let band = PaneRect { x: 0, y: 0, w: 100, h: 40 };
+        let band = PaneRect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 40,
+        };
         let mut panes = Vec::new();
         let mut divs = Vec::new();
         split(SplitDir::Row, 0, 1).layout(band, &mut panes, &mut divs);

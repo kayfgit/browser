@@ -12,12 +12,18 @@ pub(crate) fn clear(
     ai_id: Option<u64>,
     proxy: EventLoopProxy<UserEvent>,
 ) -> Result<(), String> {
-    let service = view.browsing_data().ok_or("this engine cannot clear browsing data")?;
+    let service = view
+        .browsing_data()
+        .ok_or("this engine cannot clear browsing data")?;
     service.clear(
         kind,
         range,
         Box::new(move |result| {
-            let _ = proxy.send_event(UserEvent::DataCleared { label, ai_id, result });
+            let _ = proxy.send_event(UserEvent::DataCleared {
+                label,
+                ai_id,
+                result,
+            });
         }),
     )
 }

@@ -16,7 +16,11 @@ impl Dispatcher {
     pub fn new(config: Config) -> Result<Self> {
         let text = TextBackend::new()?;
         let search = SearchBackend::new(config.search.clone())?;
-        Ok(Dispatcher { config, text, search })
+        Ok(Dispatcher {
+            config,
+            text,
+            search,
+        })
     }
 
     /// Resolve a bare target to a mode using the user's routing rules.

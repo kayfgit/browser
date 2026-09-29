@@ -179,7 +179,10 @@ mod tests {
         let p = buf[0];
         let (r, g, b) = ((p >> 16) & 0xff, (p >> 8) & 0xff, p & 0xff);
         assert_eq!(g, 0, "transparent green bled into the result");
-        assert!(r > 0 && b > 0 && r.abs_diff(b) <= 1, "red/blue should average evenly: {r},{b}");
+        assert!(
+            r > 0 && b > 0 && r.abs_diff(b) <= 1,
+            "red/blue should average evenly: {r},{b}"
+        );
         // 50% coverage over black ≈ a quarter of full intensity on each channel.
         assert!((50..=80).contains(&r), "unexpected alpha compositing: {r}");
         // Pixels outside the 1×1 blit are untouched.
@@ -201,7 +204,12 @@ mod tests {
     }
 
     /// Encode a 2×1 image in `color`/`depth` and hand back the PNG bytes.
-    fn encode(color: png::ColorType, depth: png::BitDepth, data: &[u8], palette: Option<Vec<u8>>) -> Vec<u8> {
+    fn encode(
+        color: png::ColorType,
+        depth: png::BitDepth,
+        data: &[u8],
+        palette: Option<Vec<u8>>,
+    ) -> Vec<u8> {
         let mut out = Vec::new();
         let mut enc = png::Encoder::new(&mut out, 2, 1);
         enc.set_color(color);
@@ -223,9 +231,19 @@ mod tests {
         let red_then_blue = [0xffu8, 0, 0, 0xff, 0, 0, 0xff, 0xff];
         let cases: Vec<Vec<u8>> = vec![
             // Straight RGBA.
-            encode(png::ColorType::Rgba, png::BitDepth::Eight, &red_then_blue, None),
+            encode(
+                png::ColorType::Rgba,
+                png::BitDepth::Eight,
+                &red_then_blue,
+                None,
+            ),
             // RGB (no alpha channel) — must come out fully opaque.
-            encode(png::ColorType::Rgb, png::BitDepth::Eight, &[0xff, 0, 0, 0, 0, 0xff], None),
+            encode(
+                png::ColorType::Rgb,
+                png::BitDepth::Eight,
+                &[0xff, 0, 0, 0, 0, 0xff],
+                None,
+            ),
             // Palette — png expands it for us.
             encode(
                 png::ColorType::Indexed,
@@ -244,7 +262,10 @@ mod tests {
         for (i, bytes) in cases.iter().enumerate() {
             let icon = decode_png(bytes).unwrap_or_else(|| panic!("case {i} failed to decode"));
             assert_eq!((icon.w, icon.h), (2, 1), "case {i}");
-            assert_eq!(icon.rgba, red_then_blue, "case {i} is not opaque red then blue");
+            assert_eq!(
+                icon.rgba, red_then_blue,
+                "case {i} is not opaque red then blue"
+            );
         }
     }
 
@@ -252,7 +273,12 @@ mod tests {
     /// composite an icon over the bar).
     #[test]
     fn decode_png_keeps_grayscale_alpha() {
-        let bytes = encode(png::ColorType::GrayscaleAlpha, png::BitDepth::Eight, &[0x80, 0xff, 0x40, 0x00], None);
+        let bytes = encode(
+            png::ColorType::GrayscaleAlpha,
+            png::BitDepth::Eight,
+            &[0x80, 0xff, 0x40, 0x00],
+            None,
+        );
         let icon = decode_png(&bytes).unwrap();
         assert_eq!(icon.rgba, [0x80, 0x80, 0x80, 0xff, 0x40, 0x40, 0x40, 0x00]);
     }

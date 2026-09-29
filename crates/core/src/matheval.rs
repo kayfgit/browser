@@ -10,7 +10,10 @@
 /// divides by zero, or overflows to a non-finite value.
 pub fn eval(input: &str) -> Option<f64> {
     let tokens = tokenize(input)?;
-    let mut p = Parser { toks: &tokens, pos: 0 };
+    let mut p = Parser {
+        toks: &tokens,
+        pos: 0,
+    };
     let value = p.expr(0)?;
     // Reject trailing garbage like "2 3" or "2 +".
     if p.pos != tokens.len() {

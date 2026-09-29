@@ -1,15 +1,23 @@
 //! Adapter entry points. The shell only stores browser_engine trait objects.
 mod events;
-mod shell;
-mod webview2;
 #[cfg(all(windows, feature = "servo-engine"))]
 pub(crate) mod servo;
+mod shell;
+mod webview2;
 
-pub(crate) fn with_window_target<R>(target: &tao::event_loop::EventLoopWindowTarget<crate::UserEvent>, f: impl FnOnce() -> R) -> R {
+pub(crate) fn with_window_target<R>(
+    target: &tao::event_loop::EventLoopWindowTarget<crate::UserEvent>,
+    f: impl FnOnce() -> R,
+) -> R {
     #[cfg(all(windows, feature = "servo-engine"))]
-    { servo::with_target(target, f) }
+    {
+        servo::with_target(target, f)
+    }
     #[cfg(not(all(windows, feature = "servo-engine")))]
-    { let _ = target; f() }
+    {
+        let _ = target;
+        f()
+    }
 }
 
 #[cfg(test)]
@@ -20,22 +28,31 @@ pub(crate) use webview2::{keep_alive as keep_webview2_alive, BuildOptions as Web
 
 use browser_engine::{Capabilities, ProviderDescriptor, ViewRequirements};
 
-pub(crate) const PROVIDERS: &[ProviderDescriptor] = &[ProviderDescriptor {
-    id: "webview2",
-    family: "blink",
-    display_name: "Microsoft Edge WebView2",
-    capabilities: Capabilities {
-        private: true,
-        disable_javascript: true,
-        document_scripts: true,
-        page_messages: true,
+pub(crate) const PROVIDERS: &[ProviderDescriptor] = &[
+    ProviderDescriptor {
+        id: "webview2",
+        family: "blink",
+        display_name: "Microsoft Edge WebView2",
+        capabilities: Capabilities {
+            private: true,
+            disable_javascript: true,
+            document_scripts: true,
+            page_messages: true,
+        },
     },
-},
-#[cfg(all(windows, feature = "servo-engine"))]
-ProviderDescriptor {
-    id: "servo", family: "servo", display_name: "Servo 0.5 (experimental)",
-    capabilities: Capabilities { private: false, disable_javascript: false, document_scripts: true, page_messages: true },
-}];
+    #[cfg(all(windows, feature = "servo-engine"))]
+    ProviderDescriptor {
+        id: "servo",
+        family: "servo",
+        display_name: "Servo 0.5 (experimental)",
+        capabilities: Capabilities {
+            private: false,
+            disable_javascript: false,
+            document_scripts: true,
+            page_messages: true,
+        },
+    },
+];
 
 pub(crate) fn resolve(
     name: &str,

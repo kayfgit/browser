@@ -117,7 +117,9 @@ impl App {
         }
         // Native tab: match against this tab's lines (the borrow ends before the
         // match list is stored).
-        let matches = self.find_native_lines().map(|lines| find_in_lines(&lines, q));
+        let matches = self
+            .find_native_lines()
+            .map(|lines| find_in_lines(&lines, q));
         if let Some(matches) = matches {
             self.find.matches = matches;
             if reveal && !self.find.matches.is_empty() {
@@ -144,12 +146,16 @@ impl App {
         if n == 0 {
             return;
         }
-        self.find.current =
-            if forward { (self.find.current + 1) % n } else { (self.find.current + n - 1) % n };
+        self.find.current = if forward {
+            (self.find.current + 1) % n
+        } else {
+            (self.find.current + n - 1) % n
+        };
         self.find_reveal_current();
         // Keep the read-mode caret on the current match as you step with n/N.
         if self.active_is_read_native() && self.read_caret_active() {
-            if let Some(&NativeMatch { line, start, .. }) = self.find.matches.get(self.find.current) {
+            if let Some(&NativeMatch { line, start, .. }) = self.find.matches.get(self.find.current)
+            {
                 self.place_read_caret_at(line, start);
             }
         }
@@ -170,18 +176,26 @@ impl App {
         // AI tabs are vim buffers too (their conversation), so they search the same way.
         if let Some(ai) = self.tabs.get(i).and_then(|t| t.ai()) {
             return Some(std::borrow::Cow::Owned(
-                ai.buf.lines.iter().map(|l| l.iter().collect::<String>()).collect(),
+                ai.buf
+                    .lines
+                    .iter()
+                    .map(|l| l.iter().collect::<String>())
+                    .collect(),
             ));
         }
         let vb = self.tabs.get(i)?.vim()?;
         Some(std::borrow::Cow::Owned(
-            vb.lines.iter().map(|l| l.iter().collect::<String>()).collect(),
+            vb.lines
+                .iter()
+                .map(|l| l.iter().collect::<String>())
+                .collect(),
         ))
     }
 
     /// Scroll a read tab (or move a vim tab's cursor) so the current match shows.
     pub(crate) fn find_reveal_current(&mut self) {
-        let Some(&NativeMatch { line, start, .. }) = self.find.matches.get(self.find.current) else {
+        let Some(&NativeMatch { line, start, .. }) = self.find.matches.get(self.find.current)
+        else {
             return;
         };
         let view = self.content_view_h();
@@ -210,7 +224,12 @@ impl App {
         if self.find.matches.is_empty() {
             format!("/{}  no matches", self.find.query)
         } else {
-            format!("/{}  {}/{}", self.find.query, self.find.current + 1, self.find.matches.len())
+            format!(
+                "/{}  {}/{}",
+                self.find.query,
+                self.find.current + 1,
+                self.find.matches.len()
+            )
         }
     }
 }
@@ -229,7 +248,11 @@ pub(crate) fn find_in_lines(lines: &[String], q: &str) -> Vec<NativeMatch> {
         let mut i = 0;
         while i + needle.len() <= hay.len() {
             if hay[i..i + needle.len()] == needle[..] {
-                out.push(NativeMatch { line: li, start: i, end: i + needle.len() });
+                out.push(NativeMatch {
+                    line: li,
+                    start: i,
+                    end: i + needle.len(),
+                });
                 i += needle.len();
             } else {
                 i += 1;

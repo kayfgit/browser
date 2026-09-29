@@ -24,7 +24,7 @@ impl App {
             return;
         }
         // Receiving a key here means the shell holds the keyboard, so any prior
-        // page-focus yield is over (the hook only forwards Esc as ReclaimNormal).
+        // page-focus yield is over.
         self.page_focus_yielded = false;
         match self.mode {
             ModeKind::Command | ModeKind::Find => self.key_command(key),
@@ -73,8 +73,7 @@ impl App {
                     // Web page: sticky — leaves only on Ctrl+S or Shift+Esc. Plain Esc is
                     // left for the page (a web SSH/vim needs it), so passthrough is never
                     // exited by a bare Esc, a click, or navigation.
-                    let leave = (self.modifiers.control_key()
-                        && key.physical_key == KeyCode::KeyS)
+                    let leave = (self.modifiers.control_key() && key.physical_key == KeyCode::KeyS)
                         || (matches!(key.logical_key, Key::Escape) && self.modifiers.shift_key());
                     if leave {
                         self.exit_to_normal();
@@ -389,19 +388,28 @@ impl App {
     /// session, `scratch` = the clean slate). A no-op on the header/blank rows. The
     /// picker itself goes away with the rest of the tabs — you land in the profile.
     pub(crate) fn switch_to_profile_entry(&mut self) {
-        let Some(name) = self.profile_row_under_cursor() else { return };
+        let Some(name) = self.profile_row_under_cursor() else {
+            return;
+        };
         self.run_action("profile", serde_json::json!({ "do": "load", "name": name }));
     }
 
     /// `d` on a `:profiles` row: delete that saved profile and refresh the picker.
     /// The `default` and `scratch` rows aren't files, so they're refused.
     pub(crate) fn delete_profile_entry(&mut self) {
-        let Some(name) = self.profile_row_under_cursor() else { return };
+        let Some(name) = self.profile_row_under_cursor() else {
+            return;
+        };
         if matches!(name.as_str(), "default" | "scratch") {
-            self.set_error(format!("'{name}' isn't a saved profile — nothing to delete"));
+            self.set_error(format!(
+                "'{name}' isn't a saved profile — nothing to delete"
+            ));
             return;
         }
-        self.run_action("profile", serde_json::json!({ "do": "delete", "name": name }));
+        self.run_action(
+            "profile",
+            serde_json::json!({ "do": "delete", "name": name }),
+        );
         // Only refresh if the picker survived (deleting doesn't switch, so it did).
         if self.active_url() == Some("browser://profiles") {
             self.open_profiles_page();
@@ -413,9 +421,15 @@ impl App {
         if self.active_url() != Some("browser://profiles") {
             return None;
         }
-        let buf = self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.vim())?;
-        let lines: Vec<String> =
-            buf.lines.iter().map(|chars| chars.iter().collect::<String>()).collect();
+        let buf = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.vim())?;
+        let lines: Vec<String> = buf
+            .lines
+            .iter()
+            .map(|chars| chars.iter().collect::<String>())
+            .collect();
         crate::profiles::profile_at_row(&lines, buf.cy)
     }
 
@@ -434,25 +448,44 @@ impl App {
             .map(|chars| chars.iter().collect::<String>());
         let Some(line) = line else { return };
         // Row form: "[on ]  Name    <id>" — the id is the last whitespace-delimited token.
-        let Some(id) = line.split_whitespace().last().map(str::to_string) else { return };
-        let Some(crate::tabs::TabContent::Extensions { view, items, .. }) = self.active
-            .and_then(|i| self.tabs.get(i)).map(|t| &t.content) else { return };
+        let Some(id) = line.split_whitespace().last().map(str::to_string) else {
+            return;
+        };
+        let Some(crate::tabs::TabContent::Extensions { view, items, .. }) = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .map(|t| &t.content)
+        else {
+            return;
+        };
         let target = *view;
-        let Some(pos) = items.iter().position(|e| e.id == id) else { return };
+        let Some(pos) = items.iter().position(|e| e.id == id) else {
+            return;
+        };
         let want = !items[pos].enabled;
         let mut items = items.clone();
         let Some(view) = self.view_by_id(target) else {
-            self.set_error("the source page was closed or replaced — reopen :extensions from a web page");
+            self.set_error(
+                "the source page was closed or replaced — reopen :extensions from a web page",
+            );
             return;
         };
         if let Err(error) = crate::extensions::set_enabled(view, id, want) {
-            self.set_error(error); return;
+            self.set_error(error);
+            return;
         }
         items[pos].enabled = want;
         let name = items[pos].name.trim().to_string();
         self.show_extensions_page(target, items);
-        let name = if name.is_empty() { "extension".to_string() } else { name };
-        self.set_status(format!("{} {name}", if want { "enabled" } else { "disabled" }));
+        let name = if name.is_empty() {
+            "extension".to_string()
+        } else {
+            name
+        };
+        self.set_status(format!(
+            "{} {name}",
+            if want { "enabled" } else { "disabled" }
+        ));
     }
 
     /// `d` on the `:history` pager: delete the visited entry under the cursor — or,
@@ -466,7 +499,9 @@ impl App {
         let Some(i) = self.active else { return };
         // The row span to delete: the visual selection if any, else the cursor line.
         let (lo, hi) = {
-            let Some(buf) = self.tabs.get(i).and_then(|t| t.vim()) else { return };
+            let Some(buf) = self.tabs.get(i).and_then(|t| t.vim()) else {
+                return;
+            };
             match buf.anchor {
                 Some((ay, _)) => (ay.min(buf.cy), ay.max(buf.cy)),
                 None => (buf.cy, buf.cy),
@@ -518,7 +553,9 @@ impl App {
         let n = self.ai_chats.len();
         // The buffer row span to delete: the visual selection if any, else the cursor.
         let (lo, hi) = {
-            let Some(buf) = self.tabs.get(i).and_then(|t| t.vim()) else { return };
+            let Some(buf) = self.tabs.get(i).and_then(|t| t.vim()) else {
+                return;
+            };
             match buf.anchor {
                 Some((ay, _)) => (ay.min(buf.cy), ay.max(buf.cy)),
                 None => (buf.cy, buf.cy),
@@ -587,14 +624,19 @@ impl App {
     /// Feed a key to the active `:error`/`:errors`/`:res` vim pager. Returns `true`
     /// if the pager consumed it (the shell should then do nothing else with the key).
     pub(crate) fn key_vim(&mut self, key: &KeyEvent) -> bool {
-        let Some(vk) = self.map_vim_key(key) else { return false };
+        let Some(vk) = self.map_vim_key(key) else {
+            return false;
+        };
         // Viewport in cells (monospace), matching the draw geometry below.
         let (w, _) = self.inner();
         let cw = self.painter.measure("M").max(1);
         let line_h = self.painter.line_height().max(1);
         let cols = ((w as usize).saturating_sub(2 * 8)) / cw;
         let rows = (self.content_view_h() as usize) / line_h;
-        let Some(buf) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.vim_mut())
+        let Some(buf) = self
+            .active
+            .and_then(|i| self.tabs.get_mut(i))
+            .and_then(|t| t.vim_mut())
         else {
             return false;
         };
@@ -612,7 +654,9 @@ impl App {
 
     /// Whether the active tab is an engine-free read tab (native render).
     pub(crate) fn active_is_read_native(&self) -> bool {
-        self.active.and_then(|i| self.tabs.get(i)).is_some_and(|t| t.native().is_some())
+        self.active
+            .and_then(|i| self.tabs.get(i))
+            .is_some_and(|t| t.native().is_some())
     }
 
     /// Whether read-mode caret/visual selection is currently active.
@@ -635,7 +679,9 @@ impl App {
         let cols = (((w as usize).saturating_sub(16)) / cw).max(1);
         let view = self.content_view_h();
         let rows = (view as usize / line_h).max(1);
-        let Some(nr) = self.active_native_mut() else { return };
+        let Some(nr) = self.active_native_mut() else {
+            return;
+        };
         let lines = nr.layout.text_lines();
         if lines.iter().all(|l| l.is_empty()) {
             return;
@@ -667,7 +713,9 @@ impl App {
         let line_h = self.painter.line_height().max(1);
         let cols = (((w as usize).saturating_sub(16)) / cw).max(1);
         let rows = (self.content_view_h() as usize / line_h).max(1);
-        let Some(nr) = self.active_native_mut() else { return };
+        let Some(nr) = self.active_native_mut() else {
+            return;
+        };
         let lines = nr.layout.text_lines();
         if lines.is_empty() {
             return;
@@ -685,7 +733,9 @@ impl App {
     /// with no selection leaves caret mode; the read view's pixel scroll is kept in
     /// sync with the caret's line so the cursor stays on-screen.
     pub(crate) fn key_read_caret(&mut self, key: &KeyEvent) -> bool {
-        let Some(vk) = self.map_vim_key(key) else { return false };
+        let Some(vk) = self.map_vim_key(key) else {
+            return false;
+        };
         let (w, _) = self.inner();
         let cw = self.painter.measure("M").max(1);
         let line_h = self.painter.line_height().max(1);
@@ -696,8 +746,12 @@ impl App {
         let mut consumed = true;
         let exit;
         {
-            let Some(nr) = self.active_native_mut() else { return false };
-            let Some(buf) = nr.caret.as_mut() else { return false };
+            let Some(nr) = self.active_native_mut() else {
+                return false;
+            };
+            let Some(buf) = nr.caret.as_mut() else {
+                return false;
+            };
             if vk == vim::Key::Esc && !buf.has_selection() {
                 exit = true;
             } else {
@@ -730,7 +784,9 @@ impl App {
     /// the visual selection. The shell keeps keyboard focus (like hint mode) and
     /// forwards motions via `key_caret`.
     pub(crate) fn enter_web_caret(&mut self) {
-        let Some(wv) = self.active_webview() else { return };
+        let Some(wv) = self.active_webview() else {
+            return;
+        };
         if self.mode == ModeKind::Scroll {
             let _ = wv.evaluate_script(
                 "window.__caretEnter&&window.__caretEnter(window.__scrollTarget());",
@@ -763,7 +819,8 @@ impl App {
                     *s,
                     "h" | "j" | "k" | "l" | "w" | "b" | "e" | "0" | "$" | "g" | "G" | "v" | "V"
                 ) {
-                    let _ = wv.evaluate_script(&format!("window.__caretKey&&window.__caretKey('{s}')"));
+                    let _ =
+                        wv.evaluate_script(&format!("window.__caretKey&&window.__caretKey('{s}')"));
                 }
             }
             _ => {}
@@ -954,10 +1011,16 @@ impl App {
     /// the click falls before (so clicking a glyph's left/right half lands sensibly).
     pub(crate) fn bar_caret_at_x(&self, x: f64) -> usize {
         const MARGIN: i32 = 8;
-        let pre = if self.mode == ModeKind::Find { '/' } else { ':' };
+        let pre = if self.mode == ModeKind::Find {
+            '/'
+        } else {
+            ':'
+        };
         let x_of = |k: usize| -> f64 {
             (MARGIN - self.bar_cmd_scroll) as f64
-                + self.painter.measure(&format!("{pre}{}", &self.command[..k])) as f64
+                + self
+                    .painter
+                    .measure(&format!("{pre}{}", &self.command[..k])) as f64
         };
         let mut best = 0;
         let mut prev = x_of(0);
@@ -985,15 +1048,13 @@ impl App {
                 self.bar_dragging = true;
                 self.cursor_on = true;
             }
-            ModeKind::Normal => {
-                match self.active_url() {
-                    Some(u) if u.starts_with("http") => {
-                        let line = format!("{} {u}", self.active_reopen_verb());
-                        self.enter_command(&line);
-                    }
-                    _ => self.enter_command(""),
+            ModeKind::Normal => match self.active_url() {
+                Some(u) if u.starts_with("http") => {
+                    let line = format!("{} {u}", self.active_reopen_verb());
+                    self.enter_command(&line);
                 }
-            }
+                _ => self.enter_command(""),
+            },
             _ => return,
         }
         // The click left keyboard focus on the web child (the click-focus trap); pull
@@ -1023,12 +1084,18 @@ impl App {
             }
             return;
         }
-        let Some((tab, _)) = self.pane_at_pixel(x, y) else { return };
+        let Some((tab, _)) = self.pane_at_pixel(x, y) else {
+            return;
+        };
         let Some(t) = self.tabs.get(tab) else { return };
         let text = t
             .term()
             .and_then(|s| s.pty.selection_text())
-            .or_else(|| t.vim().filter(|b| b.has_selection()).map(|b| b.selection_text()))
+            .or_else(|| {
+                t.vim()
+                    .filter(|b| b.has_selection())
+                    .map(|b| b.selection_text())
+            })
             .or_else(|| {
                 t.native()
                     .and_then(|n| n.caret.as_ref())
@@ -1116,12 +1183,20 @@ impl App {
 
     /// Byte offset of the char before `pos` (or `pos` if at the start).
     pub(crate) fn prev_char(&self, pos: usize) -> usize {
-        self.command[..pos].char_indices().next_back().map(|(i, _)| i).unwrap_or(pos)
+        self.command[..pos]
+            .char_indices()
+            .next_back()
+            .map(|(i, _)| i)
+            .unwrap_or(pos)
     }
 
     /// Byte offset just after the char at `pos` (or `pos` if at the end).
     pub(crate) fn next_char(&self, pos: usize) -> usize {
-        self.command[pos..].chars().next().map(|c| pos + c.len_utf8()).unwrap_or(pos)
+        self.command[pos..]
+            .chars()
+            .next()
+            .map(|c| pos + c.len_utf8())
+            .unwrap_or(pos)
     }
 
     /// Start of the word before `pos` in the command line (see [`prev_word_boundary`]).
@@ -1251,9 +1326,16 @@ impl App {
             if let Some(cands) = crate::commands::arg_candidates(self, verb, &prior) {
                 let len = cands.len();
                 let next = if let Some(i) = cands.iter().position(|c| c == prefix) {
-                    if forward { (i + 1) % len } else { (i + len - 1) % len }
+                    if forward {
+                        (i + 1) % len
+                    } else {
+                        (i + len - 1) % len
+                    }
                 } else if forward {
-                    cands.iter().position(|c| c.starts_with(prefix)).unwrap_or(0)
+                    cands
+                        .iter()
+                        .position(|c| c.starts_with(prefix))
+                        .unwrap_or(0)
                 } else {
                     // Step back from the first matching choice (or the end of the list).
                     cands
@@ -1274,7 +1356,9 @@ impl App {
                 return true;
             }
         }
-        let Some(sug) = self.command_suggestion() else { return false };
+        let Some(sug) = self.command_suggestion() else {
+            return false;
+        };
         self.command = sug;
         self.command_cursor = self.command.len();
         self.command_anchor = None;
@@ -1311,7 +1395,10 @@ impl App {
             // Abandon any half-typed vi find-char (f/F/t/T awaiting its target).
             self.term_find_pending = None;
             // Leave copy/vi mode (if active) so the live grid takes input again.
-            if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut())
+            if let Some(s) = self
+                .active
+                .and_then(|i| self.tabs.get_mut(i))
+                .and_then(|t| t.term_mut())
             {
                 if s.pty.is_vi() {
                     s.pty.toggle_vi();
@@ -1366,7 +1453,10 @@ impl App {
         // into Alacritty's own vi mode — a vi cursor over the LIVE colored grid, with
         // grid selection + `selection_to_string` to yank. `i`/`Enter` resumes.
         if self.active_is_term() {
-            if let Some(s) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.term_mut())
+            if let Some(s) = self
+                .active
+                .and_then(|i| self.tabs.get_mut(i))
+                .and_then(|t| t.term_mut())
             {
                 if !s.pty.is_vi() {
                     s.pty.toggle_vi();
@@ -1542,7 +1632,9 @@ pub(crate) fn next_word_boundary(s: &str, pos: usize) -> usize {
     let rest = &s[pos..];
     let after_sep = rest.trim_start_matches(|c| !is_word_char(c));
     let sep = rest.len() - after_sep.len();
-    let word = after_sep.find(|c| !is_word_char(c)).unwrap_or(after_sep.len());
+    let word = after_sep
+        .find(|c| !is_word_char(c))
+        .unwrap_or(after_sep.len());
     pos + sep + word
 }
 
@@ -1557,8 +1649,14 @@ mod tests {
         // Mid-token: the last token is what's being completed.
         assert_eq!(completion_parts("clear hi"), Some(("clear", vec![], "hi")));
         // A trailing space moves completion to the NEXT argument position.
-        assert_eq!(completion_parts("clear cache "), Some(("clear", vec!["cache"], "")));
-        assert_eq!(completion_parts("history clear 1"), Some(("history", vec!["clear"], "1")));
+        assert_eq!(
+            completion_parts("clear cache "),
+            Some(("clear", vec!["cache"], ""))
+        );
+        assert_eq!(
+            completion_parts("history clear 1"),
+            Some(("history", vec!["clear"], "1"))
+        );
         // Empty / whitespace-only lines complete nothing.
         assert_eq!(completion_parts(""), None);
         assert_eq!(completion_parts("   "), None);

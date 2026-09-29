@@ -13,7 +13,7 @@
 //!   * browser → our stdin: frames `[type:u8][len:u32 LE][payload]`;
 //!     type 0 = input bytes to write to the PTY; type 1 = resize with payload
 //!     `[cols:u16 LE][rows:u16 LE]`.
-//!   * our stdout ← PTY: raw output bytes (the browser base64s and feeds xterm).
+//!   * our stdout ← PTY: raw output bytes (the browser feeds them to its VT parser).
 //!
 //! Built as a Windows GUI-subsystem binary so launching it from the (GUI)
 //! browser does not pop up a console window — and, crucially, WITHOUT spawning
@@ -49,7 +49,12 @@ fn main() {
     let prog_args = &args[at + 1..];
 
     let pair = native_pty_system()
-        .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
         .expect("openpty");
 
     let mut cmd = CommandBuilder::new(program);
@@ -113,7 +118,12 @@ fn main() {
             1 if payload.len() == 4 => {
                 let cols = u16::from_le_bytes([payload[0], payload[1]]);
                 let rows = u16::from_le_bytes([payload[2], payload[3]]);
-                let _ = master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+                let _ = master.resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                });
             }
             _ => {}
         }

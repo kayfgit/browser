@@ -715,10 +715,42 @@ dependencies = [
 name = "browser"
 version = "0.1.0"
 dependencies = [
+ "adblock",
+ "alacritty_terminal",
  "anyhow",
+ "arboard",
+ "base64 0.22.1",
+ "browser-backend-search",
+ "browser-backend-text",
  "browser-core",
- "browser-tui",
- "tokio",
+ "browser-engine",
+ "content-security-policy",
+ "directories",
+ "dpi",
+ "embed-manifest",
+ "euclid",
+ "flate2",
+ "fontdue",
+ "png",
+ "portable-pty",
+ "raw-window-handle",
+ "reqwest",
+ "rustls",
+ "scoped-tls",
+ "serde",
+ "serde_json",
+ "servo",
+ "softbuffer",
+ "surfman",
+ "tao",
+ "tar",
+ "toml 1.1.2+spec-1.1.0",
+ "url",
+ "webview2-com",
+ "windows 0.61.3",
+ "windows 0.62.2",
+ "windows-core 0.61.2",
+ "wry",
 ]
 
 [[package]]
@@ -749,6 +781,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "browser-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "browser-core",
+ "browser-tui",
+ "tokio",
+]
+
+[[package]]
 name = "browser-core"
 version = "0.1.0"
 dependencies = [
@@ -761,54 +803,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "browser-desktop"
-version = "0.1.0"
-dependencies = [
- "adblock",
- "alacritty_terminal",
- "anyhow",
- "arboard",
- "base64 0.22.1",
- "browser-backend-search",
- "browser-backend-text",
- "browser-core",
- "browser-engine",
- "content-security-policy",
- "directories",
- "dpi",
- "embed-manifest",
- "euclid",
- "fontdue",
- "png",
- "raw-window-handle",
- "reqwest",
- "rustls",
- "scoped-tls",
- "serde",
- "serde_json",
- "servo",
- "softbuffer",
- "surfman",
- "tao",
- "toml 1.1.2+spec-1.1.0",
- "url",
- "webview2-com",
- "windows 0.61.3",
- "windows 0.62.2",
- "windows-core 0.61.2",
- "wry",
-]
-
-[[package]]
 name = "browser-engine"
 version = "0.1.0"
-
-[[package]]
-name = "browser-pty-host"
-version = "0.1.0"
-dependencies = [
- "portable-pty",
-]
 
 [[package]]
 name = "browser-tui"

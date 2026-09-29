@@ -4,8 +4,8 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2_13,
 };
 use webview2_com::{
-    take_pwstr, BrowserExtensionEnableCompletedHandler, ProfileAddBrowserExtensionCompletedHandler,
-    ProfileGetBrowserExtensionsCompletedHandler,
+    take_pwstr, BrowserExtensionEnableCompletedHandler, BrowserExtensionRemoveCompletedHandler,
+    ProfileAddBrowserExtensionCompletedHandler, ProfileGetBrowserExtensionsCompletedHandler,
 };
 use windows_core::{Interface, BOOL, PWSTR};
 use wry::{WebView, WebViewExtWindows};
@@ -41,7 +41,9 @@ fn read_list(list: &ICoreWebView2BrowserExtensionList) -> Vec<ExtInfo> {
         return out;
     }
     for i in 0..count {
-        let Ok(ext) = (unsafe { list.GetValueAtIndex(i) }) else { continue };
+        let Ok(ext) = (unsafe { list.GetValueAtIndex(i) }) else {
+            continue;
+        };
         let id = pwstr_of(|p| unsafe { ext.Id(p) });
         let name = pwstr_of(|p| unsafe { ext.Name(p) });
         let mut b = BOOL::default();
@@ -56,7 +58,9 @@ pub(crate) fn list(webview: &WebView, done: Completion<Vec<ExtInfo>>) -> EngineR
     let profile = profile7(webview).ok_or("extension APIs unavailable in this runtime")?;
     let handler = ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(move |hr, list| {
         done(hr.map_err(|e| e.to_string()).and_then(|()| {
-            list.as_ref().map(read_list).ok_or_else(|| "engine returned no extension list".into())
+            list.as_ref()
+                .map(read_list)
+                .ok_or_else(|| "engine returned no extension list".into())
         }));
         Ok(())
     }));
@@ -92,6 +96,58 @@ pub(crate) fn install_dir(webview: &WebView, dir: &std::path::Path) -> EngineRes
     Ok(())
 }
 
+/// Add every unpacked extension under `dir`, then remove any OTHER installed extension
+/// with the same name. An unpacked extension without a manifest `key` gets its ID from
+/// its folder path, so when the bundle moves (the source tree → the unpacked copy in
+/// the data folder), the profile keeps the old copy too and both would run. Async and
+/// best-effort, like the rest of this module.
+pub(crate) fn install_dir_replacing(webview: &WebView, dir: &std::path::Path) -> EngineResult {
+    let profile = profile7(webview).ok_or("extension APIs unavailable in this runtime")?;
+    let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
+    for entry in entries.flatten() {
+        let path = windows_core::HSTRING::from(entry.path().as_os_str());
+        let lookup = profile.clone();
+        let handler =
+            ProfileAddBrowserExtensionCompletedHandler::create(Box::new(move |hr, added| {
+                let Some(added) = added.filter(|_| hr.is_ok()) else {
+                    return Ok(());
+                };
+                let keep = pwstr_of(|p| unsafe { added.Id(p) });
+                let name = pwstr_of(|p| unsafe { added.Name(p) });
+                if keep.is_empty() || name.is_empty() {
+                    return Ok(());
+                }
+                let sweep = ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(
+                    move |_hr, list| {
+                        let Some(list) = list.as_ref() else {
+                            return Ok(());
+                        };
+                        let mut count = 0u32;
+                        let _ = unsafe { list.Count(&mut count) };
+                        for i in 0..count {
+                            let Ok(ext) = (unsafe { list.GetValueAtIndex(i) }) else {
+                                continue;
+                            };
+                            let id = pwstr_of(|p| unsafe { ext.Id(p) });
+                            let other = pwstr_of(|p| unsafe { ext.Name(p) });
+                            if id != keep && other == name {
+                                let done = BrowserExtensionRemoveCompletedHandler::create(
+                                    Box::new(|_hr| Ok(())),
+                                );
+                                let _ = unsafe { ext.Remove(&done) };
+                            }
+                        }
+                        Ok(())
+                    },
+                ));
+                let _ = unsafe { lookup.GetBrowserExtensions(&sweep) };
+                Ok(())
+            }));
+        unsafe { profile.AddBrowserExtension(&path, &handler) }.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Shared body of the enable/disable calls: fetch the list, then `Enable(enabled)` every
 /// extension the `want` predicate accepts. All best-effort.
 fn apply(
@@ -106,7 +162,9 @@ fn apply(
                 let mut count = 0u32;
                 let _ = unsafe { list.Count(&mut count) };
                 for i in 0..count {
-                    let Ok(ext) = (unsafe { list.GetValueAtIndex(i) }) else { continue };
+                    let Ok(ext) = (unsafe { list.GetValueAtIndex(i) }) else {
+                        continue;
+                    };
                     let id = pwstr_of(|p| unsafe { ext.Id(p) });
                     if want(&ext, &id) {
                         let done =

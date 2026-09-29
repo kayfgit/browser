@@ -21,7 +21,10 @@ pub enum Span {
     Strong(String),
     Code(String),
     /// References `Document.links[link_id - 1]`.
-    Link { text: String, link_id: usize },
+    Link {
+        text: String,
+        link_id: usize,
+    },
 }
 
 impl Span {
@@ -37,12 +40,25 @@ impl Span {
 /// A block-level element. The TUI lays these out top to bottom.
 #[derive(Debug, Clone)]
 pub enum Block {
-    Heading { level: u8, spans: Vec<Span> },
-    Paragraph { spans: Vec<Span> },
+    Heading {
+        level: u8,
+        spans: Vec<Span>,
+    },
+    Paragraph {
+        spans: Vec<Span>,
+    },
     /// Preformatted; the renderer must NOT reflow these lines.
-    Code { lines: Vec<String> },
-    ListItem { ordered: bool, marker: String, spans: Vec<Span> },
-    Quote { spans: Vec<Span> },
+    Code {
+        lines: Vec<String>,
+    },
+    ListItem {
+        ordered: bool,
+        marker: String,
+        spans: Vec<Span>,
+    },
+    Quote {
+        spans: Vec<Span>,
+    },
     Rule,
     Blank,
 }
@@ -60,7 +76,10 @@ pub struct Document {
 
 impl Document {
     pub fn new(url: impl Into<String>) -> Self {
-        Document { url: url.into(), ..Default::default() }
+        Document {
+            url: url.into(),
+            ..Default::default()
+        }
     }
 
     /// Resolve a followable link number to its target URL.
@@ -78,7 +97,9 @@ pub struct DocumentBuilder {
 
 impl DocumentBuilder {
     pub fn new(url: impl Into<String>) -> Self {
-        DocumentBuilder { doc: Document::new(url) }
+        DocumentBuilder {
+            doc: Document::new(url),
+        }
     }
 
     pub fn title(&mut self, title: impl Into<String>) -> &mut Self {
@@ -94,7 +115,11 @@ impl DocumentBuilder {
     /// Register a link and return its 1-based id for use in a [`Span::Link`].
     pub fn add_link(&mut self, url: impl Into<String>, text: impl Into<String>) -> usize {
         let id = self.doc.links.len() + 1;
-        self.doc.links.push(Link { id, url: url.into(), text: text.into() });
+        self.doc.links.push(Link {
+            id,
+            url: url.into(),
+            text: text.into(),
+        });
         id
     }
 

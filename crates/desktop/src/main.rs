@@ -1,4 +1,4 @@
-//! browser-desktop — a lightweight, keyboard-driven shell that boots a WebView2
+//! browser — a lightweight, keyboard-driven shell that boots a WebView2
 //! engine only when you open a page.
 //!
 //! The window chrome (welcome screen + command bar) is drawn natively with a
@@ -35,6 +35,7 @@ mod ai;
 mod app;
 mod blocklist;
 mod bookmarks;
+mod bundled_extensions;
 mod chrome;
 mod commands;
 mod config;
@@ -61,13 +62,13 @@ mod session;
 mod tabs;
 mod term;
 mod vim;
-use draw::Painter;
 use app::{clipboard_get, clipboard_set, AdblockMode, App, ExtInfo, ModeKind, UserEvent};
 use commands::COMMANDS;
+use draw::Painter;
 use find::FindState;
 use hints::HintAct;
-use tabs::{js_string, parse_open_flags, parse_tab_flag, Source, Tab};
 use pages::commands_document;
+use tabs::{js_string, parse_open_flags, parse_tab_flag, Source, Tab};
 use term::program_exists;
 
 /// Height of the bottom command/status bar, in physical pixels (at zoom 1.0).
@@ -175,30 +176,85 @@ const RESEARCH_JS: &str = r#"
 "#;
 
 /// Well-known ad-exchange / analytics / tracker hostnames, lower-cased. Consulted by the
-/// native navigation guard ([`url_is_ad_host`]) as the tiny always-on fallback that stops
+/// native navigation guard ([`url_is_ad_host`](crate::tabs::url_is_ad_host)) as the tiny always-on fallback that stops
 /// a forced top-level redirect to one of these hosts during the brief window before the
 /// full EasyList [`Engine`](crate::blocklist) finishes compiling off-thread at startup.
 /// The page-side cosmetic layer doesn't read this list — the engine is the source of truth
 /// there, and sub-resources are uBlock Origin Lite's job. Matched as a host substring, so
 /// `adservice.google.` catches `adservice.google.com`.
 pub(crate) const AD_HOSTS: &[&str] = &[
-    "doubleclick.net", "googlesyndication.com", "googleadservices.com",
-    "google-analytics.com", "googletagmanager.com", "googletagservices.com",
-    "adservice.google.", "pagead2.googlesyndication", "amazon-adsystem.com",
-    "adnxs.com", "adsrvr.org", "rubiconproject.com", "pubmatic.com", "openx.net",
-    "criteo.com", "criteo.net", "taboola.com", "outbrain.com", "scorecardresearch.com",
-    "quantserve.com", "moatads.com", "adcolony.com", "applovin.com", "zedo.com",
-    "bidswitch.net", "casalemedia.com", "sharethrough.com", "smartadserver.com",
-    "teads.tv", "3lift.com", "yieldmo.com", "contextweb.com", "gumgum.com",
-    "indexww.com", "media.net", "mgid.com", "revcontent.com", "adform.net",
-    "adroll.com", "bluekai.com", "demdex.net", "everesttech.net", "rlcdn.com",
-    "agkn.com", "crwdcntrl.net", "mathtag.com", "adsafeprotected.com",
-    "serving-sys.com", "flashtalking.com", "servedbyadbutler.com",
-    "hotjar.com", "mixpanel.com", "segment.io", "amplitude.com", "branch.io",
-    "onesignal.com", "clarity.ms", "fullstory.com", "heap.io", "nr-data.net",
-    "bugsnag.com", "optimizely.com", "chartbeat.com", "parsely.com",
-    "permutive.com", "cxense.com", "nitropay.com", "nitrocnct.com", "analytics.tiktok",
-    "ads.linkedin.com", "ads.pinterest.com", "ads.yahoo.com",
+    "doubleclick.net",
+    "googlesyndication.com",
+    "googleadservices.com",
+    "google-analytics.com",
+    "googletagmanager.com",
+    "googletagservices.com",
+    "adservice.google.",
+    "pagead2.googlesyndication",
+    "amazon-adsystem.com",
+    "adnxs.com",
+    "adsrvr.org",
+    "rubiconproject.com",
+    "pubmatic.com",
+    "openx.net",
+    "criteo.com",
+    "criteo.net",
+    "taboola.com",
+    "outbrain.com",
+    "scorecardresearch.com",
+    "quantserve.com",
+    "moatads.com",
+    "adcolony.com",
+    "applovin.com",
+    "zedo.com",
+    "bidswitch.net",
+    "casalemedia.com",
+    "sharethrough.com",
+    "smartadserver.com",
+    "teads.tv",
+    "3lift.com",
+    "yieldmo.com",
+    "contextweb.com",
+    "gumgum.com",
+    "indexww.com",
+    "media.net",
+    "mgid.com",
+    "revcontent.com",
+    "adform.net",
+    "adroll.com",
+    "bluekai.com",
+    "demdex.net",
+    "everesttech.net",
+    "rlcdn.com",
+    "agkn.com",
+    "crwdcntrl.net",
+    "mathtag.com",
+    "adsafeprotected.com",
+    "serving-sys.com",
+    "flashtalking.com",
+    "servedbyadbutler.com",
+    "hotjar.com",
+    "mixpanel.com",
+    "segment.io",
+    "amplitude.com",
+    "branch.io",
+    "onesignal.com",
+    "clarity.ms",
+    "fullstory.com",
+    "heap.io",
+    "nr-data.net",
+    "bugsnag.com",
+    "optimizely.com",
+    "chartbeat.com",
+    "parsely.com",
+    "permutive.com",
+    "cxense.com",
+    "nitropay.com",
+    "nitrocnct.com",
+    "analytics.tiktok",
+    "ads.linkedin.com",
+    "ads.pinterest.com",
+    "ads.yahoo.com",
     // NOTE: YouTube's own first-party ad telemetry (`/api/stats/ads`, `/ptracking`,
     // `/get_midroll_`) is DELIBERATELY absent — blocking it trips YouTube's anti-adblock
     // detector, which then serves the "Ad blockers violate ToS" enforcement wall. The ads
@@ -801,7 +857,11 @@ const FIND_JS: &str = r#"
 })();
 "#;
 
-/// pty-host trees under the shell. Best-effort: any failure is ignored.
+/// Tag this process with an explicit AppUserModelID so the taskbar treats it and
+/// the processes it spawns as one application. (Task Manager still files WebView2
+/// under its own "WebView2 Manager" group: the runtime claims a separate identity.
+/// Correct parenting comes from the DPI manifest in `build.rs`.) Best-effort: any
+/// failure is ignored.
 #[cfg(windows)]
 fn set_app_user_model_id() {
     use windows::core::w;
@@ -820,6 +880,12 @@ fn main() -> Result<()> {
     // scattering the WebView2 manager and friends as separate top-level apps.
     #[cfg(windows)]
     set_app_user_model_id();
+
+    // Release builds load uBlock Origin Lite from a copy unpacked out of the
+    // executable; get that done before the first web tab needs it.
+    if !cfg!(debug_assertions) {
+        bundled_extensions::prepare_in_background();
+    }
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
@@ -928,7 +994,7 @@ fn main() -> Result<()> {
         no_css: false,
         no_video: false,
         no_scrollbar: false,
-        term_command: vec!["nu".to_string()],
+        term_command: term::default_shell(),
         search_template: browser_core::DEFAULT_SEARCH_URL.to_string(),
         next_term_id: 0,
         groq_key: ai::load_key(),
@@ -991,13 +1057,12 @@ fn main() -> Result<()> {
     // launch (BlocklistReady), and navigations use the timing heuristic until then.
     blocklist::spawn_build(app.blocker.clone(), app.proxy.clone());
 
-    // Optional: open a page immediately, e.g. `browser-desktop youtube.com`,
-    // or run a command, e.g. `browser-desktop ":nojs youtube.com"`. An explicit
+    // Optional: open a page immediately, e.g. `browser youtube.com`,
+    // or run a command, e.g. `browser ":nojs youtube.com"`. An explicit
     // CLI target takes precedence over (and skips) session restore. With no
     // argument, restore the previous session's tabs + UI state (window geometry was
     // already applied at build time above).
-    engines::with_window_target(&event_loop, || {
-    match cli_arg {
+    engines::with_window_target(&event_loop, || match cli_arg {
         Some(target) => {
             let t = target.trim_start();
             if let Some(cmd) = t.strip_prefix(':') {
@@ -1011,8 +1076,6 @@ fn main() -> Result<()> {
                 app.restore_session(s);
             }
         }
-    }
-
     });
 
     #[cfg(all(windows, feature = "servo-engine"))]
@@ -1221,13 +1284,13 @@ fn main() -> Result<()> {
                         app.on_wheel(dy);
                     }
                 }
-                WindowEvent::KeyboardInput { event: key, .. } => {
-                    if key.state == ElementState::Pressed {
-                        app.handle_key(&key);
-                        if app.quit {
-                            app.teardown();
-                            *control_flow = ControlFlow::Exit;
-                        }
+                WindowEvent::KeyboardInput { event: key, .. }
+                    if key.state == ElementState::Pressed =>
+                {
+                    app.handle_key(&key);
+                    if app.quit {
+                        app.teardown();
+                        *control_flow = ControlFlow::Exit;
                     }
                 }
                 _ => {}
@@ -1314,6 +1377,18 @@ fn main() -> Result<()> {
                 }
             }
             Event::UserEvent(UserEvent::ReclaimNormal) => app.reclaim_from_page(),
+            Event::UserEvent(UserEvent::ReplayToShell(key)) => {
+                // Only while still in Normal: a key queued behind one that changed
+                // mode (`:` opening the command bar) is already on its way to the
+                // shell, which holds focus by then.
+                if app.mode == ModeKind::Normal {
+                    app.reclaim_from_page();
+                    // Update the hook now, so keys typed right behind this one aren't
+                    // taken from the page a second time.
+                    khook::set_mode(app.hook_mode_code());
+                }
+                khook::replay(key);
+            }
             Event::UserEvent(UserEvent::PaneClick) => {
                 // A gesture is under way in the page: hold the focus-reclaim poll off
                 // until it has finished and the bridge has said who should keep the

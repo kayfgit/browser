@@ -87,10 +87,14 @@ impl App {
         }
         let key = session::profile_key(name);
         if key.is_empty() {
-            return Err(format!("'{name}' isn't a usable profile name — use letters or digits"));
+            return Err(format!(
+                "'{name}' isn't a usable profile name — use letters or digits"
+            ));
         }
         if RESERVED.contains(&key.as_str()) {
-            return Err(format!("'{key}' is reserved — :scratch is the temporary clean slate"));
+            return Err(format!(
+                "'{key}' is reserved — :scratch is the temporary clean slate"
+            ));
         }
         let Some(path) = session::profile_path(name) else {
             return Err("no data directory available to save profiles in".into());
@@ -165,7 +169,12 @@ impl App {
             self.config.profile = None;
         }
         // A scratch return-path pointing at the deleted profile would strand you.
-        if self.config.scratch_return.as_deref().is_some_and(|p| session::profile_key(p) == key) {
+        if self
+            .config
+            .scratch_return
+            .as_deref()
+            .is_some_and(|p| session::profile_key(p) == key)
+        {
             self.config.scratch_return = None;
         }
         crate::config::save(&self.config);
@@ -274,8 +283,10 @@ impl App {
     /// the restore rather than replaced by the file's copy.
     pub(crate) fn apply_session(&mut self, s: session::Session) {
         if let Some(g) = &s.window {
-            self.window.set_outer_position(tao::dpi::PhysicalPosition::new(g.x, g.y));
-            self.window.set_inner_size(tao::dpi::PhysicalSize::new(g.w, g.h));
+            self.window
+                .set_outer_position(tao::dpi::PhysicalPosition::new(g.x, g.y));
+            self.window
+                .set_inner_size(tao::dpi::PhysicalSize::new(g.w, g.h));
         }
         let history = std::mem::take(&mut self.history);
         let history_at = std::mem::take(&mut self.history_at);
@@ -309,8 +320,9 @@ impl App {
         self.pane_focus = crate::panes::PaneFocus::default();
         // Stay on the AI tab if that's where we were — it's the only survivor — else
         // fall back to the welcome screen until the new profile's tabs land.
-        self.active =
-            was_on_ai.then(|| self.tabs.iter().position(|t| t.ai().is_some())).flatten();
+        self.active = was_on_ai
+            .then(|| self.tabs.iter().position(|t| t.ai().is_some()))
+            .flatten();
         self.ai_prev_active = None;
         // Tabs from the profile we're leaving must not be reopenable in the next one.
         self.closed_tabs.clear();
@@ -324,9 +336,17 @@ impl App {
 /// The `:profiles` picker's lines: a header, then one row per saved profile with the
 /// active one marked. `active` is what [`App::profile_label`] returns, so the scratch
 /// row is marked while `:scratch` is on.
-pub(crate) fn profile_lines(names: &[String], active: Option<&str>, scratch_return: Option<&str>) -> Vec<String> {
+pub(crate) fn profile_lines(
+    names: &[String],
+    active: Option<&str>,
+    scratch_return: Option<&str>,
+) -> Vec<String> {
     let mut lines = vec![
-        format!("{} saved profile{}   —   Enter switches · d deletes", names.len(), if names.len() == 1 { "" } else { "s" }),
+        format!(
+            "{} saved profile{}   —   Enter switches · d deletes",
+            names.len(),
+            if names.len() == 1 { "" } else { "s" }
+        ),
         String::new(),
     ];
     let mark = |row_key: &str| -> &'static str {
@@ -337,7 +357,10 @@ pub(crate) fn profile_lines(names: &[String], active: Option<&str>, scratch_retu
     };
     // The always-present rows: the unnamed session and the scratch slate.
     let default_active = active.is_none();
-    lines.push(format!("{}default   (the unnamed session)", if default_active { "▸ " } else { "  " }));
+    lines.push(format!(
+        "{}default   (the unnamed session)",
+        if default_active { "▸ " } else { "  " }
+    ));
     let scratch_note = match scratch_return {
         Some(back) if active == Some("scratch") => format!("   (clean slate — back to '{back}')"),
         _ => "   (temporary clean slate)".to_string(),

@@ -73,8 +73,17 @@ impl Args {
             }
         }
 
-        let target = if rest.is_empty() { None } else { Some(rest.join(" ")) };
-        Ok(Args { config, target, help, dump })
+        let target = if rest.is_empty() {
+            None
+        } else {
+            Some(rest.join(" "))
+        };
+        Ok(Args {
+            config,
+            target,
+            help,
+            dump,
+        })
     }
 }
 

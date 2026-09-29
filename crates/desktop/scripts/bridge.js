@@ -96,8 +96,8 @@
     return ctrl ? 'ctrl' : '';
   }
   // Act on the click (the END of the gesture, so the page's own handlers run first).
-  // Esc (caught by the keyboard hook) snaps the shell back from a hold/edit. A script
-  // `.focus()` with no click is still caught by the shell's periodic reclaim tick.
+  // The keyboard hook takes the keyboard back from a hold on Esc or on any shell key,
+  // and from a script `.focus()` (no click) on the next key.
   function onClick(e) {
     if (window.__mode && window.__mode !== 'normal') return;
     var kind = classify(e.target);
@@ -124,8 +124,48 @@
     // fetches its menu before showing it) lost focus in that window and the popover
     // never appeared: the button looked dead. Posting at pointerdown closes it.
     if (window.__mode && window.__mode !== 'normal') return;
-    if (classify(e.target) === 'ctrl') post('page-hold');
+    if (classify(e.target) === 'ctrl') { __ctrlPressAt = Date.now(); post('page-hold'); }
   }, true);
+  // A control that moves focus into a text field (a search icon that opens a search
+  // box) means the user is about to type there: enter Insert, exactly as if the field
+  // had been clicked. Otherwise the keyboard hook would treat those keystrokes as shell
+  // commands. Limited to just after a real press on a control, so a page autofocusing
+  // an input by itself never flips the mode.
+  var __ctrlPressAt = 0;
+  document.addEventListener('focusin', function (e) {
+    if (window.__mode && window.__mode !== 'normal') return;
+    if (Date.now() - __ctrlPressAt > 1500 || !editable(e.target)) return;
+    __ctrlPressAt = 0;
+    post('page-edit');
+  }, true);
+  // Normal mode means the shell owns the keyboard, but after a click on a page control
+  // (or a script .focus(), or an SPA navigation) the PAGE holds it, and every key went
+  // to the page: the "frozen command bar" bug. A key reaching the page in Normal mode
+  // is therefore a shell key that took a wrong turn. Hand it to the shell, which takes
+  // focus back and replays it (`shell-key:<keyCode>,<shift>,<ctrl>`), so `:` opens
+  // the command bar on the first press. Keys that drive the page's own menus and
+  // focus (arrows, Enter, Space, Tab, paging) and the usual editing chords stay with
+  // the page; Esc just returns the keyboard; typing into a field enters Insert.
+  // Window + capture: runs before any of the page's own key handlers.
+  var PAGE_KEYS = {
+    Tab: 1, Enter: 1, ' ': 1, PageUp: 1, PageDown: 1, Home: 1, End: 1,
+    ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1
+  };
+  var MODIFIERS = { Shift: 1, Control: 1, Alt: 1, Meta: 1, AltGraph: 1, CapsLock: 1, NumLock: 1, ScrollLock: 1 };
+  var EDIT_CHORDS = { a: 1, c: 1, x: 1, z: 1, y: 1 };
+  function shellKey(e) {
+    if ((window.__mode || 'normal') !== 'normal' || !e.isTrusted) return;
+    if (e.altKey || e.metaKey || MODIFIERS[e.key]) return;
+    if (e.ctrlKey && EDIT_CHORDS[(e.key || '').toLowerCase()]) return;
+    var t = e.composedPath ? e.composedPath()[0] : e.target;
+    if (editable(t)) { post('page-edit'); return; }
+    if (PAGE_KEYS[e.key] && !e.ctrlKey) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (e.key === 'Escape') { post('reclaim'); return; }
+    post('shell-key:' + e.keyCode + ',' + (e.shiftKey ? 1 : 0) + ',' + (e.ctrlKey ? 1 : 0));
+  }
+  if (firstRun) window.addEventListener('keydown', shellKey, true);
   // Link-hover readout: report the href under the pointer so the shell can show it
   // on the right of the command bar (like a browser status bar). Posted only when
   // the target link CHANGES (mouseover bubbles, so this is event-delegated and

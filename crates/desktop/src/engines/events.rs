@@ -16,13 +16,17 @@ impl PageEventProxy {
     }
     pub(crate) fn send_event(&self, event: UserEvent) -> Result<(), ()> {
         self.proxy
-            .send_event(UserEvent::Engine { view: self.view, event: Box::new(event) })
+            .send_event(UserEvent::Engine {
+                view: self.view,
+                event: Box::new(event),
+            })
             .map_err(|_| ())
     }
 }
 
 pub(super) fn event_target(tabs: &[Tab], view: ViewId) -> Option<usize> {
-    tabs.iter().position(|tab| tab.webview().is_some_and(|v| v.identity().id == view))
+    tabs.iter()
+        .position(|tab| tab.webview().is_some_and(|v| v.identity().id == view))
 }
 
 fn active_ui_event(event: UserEvent, source: usize, active: Option<usize>) -> Option<UserEvent> {
@@ -35,6 +39,8 @@ fn active_ui_event(event: UserEvent, source: usize, active: Option<usize>) -> Op
         | UserEvent::GrabFocus
         | UserEvent::PageHold
         | UserEvent::PageEdit
+        | UserEvent::ReclaimNormal
+        | UserEvent::ReplayToShell(_)
         | UserEvent::LinkHover(_)
         | UserEvent::ExitHint
         | UserEvent::HintEdit
@@ -51,7 +57,9 @@ fn active_ui_event(event: UserEvent, source: usize, active: Option<usize>) -> Op
 
 impl App {
     pub(crate) fn view_by_id(&self, view: ViewId) -> Option<&dyn browser_engine::EngineView> {
-        self.tabs.get(event_target(&self.tabs, view)?).and_then(Tab::webview)
+        self.tabs
+            .get(event_target(&self.tabs, view)?)
+            .and_then(Tab::webview)
     }
 
     /// Handle source-scoped events here; only active-view UI events reach the
@@ -148,5 +156,19 @@ mod tests {
             Some(UserEvent::HintEdit)
         ));
         assert!(active_ui_event(UserEvent::Quit, 1, Some(1)).is_none());
+    }
+
+    #[test]
+    fn only_the_active_page_can_hand_keys_back_to_the_shell() {
+        let key = crate::khook::KeyReplay::from_vk(0xBA, true, false);
+        assert!(matches!(
+            active_ui_event(UserEvent::ReplayToShell(key), 1, Some(1)),
+            Some(UserEvent::ReplayToShell(k)) if k == key
+        ));
+        assert!(active_ui_event(UserEvent::ReplayToShell(key), 1, Some(0)).is_none());
+        assert!(matches!(
+            active_ui_event(UserEvent::ReclaimNormal, 1, Some(1)),
+            Some(UserEvent::ReclaimNormal)
+        ));
     }
 }

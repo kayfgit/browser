@@ -104,7 +104,9 @@ pub struct SavedTab {
     pub cwd: String,
 }
 
-pub fn default_provider() -> String { "webview2".into() }
+pub fn default_provider() -> String {
+    "webview2".into()
+}
 
 /// Serde default for [`Session::content_zoom`]: 100% (no page scaling) for
 /// sessions written before content zoom was split from the chrome zoom.
@@ -127,6 +129,13 @@ fn default_adblock_mode() -> String {
 /// elsewhere. Everything below lives in it.
 fn data_dir() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "browser").map(|d| d.data_dir().to_path_buf())
+}
+
+/// The machine-local data directory: `%LOCALAPPDATA%\browser\data` on Windows. For
+/// bulky, rebuildable state that shouldn't roam with the user profile (the WebView2
+/// profile and caches, the unpacked bundled extensions).
+pub fn local_data_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "browser").map(|d| d.data_local_dir().to_path_buf())
 }
 
 /// `<data>/session.toml` — the unnamed default session (the one you get when no
@@ -190,8 +199,12 @@ pub fn profile_exists(name: &str) -> bool {
 /// Every saved profile's display name, sorted. A file whose `name` is empty (an
 /// older or hand-made file) falls back to its filename key, so nothing is hidden.
 pub fn list_profiles() -> Vec<String> {
-    let Some(dir) = profiles_dir() else { return Vec::new() };
-    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Some(dir) = profiles_dir() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut names: Vec<String> = entries
         .flatten()
         .filter(|e| e.path().extension().is_some_and(|x| x == "toml"))
@@ -230,7 +243,6 @@ pub fn load_from(path: &std::path::Path) -> Option<Session> {
     toml::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,9 +266,19 @@ mod tests {
             history: vec!["https://example.com/".into()],
             history_at: vec![1_700_000_000],
             windows: vec!["R0.5000(0|1)".into()],
-            window: Some(WindowGeom { x: 40, y: 60, w: 1280, h: 800 }),
+            window: Some(WindowGeom {
+                x: 40,
+                y: 60,
+                w: 1280,
+                h: 800,
+            }),
             tabs: vec![
-                SavedTab { provider: default_provider(), kind: "open".into(), url: "https://a.test/".into(), cwd: String::new() },
+                SavedTab {
+                    provider: default_provider(),
+                    kind: "open".into(),
+                    url: "https://a.test/".into(),
+                    cwd: String::new(),
+                },
                 SavedTab {
                     provider: default_provider(),
                     kind: "term".into(),
@@ -290,7 +312,9 @@ mod tests {
 
     #[test]
     fn saved_tab_preserves_an_unavailable_provider() {
-        let tab: SavedTab = toml::from_str("kind = 'research'\nurl = 'https://example.org'\nprovider = 'servo'").unwrap();
+        let tab: SavedTab =
+            toml::from_str("kind = 'research'\nurl = 'https://example.org'\nprovider = 'servo'")
+                .unwrap();
         let restored: SavedTab = toml::from_str(&toml::to_string(&tab).unwrap()).unwrap();
         assert_eq!(restored.provider, "servo");
         assert_eq!(restored.kind, "research");

@@ -49,7 +49,7 @@ impl Candidate {
 fn client() -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
-        .user_agent("browser-desktop") // GitHub rejects requests without a UA
+        .user_agent("browser") // GitHub rejects requests without a UA
         .build()
         .map_err(|e| e.to_string())
 }
@@ -126,7 +126,9 @@ fn wt_list(c: &reqwest::blocking::Client) -> Result<Vec<String>, String> {
         .map_err(|e| format!("reaching iTerm2-Color-Schemes: {e}"))?
         .json()
         .map_err(|e| format!("parsing the iTerm2-Color-Schemes list: {e}"))?;
-    let arr = v.as_array().ok_or("unexpected response from iTerm2-Color-Schemes")?;
+    let arr = v
+        .as_array()
+        .ok_or("unexpected response from iTerm2-Color-Schemes")?;
     Ok(arr
         .iter()
         .filter_map(|f| Some(f.get("name")?.as_str()?.strip_suffix(".json")?.to_string()))
@@ -143,7 +145,9 @@ fn gogh_list(c: &reqwest::blocking::Client) -> Result<Vec<serde_json::Value>, St
         .map_err(|e| format!("reaching Gogh: {e}"))?
         .json()
         .map_err(|e| format!("parsing the Gogh theme list: {e}"))?;
-    v.as_array().cloned().ok_or_else(|| "unexpected response from Gogh".into())
+    v.as_array()
+        .cloned()
+        .ok_or_else(|| "unexpected response from Gogh".into())
 }
 
 /// Resolve `query` to one collection entry. An exact (normalized) name wins; then
@@ -163,16 +167,29 @@ fn pick(query: &str, names: &[String]) -> Result<String, String> {
     let listed = |hits: &[&String]| {
         let mut shown: Vec<&str> = hits.iter().take(8).map(|s| s.as_str()).collect();
         shown.sort();
-        format!("{}{}", shown.join(", "), if hits.len() > 8 { ", …" } else { "" })
+        format!(
+            "{}{}",
+            shown.join(", "),
+            if hits.len() > 8 { ", …" } else { "" }
+        )
     };
     // Whole-query containment, then all-words coverage — both count as real matches.
-    let mut hits: Vec<&String> = names.iter().filter(|n| scheme_key(n).contains(&qk)).collect();
-    let tokens: Vec<String> =
-        query.split_whitespace().map(scheme_key).filter(|t| t.len() >= 2).collect();
+    let mut hits: Vec<&String> = names
+        .iter()
+        .filter(|n| scheme_key(n).contains(&qk))
+        .collect();
+    let tokens: Vec<String> = query
+        .split_whitespace()
+        .map(scheme_key)
+        .filter(|t| t.len() >= 2)
+        .collect();
     let matched =
         |n: &str| -> usize { tokens.iter().filter(|t| scheme_key(n).contains(*t)).count() };
     if hits.is_empty() && !tokens.is_empty() {
-        hits = names.iter().filter(|n| matched(n) == tokens.len()).collect();
+        hits = names
+            .iter()
+            .filter(|n| matched(n) == tokens.len())
+            .collect();
     }
     match hits.len() {
         1 => return Ok(hits[0].clone()),
@@ -207,16 +224,33 @@ fn convert_wt(name: &str, v: &serde_json::Value) -> Result<SchemeFile, String> {
             .ok_or_else(|| format!("scheme file is missing '{k}'"))
     };
     const ANSI_KEYS: [&str; 16] = [
-        "black", "red", "green", "yellow", "blue", "purple", "cyan", "white",
-        "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue",
-        "brightPurple", "brightCyan", "brightWhite",
+        "black",
+        "red",
+        "green",
+        "yellow",
+        "blue",
+        "purple",
+        "cyan",
+        "white",
+        "brightBlack",
+        "brightRed",
+        "brightGreen",
+        "brightYellow",
+        "brightBlue",
+        "brightPurple",
+        "brightCyan",
+        "brightWhite",
     ];
     let mut ansi = Vec::with_capacity(16);
     for k in ANSI_KEYS {
         ansi.push(get(k)?);
     }
     Ok(SchemeFile {
-        name: v.get("name").and_then(|x| x.as_str()).unwrap_or(name).to_string(),
+        name: v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .unwrap_or(name)
+            .to_string(),
         fg: get("foreground")?,
         bg: get("background")?,
         ansi,
@@ -236,7 +270,12 @@ fn convert_gogh(v: &serde_json::Value) -> Result<SchemeFile, String> {
     for i in 1..=16 {
         ansi.push(get(&format!("color_{i:02}"))?);
     }
-    Ok(SchemeFile { name: get("name")?, fg: get("foreground")?, bg: get("background")?, ansi })
+    Ok(SchemeFile {
+        name: get("name")?,
+        fg: get("foreground")?,
+        bg: get("background")?,
+        ansi,
+    })
 }
 
 #[cfg(test)]
@@ -245,8 +284,15 @@ mod tests {
 
     fn names() -> Vec<String> {
         [
-            "3270-Dark", "3270-Light", "GruvboxDark", "GruvboxDarkHard", "Dracula",
-            "Tokyo Night", "Ibm3270", "IBM 5153 CGA", "IBM 5153 CGA (Black)",
+            "3270-Dark",
+            "3270-Light",
+            "GruvboxDark",
+            "GruvboxDarkHard",
+            "Dracula",
+            "Tokyo Night",
+            "Ibm3270",
+            "IBM 5153 CGA",
+            "IBM 5153 CGA (Black)",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -260,17 +306,26 @@ mod tests {
         assert_eq!(pick("dracula", &names()).unwrap(), "Dracula");
         assert_eq!(pick("tokyo night", &names()).unwrap(), "Tokyo Night");
         // A lone all-words match is picked ("5153 black" covers both words).
-        assert_eq!(pick("5153 black", &names()).unwrap(), "IBM 5153 CGA (Black)");
+        assert_eq!(
+            pick("5153 black", &names()).unwrap(),
+            "IBM 5153 CGA (Black)"
+        );
     }
 
     #[test]
     fn pick_lists_candidates_and_similar_names() {
         // Whole-query containment with several hits lists them to choose from.
         let err = pick("gruvbox", &names()).unwrap_err();
-        assert!(err.contains("GruvboxDark") && err.contains("GruvboxDarkHard"), "{err}");
+        assert!(
+            err.contains("GruvboxDark") && err.contains("GruvboxDarkHard"),
+            "{err}"
+        );
         // Names sharing only SOME words are suggestions, never auto-installed.
         let err = pick("ibm quantum", &names()).unwrap_err();
-        assert!(err.contains("no scheme matches") && err.contains("IBM 5153 CGA"), "{err}");
+        assert!(
+            err.contains("no scheme matches") && err.contains("IBM 5153 CGA"),
+            "{err}"
+        );
         // Unknown names say so.
         assert!(pick("zzzz", &names()).unwrap_err().contains("no scheme"));
     }

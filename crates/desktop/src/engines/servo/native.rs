@@ -3,6 +3,7 @@ use servo::{ContextMenu, ContextMenuAction, ContextMenuItem, Cursor};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tao::{platform::windows::WindowExtWindows, window::Window};
 use windows::{
+    core::PCWSTR,
     Win32::{
         Foundation::{HWND, POINT},
         Graphics::Gdi::ClientToScreen,
@@ -11,7 +12,6 @@ use windows::{
             WindowsAndMessaging::*,
         },
     },
-    core::PCWSTR,
 };
 
 pub fn hwnd(window: &Window) -> HWND {

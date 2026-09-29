@@ -4,19 +4,24 @@
 //! toggles (adblock/mute/css/js).
 
 use anyhow::Result;
-use browser_engine::{EngineView, RectPx};
 pub(crate) use browser_engine::Source;
+use browser_engine::{EngineView, RectPx};
 
 use crate::panes::{PaneNode, PaneRect, FOCUS_BORDER};
 use crate::term::TermSession;
 use crate::{
-    read_view, session, vim, AdblockMode, App, ModeKind, UserEvent, AD_HOSTS,
-    CLOSED_CAP, RESEARCH_JS,
+    read_view, session, vim, AdblockMode, App, ModeKind, UserEvent, AD_HOSTS, CLOSED_CAP,
+    RESEARCH_JS,
 };
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-/// Bundled unpacked extensions: prefer the installed layout, then the source tree.
+/// The folder of unpacked extensions to load into WebView2 (uBlock Origin Lite).
+///
+/// An `extensions` folder next to the executable wins (a hand-assembled install).
+/// Debug builds then use the source tree directly, so editing the extension needs no
+/// rebuild. Everything else uses the copy embedded in the executable, unpacked to
+/// the local data folder (see [`bundled_extensions`](crate::bundled_extensions)).
 pub(crate) fn ublock_extensions_dir() -> Option<std::path::PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         let beside = exe.with_file_name("extensions");
@@ -24,8 +29,13 @@ pub(crate) fn ublock_extensions_dir() -> Option<std::path::PathBuf> {
             return Some(beside);
         }
     }
-    let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("extensions");
-    dev.is_dir().then_some(dev)
+    if cfg!(debug_assertions) {
+        let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("extensions");
+        if dev.is_dir() {
+            return Some(dev);
+        }
+    }
+    crate::bundled_extensions::dir()
 }
 
 /// The live state a web tab's ENGINE reports back to the shell: whether a page load
@@ -75,13 +85,25 @@ impl PageState {
 
 /// What a tab shows. Exactly one of these — the invariants the old
 /// quadruple-Option encoding kept by comment are now kept by construction.
+// Variants differ a lot in size, but there are only ever a handful of tabs, so
+// boxing the big ones would buy nothing but indirection.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum TabContent {
     /// An engine page (child surface over the content band) plus the load /
     /// favicon state its engine callbacks report into.
     Web(Box<dyn EngineView>, PageState),
+    /// The `:extensions` picker for the extensions installed in `view`'s profile.
+    Extensions {
+        view: browser_engine::ViewId,
+        items: Vec<crate::ExtInfo>,
+        buffer: vim::TextBuffer,
+    },
     /// A restorable location whose requested provider could not be created.
-    Extensions { view: browser_engine::ViewId, items: Vec<crate::ExtInfo>, buffer: vim::TextBuffer },
-    Unavailable { provider: String, error: String, buffer: vim::TextBuffer },
+    Unavailable {
+        provider: String,
+        error: String,
+        buffer: vim::TextBuffer,
+    },
     /// An engine-free read-mode document, painted by the shell.
     Read(NativeRead),
     /// A read-only vim-style pager (`:error(s)`, `:res`, `:version`).
@@ -173,7 +195,12 @@ pub(crate) fn nav_entry(tab: &Tab) -> Option<NavEntry> {
     } else {
         return None;
     };
-    Some(NavEntry { provider: tab.provider().unwrap_or("webview2").into(), url: tab.url.clone(), kind, private: tab.private })
+    Some(NavEntry {
+        provider: tab.provider().unwrap_or("webview2").into(),
+        url: tab.url.clone(),
+        kind,
+        private: tab.private,
+    })
 }
 
 /// Push `entry` onto a back/forward stack, dropping the oldest if it would exceed
@@ -195,11 +222,17 @@ impl Tab {
     }
 
     pub(crate) fn unavailable(&self) -> Option<&str> {
-        match &self.content { TabContent::Unavailable { error, .. } => Some(error), _ => None }
+        match &self.content {
+            TabContent::Unavailable { error, .. } => Some(error),
+            _ => None,
+        }
     }
 
     /// Creation failure must leave the outgoing view and its state intact.
-    pub(crate) fn replace_engine(&mut self, candidate: Result<(Box<dyn EngineView>, PageState)>) -> Result<()> {
+    pub(crate) fn replace_engine(
+        &mut self,
+        candidate: Result<(Box<dyn EngineView>, PageState)>,
+    ) -> Result<()> {
         let (view, page) = candidate?;
         self.content = TabContent::Web(view, page);
         self.nav.settling = true;
@@ -258,14 +291,18 @@ impl Tab {
 
     pub(crate) fn vim(&self) -> Option<&vim::TextBuffer> {
         match &self.content {
-            TabContent::Pager(b) | TabContent::Unavailable { buffer: b, .. } | TabContent::Extensions { buffer: b, .. } => Some(b),
+            TabContent::Pager(b)
+            | TabContent::Unavailable { buffer: b, .. }
+            | TabContent::Extensions { buffer: b, .. } => Some(b),
             _ => None,
         }
     }
 
     pub(crate) fn vim_mut(&mut self) -> Option<&mut vim::TextBuffer> {
         match &mut self.content {
-            TabContent::Pager(b) | TabContent::Unavailable { buffer: b, .. } | TabContent::Extensions { buffer: b, .. } => Some(b),
+            TabContent::Pager(b)
+            | TabContent::Unavailable { buffer: b, .. }
+            | TabContent::Extensions { buffer: b, .. } => Some(b),
             _ => None,
         }
     }
@@ -508,7 +545,10 @@ impl App {
     /// tabs, which must leave no reopenable trace once closed.
     pub(crate) fn record_closed(&mut self, i: usize) {
         let Some(t) = self.tabs.get(i) else { return };
-        if t.url.starts_with("browser://") || (t.vim().is_some() && t.unavailable().is_none()) || t.private {
+        if t.url.starts_with("browser://")
+            || (t.vim().is_some() && t.unavailable().is_none())
+            || t.private
+        {
             return;
         }
         let kind = if t.term().is_some() {
@@ -524,7 +564,12 @@ impl App {
         };
         // A closed terminal keeps its last known cwd so `U` reopens it there.
         let cwd = t.term().and_then(|s| s.cwd()).unwrap_or_default();
-        self.closed_tabs.push(session::SavedTab { provider: t.provider().unwrap_or("webview2").into(), kind: kind.to_string(), url: t.url.clone(), cwd });
+        self.closed_tabs.push(session::SavedTab {
+            provider: t.provider().unwrap_or("webview2").into(),
+            kind: kind.to_string(),
+            url: t.url.clone(),
+            cwd,
+        });
         if self.closed_tabs.len() > CLOSED_CAP {
             self.closed_tabs.remove(0);
         }
@@ -569,11 +614,22 @@ impl App {
         extra_init: &str,
         private: bool,
     ) -> Result<(Box<dyn EngineView>, PageState)> {
-        self.build_provider_view(self.default_engine(), source, disable_js, extra_init, private)
+        self.build_provider_view(
+            self.default_engine(),
+            source,
+            disable_js,
+            extra_init,
+            private,
+        )
     }
 
     pub(crate) fn build_provider_view(
-        &self, provider: &str, source: Source, disable_js: bool, extra_init: &str, private: bool,
+        &self,
+        provider: &str,
+        source: Source,
+        disable_js: bool,
+        extra_init: &str,
+        private: bool,
     ) -> Result<(Box<dyn EngineView>, PageState)> {
         crate::engines::build(
             provider,
@@ -582,7 +638,11 @@ impl App {
                 source,
                 disable_js,
                 extra_init,
-                storage: if private { browser_engine::StorageMode::Private } else { browser_engine::StorageMode::Persistent },
+                storage: if private {
+                    browser_engine::StorageMode::Private
+                } else {
+                    browser_engine::StorageMode::Persistent
+                },
                 bounds: self.content_rect(),
                 adblock: self.adblock,
                 adblock_mode: self.adblock_mode,
@@ -612,7 +672,7 @@ impl App {
     ///
     /// Holding one webview across the swap keeps the process (and its whole profile
     /// state) live, and the rebuilt tabs attach to it instead of booting a new one.
-    /// Environment options MUST match every other webview (see [`BROWSER_ARGS`]) or
+    /// Environment options MUST match every other webview (see [`BROWSER_ARGS`](crate::BROWSER_ARGS)) or
     /// WebView2 refuses to create it with 0x8007139F.
     pub(crate) fn hold_engine(&mut self) {
         if self.engine_keepalive.is_some() {
@@ -650,7 +710,11 @@ impl App {
             self.set_status(format!("searching {query} …"));
             std::thread::spawn(move || {
                 let event = match browser_backend_search::search_blocking(&query, config) {
-                    Ok(doc) => UserEvent::ReadReady { doc: Box::new(doc), replace, record },
+                    Ok(doc) => UserEvent::ReadReady {
+                        doc: Box::new(doc),
+                        replace,
+                        record,
+                    },
                     Err(e) => UserEvent::ReadFailed(format!("{e:#}")),
                 };
                 let _ = proxy.send_event(event);
@@ -662,7 +726,11 @@ impl App {
             self.set_status(format!("reading {url} …"));
             std::thread::spawn(move || {
                 let event = match browser_backend_text::fetch_document_blocking(&url) {
-                    Ok(doc) => UserEvent::ReadReady { doc: Box::new(doc), replace, record },
+                    Ok(doc) => UserEvent::ReadReady {
+                        doc: Box::new(doc),
+                        replace,
+                        record,
+                    },
                     Err(e) => UserEvent::ReadFailed(format!("{e:#}")),
                 };
                 let _ = proxy.send_event(event);
@@ -677,7 +745,12 @@ impl App {
     /// it's some other tab type, that tab is replaced with a fresh read tab. Without
     /// `replace` (`:read -t`), a new read tab is opened. `record` adds a back-stack
     /// step for the page being left (false for reloads and `H`/`L` history replays).
-    pub(crate) fn show_read_document(&mut self, doc: browser_core::Document, replace: bool, record: bool) {
+    pub(crate) fn show_read_document(
+        &mut self,
+        doc: browser_core::Document,
+        replace: bool,
+        record: bool,
+    ) {
         let url = doc.url.clone();
         if replace {
             if let Some(i) = self.active {
@@ -748,7 +821,11 @@ impl App {
         self.active = self.drop_tab(i);
         // Closing a tab must never surface the background AI singleton: if the survivor
         // we'd land on is the AI tab, step away to a real tab (or the welcome screen).
-        if self.active.and_then(|a| self.tabs.get(a)).is_some_and(|t| t.ai().is_some()) {
+        if self
+            .active
+            .and_then(|a| self.tabs.get(a))
+            .is_some_and(|t| t.ai().is_some())
+        {
             self.focus_away_from_ai();
         }
         self.find_reset();
@@ -829,7 +906,9 @@ impl App {
                 let mut leaves = Vec::new();
                 tree.leaves(&mut leaves);
                 let rep = if Some(wi) == aw {
-                    self.active.filter(|a| leaves.contains(a)).unwrap_or_else(|| tree.first_leaf())
+                    self.active
+                        .filter(|a| leaves.contains(a))
+                        .unwrap_or_else(|| tree.first_leaf())
                 } else {
                     tree.first_leaf()
                 };
@@ -883,7 +962,9 @@ impl App {
         let labels = self.tab_labels();
         let limit = self.inner().0 as usize;
         let px = px.max(0.0) as usize;
-        for (pos, cell) in crate::chrome::tab_cells(&self.painter, limit, &labels).iter().enumerate()
+        for (pos, cell) in crate::chrome::tab_cells(&self.painter, limit, &labels)
+            .iter()
+            .enumerate()
         {
             if px >= cell.x && px < cell.x + cell.w {
                 return Some(pos);
@@ -896,7 +977,9 @@ impl App {
     /// Reordering the `windows` vec leaves every tab index (and each window's pane
     /// tree) untouched, so nothing about the layout changes — just the strip order.
     pub(crate) fn move_tab(&mut self, delta: i32) {
-        let Some(cur) = self.active_window() else { return };
+        let Some(cur) = self.active_window() else {
+            return;
+        };
         let target = cur as i32 + delta;
         if target < 0 || target as usize >= self.windows.len() {
             return;
@@ -1005,7 +1088,11 @@ impl App {
     pub(crate) fn scroll_edge(&mut self, bottom: bool) {
         let view = self.content_view_h();
         if let Some(nr) = self.active_native_mut() {
-            nr.scroll = if bottom { (nr.layout.height - view).max(0) } else { 0 };
+            nr.scroll = if bottom {
+                (nr.layout.height - view).max(0)
+            } else {
+                0
+            };
             self.window.request_redraw();
             return;
         }
@@ -1026,13 +1113,19 @@ impl App {
     /// read tabs (which have no engine history at all) — so it goes back the full way.
     pub(crate) fn history(&mut self, forward: bool) {
         let Some(i) = self.active else { return };
-        let Some(current) = self.tabs.get(i) else { return };
+        let Some(current) = self.tabs.get(i) else {
+            return;
+        };
         let previous_nav = current.nav.clone();
         let previous_url = current.url.clone();
         // Nothing to go to?
         let empty = {
             let Some(tab) = self.tabs.get(i) else { return };
-            if forward { tab.nav.fwd.is_empty() } else { tab.nav.back.is_empty() }
+            if forward {
+                tab.nav.fwd.is_empty()
+            } else {
+                tab.nav.back.is_empty()
+            }
         };
         if empty {
             // The shell's stack is empty, but the ENGINE's own session history may
@@ -1047,7 +1140,11 @@ impl App {
                 .and_then(|t| t.webview())
                 .is_some_and(|wv| wv.history().is_some_and(|history| history.can_go(forward)));
             if !engine_can {
-                self.set_status(if forward { "no forward history" } else { "no back history" });
+                self.set_status(if forward {
+                    "no forward history"
+                } else {
+                    "no back history"
+                });
                 return;
             }
             let tab = self.tabs.get_mut(i).unwrap();
@@ -1077,7 +1174,12 @@ impl App {
         // Pop the target and move the current page onto the opposite stack so the
         // reverse key returns to it.
         let tab = self.tabs.get_mut(i).unwrap();
-        let entry = if forward { tab.nav.fwd.pop() } else { tab.nav.back.pop() }.unwrap();
+        let entry = if forward {
+            tab.nav.fwd.pop()
+        } else {
+            tab.nav.back.pop()
+        }
+        .unwrap();
         if let Some(cur) = nav_entry(tab) {
             if forward {
                 nav_push(&mut tab.nav.back, cur);
@@ -1086,8 +1188,10 @@ impl App {
             }
         }
 
-        let engine = engine && tab.provider() == Some(entry.provider.as_str())
-            && tab.private == entry.private && nav_entry(tab).is_some_and(|current| current.kind == entry.kind);
+        let engine = engine
+            && tab.provider() == Some(entry.provider.as_str())
+            && tab.private == entry.private
+            && nav_entry(tab).is_some_and(|current| current.kind == entry.kind);
         if engine {
             // Pre-set the URL and settle so the engine nav's page-load doesn't record
             // the step a second time into the back stack.
@@ -1101,8 +1205,11 @@ impl App {
     }
 
     fn step_native_history(&mut self, index: usize, forward: bool, previous: TabNav, url: String) {
-        let result = self.tabs[index].webview().and_then(|view| view.history())
-            .ok_or_else(|| "native history is unavailable".to_string()).and_then(|history| history.go(forward));
+        let result = self.tabs[index]
+            .webview()
+            .and_then(|view| view.history())
+            .ok_or_else(|| "native history is unavailable".to_string())
+            .and_then(|history| history.go(forward));
         if let Err(error) = result {
             self.tabs[index].nav = previous;
             self.tabs[index].url = url;
@@ -1119,21 +1226,44 @@ impl App {
             self.start_read(&entry.url, true, false);
             return true;
         }
-        if self.frozen { self.set_status("browser is frozen — :unfreeze first"); return false; }
+        if self.frozen {
+            self.set_status("browser is frozen — :unfreeze first");
+            return false;
+        }
         let nojs = entry.kind == NavKind::Nojs;
         let research = entry.kind == NavKind::Research;
         let extra = if research { RESEARCH_JS } else { "" };
-        match self.build_provider_view(&entry.provider, Source::Url(entry.url.clone()), nojs, extra, entry.private) {
+        match self.build_provider_view(
+            &entry.provider,
+            Source::Url(entry.url.clone()),
+            nojs,
+            extra,
+            entry.private,
+        ) {
             Ok((view, page)) => {
                 self.nav_replaying = true;
-                self.place_tab(Tab {
-                    content: TabContent::Web(view, page), url: entry.url, nojs, research, read: false,
-                    private: entry.private, nav: TabNav { settling: true, ..TabNav::default() },
-                }, false);
+                self.place_tab(
+                    Tab {
+                        content: TabContent::Web(view, page),
+                        url: entry.url,
+                        nojs,
+                        research,
+                        read: false,
+                        private: entry.private,
+                        nav: TabNav {
+                            settling: true,
+                            ..TabNav::default()
+                        },
+                    },
+                    false,
+                );
                 self.nav_replaying = false;
                 true
             }
-            Err(error) => { self.set_error(format!("history unchanged: {error:#}")); false }
+            Err(error) => {
+                self.set_error(format!("history unchanged: {error:#}"));
+                false
+            }
         }
     }
 
@@ -1170,22 +1300,23 @@ impl App {
         let on = mode.blocking();
         let ext = mode.extension();
         self.set_adblock(on); // keeps the native guards' shared flag in lock-step
-        // A session whose webviews were built in another mode never added the bundled
-        // extension, and a fresh profile may never have had it installed — so add it
-        // (profile-wide, idempotent) before the enable sweep below. Any one webview
-        // reaches the shared profile.
+                              // A session whose webviews were built in another mode never added the bundled
+                              // extension, and a fresh profile may never have had it installed — so add it
+                              // (profile-wide, idempotent) before the enable sweep below. Any one webview
+                              // reaches the shared profile.
         #[cfg(windows)]
         if ext {
-            if let (Some(dir), Some(wv)) =
-                (ublock_extensions_dir(), self.tabs.iter().find_map(|t| t.webview()))
-            {
+            if let (Some(dir), Some(wv)) = (
+                ublock_extensions_dir(),
+                self.tabs.iter().find_map(|t| t.webview()),
+            ) {
                 crate::extensions::install_dir(wv, &dir);
             }
         }
         for tab in &self.tabs {
             if let Some(wv) = tab.webview() {
-                let _ = wv
-                    .evaluate_script(&format!("window.__setAdblock&&window.__setAdblock({on})"));
+                let _ =
+                    wv.evaluate_script(&format!("window.__setAdblock&&window.__setAdblock({on})"));
                 #[cfg(windows)]
                 crate::extensions::set_all_enabled(wv, ext);
             }
@@ -1194,8 +1325,12 @@ impl App {
         // request time and its content scripts at document start, so entering/leaving `Ubo`
         // only fully takes hold on the next load — say so rather than implying otherwise.
         self.set_status(match mode {
-            AdblockMode::Ubo => "adblock on — uBO Lite (network) + native (cosmetic, youtube, redirects)",
-            AdblockMode::Native => "adblock on — native only (cosmetic, youtube, redirects); no extension",
+            AdblockMode::Ubo => {
+                "adblock on — uBO Lite (network) + native (cosmetic, youtube, redirects)"
+            }
+            AdblockMode::Native => {
+                "adblock on — native only (cosmetic, youtube, redirects); no extension"
+            }
             AdblockMode::Off => "adblock off — reload to drop what this page already applied",
         });
         self.window.request_redraw();
@@ -1209,9 +1344,8 @@ impl App {
         let on = self.adblock_mode.blocking();
         for tab in &self.tabs {
             if let Some(wv) = tab.webview() {
-                let _ = wv.evaluate_script(&format!(
-                    "window.__setAdblock&&window.__setAdblock({on})"
-                ));
+                let _ =
+                    wv.evaluate_script(&format!("window.__setAdblock&&window.__setAdblock({on})"));
             }
         }
     }
@@ -1229,7 +1363,7 @@ impl App {
         self.window.request_redraw();
     }
 
-    /// Flip a live page-feature toggle ([`FEATURES_JS`]) on every open web tab via
+    /// Flip a live page-feature toggle ([`FEATURES_JS`](crate::FEATURES_JS)) on every open web tab via
     /// `__setToggle` (no reload). `name` is `mute` | `css` | `video` | `scrollbar`.
     pub(crate) fn broadcast_toggle(&self, name: &str, on: bool) {
         for tab in &self.tabs {
@@ -1261,8 +1395,13 @@ impl App {
         let research = t.research;
         let private = t.private;
         let extra = if research { RESEARCH_JS } else { "" };
-        match self.build_provider_view(t.provider().unwrap_or("webview2"), Source::Url(url.clone()), self.nojs, extra, private)
-        {
+        match self.build_provider_view(
+            t.provider().unwrap_or("webview2"),
+            Source::Url(url.clone()),
+            self.nojs,
+            extra,
+            private,
+        ) {
             Ok((webview, page)) => {
                 let nojs = self.nojs;
                 if let Some(session) = self.tabs[i].take_term() {
@@ -1344,7 +1483,9 @@ pub(crate) fn js_string(s: &str) -> String {
 /// against a host would never fire anyway. Substring match (mirrors the page-side
 /// `blocked()`), so `adservice.google.` catches `adservice.google.com`.
 pub(crate) fn url_is_ad_host(url: &str) -> bool {
-    let Some(host) = url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+    let Some(host) = url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
     else {
         return false;
     };
@@ -1368,9 +1509,38 @@ pub(crate) fn origin_of(url: &str) -> String {
 
 /// Executable/installer extensions a drive-by download must not run unprompted.
 const RISKY_DOWNLOAD_EXTS: &[&str] = &[
-    "exe", "msi", "msix", "msp", "scr", "bat", "cmd", "com", "cpl", "pif", "jar", "apk",
-    "app", "dmg", "pkg", "deb", "rpm", "vbs", "vbe", "jse", "wsf", "wsh", "ps1", "psm1",
-    "reg", "hta", "lnk", "gadget", "inf", "scf", "appx", "appxbundle",
+    "exe",
+    "msi",
+    "msix",
+    "msp",
+    "scr",
+    "bat",
+    "cmd",
+    "com",
+    "cpl",
+    "pif",
+    "jar",
+    "apk",
+    "app",
+    "dmg",
+    "pkg",
+    "deb",
+    "rpm",
+    "vbs",
+    "vbe",
+    "jse",
+    "wsf",
+    "wsh",
+    "ps1",
+    "psm1",
+    "reg",
+    "hta",
+    "lnk",
+    "gadget",
+    "inf",
+    "scf",
+    "appx",
+    "appxbundle",
 ];
 
 /// The lower-cased file extension of a download, from the suggested save `path` first
@@ -1380,8 +1550,13 @@ fn download_ext(url: &str, path: &std::path::Path) -> Option<String> {
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
         .or_else(|| {
-            let seg = url::Url::parse(url).ok()?.path_segments()?.next_back()?.to_string();
-            seg.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase())
+            let seg = url::Url::parse(url)
+                .ok()?
+                .path_segments()?
+                .next_back()?
+                .to_string();
+            seg.rsplit_once('.')
+                .map(|(_, ext)| ext.to_ascii_lowercase())
         })
 }
 
@@ -1459,7 +1634,12 @@ pub(crate) fn deproxy_translate(url: &str) -> Option<String> {
 
 /// Convert pane geometry to physical engine-surface bounds.
 pub(crate) fn engine_rect(r: PaneRect) -> RectPx {
-    RectPx { x: r.x, y: r.y, w: r.w.max(1) as u32, h: r.h.max(1) as u32 }
+    RectPx {
+        x: r.x,
+        y: r.y,
+        w: r.w.max(1) as u32,
+        h: r.h.max(1) as u32,
+    }
 }
 
 #[cfg(test)]
@@ -1476,13 +1656,21 @@ mod tests {
         for i in 0..NAV_CAP + 5 {
             nav_push(
                 &mut stack,
-                NavEntry { provider: "webview2".into(), url: format!("https://e/{i}"), kind: NavKind::Web, private: false },
+                NavEntry {
+                    provider: "webview2".into(),
+                    url: format!("https://e/{i}"),
+                    kind: NavKind::Web,
+                    private: false,
+                },
             );
         }
         // Capped at NAV_CAP, and it's the OLDEST entries that fell off the front.
         assert_eq!(stack.len(), NAV_CAP);
         assert_eq!(stack.first().unwrap().url, "https://e/5");
-        assert_eq!(stack.last().unwrap().url, format!("https://e/{}", NAV_CAP + 4));
+        assert_eq!(
+            stack.last().unwrap().url,
+            format!("https://e/{}", NAV_CAP + 4)
+        );
     }
 
     #[test]
@@ -1502,22 +1690,52 @@ mod tests {
     fn parse_open_flags_handles_combined_and_separate_flags() {
         use super::parse_open_flags;
         // Single flags.
-        assert_eq!(parse_open_flags("-t youtube.com"), (true, false, "youtube.com"));
-        assert_eq!(parse_open_flags("-n youtube.com"), (false, true, "youtube.com"));
+        assert_eq!(
+            parse_open_flags("-t youtube.com"),
+            (true, false, "youtube.com")
+        );
+        assert_eq!(
+            parse_open_flags("-n youtube.com"),
+            (false, true, "youtube.com")
+        );
         // Combined (either order) and separate tokens.
-        assert_eq!(parse_open_flags("-tn youtube.com"), (true, true, "youtube.com"));
-        assert_eq!(parse_open_flags("-nt youtube.com"), (true, true, "youtube.com"));
-        assert_eq!(parse_open_flags("-t -n youtube.com"), (true, true, "youtube.com"));
+        assert_eq!(
+            parse_open_flags("-tn youtube.com"),
+            (true, true, "youtube.com")
+        );
+        assert_eq!(
+            parse_open_flags("-nt youtube.com"),
+            (true, true, "youtube.com")
+        );
+        assert_eq!(
+            parse_open_flags("-t -n youtube.com"),
+            (true, true, "youtube.com")
+        );
         // Long spellings.
-        assert_eq!(parse_open_flags("--tab --private x.com"), (true, true, "x.com"));
+        assert_eq!(
+            parse_open_flags("--tab --private x.com"),
+            (true, true, "x.com")
+        );
         // Bare flag → empty target.
         assert_eq!(parse_open_flags("-tn"), (true, true, ""));
         // No flag → target untouched.
-        assert_eq!(parse_open_flags("youtube.com"), (false, false, "youtube.com"));
+        assert_eq!(
+            parse_open_flags("youtube.com"),
+            (false, false, "youtube.com")
+        );
         // Only whole LEADING tokens count.
-        assert_eq!(parse_open_flags("-test query"), (false, false, "-test query"));
-        assert_eq!(parse_open_flags("rust -t async"), (false, false, "rust -t async"));
-        assert_eq!(parse_open_flags("-north pole"), (false, false, "-north pole"));
+        assert_eq!(
+            parse_open_flags("-test query"),
+            (false, false, "-test query")
+        );
+        assert_eq!(
+            parse_open_flags("rust -t async"),
+            (false, false, "rust -t async")
+        );
+        assert_eq!(
+            parse_open_flags("-north pole"),
+            (false, false, "-north pole")
+        );
     }
 
     #[test]
@@ -1542,7 +1760,10 @@ mod tests {
     fn deproxy_keeps_real_query_and_decodes_literal_dashes() {
         // `my--site` decodes to `my-site` (a literal dash); `q=1` is a real param.
         let url = "https://my--site-com.translate.goog/p?q=1&_x_tr_sl=en";
-        assert_eq!(deproxy_translate(url).as_deref(), Some("https://my-site.com/p?q=1"));
+        assert_eq!(
+            deproxy_translate(url).as_deref(),
+            Some("https://my-site.com/p?q=1")
+        );
     }
 
     #[test]
@@ -1554,7 +1775,9 @@ mod tests {
     #[test]
     fn ad_host_redirect_guard_matches_hosts_not_paths() {
         // Host-style entries match the URL host (substring, so subdomains count).
-        assert!(url_is_ad_host("https://googleads.g.doubleclick.net/pagead/x"));
+        assert!(url_is_ad_host(
+            "https://googleads.g.doubleclick.net/pagead/x"
+        ));
         assert!(url_is_ad_host("http://ads.pubmatic.com/AdServer"));
         // The `adservice.google.` trailing-dot entry catches the real TLD'd host.
         assert!(url_is_ad_host("https://adservice.google.com/"));
@@ -1570,11 +1793,20 @@ mod tests {
 
     #[test]
     fn origin_of_isolates_web_origins() {
-        assert_eq!(origin_of("https://animepahe.pw/play/x"), "https://animepahe.pw");
+        assert_eq!(
+            origin_of("https://animepahe.pw/play/x"),
+            "https://animepahe.pw"
+        );
         // Port and scheme are part of the origin; path/query are not.
-        assert_eq!(origin_of("http://localhost:8731/a?b=1"), "http://localhost:8731");
+        assert_eq!(
+            origin_of("http://localhost:8731/a?b=1"),
+            "http://localhost:8731"
+        );
         // A cross-origin scam URL has a different origin than the page above.
-        assert_ne!(origin_of("https://scam.example/win"), origin_of("https://animepahe.pw/"));
+        assert_ne!(
+            origin_of("https://scam.example/win"),
+            origin_of("https://animepahe.pw/")
+        );
         // Non-web schemes and junk yield "" so they never count as "a different origin".
         assert_eq!(origin_of("about:blank"), "");
         assert_eq!(origin_of("file:///C:/x.html"), "");
@@ -1585,21 +1817,43 @@ mod tests {
     #[test]
     fn download_guard_flags_executables_only() {
         // Executable / installer types are risky (from the save path)…
-        assert!(is_risky_download("https://x.test/get", Path::new("setup.exe")));
+        assert!(is_risky_download(
+            "https://x.test/get",
+            Path::new("setup.exe")
+        ));
         assert!(is_risky_download("https://x.test/a", Path::new("pkg.msi")));
-        assert!(is_risky_download("https://x.test/a", Path::new("s.BAT"))); // case-insensitive
+        // Case-insensitive.
+        assert!(is_risky_download("https://x.test/a", Path::new("s.BAT")));
         // …or inferred from the URL when the save path has no extension.
-        assert!(is_risky_download("https://x.test/download/installer.exe", Path::new("installer")));
+        assert!(is_risky_download(
+            "https://x.test/download/installer.exe",
+            Path::new("installer")
+        ));
         // Ordinary downloads are allowed through.
-        assert!(!is_risky_download("https://x.test/a", Path::new("movie.mp4")));
-        assert!(!is_risky_download("https://x.test/doc.pdf", Path::new("doc.pdf")));
-        assert!(!is_risky_download("https://x.test/archive.zip", Path::new("archive.zip")));
+        assert!(!is_risky_download(
+            "https://x.test/a",
+            Path::new("movie.mp4")
+        ));
+        assert!(!is_risky_download(
+            "https://x.test/doc.pdf",
+            Path::new("doc.pdf")
+        ));
+        assert!(!is_risky_download(
+            "https://x.test/archive.zip",
+            Path::new("archive.zip")
+        ));
     }
 
     #[test]
     fn download_name_prefers_file_name() {
-        assert_eq!(download_name("https://x.test/d", Path::new("C:/Users/me/setup.exe")), "setup.exe");
+        assert_eq!(
+            download_name("https://x.test/d", Path::new("C:/Users/me/setup.exe")),
+            "setup.exe"
+        );
         // Falls back to the URL's last segment when the path has no file name.
-        assert_eq!(download_name("https://x.test/path/evil.exe", Path::new("")), "evil.exe");
+        assert_eq!(
+            download_name("https://x.test/path/evil.exe", Path::new("")),
+            "evil.exe"
+        );
     }
 }

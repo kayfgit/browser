@@ -56,7 +56,9 @@ fn path() -> Option<PathBuf> {
 /// Read the saved pages, newest-first as written. Never fails: a missing or garbled
 /// file reads as an empty list rather than blocking startup.
 pub(crate) fn load() -> Vec<Bookmark> {
-    let Some(path) = path() else { return Vec::new() };
+    let Some(path) = path() else {
+        return Vec::new();
+    };
     std::fs::read_to_string(path)
         .ok()
         .and_then(|s| toml::from_str::<SavedFile>(&s).ok())
@@ -70,7 +72,9 @@ pub(crate) fn store(items: &[Bookmark]) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let file = SavedFile { items: items.to_vec() };
+    let file = SavedFile {
+        items: items.to_vec(),
+    };
     if let Ok(s) = toml::to_string_pretty(&file) {
         let _ = std::fs::write(path, s);
     }
@@ -110,8 +114,9 @@ impl App {
     /// without one it just says so (so a stray second `:save` is harmless).
     pub(crate) fn save_current_page(&mut self, name: &str) -> Result<String, String> {
         let Some(url) = self.current_url().filter(|u| u.starts_with("http")) else {
-            return Err("nothing to save — open a page first (internal pages aren't saveable)"
-                .to_string());
+            return Err(
+                "nothing to save — open a page first (internal pages aren't saveable)".to_string(),
+            );
         };
         let name = name.trim();
         if let Some(pos) = self.saved.iter().position(|b| b.url == url) {
@@ -128,7 +133,14 @@ impl App {
         } else {
             name.to_string()
         };
-        self.saved.insert(0, Bookmark { url, name: label.clone(), at: now_epoch() });
+        self.saved.insert(
+            0,
+            Bookmark {
+                url,
+                name: label.clone(),
+                at: now_epoch(),
+            },
+        );
         store(&self.saved);
         self.refresh_saved_page();
         Ok(format!("saved '{label}'  —  :saved to open the list"))
@@ -196,8 +208,16 @@ impl App {
     /// Swap the picker's text in place, keeping the cursor row (clamped) and dropping
     /// any visual selection — the rows it covered may no longer exist.
     fn set_saved_lines(&mut self, lines: Vec<String>) {
-        let cy = self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.vim()).map_or(0, |b| b.cy);
-        if let Some(buf) = self.active.and_then(|i| self.tabs.get_mut(i)).and_then(|t| t.vim_mut()) {
+        let cy = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.vim())
+            .map_or(0, |b| b.cy);
+        if let Some(buf) = self
+            .active
+            .and_then(|i| self.tabs.get_mut(i))
+            .and_then(|t| t.vim_mut())
+        {
             buf.set_lines(lines);
             buf.anchor = None;
             buf.cy = cy.min(buf.lines.len().saturating_sub(1));
@@ -212,7 +232,11 @@ impl App {
         if self.active_url() != Some("browser://saved") {
             return;
         }
-        let row = self.active.and_then(|i| self.tabs.get(i)).and_then(|t| t.vim()).map(|b| b.cy);
+        let row = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.vim())
+            .map(|b| b.cy);
         let Some(url) = row
             .and_then(|r| index_at_row(self.saved.len(), r))
             .map(|i| self.saved[i].url.clone())
@@ -230,16 +254,19 @@ impl App {
         }
         let Some(i) = self.active else { return };
         let (lo, hi) = {
-            let Some(buf) = self.tabs.get(i).and_then(|t| t.vim()) else { return };
+            let Some(buf) = self.tabs.get(i).and_then(|t| t.vim()) else {
+                return;
+            };
             match buf.anchor {
                 Some((ay, _)) => (ay.min(buf.cy), ay.max(buf.cy)),
                 None => (buf.cy, buf.cy),
             }
         };
         let n = self.saved.len();
-        let (Some(first), Some(last)) =
-            (index_at_row(n, lo.max(HEADER)), index_at_row(n, hi.min(n + HEADER - 1)))
-        else {
+        let (Some(first), Some(last)) = (
+            index_at_row(n, lo.max(HEADER)),
+            index_at_row(n, hi.min(n + HEADER - 1)),
+        ) else {
             return;
         };
         let removed = last + 1 - first;
@@ -247,7 +274,10 @@ impl App {
         store(&self.saved);
         let lines = saved_lines(&self.saved);
         self.set_saved_lines(lines);
-        self.set_status(format!("removed {removed} saved page{}", if removed == 1 { "" } else { "s" }));
+        self.set_status(format!(
+            "removed {removed} saved page{}",
+            if removed == 1 { "" } else { "s" }
+        ));
     }
 }
 
@@ -257,8 +287,16 @@ mod tests {
 
     fn items() -> Vec<Bookmark> {
         vec![
-            Bookmark { url: "https://a.test/one".into(), name: "One".into(), at: 1 },
-            Bookmark { url: "https://b.test/two".into(), name: String::new(), at: 0 },
+            Bookmark {
+                url: "https://a.test/one".into(),
+                name: "One".into(),
+                at: 1,
+            },
+            Bookmark {
+                url: "https://b.test/two".into(),
+                name: String::new(),
+                at: 0,
+            },
         ]
     }
 

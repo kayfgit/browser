@@ -1,14 +1,35 @@
 [package]
-name = "browser-desktop"
+name = "browser"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+default-run = "browser"
 description = "A modal, mode-dispatching browser — only what's needed, when needed."
 
+[package.metadata.dist]
+# Ship the third-party notices in the release archive (the MSI adds them too).
+include = ["../../THIRD_PARTY_NOTICES.md"]
+
+[package.metadata.wix]
+upgrade-guid = "48D6537F-B5B7-450F-BB2A-CA44F4275E40"
+path-guid = "74A64A9E-90DA-43E4-9945-59106CCE9B42"
+license = false
+eula = false
+
+# The browser itself. Installed as `browser.exe`.
 [[bin]]
-name = "browser-desktop"
+name = "browser"
 path = "src/main.rs"
+
+# Companion process that owns the ConPTY for terminal tabs (see its module docs).
+# Lives in this package so every build and installer ships the pair together;
+# the browser looks for it next to its own executable.
+[[bin]]
+name = "browser-pty-host"
+path = "src/bin/browser-pty-host.rs"
 
 [features]
 servo-engine = ["dep:servo", "dep:content-security-policy", "dep:euclid", "dep:dpi", "dep:surfman", "dep:raw-window-handle", "dep:scoped-tls", "dep:rustls"]
@@ -33,6 +54,8 @@ fontdue.workspace = true
 # default-features off drops the image/png clipboard stack — we only do text.
 arboard = { version = "3", default-features = false }
 alacritty_terminal = "0.26.0"
+# Only used by the browser-pty-host binary.
+portable-pty = "0.9"
 # default-features off drops `single-thread` (which makes Engine !Send via Rc) so the
 # engine is Send+Sync — we build it off-thread and share it. We only need network
 # blocking, not the cosmetic/CSS machinery.
@@ -41,9 +64,17 @@ adblock = { version = "0.12.5", default-features = false, features = [
     "full-regex-handling",
 ] }
 # Decodes the `data:<mime>;base64,…` bodies adblock-rust hands back for `$redirect`
-# surrogate rules, so the sub-resource blocker can serve the neutered stub (see netblock.rs).
+# surrogate rules (`blocklist::classify_request`, kept for a future ruleset; see there).
 base64 = "0.22"
+# Unpack the bundled extensions embedded by build.rs (bundled_extensions.rs).
+flate2 = "1"
+tar = "0.4"
 png = "0.18.1"
+
+[build-dependencies]
+# Pack the bundled extensions into the executable (see build.rs).
+flate2 = "1"
+tar = "0.4"
 
 [target.'cfg(windows)'.build-dependencies]
 embed-manifest = "1.4"
@@ -63,15 +94,12 @@ scoped-tls = { version = "1", optional = true }
 rustls = { version = "0.23", features = ["aws_lc_rs"], optional = true }
 webview2-com = "0.38"
 windows-core = "0.61"
-# `$redirect` surrogate serving (netblock.rs) hands WebView2 a response body as an
-# `IStream`. `CreateWebResourceResponse` wants the `IStream` from `windows` 0.61 (the
-# version webview2-com-sys is built against), NOT our 0.62 below — the two are distinct
-# types. This renamed alias resolves to that same 0.61 build so the COM types unify; it's
-# used solely for `SHCreateMemStream` + `IStream`.
+# WebView2 COM interop (favicon.rs reads the favicon `IStream`) needs the `windows` 0.61 types webview2-com-sys is built against, NOT our 0.62 below —
+# the two are distinct types. This renamed alias resolves to that same 0.61 build so the
+# COM types unify.
 windows061 = { package = "windows", version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Com",
-    "Win32_UI_Shell",
 ] }
 windows = { version = "0.62", features = [
     "Win32_Graphics_Gdi",
