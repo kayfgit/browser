@@ -13,8 +13,7 @@ use crate::tabs::{
     ublock_extensions_dir, url_is_ad_host, PageState,
 };
 use crate::{
-    AdblockMode, UserEvent, ADBLOCK_JS, BRIDGE_JS, BROWSER_ARGS, CARET_JS, FEATURES_JS, FIND_JS,
-    IPC_PRELUDE,
+    AdblockMode, UserEvent, ADBLOCK_JS, BRIDGE_JS, CARET_JS, FEATURES_JS, FIND_JS, IPC_PRELUDE,
 };
 use anyhow::Result;
 use browser_engine::{
@@ -28,6 +27,20 @@ use wry::dpi::{PhysicalPosition, PhysicalSize};
 use wry::{
     NewWindowResponse, PageLoadEvent, Rect, WebView, WebViewBuilder, WebViewBuilderExtWindows,
 };
+
+/// WebView2 browser-process arguments, applied to EVERY webview we build.
+///
+/// This MUST be identical across all webviews: WebView2 requires every
+/// environment sharing a user-data folder to be created with the same options,
+/// or the second creation fails with `ERROR_INVALID_STATE` (HRESULT 0x8007139F).
+/// (That's why a `:te` terminal opened after a content tab used to error — the
+/// terminal webview had no args while content tabs did.) Overrides wry's default
+/// arg string, so we re-include its defaults (mini-menu / PDF UI / SmartScreen off,
+/// plus gesture-free autoplay) and add `Translate,msAutoTranslate` to kill Edge's
+/// "translate this page?" bar.
+pub(crate) const BROWSER_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,\
+     Translate,msAutoTranslate --autoplay-policy=no-user-gesture-required";
 
 pub(crate) struct BuildOptions<'a> {
     pub source: Source,

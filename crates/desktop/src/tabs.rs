@@ -7,11 +7,11 @@ use anyhow::Result;
 pub(crate) use browser_engine::Source;
 use browser_engine::{EngineView, RectPx};
 
+use crate::blocklist::AD_HOSTS;
 use crate::panes::{PaneNode, PaneRect, FOCUS_BORDER};
 use crate::term::TermSession;
 use crate::{
-    read_view, session, vim, AdblockMode, App, ModeKind, UserEvent, AD_HOSTS, CLOSED_CAP,
-    RESEARCH_JS,
+    read_view, session, vim, AdblockMode, App, ModeKind, UserEvent, CLOSED_CAP, RESEARCH_JS,
 };
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -672,7 +672,7 @@ impl App {
     ///
     /// Holding one webview across the swap keeps the process (and its whole profile
     /// state) live, and the rebuilt tabs attach to it instead of booting a new one.
-    /// Environment options MUST match every other webview (see [`BROWSER_ARGS`](crate::BROWSER_ARGS)) or
+    /// Environment options MUST match every other webview (see `BROWSER_ARGS` in `engines/webview2`) or
     /// WebView2 refuses to create it with 0x8007139F.
     pub(crate) fn hold_engine(&mut self) {
         if self.engine_keepalive.is_some() {
