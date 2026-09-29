@@ -65,6 +65,7 @@ mod shellkeys;
 mod tabs;
 mod term;
 mod vim;
+mod visited;
 // Re-exported so modules (and the Servo engine) can keep using `crate::ADBLOCK_JS`.
 use app::{clipboard_get, clipboard_set, AdblockMode, App, ExtInfo, ModeKind, UserEvent};
 use commands::COMMANDS;
@@ -88,9 +89,6 @@ const BASE_PX: f32 = 17.0;
 const ZOOM_MIN: f64 = 0.5;
 const ZOOM_MAX: f64 = 3.0;
 const ZOOM_STEP: f64 = 0.1;
-
-/// Max visited URLs kept for autocomplete (also the cap persisted in the session).
-const HISTORY_CAP: usize = 300;
 
 /// How many recently-closed tabs to remember for `U` / Ctrl+Shift+T (reopen).
 const CLOSED_CAP: usize = 20;
@@ -262,8 +260,7 @@ fn main() -> Result<()> {
         config: cfg,
         theme: draw::Theme::default(),
         last_focus_gain: Instant::now(),
-        history: Vec::new(),
-        history_at: Vec::new(),
+        visited: visited::Visited::default(),
         saved: bookmarks::load(),
         closed_tabs: Vec::new(),
         fs_from_page: false,

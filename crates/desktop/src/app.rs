@@ -19,9 +19,7 @@ use crate::hints::NativeHint;
 use crate::pages::{now_hms, ErrorEntry, ERROR_LOG_CAP};
 use crate::panes::{PaneNode, PaneRect};
 use crate::tabs::{NativeRead, Tab};
-use crate::{
-    read_view, session, BAR_H, BASE_PX, HISTORY_CAP, TAB_BAR_H, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
-};
+use crate::{read_view, session, BAR_H, BASE_PX, TAB_BAR_H, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP};
 
 /// How long any status message stays on the command bar before it auto-clears.
 /// The bar shouldn't hold stale text indefinitely; every status (info, warning, or
@@ -520,15 +518,9 @@ pub(crate) struct App {
     /// When the window last gained focus — used to swallow the stray `Tab` that
     /// Alt+Tab delivers to a focused terminal.
     pub(crate) last_focus_gain: Instant,
-    /// Visited URLs, most-recent first (deduped, capped). Drives command-bar
-    /// autocomplete for `:open <partial>` and is persisted in the session.
-    pub(crate) history: Vec<String>,
-    /// Visit time (Unix-epoch seconds) parallel to [`history`](Self::history), same
-    /// order/length — kept in lock-step by [`record_history`](Self::record_history)
-    /// so `:clear history <period>` can drop only the entries inside a time window.
-    /// Restored-from-session entries are stamped `0` (their real time is unknown, so
-    /// only an all-time clear removes them).
-    pub(crate) history_at: Vec<u64>,
+    /// Visited URLs with their visit times, most recent first. Drives command-bar
+    /// autocomplete for `:open <partial>` and `:history`; persisted in the session.
+    pub(crate) visited: crate::visited::Visited,
     /// Pages kept for later with `:save`, newest first — the `:saved` picker's list.
     /// Loaded once at startup and rewritten on every change, from its own file rather
     /// than the session or config (see [`bookmarks`](crate::bookmarks)), so profile
@@ -1165,24 +1157,9 @@ impl App {
         }
     }
 
-    /// Record a visited URL for autocomplete: move it to the front (most recent),
-    /// de-duplicated, and cap the list — keeping [`history_at`](Self::history_at) in
-    /// lock-step (same index, same length). Skips internal `browser://` pages.
+    /// Record a visited URL for autocomplete and `:history`, stamped now.
     pub(crate) fn record_history(&mut self, url: &str) {
-        if url.is_empty() || url.starts_with("browser://") {
-            return;
-        }
-        // Drop any existing copy from BOTH vecs at the same index so they stay aligned.
-        if let Some(pos) = self.history.iter().position(|u| u == url) {
-            self.history.remove(pos);
-            if pos < self.history_at.len() {
-                self.history_at.remove(pos);
-            }
-        }
-        self.history.insert(0, url.to_string());
-        self.history_at.insert(0, now_epoch());
-        self.history.truncate(HISTORY_CAP);
-        self.history_at.truncate(HISTORY_CAP);
+        self.visited.record(url, now_epoch());
     }
 
     pub(crate) fn resize_window(&self, dw: i32, dh: i32) {
@@ -1477,6 +1454,7 @@ impl App {
                 h: s.height,
             }
         });
+        let (history, history_at) = self.visited.to_saved();
         session::Session {
             // The profile this file belongs to (empty for the default session and
             // the scratch stash) — what `:profiles` lists.
@@ -1491,8 +1469,8 @@ impl App {
             search_template: self.search_template.clone(),
             term_command: self.term_command.clone(),
             active,
-            history: self.history.clone(),
-            history_at: self.history_at.clone(),
+            history,
+            history_at,
             windows,
             window,
             tabs,
@@ -1507,13 +1485,7 @@ impl App {
         if !s.term_command.is_empty() {
             self.term_command = s.term_command;
         }
-        self.history = s.history;
-        self.history.truncate(HISTORY_CAP);
-        // Restore visit times, realigning to the URL list: old sessions (and any
-        // length drift) leave entries stamped 0 = "time unknown", so only an
-        // all-time `:clear history` removes them, never a windowed clear.
-        self.history_at = s.history_at;
-        self.history_at.resize(self.history.len(), 0);
+        self.visited = crate::visited::Visited::from_saved(s.history, s.history_at);
         self.nojs = s.nojs;
         // Set BEFORE the tabs are opened below, so each restored webview bakes the
         // hidden-scrollbar state into its `__featureDefaults` init script.

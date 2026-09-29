@@ -235,11 +235,11 @@ impl App {
     /// they can be selected and re-opened. `:history clear` wipes it (see
     /// [`App::perform`]).
     pub(crate) fn open_history_page(&mut self) {
-        if self.history.is_empty() {
+        if self.visited.is_empty() {
             self.set_status("no history yet");
             return;
         }
-        let lines = history_lines(&self.history);
+        let lines = history_lines(&self.visited);
         self.place_tab(
             Tab {
                 url: "browser://history".into(),
@@ -922,14 +922,14 @@ pub(crate) fn ext_lines(exts: &[crate::ExtInfo]) -> Vec<String> {
 
 /// Plain-text lines for the `:history` vim pager: a header plus the visited URLs,
 /// most-recent first, one per line (full URLs so they stay selectable/openable).
-pub(crate) fn history_lines(history: &[String]) -> Vec<String> {
-    let mut lines = Vec::with_capacity(history.len() + 2);
+pub(crate) fn history_lines(visited: &crate::visited::Visited) -> Vec<String> {
+    let mut lines = Vec::with_capacity(visited.len() + 2);
     lines.push(format!(
         "history — {} entries    (Enter: open · ⇧Enter: new tab · d: delete · v: select · :clear history to wipe)",
-        history.len()
+        visited.len()
     ));
     lines.push(String::new());
-    lines.extend(history.iter().cloned());
+    lines.extend(visited.urls().map(str::to_string));
     lines
 }
 
@@ -1179,10 +1179,13 @@ mod tests {
 
     #[test]
     fn history_lines_keep_order_with_a_count_header() {
-        let h = vec![
-            "https://a.test/".to_string(),
-            "https://b.test/x".to_string(),
-        ];
+        let h = crate::visited::Visited::from_saved(
+            vec![
+                "https://a.test/".to_string(),
+                "https://b.test/x".to_string(),
+            ],
+            vec![2, 1],
+        );
         let lines = history_lines(&h);
         assert!(lines[0].starts_with("history — 2 entries"));
         assert_eq!(lines[1], ""); // blank under the header
