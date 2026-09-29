@@ -679,7 +679,14 @@ impl App {
     /// config-driven surface live (today: chrome appearance), so a bad theme is undone
     /// without a restart. Returns the status message.
     pub(crate) fn restore_defaults(&mut self) -> String {
-        self.config = crate::config::Config::default();
+        // Reset customization only. Which profile is active (and the scratch state)
+        // and the last version seen are state; resetting the theme mustn't move you
+        // into a different set of tabs.
+        let old = std::mem::take(&mut self.config);
+        self.config.profile = old.profile;
+        self.config.scratch = old.scratch;
+        self.config.scratch_return = old.scratch_return;
+        self.config.seen_version = old.seen_version;
         crate::config::save(&self.config);
         self.rebuild_theme();
         self.rebuild_term_style();
