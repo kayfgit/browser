@@ -802,7 +802,7 @@ impl App {
 
     /// Enter passthrough on the AI tab (type into its field). The shell keeps keyboard
     /// focus — there's no webview — and forwards keys via [`key_ai`](crate::App::key_ai), which owns Esc
-    /// (leave), Enter (send), and Ctrl+U (clear).
+    /// and Ctrl+S (leave), Enter (send), and Ctrl+U (clear).
     pub(crate) fn enter_ai_passthrough(&mut self) {
         if let Some(ai) = self.active_ai_mut() {
             ai.follow = true; // keep the input line in view while typing
@@ -826,11 +826,13 @@ impl App {
         self.window.request_redraw();
     }
 
-    /// Handle a key while typing in an AI tab's field (Insert mode). Enter submits,
-    /// Esc returns to Normal, Ctrl+V pastes, Ctrl+U clears the line.
+    /// Handle a key while typing in an AI tab's field. Enter submits, Esc or Ctrl+S
+    /// return to Normal (Ctrl+S leaves every typing mode), Ctrl+V pastes, Ctrl+U
+    /// clears the line.
     pub(crate) fn key_ai(&mut self, key: &KeyEvent) {
         if self.modifiers.control_key() {
             match key.physical_key {
+                KeyCode::KeyS => return self.exit_to_normal(),
                 KeyCode::KeyV => {
                     if let Some(text) = clipboard_get() {
                         if let Some(ai) = self.active_ai_mut() {
