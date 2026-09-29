@@ -297,12 +297,9 @@ pub(crate) struct App {
     pub(crate) proxy: EventLoopProxy<UserEvent>,
 
     pub(crate) mode: ModeKind,
-    pub(crate) command: String,
-    /// Caret position within `command`, as a byte offset on a char boundary.
-    pub(crate) command_cursor: usize,
-    /// Selection anchor (byte offset). When `Some` and != cursor, the text between
-    /// it and the caret is selected (Shift-movement extends it; typing replaces it).
-    pub(crate) command_anchor: Option<usize>,
+    /// The command bar's editable line (`:` commands, `/` searches), with its caret
+    /// and selection.
+    pub(crate) cmdline: crate::cmdline::LineEdit,
     /// Accumulated label characters while in Hint mode.
     pub(crate) hint_input: String,
     /// What the current hint does with its target: follow it (`f`), open it in a
@@ -1160,7 +1157,7 @@ impl App {
     /// its formatted result. Gated on the presence of a maths operator so plain
     /// inputs (a lone number, a URL, a command) don't show a spurious result.
     pub(crate) fn math_preview(&self) -> Option<String> {
-        let line = self.command.trim();
+        let line = self.cmdline.text().trim();
         if !line.contains(['+', '-', '*', '/', '%', '^']) {
             return None;
         }

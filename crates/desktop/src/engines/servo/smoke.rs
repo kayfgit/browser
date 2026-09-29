@@ -159,8 +159,8 @@ impl Smoke {
                 // Chrome-only updates must remain independent of Servo painting.
                 app.enter_command("open ");
                 for _ in 0..20 {
-                    app.command.push('a');
-                    app.command_cursor = app.command.len();
+                    app.cmdline.end(false);
+                    app.cmdline.insert("a");
                     app.draw().map_err(|e| e.to_string())?;
                 }
                 app.cancel_command();

@@ -31,9 +31,7 @@ impl App {
     pub(crate) fn enter_find(&mut self) {
         self.find_clear();
         self.mode = ModeKind::Find;
-        self.command.clear();
-        self.command_cursor = 0;
-        self.command_anchor = None;
+        self.cmdline.clear();
         self.cursor_on = true;
         // Reveal the bar over a fullscreen page (it hides again on leaving Find).
         self.relayout_active();
@@ -41,7 +39,7 @@ impl App {
 
     /// Live-update the search from the current `/` input.
     pub(crate) fn find_update(&mut self) {
-        let q = self.command.clone();
+        let q = self.cmdline.text().to_string();
         self.find.query = q.clone();
         self.find_search(&q, true);
         self.window.request_redraw();
@@ -50,9 +48,7 @@ impl App {
     /// Confirm the search: keep the highlights and enable `n`/`N`, or clear it if
     /// the query is empty (or matched nothing on a native tab).
     pub(crate) fn find_confirm(&mut self) {
-        self.command.clear();
-        self.command_cursor = 0;
-        self.command_anchor = None;
+        self.cmdline.clear();
         self.mode = ModeKind::Normal;
         let native_empty = self.active_webview().is_none() && self.find.matches.is_empty();
         if self.find.query.is_empty() || native_empty {

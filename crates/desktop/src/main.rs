@@ -37,6 +37,7 @@ mod blocklist;
 mod bookmarks;
 mod bundled_extensions;
 mod chrome;
+mod cmdline;
 mod commands;
 mod config;
 mod data;
@@ -203,9 +204,7 @@ fn main() -> Result<()> {
         painter,
         proxy,
         mode: ModeKind::Normal,
-        command: String::new(),
-        command_cursor: 0,
-        command_anchor: None,
+        cmdline: cmdline::LineEdit::default(),
         hint_input: String::new(),
         hint_act: HintAct::Follow,
         native_hints: Vec::new(),
