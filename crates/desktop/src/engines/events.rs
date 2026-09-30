@@ -126,6 +126,17 @@ impl App {
                 self.open_web_provider(&url, self.nojs, false, true, private, &provider);
                 None
             }
+            UserEvent::HintClick(x, y) => {
+                if self.active == Some(index) && self.mode == crate::ModeKind::Hint {
+                    if let Some(view) = self.tabs[index].webview() {
+                        if view.trusted_click(x, y).is_err() {
+                            let _ = view
+                                .evaluate_script("window.__hintFallback&&window.__hintFallback()");
+                        }
+                    }
+                }
+                None
+            }
             // These notify the user, but cannot change another tab's document or mode.
             event @ (UserEvent::RedirectBlocked(_)
             | UserEvent::PopupBlocked(_)

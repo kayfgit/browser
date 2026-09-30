@@ -5,6 +5,7 @@
 mod data;
 mod extensions;
 mod favicon;
+mod input;
 mod keys;
 mod navigation;
 mod suspension;
@@ -345,6 +346,12 @@ pub(crate) fn build(
                 // A hint in new-tab mode resolved to a link: `hint-open:<href>`.
                 } else if let Some(href) = body.strip_prefix("hint-open:") {
                     let _ = ipc_proxy.send_event(UserEvent::HintOpen(href.to_string()));
+                // A hint picked a control: `hint-click:<x>,<y>` asks for a trusted click.
+                } else if let Some(at) = body.strip_prefix("hint-click:") {
+                    let mut xy = at.split(',').map(|v| v.parse::<f64>());
+                    if let (Some(Ok(x)), Some(Ok(y))) = (xy.next(), xy.next()) {
+                        let _ = ipc_proxy.send_event(UserEvent::HintClick(x, y));
+                    }
                 // A hint in copy mode (`yf`) resolved to a link: `hint-copy:<href>`.
                 } else if let Some(href) = body.strip_prefix("hint-copy:") {
                     let _ = ipc_proxy.send_event(UserEvent::HintCopy(href.to_string()));
@@ -750,6 +757,12 @@ impl EngineView for WebView2View {
         self.inner
             .evaluate_script(script)
             .map_err(|e| e.to_string())
+    }
+    fn trusted_click(&self, x: f64, y: f64) -> EngineResult {
+        // A click may follow a link or submit a form cross-site; mark it as wanted so
+        // the navigation guard doesn't read it as a forced redirect.
+        self.authorize_navigation();
+        input::click(&self.inner, x, y)
     }
     fn history(&self) -> Option<&dyn History> {
         Some(self)
