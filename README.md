@@ -71,6 +71,7 @@ Launch **browser** from the Start Menu, or run `browser <url>` in a terminal.
 | `H` / `L` | back / forward |
 | `n` / `p`, `1`–`9` | next / previous tab, jump to tab |
 | `x` / `u` | close tab / reopen it |
+| `U` / `R` | undo / redo a layout change (close, split, pane move, resize) |
 | `i` | type into a page field (`Esc` to leave) |
 | `Ctrl+V` | passthrough: every key goes to the page (`Ctrl+S` or `Shift+Esc` to leave) |
 | `v` | select text with vim motions, `y` to copy |

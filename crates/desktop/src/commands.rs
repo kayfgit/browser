@@ -49,6 +49,7 @@ pub(crate) const BUILTIN_VERBS: &[&str] = &[
     "unbookmark",
     "reopen",
     "undo",
+    "redo",
     "ads",
     "adblock",
     "extensions",
@@ -156,6 +157,8 @@ pub(crate) const COMMANDS: &[&str] = &[
     "res",
     "resources",
     "reopen",
+    "undo",
+    "redo",
     "ai",
     "error",
     "errors",
@@ -369,7 +372,9 @@ impl App {
                 serde_json::json!({ "do": "delete", "name": rest.trim() }),
             ),
             // Reopen the most recently closed tab (also `u` / Ctrl+Shift+T).
-            "reopen" | "undo" => self.reopen_closed(),
+            "reopen" => self.reopen_closed(),
+            "undo" => self.undo_layout(),
+            "redo" => self.redo_layout(),
             // Ad blocker control. `on`/`ubo` (the default) runs both halves — uBO Lite for
             // network filtering plus the native cosmetic/YouTube/redirect layers, which cover
             // what the extension structurally can't. `native` drops the extension only, as an

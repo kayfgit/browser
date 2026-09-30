@@ -2,6 +2,7 @@
 //! content band), its maintenance operations, and the [`App`] methods that drive
 //! pane focus, splitting, and hit-testing.
 
+use crate::layout::ChangeKind;
 use crate::{App, ModeKind, Tab};
 
 /// A rectangle in physical pixels within the content band, for pane tiling.
@@ -14,7 +15,7 @@ pub(crate) struct PaneRect {
 }
 
 /// Which way a split divides its region.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum SplitDir {
     /// Children side by side, left | right (a vertical divider) — `:vsplit`.
     Row,
@@ -26,7 +27,7 @@ pub(crate) enum SplitDir {
 /// a `Split` divides its region between two children, `ratio` being the fraction of
 /// the space given to the first child `a` (left in a Row split, top in a Col split).
 /// New splits start at `0.5` (an even divide); Ctrl+W H/J/K/L nudge it.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum PaneNode {
     Leaf(usize),
     Split {
@@ -508,7 +509,9 @@ impl App {
             'j' => (SplitDir::Col, RESIZE_STEP),
             _ => return,
         };
+        let before = self.layout_now();
         if self.windows[w].resize_split(a, axis, delta) {
+            self.record_layout(ChangeKind::Resize, before, Vec::new(), Vec::new());
             self.refresh_visibility();
             self.window.request_redraw();
         } else {
@@ -545,6 +548,7 @@ impl App {
             self.set_status("can't split this — open a page first");
             return;
         };
+        let before = self.layout_now();
         let new_idx = self.tabs.len();
         self.tabs.push(Tab::blank());
         let tree = std::mem::replace(&mut self.windows[w], PaneNode::Leaf(new_idx));
@@ -555,6 +559,8 @@ impl App {
         self.refresh_visibility();
         self.window.set_focus();
         self.window.request_redraw();
+        let created = vec![self.tabs[new_idx].id];
+        self.record_layout(ChangeKind::Split, before, created, Vec::new());
     }
 
     /// `Ctrl+W <n>` in Normal: start moving a pane. `win` is a tab-bar entry index. If it
@@ -638,7 +644,10 @@ impl App {
 
     /// Commit the move: keep the current arrangement and return to Normal.
     pub(crate) fn commit_pane_move(&mut self) {
-        self.pane_move_orig = None;
+        if let Some((windows, active)) = self.pane_move_orig.take() {
+            let before = self.layout_of(&windows, active);
+            self.record_layout(ChangeKind::Move, before, Vec::new(), Vec::new());
+        }
         self.mode = ModeKind::Normal;
         self.clear_status();
         self.refresh_visibility();
@@ -672,11 +681,13 @@ impl App {
             self.set_status("pane isn't split — nothing to break out");
             return;
         }
+        let before = self.layout_now();
         let src = std::mem::replace(&mut self.windows[aw], PaneNode::Leaf(a));
         if let Some(t) = src.prune(a) {
             self.windows[aw] = t;
         }
         self.windows.push(PaneNode::Leaf(a));
+        self.record_layout(ChangeKind::BreakOut, before, Vec::new(), Vec::new());
         self.mode = ModeKind::Normal;
         self.find_reset();
         self.refresh_visibility();
@@ -695,7 +706,9 @@ impl App {
             self.set_status("nothing to flip — open a page first");
             return;
         };
+        let before = self.layout_now();
         if self.windows[aw].flip_parent_split(a) {
+            self.record_layout(ChangeKind::Flip, before, Vec::new(), Vec::new());
             self.refresh_visibility();
             self.window.set_focus();
             self.window.request_redraw();

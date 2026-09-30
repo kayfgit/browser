@@ -44,7 +44,8 @@ The browser is modal, like vim or qutebrowser. The mode decides where your keys 
   `Ctrl+D`/`Ctrl+U` move half a page, `g`/`G` jump to top/bottom, `H`/`L` go
   back/forward, `r` reloads. `n`/`p` switch tabs, `1`–`9` jump to a tab
   (`Shift+1`–`9` for tabs 11–19), `<`/`>` move the current tab, `x` closes it and
-  `u` (or `Ctrl+Shift+T`) reopens the last closed one. `yy` copies the page address.
+  `u` (or `Ctrl+Shift+T`) reopens the last closed one. `U` undoes the last layout change
+  and `R` redoes it (see [Splits](#splits)). `yy` copies the page address.
   Clicking a button, link or menu on a page lets the page keep the keyboard so its
   menu stays usable: arrow keys, Enter, Space and Tab operate it. Any other key hands
   the keyboard back to the browser and still counts, so `:` opens the command bar
@@ -122,6 +123,10 @@ be any tab type.
   swap it with its neighbours (`Enter` keeps, `Esc` reverts). `Ctrl+W` then a tab number
   pulls that tab into the split.
 - Clicking a pane focuses it. Splits are saved with the session.
+- `U` undoes the last layout change and `R` redoes it (also `:undo` / `:redo`): closing a
+  tab or pane, a split, moving, swapping or breaking out a pane, flipping or resizing a
+  split, moving a tab. Undoing a close reopens the page in the pane it was in (a
+  terminal restarts in its directory). A run of resizes counts as one change.
 
 ## Sessions, profiles and saved pages
 

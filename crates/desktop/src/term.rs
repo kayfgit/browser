@@ -389,6 +389,7 @@ impl App {
         // New tab normally; under a split it fills the focused pane (place_tab).
         self.place_tab(
             Tab {
+                id: crate::layout::TabId::new(),
                 url: format!("term: {}", shell[0]),
                 nojs: false,
                 read: false,

@@ -181,6 +181,7 @@ impl App {
         }
         self.place_tab(
             Tab {
+                id: crate::layout::TabId::new(),
                 url: "browser://saved".into(),
                 nojs: false,
                 read: false,

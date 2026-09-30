@@ -137,6 +137,7 @@ State that has its own type (each module holds the rules for keeping its fields
 consistent, with tests):
 
 - [cmdline.rs](crates/desktop/src/cmdline.rs): the command bar's text, caret and selection.
+- [layout.rs](crates/desktop/src/layout.rs): undo/redo of layout changes (`U` / `R`), recorded by stable `TabId`s.
 - [status.rs](crates/desktop/src/status.rs): the status message and when it clears.
 - [visited.rs](crates/desktop/src/visited.rs): visited-URL history with visit times.
 - [adblock.rs](crates/desktop/src/adblock.rs): the ad-block mode and the flag shared with every tab.
