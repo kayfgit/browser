@@ -528,9 +528,9 @@ pub(crate) struct App {
     /// `(when, x, y, count)` of the last press. A press near the same spot within
     /// [`MULTI_CLICK`](crate::term::MULTI_CLICK) grows `count` (2 = word, 3 = line).
     pub(crate) term_clicks: Option<(Instant, f64, f64, u8)>,
-    /// True while the browser is frozen (`:freeze`): every web tab is hidden and
-    /// suspended to minimize RAM; the content band shows a frozen notice instead of
-    /// the (hidden) webviews. `:unfreeze` resumes them. See [`freeze`](crate::freeze).
+    /// True while the browser is frozen (`:freeze`): every web tab's view is dropped so
+    /// the engine exits; the content band shows a frozen notice instead of
+    /// the pages. `:unfreeze` rebuilds them. See [`freeze`](crate::freeze).
     pub(crate) frozen: bool,
 }
 

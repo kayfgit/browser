@@ -152,20 +152,24 @@ impl App {
         let nojs = saved.kind == "nojs";
         let research = saved.kind == "research";
         let extra = if research { RESEARCH_JS } else { "" };
-        let candidate = if self.frozen {
-            Err(anyhow::anyhow!("browser is frozen — :unfreeze first"))
+        // While frozen, the tab comes back frozen too, and `:unfreeze` builds it.
+        let content = if self.frozen {
+            TabContent::Frozen {
+                provider: saved.provider.clone(),
+            }
         } else {
-            self.build_provider_view(
+            match self.build_provider_view(
                 &saved.provider,
                 Source::Url(saved.url.clone()),
                 nojs,
                 extra,
                 false,
-            )
-        };
-        let content = match candidate {
-            Ok((view, page)) => TabContent::Web(view, page),
-            Err(error) => unavailable_content(&saved.provider, &saved.url, &format!("{error:#}")),
+            ) {
+                Ok((view, page)) => TabContent::Web(view, page),
+                Err(error) => {
+                    unavailable_content(&saved.provider, &saved.url, &format!("{error:#}"))
+                }
+            }
         };
         self.place_tab_escaping_split(
             Tab {
@@ -245,7 +249,7 @@ impl App {
     }
 }
 
-pub(super) fn unavailable_content(provider: &str, url: &str, error: &str) -> TabContent {
+pub(crate) fn unavailable_content(provider: &str, url: &str, error: &str) -> TabContent {
     TabContent::Unavailable {
         provider: provider.into(),
         error: error.into(),

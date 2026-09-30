@@ -542,6 +542,11 @@ pub(crate) fn paint_pane(
         return;
     }
 
+    if matches!(t.content, crate::tabs::TabContent::Frozen { .. }) {
+        paint_frozen_pane(p, buf, wz, hz, rect);
+        return;
+    }
+
     // Blank pane: a quiet prompt centred in the rect.
     let msg = "empty pane — :open a page · :te terminal";
     let mw = p.measure(msg) as i32;
@@ -562,10 +567,9 @@ pub(crate) fn paint_pane(
     );
 }
 
-/// Paint a "frozen" placeholder over a web pane whose webview is hidden+suspended
-/// (`:freeze`). The content band is already cleared to the theme bg by the caller,
-/// so this just centres a short note — the suspended pane reads as deliberately
-/// paused instead of a blank/stale gap.
+/// Paint the placeholder for a web tab frozen by `:freeze`. The content band is
+/// already cleared to the theme bg by the caller, so this just centres a short note —
+/// the pane reads as deliberately paused instead of a blank gap.
 fn paint_frozen_pane(p: &Painter, buf: &mut [u32], wz: usize, hz: usize, rect: PaneRect) {
     const MARGIN: i32 = 8;
     let lh = p.line_height() as i32;

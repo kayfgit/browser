@@ -601,7 +601,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("error", ":error · :err", "latest error in a read-only vim tab (v/y to select & copy)"),
     ("errors", ":errors · :errs", "every error this session (newest first), same vim tab"),
     ("resources", ":res · :resources", "live memory/CPU/disk across the whole browser tree (freezes while you select)"),
-    ("freeze", ":freeze · :unfreeze", "suspend every web tab to minimize RAM while staying open; :unfreeze resumes them"),
+    ("freeze", ":freeze · :unfreeze", "stop the web engine to free its memory, keeping every tab; :unfreeze reloads them"),
     ("save", ":save [name] · :favorite · :bookmark", "keep the current page for later, optionally under a short name (re-saving the same page renames it instead of duplicating)"),
     ("saved", ":saved · :favorites", "the saved pages in a vim tab (Enter opens, ⇧Enter new tab, d deletes the line/selection); kept in their own file, so profiles and :restore never touch them"),
     ("unsave", ":unsave <name|url>", "remove a saved page (same as d on its row in :saved)"),
