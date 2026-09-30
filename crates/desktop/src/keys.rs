@@ -327,6 +327,9 @@ impl App {
                 }
                 "x" => self.close_active(),
                 "r" => self.reload_active(),
+                // Undo / redo the last layout change (close, split, pane move, …).
+                "U" => self.undo_layout(),
+                "R" => self.redo_layout(),
                 // On an AI tab, H/L step through saved chats; elsewhere they're
                 // page history (back/forward).
                 "H" => {

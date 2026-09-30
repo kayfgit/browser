@@ -30,6 +30,7 @@ impl App {
         let lines = error_lines(&self.errors, all);
         self.place_tab(
             Tab {
+                id: crate::layout::TabId::new(),
                 url: "browser://error".into(),
                 nojs: false,
                 read: false,
@@ -62,6 +63,7 @@ impl App {
         }
         self.place_tab(
             Tab {
+                id: crate::layout::TabId::new(),
                 url: "browser://res".into(),
                 nojs: false,
                 read: false,
@@ -215,6 +217,7 @@ impl App {
     pub(crate) fn open_version_page(&mut self) {
         self.place_tab(
             Tab {
+                id: crate::layout::TabId::new(),
                 url: "browser://version".into(),
                 nojs: false,
                 read: false,
@@ -242,6 +245,7 @@ impl App {
         let lines = history_lines(&self.visited);
         self.place_tab(
             Tab {
+                id: crate::layout::TabId::new(),
                 url: "browser://history".into(),
                 nojs: false,
                 read: false,
@@ -328,6 +332,7 @@ impl App {
         let lines = alias_lines(&self.config.aliases);
         self.place_tab(
             Tab {
+                id: crate::layout::TabId::new(),
                 url: "browser://aliases".into(),
                 nojs: false,
                 read: false,
@@ -373,6 +378,7 @@ impl App {
         }
         self.place_tab(
             Tab {
+                id: crate::layout::TabId::new(),
                 url: "browser://profiles".into(),
                 nojs: false,
                 read: false,
@@ -393,6 +399,7 @@ impl App {
             Ok((webview, page)) => {
                 self.place_tab(
                     Tab {
+                        id: crate::layout::TabId::new(),
                         content: TabContent::Web(webview, page),
                         url: format!("browser://{label}"),
                         nojs: false,
@@ -567,7 +574,8 @@ pub(crate) fn now_stamp() -> String {
 const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("open", ":open <url|query> · :o", "open in THIS tab (non-URL → search engine); -t = new tab, -n = private, combinable (-tn)"),
     ("tabopen", ":tabopen · :t", "open in a new tab (same as :open -t); -n = private"),
-    ("reopen", ":reopen · :undo", "reopen the last closed tab (also U / Ctrl+Shift+T)"),
+    ("reopen", ":reopen", "reopen the last closed tab (also u / Ctrl+Shift+T)"),
+    ("undo", ":undo · :redo", "undo / redo the last layout change — closing a tab or pane, a split, moving, swapping or breaking out a pane, flipping or resizing a split, moving a tab (also U / R); an undone close reopens the page where it was"),
     ("research", ":research <url|query> · :rs", "lighter browse: JS on, images kept, media/embeds stripped (-t = new tab, -n = private)"),
     ("edit", ":edit · :e", "edit the current URL (re-opens in the tab's own mode)"),
     ("yank", ":y · :yank", "copy the current URL to the clipboard (also yy; yf copies a link you pick by hint)"),
@@ -779,6 +787,7 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
         ("v / V", "selection mode on read & web tabs — hjkl/w/b move, v/V select, y yank, Esc exits"),
         ("x", "close the current tab"),
         ("u / Ctrl+Shift+T", "reopen the last closed tab"),
+        ("U / R", "undo / redo the last layout change (close, split, pane move, resize, tab move)"),
         ("r", "reload the page"),
         ("H / L", "history back / forward"),
         ("n / p", "next / previous tab"),

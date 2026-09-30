@@ -52,6 +52,7 @@ mod find;
 mod freeze;
 mod hints;
 mod keys;
+mod layout;
 mod markdown;
 mod navguard;
 mod news;
@@ -264,6 +265,7 @@ fn main() -> Result<()> {
         windows: Vec::new(),
         pane_focus: panes::PaneFocus::default(),
         pending_prefix: None,
+        layout_history: layout::LayoutHistory::default(),
         cli_scratch,
         pane_resize_at: Instant::now(),
         pane_move_orig: None,

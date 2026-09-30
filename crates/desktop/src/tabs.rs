@@ -120,6 +120,9 @@ pub(crate) enum TabContent {
 }
 
 pub(crate) struct Tab {
+    /// Stays the same while the tab exists, even as indices shift; opening another
+    /// page in the same pane keeps it. Layout undo is recorded in these.
+    pub(crate) id: crate::layout::TabId,
     pub(crate) content: TabContent,
     pub(crate) url: String,
     /// Whether this tab was opened with JavaScript disabled (hint mode needs JS).
@@ -249,6 +252,7 @@ impl Tab {
     /// first `:open`/`:te`/`:read`/… run while it's focused.
     pub(crate) fn blank() -> Tab {
         Tab {
+            id: crate::layout::TabId::new(),
             content: TabContent::Blank,
             url: BLANK_URL.to_string(),
             nojs: false,
@@ -418,6 +422,7 @@ pub(crate) fn parse_open_flags(rest: &str) -> (bool, bool, &str) {
 /// layout is left empty/dirty so it's laid out on the next draw at the live width.
 pub(crate) fn native_read_tab(doc: browser_core::Document, url: String, read: bool) -> Tab {
     Tab {
+        id: crate::layout::TabId::new(),
         url,
         nojs: false,
         read,
@@ -516,6 +521,8 @@ impl App {
                 let mut tab = tab;
                 tab.nav.back = back;
                 tab.nav.fwd = fwd;
+                // Same pane, new content: it keeps the slot's identity.
+                tab.id = self.tabs[i].id;
                 self.tabs[i] = tab;
                 self.active = Some(i);
             }
@@ -544,17 +551,28 @@ impl App {
         idx
     }
 
-    /// Record tab `i` on the closed-tab stack so `U` / Ctrl+Shift+T can reopen it.
+    /// Record tab `i` on the closed-tab stack so `u` / Ctrl+Shift+T can reopen it.
     /// Mirrors the session's restorable-tab rules: live `browser://…` pages and the
     /// error/res vim pagers are session-specific and skipped — and so are private
     /// tabs, which must leave no reopenable trace once closed.
     pub(crate) fn record_closed(&mut self, i: usize) {
-        let Some(t) = self.tabs.get(i) else { return };
+        let Some(saved) = self.saved_tab(i) else {
+            return;
+        };
+        self.closed_tabs.push(saved);
+        if self.closed_tabs.len() > CLOSED_CAP {
+            self.closed_tabs.remove(0);
+        }
+    }
+
+    /// How tab `i` is reopened (`u`, layout undo); `None` for tabs that can't be.
+    pub(crate) fn saved_tab(&self, i: usize) -> Option<session::SavedTab> {
+        let t = self.tabs.get(i)?;
         if t.url.starts_with("browser://")
             || (t.vim().is_some() && t.unavailable().is_none())
             || t.private
         {
-            return;
+            return None;
         }
         let kind = if t.term().is_some() {
             "term"
@@ -567,17 +585,14 @@ impl App {
         } else {
             "open"
         };
-        // A closed terminal keeps its last known cwd so `U` reopens it there.
+        // A closed terminal keeps its last known cwd so `u` reopens it there.
         let cwd = t.term().and_then(|s| s.cwd()).unwrap_or_default();
-        self.closed_tabs.push(session::SavedTab {
+        Some(session::SavedTab {
             provider: t.provider().unwrap_or("webview2").into(),
             kind: kind.to_string(),
             url: t.url.clone(),
             cwd,
-        });
-        if self.closed_tabs.len() > CLOSED_CAP {
-            self.closed_tabs.remove(0);
-        }
+        })
     }
 
     /// Reopen the most recently closed tab (`U` / Ctrl+Shift+T), as a new tab. Read
@@ -820,7 +835,13 @@ impl App {
             self.set_status("no tab to close");
             return;
         };
-        // Remember it so `U` / Ctrl+Shift+T can reopen it (internal pages are skipped
+        let before = self.layout_now();
+        let closed: Vec<_> = self
+            .reopen_info(i)
+            .map(|how| (self.tabs[i].id, how))
+            .into_iter()
+            .collect();
+        // Remember it so `u` / Ctrl+Shift+T can reopen it (internal pages are skipped
         // by record_closed). Shut a terminal down deterministically (kill shell, close
         // PTY, join reader) before dropping the tab; dropping the WebView frees the renderer.
         self.record_closed(i);
@@ -843,6 +864,7 @@ impl App {
         self.mode = ModeKind::Normal;
         self.refresh_visibility();
         self.window.set_focus();
+        self.record_layout(crate::layout::ChangeKind::Close, before, Vec::new(), closed);
     }
 
     /// Hide the AI tab (the `x` action on it): step focus away so the chat stays alive
@@ -995,8 +1017,15 @@ impl App {
         if target < 0 || target as usize >= self.windows.len() {
             return;
         }
+        let before = self.layout_now();
         self.windows.swap(cur, target as usize);
         self.refresh_visibility();
+        self.record_layout(
+            crate::layout::ChangeKind::Reorder,
+            before,
+            Vec::new(),
+            Vec::new(),
+        );
     }
 
     pub(crate) fn refresh_visibility(&mut self) {
@@ -1255,6 +1284,7 @@ impl App {
                 self.nav_replaying = true;
                 self.place_tab(
                     Tab {
+                        id: crate::layout::TabId::new(),
                         content: TabContent::Web(view, page),
                         url: entry.url,
                         nojs,
@@ -1412,7 +1442,9 @@ impl App {
                 // and settle so the reloaded landing isn't recorded as a new step.
                 let mut nav = std::mem::take(&mut self.tabs[i].nav);
                 nav.settling = true;
+                let id = self.tabs[i].id;
                 self.tabs[i] = Tab {
+                    id,
                     content: TabContent::Web(webview, page),
                     url,
                     nojs,

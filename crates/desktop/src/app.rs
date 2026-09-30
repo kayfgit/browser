@@ -466,6 +466,8 @@ pub(crate) struct App {
     /// when it was pressed. The next key consumes it, or it's dropped once older than
     /// [`KeyPrefix::timeout`].
     pub(crate) pending_prefix: Option<(KeyPrefix, Instant)>,
+    /// Layout changes `U` can undo and `R` redo.
+    pub(crate) layout_history: crate::layout::LayoutHistory,
     /// This process was launched with `--scratch`: a throwaway slate for poking at a
     /// dev build. Run-scoped and never persisted — it redirects
     /// [`current_session_path`](Self::current_session_path) to its own file, so

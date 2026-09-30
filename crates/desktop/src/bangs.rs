@@ -73,6 +73,7 @@ impl App {
         let lines = bang_lines(word, &found, self.config.bangs.len());
         self.place_tab(
             Tab {
+                id: crate::layout::TabId::new(),
                 url: "browser://bangs".into(),
                 nojs: false,
                 read: false,

@@ -324,6 +324,7 @@ impl App {
         self.ai_prev_active = None;
         // Tabs from the profile we're leaving must not be reopenable in the next one.
         self.closed_tabs.clear();
+        self.layout_history = crate::layout::LayoutHistory::default();
         self.find_reset();
         self.mode = crate::ModeKind::Normal;
         self.native_hints.clear();

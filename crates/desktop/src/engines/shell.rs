@@ -110,6 +110,7 @@ impl App {
                 }
                 self.place_tab_escaping_split(
                     Tab {
+                        id: crate::layout::TabId::new(),
                         content: TabContent::Web(view, page),
                         url,
                         nojs,
@@ -173,6 +174,7 @@ impl App {
         };
         self.place_tab_escaping_split(
             Tab {
+                id: crate::layout::TabId::new(),
                 content,
                 url: saved.url.clone(),
                 nojs,

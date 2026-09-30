@@ -778,6 +778,7 @@ impl App {
         let id = self.next_ai_id;
         self.next_ai_id += 1;
         Tab {
+            id: crate::layout::TabId::new(),
             url: "browser://ai".into(),
             nojs: false,
             read: false,
@@ -1138,6 +1139,7 @@ impl App {
         let lines = crate::pages::ai_history_lines(&self.ai_chats);
         self.place_tab(
             Tab {
+                id: crate::layout::TabId::new(),
                 url: "browser://aihist".into(),
                 nojs: false,
                 read: false,

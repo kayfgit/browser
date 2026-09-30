@@ -89,7 +89,7 @@ pub struct WindowGeom {
 
 /// One saved tab: how it was opened (`open` | `nojs` | `research` | `read` |
 /// `term`) and the address to reopen it at (unused for `term`).
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedTab {
     /// Concrete provider; old sessions used WebView2. Native tabs ignore this field.
     #[serde(default = "default_provider")]
