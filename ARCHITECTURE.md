@@ -191,6 +191,9 @@ Things that look changeable but aren't:
 - **Don't use a low-level keyboard hook (`WH_KEYBOARD_LL`).** Once WebView2 runs in the
   process, Windows stops calling the process's hooks. Keys the shell needs while a page
   has focus go through `shellkeys.rs` (see "How things flow").
+- **Keep the shell's own UI text within Consolas.** A symbol it lacks (⇧, ⚠, ⁝, ↗, …)
+  makes the painter load a fallback font, and fontdue holds every glyph of it in memory:
+  Segoe UI Symbol costs about 45 MB. Web pages rendered by WebView2 aren't affected.
 - **Any draw path must tolerate a window smaller than the chrome**: a minimized
   window can be shorter than the tab and command bars.
 - **Keep related fields in one type.** If two `App` fields must change together, give

@@ -925,7 +925,7 @@ pub(crate) fn ext_lines(exts: &[crate::ExtInfo]) -> Vec<String> {
 pub(crate) fn history_lines(visited: &crate::visited::Visited) -> Vec<String> {
     let mut lines = Vec::with_capacity(visited.len() + 2);
     lines.push(format!(
-        "history — {} entries    (Enter: open · ⇧Enter: new tab · d: delete · v: select · :clear history to wipe)",
+        "history — {} entries    (Enter: open · Shift+Enter: new tab · d: delete · v: select · :clear history to wipe)",
         visited.len()
     ));
     lines.push(String::new());

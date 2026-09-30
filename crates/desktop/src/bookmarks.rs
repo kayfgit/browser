@@ -85,7 +85,7 @@ pub(crate) fn store(items: &[Bookmark]) {
 pub(crate) fn saved_lines(items: &[Bookmark]) -> Vec<String> {
     let mut lines = Vec::with_capacity(items.len() + HEADER);
     lines.push(format!(
-        "saved — {} page{}    (Enter: open · ⇧Enter: new tab · d: delete · v: select · :save adds this page)",
+        "saved — {} page{}    (Enter: open · Shift+Enter: new tab · d: delete · v: select · :save adds this page)",
         items.len(),
         if items.len() == 1 { "" } else { "s" }
     ));

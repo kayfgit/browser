@@ -101,16 +101,53 @@ pub fn parse_color(s: &str) -> Option<Rgb> {
     })
 }
 
+/// Fonts are shared by every [`Painter`], and each fallback face loads only when a
+/// glyph reaches it. fontdue parses every glyph outline up front, so a face costs far
+/// more memory than its file: Segoe UI Symbol (2.4 MB on disk) takes about 45 MB, and
+/// the CJK faces together over 600 MB. Loading them eagerly, once per painter, made up
+/// most of an idle browser's memory.
+///
+/// The system monospace face (Consolas → Segoe UI → Arial), which covers normal text.
+/// Keep the shell's own UI text within it: one symbol it lacks loads a fallback face.
+static SYSTEM_FONT: OnceLock<Font> = OnceLock::new();
+
+/// A fallback face for glyphs the primary lacks, loaded on first use (`None` when it
+/// isn't installed or doesn't parse).
+struct Fallback {
+    path: &'static str,
+    /// Only characters in CJK, kana and Hangul ranges try this face, so an icon no font
+    /// has (a private-use prompt glyph, say) can't load hundreds of MB of CJK faces.
+    cjk_only: bool,
+    face: OnceLock<Option<Font>>,
+}
+
+const fn fallback(path: &'static str, cjk_only: bool) -> Fallback {
+    Fallback {
+        path,
+        cjk_only,
+        face: OnceLock::new(),
+    }
+}
+
+/// Tried in order, so terminals and pages show real glyphs rather than `.notdef` tofu
+/// boxes: symbols (Braille, dingbats) and other Latin first, then CJK — Japanese first
+/// so the Han ideographs shared across CJK render in Japanese forms, then Korean, then
+/// Chinese. `.ttc` collections load their first face (fontdue's default).
+static FALLBACKS: [Fallback; 7] = [
+    fallback(r"C:\Windows\Fonts\seguisym.ttf", false), // Segoe UI Symbol
+    fallback(r"C:\Windows\Fonts\arial.ttf", false),
+    fallback(r"C:\Windows\Fonts\YuGothR.ttc", true), // Yu Gothic — Japanese
+    fallback(r"C:\Windows\Fonts\msgothic.ttc", true), // MS Gothic — Japanese
+    fallback(r"C:\Windows\Fonts\malgun.ttf", true),  // Malgun Gothic — Korean
+    fallback(r"C:\Windows\Fonts\msyh.ttc", true),    // Microsoft YaHei — Chinese
+    fallback(r"C:\Windows\Fonts\simsun.ttc", true),  // SimSun — Chinese
+];
+
 pub struct Painter {
-    /// Primary monospace font + fallbacks, tried in order for each glyph. The
-    /// primary (Consolas) covers normal text; fallbacks (e.g. Segoe UI Symbol)
-    /// cover glyphs it lacks (Braille, symbols, dingbats) so terminals/pages don't
-    /// show `.notdef` tofu boxes for them.
-    fonts: Vec<Font>,
-    /// Broad-script (CJK …) fallbacks, loaded LAZILY the first time a glyph misses
-    /// every `fonts` entry — so a session that only ever shows Latin text never pays
-    /// the cost of holding several large CJK faces in memory.
-    cjk: OnceLock<Vec<Font>>,
+    /// A custom primary face (the terminal's configured font), tried before the
+    /// system face.
+    custom: Option<Font>,
+    system: &'static Font,
     px: f32,
 }
 
@@ -125,52 +162,43 @@ impl Painter {
     /// terminal's custom font). The system monospace + symbol fallbacks still load
     /// behind it, so glyphs the custom face lacks don't render as tofu.
     pub fn with_primary(primary: Option<&std::path::Path>, px: f32) -> Result<Self> {
-        let mut fonts = Vec::new();
-        if let Some(path) = primary {
-            let bytes =
-                std::fs::read(path).map_err(|e| anyhow!("reading font {}: {e}", path.display()))?;
-            fonts.push(
-                Font::from_bytes(bytes, FontSettings::default())
-                    .map_err(|e| anyhow!("parsing font {}: {e}", path.display()))?,
-            );
-        }
-        fonts.push(
-            Font::from_bytes(load_system_font()?, FontSettings::default())
-                .map_err(|e| anyhow!("parsing font: {e}"))?,
-        );
-        // Optional fallbacks — skipped silently if a face isn't installed.
-        for path in [
-            r"C:\Windows\Fonts\seguisym.ttf",
-            r"C:\Windows\Fonts\arial.ttf",
-        ] {
-            if let Ok(bytes) = std::fs::read(path) {
-                if let Ok(f) = Font::from_bytes(bytes, FontSettings::default()) {
-                    fonts.push(f);
-                }
+        let custom = match primary {
+            Some(path) => {
+                let bytes = std::fs::read(path)
+                    .map_err(|e| anyhow!("reading font {}: {e}", path.display()))?;
+                Some(
+                    Font::from_bytes(bytes, FontSettings::default())
+                        .map_err(|e| anyhow!("parsing font {}: {e}", path.display()))?,
+                )
             }
-        }
+            None => None,
+        };
         Ok(Painter {
-            fonts,
-            cjk: OnceLock::new(),
+            custom,
+            system: system_font()?,
             px,
         })
     }
 
-    /// The first loaded font that has a glyph for `ch` (else the primary, which
-    /// renders its `.notdef`). The Latin/symbol `fonts` are checked first — the hot
-    /// path for ordinary text — and only on a miss are the CJK fallbacks consulted
-    /// (loading them once, on demand), so Japanese/Chinese/Korean text renders
-    /// instead of showing tofu boxes on `:read` and `:term`.
+    /// The first font that has a glyph for `ch` (else the primary, which renders its
+    /// `.notdef`): the custom and system faces first — the hot path for ordinary text
+    /// — then the [`FALLBACKS`] in order, each loaded when a glyph first reaches it.
     fn font_for(&self, ch: char) -> &Font {
-        if let Some(f) = self.fonts.iter().find(|f| f.lookup_glyph_index(ch) != 0) {
+        let has = |f: &&Font| f.lookup_glyph_index(ch) != 0;
+        if let Some(f) = self.custom.iter().chain([self.system]).find(has) {
             return f;
         }
-        for f in self.cjk.get_or_init(load_cjk_fonts) {
-            if f.lookup_glyph_index(ch) != 0 {
-                return f;
-            }
-        }
-        &self.fonts[0]
+        let cjk = is_cjk(ch);
+        FALLBACKS
+            .iter()
+            .filter(|fb| cjk || !fb.cjk_only)
+            .find_map(|fb| {
+                fb.face
+                    .get_or_init(|| load_face(fb.path))
+                    .as_ref()
+                    .filter(has)
+            })
+            .unwrap_or(self.custom.as_ref().unwrap_or(self.system))
     }
 
     pub fn line_height(&self) -> usize {
@@ -346,28 +374,37 @@ fn blend(bg: u32, fg: Rgb, cov: u8) -> u32 {
     (r << 16) | (g << 8) | b
 }
 
-/// Best-effort broad-script fallback faces for glyphs the Latin/symbol fonts lack —
-/// chiefly CJK. Loaded once, on first miss (see [`Painter::font_for`]). Each path is
-/// skipped silently if the face isn't installed. Japanese is listed first so the Han
-/// ideographs shared across CJK render in Japanese forms; then Korean, then Chinese.
-/// `.ttc` collections load their first face (fontdue's default `collection_index`).
-fn load_cjk_fonts() -> Vec<Font> {
-    const PATHS: &[&str] = &[
-        r"C:\Windows\Fonts\YuGothR.ttc", // Yu Gothic — Japanese (kana + kanji)
-        r"C:\Windows\Fonts\msgothic.ttc", // MS Gothic — Japanese fallback
-        r"C:\Windows\Fonts\malgun.ttf",  // Malgun Gothic — Korean (Hangul)
-        r"C:\Windows\Fonts\msyh.ttc",    // Microsoft YaHei — Simplified Chinese
-        r"C:\Windows\Fonts\simsun.ttc",  // SimSun — Chinese fallback
-    ];
-    let mut fonts = Vec::new();
-    for path in PATHS {
-        if let Ok(bytes) = std::fs::read(path) {
-            if let Ok(f) = Font::from_bytes(bytes, FontSettings::default()) {
-                fonts.push(f);
-            }
-        }
+/// The shared system monospace face, loaded on first use.
+fn system_font() -> Result<&'static Font> {
+    if let Some(f) = SYSTEM_FONT.get() {
+        return Ok(f);
     }
-    fonts
+    let font = Font::from_bytes(load_system_font()?, FontSettings::default())
+        .map_err(|e| anyhow!("parsing font: {e}"))?;
+    Ok(SYSTEM_FONT.get_or_init(|| font))
+}
+
+fn load_face(path: &str) -> Option<Font> {
+    let bytes = std::fs::read(path).ok()?;
+    Font::from_bytes(bytes, FontSettings::default()).ok()
+}
+
+/// Whether `ch` is in a CJK, kana or Hangul block — the characters the CJK fallback
+/// faces exist for.
+fn is_cjk(ch: char) -> bool {
+    matches!(ch as u32,
+        0x1100..=0x11FF // Hangul Jamo
+        | 0x2E80..=0x2FDF // CJK radicals
+        | 0x3000..=0x33FF // CJK punctuation, kana, bopomofo, Hangul compatibility, enclosed
+        | 0x3400..=0x4DBF // CJK extension A
+        | 0x4E00..=0x9FFF // CJK unified ideographs
+        | 0xA960..=0xA97F // Hangul Jamo extended A
+        | 0xAC00..=0xD7FF // Hangul syllables, Jamo extended B
+        | 0xF900..=0xFAFF // CJK compatibility ideographs
+        | 0xFE30..=0xFE4F // CJK compatibility forms
+        | 0xFF00..=0xFFEF // half- and full-width forms
+        | 0x20000..=0x3FFFF // CJK extensions B and later
+    )
 }
 
 fn load_system_font() -> Result<Vec<u8>> {
@@ -454,7 +491,18 @@ pub fn find_font(query: &str) -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_color;
+    use super::{is_cjk, parse_color};
+
+    #[test]
+    fn only_cjk_kana_and_hangul_reach_the_cjk_fonts() {
+        for ch in ['漢', 'か', 'カ', '한', '。', 'Ａ', '𠀋'] {
+            assert!(is_cjk(ch), "{ch:?} should use the CJK fonts");
+        }
+        // A private-use prompt icon, an emoji, Braille and Latin never load them.
+        for ch in ['\u{E0B0}', '🙂', '⠿', 'é', '→'] {
+            assert!(!is_cjk(ch), "{ch:?} must not load the CJK fonts");
+        }
+    }
 
     #[test]
     fn parse_color_accepts_hex_and_names() {

@@ -681,7 +681,7 @@ fn render(ai: &AiState, model: &str, has_key: bool, cols: usize) -> (Vec<String>
             AiRole::Err => push_line(
                 &mut lines,
                 &mut styles,
-                &format!("⚠ {}", m.text),
+                &format!("! {}", m.text),
                 draw::ERR,
                 cols,
             ),
