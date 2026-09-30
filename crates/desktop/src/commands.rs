@@ -130,6 +130,7 @@ pub(crate) const BUILTIN_VERBS: &[&str] = &[
     "unalias",
     "bang",
     "unbang",
+    "resetbangs",
     "bangs",
     "theme",
     "restore",
@@ -187,6 +188,7 @@ pub(crate) const COMMANDS: &[&str] = &[
     "bangs",
     "bang",
     "unbang",
+    "resetbangs",
     "theme",
     "restore",
     // After "search"/"scratch"-style verbs above so `:s`/`:sc` keep their old
@@ -568,7 +570,8 @@ impl App {
             }
             "unalias" => self.run_action("unalias", serde_json::json!({ "name": rest.trim() })),
             // Bangs: `:bang <key> <url>` adds one of yours, `:bang <key>` says what a
-            // bang does, `:unbang <key>` removes yours, `:bangs [word]` lists/searches.
+            // bang does, `:unbang <key>` removes one (switching off a Kagi bang),
+            // `:resetbangs [key]` undoes that, `:bangs [word]` lists/searches.
             "bang" => match rest.trim().split_once(char::is_whitespace) {
                 Some((key, url)) => {
                     self.run_action("bang", serde_json::json!({ "key": key, "url": url.trim() }))
@@ -577,6 +580,9 @@ impl App {
                 None => self.describe_bang(rest.trim()),
             },
             "unbang" => self.run_action("unbang", serde_json::json!({ "key": rest.trim() })),
+            "resetbangs" => {
+                self.run_action("resetbangs", serde_json::json!({ "key": rest.trim() }))
+            }
             "bangs" => self.open_bangs_page(rest),
             // Appearance. Bare `:theme` opens config.toml in an editor terminal
             // (closing it applies the changes); `:theme <key> <value…>` sets one
@@ -685,6 +691,9 @@ impl App {
     }
 }
 
+/// The bang keys `:search <Tab>` offers: the common search engines.
+const SEARCH_ENGINES: &[&str] = &["g", "ddg", "bing", "brave", "startpage", "ecosia", "qwant"];
+
 /// The fixed argument choices Tab cycles through in the command bar (see
 /// `App::accept_suggestion`): the candidates for the argument at position
 /// `prior.len()` of `verb`, given the arguments already typed before it —
@@ -718,12 +727,8 @@ pub(crate) fn arg_candidates(app: &App, verb: &str, prior: &[&str]) -> Option<Ve
             "reload",
             "show",
         ]),
-        // `:search` engine names come from the bang table's canonical keys, so the
-        // cycle always matches what `search_template_for` below actually accepts.
-        ("search", []) => browser_core::bang_list()
-            .into_iter()
-            .map(|(k, _)| k.to_string())
-            .collect(),
+        // `:search` takes any bang key; offer the common search engines.
+        ("search", []) => own(SEARCH_ENGINES),
         ("help" | "commands", []) => crate::pages::help_topics(),
         // Saved profile names (plus the two always-there targets), so `:profile <Tab>`
         // cycles what you can actually switch to.
@@ -806,6 +811,16 @@ mod tests {
             }
         }
         verbs
+    }
+
+    #[test]
+    fn every_offered_search_engine_is_a_bang() {
+        for key in super::SEARCH_ENGINES {
+            assert!(
+                browser_core::bang_search_template(key).is_some(),
+                "!{key} isn't in the bang list"
+            );
+        }
     }
 
     #[test]

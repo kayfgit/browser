@@ -125,12 +125,26 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "unbang",
-        summary: "Remove one of the user's own bangs.",
+        summary: "Remove a bang: one the user added, or switch off one of Kagi's. \
+                  resetbangs undoes it.",
         params: &[ParamSpec {
             name: "key",
             values: &[],
             required: true,
             desc: "The bang's key, without the '!'.",
+        }],
+    },
+    ActionSpec {
+        name: "resetbangs",
+        summary: "Undo changes to the bangs: bring back a bang the user removed (or \
+                  replaced with their own), or with no key, return every bang to Kagi's \
+                  list. Use when the user removed a bang by accident, e.g. 'help, I \
+                  removed a bang I use every day' — if they don't say which, reset all.",
+        params: &[ParamSpec {
+            name: "key",
+            values: &[],
+            required: false,
+            desc: "The bang to restore, without the '!'. Leave empty to reset all.",
         }],
     },
     ActionSpec {
@@ -596,6 +610,7 @@ impl App {
             "unalias" => self.remove_alias(str_arg("name")),
             "bang" => self.set_bang(str_arg("key"), str_arg("url")),
             "unbang" => self.remove_bang(str_arg("key")),
+            "resetbangs" => self.reset_bangs(str_arg("key")),
             "restore" => Ok(self.restore_defaults()),
             "theme" => self.set_theme(args),
             "install_scheme" => {
