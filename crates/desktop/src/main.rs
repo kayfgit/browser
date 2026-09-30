@@ -41,6 +41,7 @@ mod cmdline;
 mod commands;
 mod config;
 mod data;
+mod devtools;
 mod draw;
 mod engines;
 mod events;

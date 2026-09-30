@@ -43,7 +43,7 @@ directories = "6"
 
 # desktop GUI shell
 tao = "0.35"
-wry = "0.55"
+wry = { version = "0.55", features = ["devtools"] }
 softbuffer = "0.4"
 fontdue = "0.9"
 raw-window-handle = "0.6"

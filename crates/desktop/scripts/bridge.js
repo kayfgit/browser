@@ -219,7 +219,7 @@
   // "Open in new tab" (`hint-open`) plus "Copy link address". Copy items hand the
   // text to the SHELL over IPC (`clip:`) — the page can't reach the real clipboard
   // in Normal mode, and the shell owns it anyway (`y`, caret yank, terminal select).
-  // With nothing actionable under the cursor we just eat the event: no empty menu.
+  // "View page source" and "Inspect" are always offered.
   var __ctxMenu = null;
   function ctxClose() { if (__ctxMenu) { __ctxMenu.remove(); __ctxMenu = null; } }
   document.addEventListener('contextmenu', function (e) {
@@ -239,7 +239,8 @@
     var img = e.target && e.target.closest ? e.target.closest('img[src]') : null;
     var isrc = img ? (img.currentSrc || img.src) : '';
     if (isrc && !/^data:/i.test(isrc)) items.push(['Copy image address', 'clip:' + isrc]);
-    if (!items.length) return; // nothing actionable under the cursor
+    items.push(['View page source', 'view-source']);
+    items.push(['Inspect', 'inspect']);
     var menu = document.createElement('div');
     menu.style.cssText = 'position:fixed;z-index:2147483647;left:' + e.clientX + 'px;top:' +
       e.clientY + 'px;background:#222;color:#eee;font:13px sans-serif;border:1px solid #444;' +

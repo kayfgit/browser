@@ -227,6 +227,11 @@ impl App {
         if self.active_is_ai() && self.key_ai_nav(key) {
             return;
         }
+        // F12 opens the page's developer tools, as in other browsers.
+        if key.logical_key == Key::F12 {
+            self.inspect_active();
+            return;
+        }
         // Chords (with Ctrl) take precedence over plain keys.
         if self.modifiers.control_key() {
             match key.physical_key {
@@ -238,6 +243,9 @@ impl App {
                 }
                 // Reopen the last closed tab (the familiar browser shortcut).
                 KeyCode::KeyT if self.modifiers.shift_key() => self.reopen_closed(),
+                // Page source and developer tools (Ctrl+U itself scrolls, below).
+                KeyCode::KeyU if self.modifiers.shift_key() => self.view_source_active(),
+                KeyCode::KeyI if self.modifiers.shift_key() => self.inspect_active(),
                 // Half-page scroll (vim Ctrl+D / Ctrl+U).
                 KeyCode::KeyD => self.scroll(self.half_page()),
                 KeyCode::KeyU => self.scroll(-self.half_page()),

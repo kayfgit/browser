@@ -80,6 +80,11 @@ pub(crate) const BUILTIN_VERBS: &[&str] = &[
     "quit",
     "leave",
     "l",
+    "inspect",
+    "devtools",
+    "source",
+    "viewsource",
+    "src",
     "q",
     "q!",
     "saveprofile",
@@ -207,6 +212,8 @@ pub(crate) const COMMANDS: &[&str] = &[
     "write",
     "quit",
     "leave",
+    "inspect",
+    "source",
     // Last, so it can't shadow `:f`/`:fo`… (fullscreen/forward/freeze) — `:fa` is
     // unambiguous and reaches it.
     "favorites",
@@ -486,6 +493,9 @@ impl App {
             "freeze" => self.freeze(),
             "unfreeze" | "thaw" => self.unfreeze(),
             "reload" | "r" => self.reload_active(),
+            // Developer tools and page source for the active page (F12, Ctrl+Shift+U).
+            "inspect" | "devtools" => self.inspect_active(),
+            "source" | "viewsource" | "src" => self.view_source_active(),
             "next" | "tabnext" | "tn" => self.switch_tab(1),
             "prev" | "tabprev" | "tp" => self.switch_tab(-1),
             "back" => self.history(false),
@@ -636,6 +646,9 @@ impl App {
     /// (spaces, or no scheme/dot like `rustlang`) — or anything that won't parse as
     /// a URL — goes to the configured search engine; a real address opens directly.
     pub(crate) fn resolve_target(&self, target: &str) -> String {
+        if target.starts_with("view-source:") {
+            return target.to_string();
+        }
         // DuckDuckGo-style bangs (`!yt cats`, `!osrs dragon`) take priority: they
         // redirect to a specific site's search regardless of the default engine.
         if let Some(url) = browser_core::expand_bang(target) {
