@@ -2,17 +2,17 @@ current todos.
 
 * in the todo means its a high priority, the more there is, the highest the chance it will be implemented on the next update
 ~ in the todo means its half-done/in-progress
-x in the todo means its done
+x in the todo means its done (or if it just disappears)
 ? in the todo means i cant recreate the issue
 / in the todo means its not too important
 - in the todo means i couldnt fix it yet and will revisit later
 $ in the todo means its an easy fix/feat
-
-empty brackets means its untouched (also means i probably just dumped a random idea i had)
+empty brackets means its untouched (also means i probably just dumped a random idea/issue i had)
 
 done todos get erased shortly after.
 
 STUFF TO KEEP IN MIND:
+- because i made this for myself first, its only ported to windows which is my daily driver. if someone wants ill port it to lsomeone wants ill port it to linux/mac aswell
 - i dont really care about looks (will probably be one of the last things i care about)
 - i dont really care about security *as of now* (of course i care about it, but i have to make the browser actually usable before making it secure)
 - i REALLY care about efficiency
@@ -24,6 +24,7 @@ STUFF TO KEEP IN MIND:
 general:
 [*] - on the installer, allow users to choose which engine to get first, if they want to change engines or want multiple engines they can download it somehow later
 [] - maybe freeze the adblock feature for now, it doesnt really work as intended (ill probably have to rework it)
+[] - add a demo video on the readme
 
 issues:
 [?/] - random not responding after exiting cs2 (might have to do with constant changes to resolution)
@@ -31,11 +32,7 @@ issues:
 [*-] - opening youtube with ublock origin activated makes it open in a half-open half-not state.
 [?] - saving a session with :w sometimes doesnt work, no idea why
 [/?] - random not responding after new update 26/07/2026 22:54
-[$**] - pressing a copy button using the hint mode doesnt actually copy it (tested on the copy repository button on github)
-[***] - on the terminal, if i scroll up and start typing on claude code, the screen stays up there when its supposed to go down the second i start typing.
 [*] - add a way for users to freely install extensions
-[$/] - closing a split always makes the left-most split the highlighted one instead of the previously added split
-[/] - fix :freeze, doesnt really do what its supposed to (its supposed to completely freeze everything thats using resources and drop the :resources to 30-60 mb, but it only reduces like 10%, so if the browser is using 1gb and i freeze everything it drops to 900mb instead of 30-60mb)
 
 feats:
 [] - make ";" toggle browser hud visibility
