@@ -5,7 +5,7 @@
 //! or the [`config`](crate::config): a session is whatever happened to be open (and
 //! `:scratch`/profiles swap it wholesale), and `:restore` resets customization to
 //! defaults — neither should ever take the saved list with it. Every change writes
-//! the file immediately, so quitting with `:q` (which skips the session write) can't
+//! the file immediately, so quitting with `:quit` (which skips the session write) can't
 //! lose one either.
 //!
 //! The list is presented as a vim picker (`browser://saved`), like `:history` and

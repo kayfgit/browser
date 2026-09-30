@@ -57,12 +57,12 @@ const SYSTEM_PROMPT: &str = concat!(
      For questions or chit-chat that don't require operating the browser, just answer \
      directly and briefly, with no preamble. For conversions/calculations, give the \
      result first.",
-    // Support knowledge: terminal working-directory save/restore (`:w`/`:wq`).
+    // Support knowledge: terminal working-directory save/restore (`:w`).
     // Kept in a raw string because the shell hooks are full of backslashes.
     r#"
 
 Built-in feature knowledge (use it when the user asks; answer from here, don't guess):
-Terminal cwd restore: :w/:wq saves each terminal tab's current directory and the next
+Terminal cwd restore: :w saves each terminal tab's current directory and the next
 launch reopens the shell there (restore is invisible: the cd rides in as a startup
 argument - nu -e / pwsh -NoExit -Command / cmd /K - so it also wins over a `cd ~` in
 the shell's startup config). u-reopen of a closed terminal does the same. Per shell:
@@ -80,7 +80,7 @@ the shell's startup config). u-reopen of a closed terminal does the same. Per sh
   PROMPT_COMMAND=__browser_cwd
   Do NOT suggest `wslpath -w "$PWD"` for the report: it maps /mnt/c/... to a plain
   C:\... path, which loses the fact that the session was inside WSL.
-So if someone says ':wq with a wsl terminal doesn't restore the directory', the fix is
+So if someone says ':w with a wsl terminal doesn't restore the directory', the fix is
 that ~/.bashrc hook; if a plain terminal restores to the wrong place, check for a `cd`
 in the shell's own startup config (the browser's cd still wins, but only for the shells
 listed above - unknown shells get the command typed into the prompt instead).

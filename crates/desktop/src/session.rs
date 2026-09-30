@@ -32,7 +32,7 @@ pub struct Session {
     pub nojs: bool,
     /// Whether the pages' scrollbars are hidden (`:scrollbar`). Unlike the other
     /// page-feature toggles (mute/css/video — deliberately session-only), hiding
-    /// scrollbars is a lasting preference, so it survives `:wq`. `default` (shown)
+    /// scrollbars is a lasting preference, so it survives `:w`. `default` (shown)
     /// for sessions written before it existed.
     #[serde(default)]
     pub no_scrollbar: bool,
