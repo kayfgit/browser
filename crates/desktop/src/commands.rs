@@ -127,6 +127,9 @@ pub(crate) const BUILTIN_VERBS: &[&str] = &[
     "clear",
     "alias",
     "unalias",
+    "bang",
+    "unbang",
+    "bangs",
     "theme",
     "restore",
     "commands",
@@ -178,6 +181,9 @@ pub(crate) const COMMANDS: &[&str] = &[
     "clear",
     "alias",
     "unalias",
+    "bangs",
+    "bang",
+    "unbang",
     "theme",
     "restore",
     // After "search"/"scratch"-style verbs above so `:s`/`:sc` keep their old
@@ -556,6 +562,17 @@ impl App {
                 }
             }
             "unalias" => self.run_action("unalias", serde_json::json!({ "name": rest.trim() })),
+            // Bangs: `:bang <key> <url>` adds one of yours, `:bang <key>` says what a
+            // bang does, `:unbang <key>` removes yours, `:bangs [word]` lists/searches.
+            "bang" => match rest.trim().split_once(char::is_whitespace) {
+                Some((key, url)) => {
+                    self.run_action("bang", serde_json::json!({ "key": key, "url": url.trim() }))
+                }
+                None if rest.trim().is_empty() => self.open_bangs_page(""),
+                None => self.describe_bang(rest.trim()),
+            },
+            "unbang" => self.run_action("unbang", serde_json::json!({ "key": rest.trim() })),
+            "bangs" => self.open_bangs_page(rest),
             // Appearance. Bare `:theme` opens config.toml in an editor terminal
             // (closing it applies the changes); `:theme <key> <value…>` sets one
             // field of the same action the AI drives — e.g. `:theme accent orange`,
@@ -651,7 +668,7 @@ impl App {
         }
         // DuckDuckGo-style bangs (`!yt cats`, `!osrs dragon`) take priority: they
         // redirect to a specific site's search regardless of the default engine.
-        if let Some(url) = browser_core::expand_bang(target) {
+        if let Some(url) = self.expand_bang(target) {
             return url;
         }
         if browser_core::looks_like_query(target) {

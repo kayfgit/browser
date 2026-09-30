@@ -104,7 +104,7 @@ in the tab strip.
 |---|---|
 | [crates/desktop](crates/desktop/Cargo.toml) | The browser (package `browser`). Almost all work happens here. |
 | [crates/engine](crates/engine/src/lib.rs) | The contract between the shell and a page engine: `EngineView`, providers, view ids. No WebView2 code. |
-| [crates/core](crates/core/src/lib.rs) | Shared, engine-free logic: the `Document` model, config types, bangs, maths, search routing. |
+| [crates/core](crates/core/src/lib.rs) | Shared, engine-free logic: the `Document` model, config types, bangs, maths, search routing. Kagi's bang list ([data](crates/core/data/kagi-bangs.json)) is compiled in by [build.rs](crates/core/build.rs). |
 | [crates/backend-text](crates/backend-text/src/lib.rs) | Fetches a page and extracts readable text for `:read`. |
 | [crates/backend-search](crates/backend-search/src/lib.rs) | DuckDuckGo-lite / SearXNG results for `:read <query>`. |
 | [crates/tui](crates/tui/src/lib.rs), [crates/cli](crates/cli/src/main.rs) | The original terminal-only reader. Legacy, not shipped. |
@@ -169,6 +169,7 @@ Tabs the shell draws itself:
 - [ai.rs](crates/desktop/src/ai.rs), [markdown.rs](crates/desktop/src/markdown.rs): the `:ai` tab and rendering its answers.
 - [news.rs](crates/desktop/src/news.rs): `:news`, from the changelog.
 - [bookmarks.rs](crates/desktop/src/bookmarks.rs): `:save` / `:saved`.
+- [bangs.rs](crates/desktop/src/bangs.rs): your own bangs (`:bang`) and the `:bangs` search page.
 - [procmon.rs](crates/desktop/src/procmon.rs): the resource numbers behind `:res`.
 
 ## Rules

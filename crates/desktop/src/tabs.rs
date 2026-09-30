@@ -714,7 +714,7 @@ impl App {
         // which returns a clean, followable results document — readability can't parse
         // a live search-results page (it errors "failed to grab the article"). A bang
         // or a real address is fetched + run through readability as before.
-        let bang = browser_core::expand_bang(target);
+        let bang = self.expand_bang(target);
         if bang.is_none() && browser_core::looks_like_query(target) {
             let query = target.to_string();
             let config = browser_core::SearchConfig::default(); // DDG-lite, zero-config

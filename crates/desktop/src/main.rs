@@ -33,6 +33,7 @@ mod actions;
 mod adblock;
 mod ai;
 mod app;
+mod bangs;
 mod blocklist;
 mod bookmarks;
 mod bundled_extensions;
