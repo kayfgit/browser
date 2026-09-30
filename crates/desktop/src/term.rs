@@ -501,6 +501,7 @@ impl App {
                 // would be stale. Copy mode's own `v`/`V` selection is untouched here
                 // (keys only reach the PTY in passthrough).
                 s.pty.clear_selection();
+                snap_to_live(s, &self.window);
                 s.send(0, &bytes);
             }
         }
@@ -532,6 +533,7 @@ impl App {
         if bracketed {
             out.extend_from_slice(b"\x1b[201~");
         }
+        snap_to_live(s, &self.window);
         s.send(0, &out);
     }
 
@@ -883,6 +885,16 @@ impl App {
         s.send(0, &out);
         self.window.request_redraw();
         true
+    }
+}
+
+/// Input sent to a terminal returns its view to the live screen, as other terminals
+/// do: you scrolled up to read, and typing means you're back at the prompt. The
+/// program's own output doesn't move a scrolled-back view, so this has to.
+fn snap_to_live(s: &mut TermSession, window: &tao::window::Window) {
+    if s.pty.scrolled_back() {
+        s.pty.scroll_to_bottom();
+        window.request_redraw();
     }
 }
 
