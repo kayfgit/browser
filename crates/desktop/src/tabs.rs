@@ -873,9 +873,9 @@ impl App {
 
     /// Remove tab `i` from `tabs` and repair every tab-strip window: prune its leaf,
     /// shift higher leaf indices down, and drop any window left empty. Returns the tab
-    /// index that should take focus afterwards — the (adjusted) active window's first
-    /// pane, or the window that slid into its place if that window was emptied — or
-    /// `None` when no tabs remain.
+    /// index that should take focus afterwards — the most recently focused pane left in
+    /// the active window (or in the window that slid into its place, if that window was
+    /// emptied) — or `None` when no tabs remain.
     pub(crate) fn drop_tab(&mut self, i: usize) -> Option<usize> {
         // Which window held the tab being removed (it's the only one that can empty,
         // since every tab is a leaf of exactly one window).
@@ -896,7 +896,7 @@ impl App {
         // Land on the active window (still at index `aw` if it survived; otherwise the
         // window that slid into that slot), clamped into range.
         let w = aw.unwrap_or(0).min(self.windows.len() - 1);
-        Some(self.windows[w].first_leaf())
+        Some(self.pane_focus.target(&self.windows[w]))
     }
 
     /// The tab-strip entries (one per tmux-style window), each as `(rep, panes)`: the

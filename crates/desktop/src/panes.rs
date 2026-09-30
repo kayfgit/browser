@@ -83,8 +83,8 @@ pub(crate) const DIVIDER: i32 = 1;
 pub(crate) const FOCUS_BORDER: i32 = 2;
 
 impl PaneNode {
-    /// The tab index of the first (top-left-most) leaf — used to pick a new focus
-    /// after the focused pane is closed.
+    /// The tab index of the first (top-left-most) leaf — the fallback focus when none
+    /// of the tree's panes has been focused yet (see [`PaneFocus::target`]).
     pub(crate) fn first_leaf(&self) -> usize {
         match self {
             PaneNode::Leaf(t) => *t,
@@ -864,6 +864,20 @@ mod tests {
         focus.remove(0);
         // Newly created tabs must not inherit the old tabs' focus history.
         assert_eq!(focus.target(&split(SplitDir::Row, 1, 0)), 1);
+    }
+
+    #[test]
+    fn closing_the_focused_pane_returns_to_the_one_focused_before_it() {
+        // Split 0 → 1 → 2, focusing each new pane as it opens, then close pane 2.
+        let tree = split(SplitDir::Row, 0, 1).insert_split(1, SplitDir::Col, 2);
+        let mut focus = PaneFocus::default();
+        focus.remember(0);
+        focus.remember(1);
+        focus.remember(2);
+        let mut tree = tree.prune(2).unwrap();
+        tree.shift_after_remove(2);
+        focus.remove(2);
+        assert_eq!(focus.target(&tree), 1, "not the first pane (0)");
     }
 
     #[test]
