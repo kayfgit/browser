@@ -846,17 +846,6 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
     // from the one action registry, so help and AI never drift.
     let cmds = cmd_table();
     let actions = action_cards();
-    // Bangs: build `!key → description` rows from the core table.
-    let bang_rows: Vec<(String, &str)> = browser_core::bang_list()
-        .into_iter()
-        .map(|(k, d)| (format!("!{k} <query>"), d))
-        .collect();
-    let bangs = help_table(
-        &bang_rows
-            .iter()
-            .map(|(k, d)| (k.as_str(), *d))
-            .collect::<Vec<_>>(),
-    );
     let toc: String = HELP_SECTIONS
         .iter()
         .map(|(id, label, _)| format!("<a href=\"#{id}\">{label}</a>"))
@@ -895,15 +884,16 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
          <section id=\"sec-bangs\"><h2>Bangs</h2>\
          <p class=\"sub\">A <code>!key</code> token in any open/search target jumps to that \
          site's search (no query → the site's home). Trailing form works too: \
-         <code>dragon scimitar !osrs</code>. Your own bangs (<code>:bang</code>) come first, \
-         then the built-in ones below, then about 13,000 from \
+         <code>dragon scimitar !osrs</code>. The bangs are the 13,000+ of \
          <a href=\"https://github.com/kagisearch/bangs\">Kagi's list</a> (the ones Helium \
-         uses). <code>:bangs &lt;word&gt;</code> searches them all by key or name (bare \
-         <code>:bangs</code> lists yours and the built-in ones); <code>:bang &lt;key&gt;</code> \
-         says what one does. <code>:bang &lt;key&gt; &lt;url&gt;</code> adds your own, with \
-         <code>%s</code> where the search goes \
-         (<code>:bang osrs https://oldschool.runescape.wiki/?search=%s</code>), replacing a \
-         bang with the same key; <code>:unbang &lt;key&gt;</code> removes it.</p>{bangs}</section>\
+         uses): <code>:bangs</code> lists them all (<code>/</code> searches the list), \
+         <code>:bangs &lt;word&gt;</code> filters by key or name, and \
+         <code>:bang &lt;key&gt;</code> says what one does. \
+         <code>:bang &lt;key&gt; &lt;url&gt;</code> adds your own, with <code>%s</code> where \
+         the search goes (<code>:bang rs https://runescape.wiki/?search=%s</code>); it wins over \
+         Kagi's for the same key. <code>:unbang &lt;key&gt;</code> removes one (yours, or \
+         switches off Kagi's) and <code>:resetbangs [key]</code> brings it back, or every \
+         bang with no key.</p></section>\
          <section id=\"sec-maths\"><h2>Quick maths</h2>\
          <p class=\"sub\">Type an arithmetic expression in the command bar \
          (<code>+ - * / %  ^</code>, parentheses) to see the result live, e.g. \

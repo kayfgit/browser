@@ -30,10 +30,10 @@ pub(crate) struct Config {
     /// listing/serialization.
     #[serde(default)]
     pub(crate) aliases: BTreeMap<String, String>,
-    /// The user's own bangs: key (without `!`) → search URL with `%s` for the query.
-    /// Looked up before the built-in and Kagi bangs, so one can replace either.
+    /// The user's changes to Kagi's bang list: their own bangs (which win over
+    /// Kagi's for the same key) and the Kagi ones they switched off.
     #[serde(default)]
-    pub(crate) bangs: BTreeMap<String, String>,
+    pub(crate) bangs: browser_core::BangOverrides,
     /// Chrome appearance overrides (bar height + colours). Resolved into the live
     /// [`Theme`](crate::draw::Theme) by [`rebuild_theme`](crate::App::rebuild_theme).
     #[serde(default)]

@@ -225,13 +225,15 @@ Other protections and toggles:
   `:clear`, `:theme`, …) `Tab`/`Shift+Tab` cycle them.
 - **Bangs**: a `!key` anywhere in a search jumps to that site's search, DuckDuckGo-style.
   `!yt lofi` searches YouTube, `dragon scimitar !osrs` the RuneScape wiki. A bang with no
-  query opens the site's home page. Besides a hand-picked set, the browser ships the
-  13,000+ bangs from [Kagi's list](https://github.com/kagisearch/bangs) (the ones Helium
-  uses), offline: `:bangs <word>` searches them by key or name, `:bang <key>` says what one
-  does. Add your own with `:bang <key> <url>`, putting `%s` where the search goes
-  (`:bang osrs https://oldschool.runescape.wiki/?search=%s`); yours come first, so one can
-  replace a built-in bang. `:unbang <key>` removes it. `:ai` can add them too ("add a !mdn
-  bang for MDN").
+  query opens the site's home page. The bangs are the 13,000+ of
+  [Kagi's list](https://github.com/kagisearch/bangs) (the ones Helium uses), built in and
+  offline: `:bangs` lists them all (`/` searches the list), `:bangs <word>` filters by key
+  or name, `:bang <key>` says what one does. Add your own with `:bang <key> <url>`, putting
+  `%s` where the search goes (`:bang rs https://runescape.wiki/?search=%s`); yours win over
+  Kagi's for the same key. `:unbang <key>` removes a bang (yours, or switches off one of
+  Kagi's), and `:resetbangs <key>` brings it back (`:resetbangs` alone resets them all).
+  `:ai` can do all of this too ("add a !rs bang for the RuneScape wiki", "I removed a bang
+  by accident").
 - **Maths**: type an expression (`+ - * / % ^`, parentheses) to see the result live;
   `Enter` replaces the line with it so you can keep going.
 - **Aliases**: `:alias gh open github.com` makes `:gh` open GitHub; `:unalias gh` removes it.

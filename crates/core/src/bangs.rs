@@ -5,139 +5,26 @@
 //! no query after the bang, the site's home page is opened instead. Unknown
 //! bangs are ignored so the input falls back to the normal open/search routing.
 //!
-//! A key is looked up in three places, first match wins: the user's own bangs,
-//! the hand-picked built-in table below, then Kagi's list of about 13,000
-//! (<https://github.com/kagisearch/bangs>, MIT; the list Helium ships too),
-//! compiled into the executable by `build.rs` from `data/kagi-bangs.json`.
+//! The bangs are Kagi's list (<https://github.com/kagisearch/bangs>, MIT; the one
+//! Helium ships too), about 13,000 keys compiled into the executable by `build.rs`
+//! from `data/kagi-bangs.json`. On top of it, [`BangOverrides`] holds the user's own
+//! bangs, which win over Kagi's for the same key, and the Kagi ones they switched off.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::{Deserialize, Serialize};
 
 use crate::intent::search_url;
 
-/// The user's own bangs: key → search URL template (`%s` = the query).
-pub type CustomBangs = BTreeMap<String, String>;
-
-/// A single bang: its trigger key(s) (the first is the canonical one), the
-/// search-URL template (`%s` = percent-encoded query), the home page to open
-/// when no query follows, and a short description for the help listing.
-struct Bang {
-    keys: &'static [&'static str],
-    search: &'static str,
-    home: &'static str,
-    desc: &'static str,
+/// The user's changes to Kagi's list.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BangOverrides {
+    /// Kagi bangs switched off (`:unbang`), by key.
+    pub disabled: BTreeSet<String>,
+    /// The user's own bangs: key (without `!`) → search URL with `%s` for the query.
+    pub custom: BTreeMap<String, String>,
 }
-
-/// The built-in bang table: hand-picked, and ahead of Kagi's list for the same key.
-const BANGS: &[Bang] = &[
-    Bang {
-        keys: &["yt", "youtube"],
-        search: "https://www.youtube.com/results?search_query=%s",
-        home: "https://www.youtube.com/",
-        desc: "YouTube",
-    },
-    Bang {
-        keys: &["osrs"],
-        search: "https://oldschool.runescape.wiki/?search=%s",
-        home: "https://oldschool.runescape.wiki/",
-        desc: "Old School RuneScape Wiki",
-    },
-    Bang {
-        keys: &["rs", "rswiki"],
-        search: "https://runescape.wiki/?search=%s",
-        home: "https://runescape.wiki/",
-        desc: "RuneScape Wiki",
-    },
-    Bang {
-        keys: &["w", "wiki", "wikipedia"],
-        search: "https://en.wikipedia.org/w/index.php?search=%s",
-        home: "https://en.wikipedia.org/",
-        desc: "Wikipedia",
-    },
-    Bang {
-        keys: &["g", "google"],
-        search: "https://www.google.com/search?q=%s",
-        home: "https://www.google.com/",
-        desc: "Google",
-    },
-    Bang {
-        keys: &["ddg"],
-        search: "https://duckduckgo.com/?q=%s",
-        home: "https://duckduckgo.com/",
-        desc: "DuckDuckGo",
-    },
-    Bang {
-        keys: &["gh", "github"],
-        search: "https://github.com/search?q=%s&type=repositories",
-        home: "https://github.com/",
-        desc: "GitHub",
-    },
-    Bang {
-        keys: &["so"],
-        search: "https://stackoverflow.com/search?q=%s",
-        home: "https://stackoverflow.com/",
-        desc: "Stack Overflow",
-    },
-    Bang {
-        keys: &["reddit", "r"],
-        search: "https://www.reddit.com/search/?q=%s",
-        home: "https://www.reddit.com/",
-        desc: "Reddit",
-    },
-    Bang {
-        keys: &["cr", "crates"],
-        search: "https://crates.io/search?q=%s",
-        home: "https://crates.io/",
-        desc: "crates.io",
-    },
-    Bang {
-        keys: &["dr", "docs"],
-        search: "https://docs.rs/releases/search?query=%s",
-        home: "https://docs.rs/",
-        desc: "docs.rs",
-    },
-    Bang {
-        keys: &["mdn"],
-        search: "https://developer.mozilla.org/en-US/search?q=%s",
-        home: "https://developer.mozilla.org/",
-        desc: "MDN Web Docs",
-    },
-    Bang {
-        keys: &["npm"],
-        search: "https://www.npmjs.com/search?q=%s",
-        home: "https://www.npmjs.com/",
-        desc: "npm",
-    },
-    Bang {
-        keys: &["wa"],
-        search: "https://www.wolframalpha.com/input?i=%s",
-        home: "https://www.wolframalpha.com/",
-        desc: "Wolfram Alpha",
-    },
-    Bang {
-        keys: &["maps", "map"],
-        search: "https://www.google.com/maps/search/%s",
-        home: "https://www.google.com/maps",
-        desc: "Google Maps",
-    },
-    Bang {
-        keys: &["a", "amazon"],
-        search: "https://www.amazon.com/s?k=%s",
-        home: "https://www.amazon.com/",
-        desc: "Amazon",
-    },
-    Bang {
-        keys: &["imdb"],
-        search: "https://www.imdb.com/find/?q=%s",
-        home: "https://www.imdb.com/",
-        desc: "IMDb",
-    },
-    Bang {
-        keys: &["tw", "x"],
-        search: "https://twitter.com/search?q=%s",
-        home: "https://twitter.com/",
-        desc: "Twitter / X",
-    },
-];
 
 mod kagi {
     include!(concat!(env!("OUT_DIR"), "/kagi_bangs.rs"));
@@ -235,8 +122,6 @@ fn origin(url: &str) -> String {
 pub enum BangSource {
     /// Added by the user (`:bang`).
     Custom,
-    /// The built-in table.
-    BuiltIn,
     /// Kagi's list.
     Kagi,
 }
@@ -255,17 +140,16 @@ pub struct BangInfo {
 
 enum Found<'a> {
     Custom(&'a str),
-    BuiltIn(&'static Bang),
     Kagi(usize),
 }
 
-fn resolve<'a>(key: &str, custom: &'a CustomBangs) -> Option<Found<'a>> {
+fn resolve<'a>(key: &str, user: &'a BangOverrides) -> Option<Found<'a>> {
     let key = key.to_lowercase();
-    if let Some(template) = custom.get(&key) {
+    if let Some(template) = user.custom.get(&key) {
         return Some(Found::Custom(template));
     }
-    if let Some(bang) = BANGS.iter().find(|b| b.keys.contains(&key.as_str())) {
-        return Some(Found::BuiltIn(bang));
+    if user.disabled.contains(&key) {
+        return None;
     }
     kagi::find(&key).map(Found::Kagi)
 }
@@ -275,8 +159,6 @@ impl Found<'_> {
         match self {
             Found::Custom(template) if query.is_empty() => origin(template) + "/",
             Found::Custom(template) => search_url(template, query),
-            Found::BuiltIn(bang) if query.is_empty() => bang.home.to_string(),
-            Found::BuiltIn(bang) => search_url(bang.search, query),
             Found::Kagi(bang) => kagi::expand(*bang, query),
         }
     }
@@ -287,17 +169,17 @@ impl Found<'_> {
 /// remain — the bang's home page. Returns `None` if no known bang token is present,
 /// so callers fall back to the normal open/search routing.
 pub fn expand_bang(input: &str) -> Option<String> {
-    expand_bang_with(input, &CustomBangs::new())
+    expand_bang_with(input, &BangOverrides::default())
 }
 
-/// [`expand_bang`] with the user's own bangs, which take precedence.
-pub fn expand_bang_with(input: &str, custom: &CustomBangs) -> Option<String> {
+/// [`expand_bang`] with the user's changes applied.
+pub fn expand_bang_with(input: &str, user: &BangOverrides) -> Option<String> {
     let mut found = None;
     let mut rest: Vec<&str> = Vec::new();
     for tok in input.split_whitespace() {
         if found.is_none() {
             if let Some(key) = tok.strip_prefix('!') {
-                if let Some(bang) = resolve(key, custom) {
+                if let Some(bang) = resolve(key, user) {
                     found = Some(bang);
                     continue;
                 }
@@ -308,67 +190,61 @@ pub fn expand_bang_with(input: &str, custom: &CustomBangs) -> Option<String> {
     Some(found?.url(&rest.join(" ")))
 }
 
-/// What `!key` does: its name, template and where it's defined.
-pub fn find_bang(key: &str, custom: &CustomBangs) -> Option<BangInfo> {
+/// What `!key` does, with the user's changes applied: its name, template and where
+/// it's defined.
+pub fn find_bang(key: &str, user: &BangOverrides) -> Option<BangInfo> {
     let key = key.trim_start_matches('!').to_lowercase();
-    Some(match resolve(&key, custom)? {
+    Some(match resolve(&key, user)? {
         Found::Custom(template) => BangInfo {
             triggers: vec![key],
             name: crate::intent::host_of(template).unwrap_or_default(),
             search: template.to_string(),
             source: BangSource::Custom,
         },
-        Found::BuiltIn(bang) => BangInfo {
-            triggers: bang.keys.iter().map(|k| k.to_string()).collect(),
-            name: bang.desc.to_string(),
-            search: bang.search.to_string(),
-            source: BangSource::BuiltIn,
-        },
-        Found::Kagi(bang) => BangInfo {
-            triggers: kagi_triggers(bang, &key),
-            name: kagi::name(bang).to_string(),
-            search: kagi::template(bang).replace("{{{s}}}", "%s"),
-            source: BangSource::Kagi,
-        },
+        Found::Kagi(bang) => kagi_info(bang, &key),
     })
 }
 
-/// Kagi bang `bang`'s triggers, `first` leading.
-fn kagi_triggers(bang: usize, first: &str) -> Vec<String> {
-    let mut keys = vec![first.to_string()];
-    keys.extend(
+/// Kagi's own `!key`, whatever the user changed.
+pub fn kagi_bang(key: &str) -> Option<BangInfo> {
+    find_bang(key, &BangOverrides::default())
+}
+
+fn kagi_info(bang: usize, first: &str) -> BangInfo {
+    let mut triggers = vec![first.to_string()];
+    triggers.extend(
         kagi::triggers()
             .filter(|&(t, b)| b == bang && t != first)
             .map(|(t, _)| t.to_string()),
     );
-    keys
+    BangInfo {
+        triggers,
+        name: kagi::name(bang).to_string(),
+        search: kagi::template(bang).replace("{{{s}}}", "%s"),
+        source: BangSource::Kagi,
+    }
 }
 
-/// Bangs whose key or name contains `word` (case-insensitive), at most `limit`:
-/// the user's own, then built-in, then Kagi's, exact key matches first within each.
-pub fn search_bangs(word: &str, custom: &CustomBangs, limit: usize) -> Vec<BangInfo> {
+/// The bangs whose key or name contains `word` (case-insensitive; every bang for an
+/// empty `word`), at most `limit`: the user's own first, then Kagi's, an exact key
+/// match first. Kagi bangs the user switched off, or replaced with their own, are
+/// left out.
+pub fn search_bangs(word: &str, user: &BangOverrides, limit: usize) -> Vec<BangInfo> {
     let word = word.trim().trim_start_matches('!').to_lowercase();
     let hit = |key: &str, name: &str| key.contains(&word) || name.to_lowercase().contains(&word);
-    let mut out: Vec<BangInfo> = Vec::new();
-    for (key, template) in custom {
-        if hit(key, template) {
-            out.push(find_bang(key, custom).expect("a custom bang resolves"));
-        }
-    }
-    for bang in BANGS {
-        if bang.keys.iter().any(|k| hit(k, bang.desc)) {
-            out.push(BangInfo {
-                triggers: bang.keys.iter().map(|k| k.to_string()).collect(),
-                name: bang.desc.to_string(),
-                search: bang.search.to_string(),
-                source: BangSource::BuiltIn,
-            });
-        }
-    }
-    // Kagi: gather each matching bang's triggers, exact key first, then by key order.
+    let mut out: Vec<BangInfo> = user
+        .custom
+        .iter()
+        .filter(|(key, template)| hit(key, template))
+        .filter_map(|(key, _)| find_bang(key, user))
+        .collect();
+    // Kagi: each matching bang once, with its live keys; exact key first.
     let mut matched: BTreeMap<usize, Vec<&str>> = BTreeMap::new();
     let mut exact = None;
     for (key, bang) in kagi::triggers() {
+        if user.disabled.contains(key) || user.custom.contains_key(key) {
+            continue;
+        }
         if key == word {
             exact = Some(bang);
         }
@@ -376,8 +252,9 @@ pub fn search_bangs(word: &str, custom: &CustomBangs, limit: usize) -> Vec<BangI
             matched.entry(bang).or_default().push(key);
         }
     }
-    let mut order: Vec<usize> = exact.into_iter().collect();
-    order.extend(matched.keys().copied().filter(|&b| Some(b) != exact));
+    let order = exact
+        .into_iter()
+        .chain(matched.keys().copied().filter(|&b| Some(b) != exact));
     for bang in order {
         if out.len() >= limit {
             break;
@@ -425,21 +302,26 @@ pub fn normalize_custom_bang(key: &str, url: &str) -> Result<(String, String), S
     Ok((key, url))
 }
 
-/// `(canonical key, description)` for every built-in bang, for the help page.
-pub fn bang_list() -> Vec<(&'static str, &'static str)> {
-    BANGS.iter().map(|b| (b.keys[0], b.desc)).collect()
-}
-
-/// The search-URL template (`%s` = query) for a bang key — lets `:search <name>`
-/// (e.g. `:search ddg`, `:search google`) reuse the bang tables instead of needing a
-/// full `%s` URL. Returns `None` for an unknown key.
+/// The search-URL template (`%s` = query) for Kagi's `!key` — lets `:search <name>`
+/// (e.g. `:search ddg`, `:search g`) reuse the bang list instead of needing a full
+/// `%s` URL. Returns `None` for an unknown key.
 pub fn bang_search_template(key: &str) -> Option<String> {
-    find_bang(key, &CustomBangs::new()).map(|b| b.search)
+    kagi_bang(key).map(|b| b.search)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn user(custom: &[(&str, &str)], disabled: &[&str]) -> BangOverrides {
+        BangOverrides {
+            custom: custom
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            disabled: disabled.iter().map(|k| k.to_string()).collect(),
+        }
+    }
 
     #[test]
     fn expands_leading_bang_with_query() {
@@ -455,19 +337,24 @@ mod tests {
             expand_bang("!osrs"),
             Some("https://oldschool.runescape.wiki/".into())
         );
+        assert_eq!(
+            expand_bang("!mdn"),
+            Some("https://developer.mozilla.org/".into())
+        );
     }
 
     #[test]
     fn bang_can_trail_the_query() {
-        assert_eq!(
-            expand_bang("dragon scimitar !osrs"),
-            Some("https://oldschool.runescape.wiki/?search=dragon+scimitar".into())
+        let url = expand_bang("dragon scimitar !osrs").unwrap();
+        assert!(
+            url.starts_with("https://oldschool.runescape.wiki/?search=dragon+scimitar"),
+            "{url}"
         );
     }
 
     #[test]
     fn unknown_or_absent_bang_is_none() {
-        assert_eq!(expand_bang("!nope something"), None);
+        assert_eq!(expand_bang("!zzzznotabang something"), None);
         assert_eq!(expand_bang("just a search"), None);
         assert_eq!(expand_bang("example.com"), None);
     }
@@ -477,41 +364,18 @@ mod tests {
         assert!(expand_bang("!YT cats").is_some());
     }
 
-    fn custom(pairs: &[(&str, &str)]) -> CustomBangs {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
-
     #[test]
-    fn kagi_bangs_fill_in_behind_the_built_in_ones() {
+    fn the_whole_kagi_list_is_there() {
         assert!(kagi_bang_count() > 10_000);
-        // Built in: our template wins over Kagi's for the same key.
-        assert_eq!(
-            expand_bang("!w rust"),
-            Some("https://en.wikipedia.org/w/index.php?search=rust".into())
-        );
-        // Only in Kagi's list: MDN.
         let mdn = expand_bang("!mdn array map").unwrap();
-        assert!(mdn.contains("developer.mozilla.org"), "{mdn}");
-        assert!(
-            mdn.contains("array+map") || mdn.contains("array%20map"),
-            "{mdn}"
-        );
+        assert!(mdn.starts_with("https://developer.mozilla.org/"), "{mdn}");
+        assert!(mdn.contains("array+map"), "{mdn}");
+        assert_eq!(kagi_bang("hn").unwrap().source, BangSource::Kagi);
     }
 
     #[test]
-    fn kagi_flags_pick_the_home_page_and_space_encoding() {
-        let home = expand_bang("!mdn").unwrap();
-        assert_eq!(home, "https://developer.mozilla.org/");
-        let hn = find_bang("hn", &CustomBangs::new()).unwrap();
-        assert_eq!(hn.source, BangSource::Kagi);
-    }
-
-    #[test]
-    fn custom_bangs_win_and_open_their_site_without_a_query() {
-        let mine = custom(&[("w", "https://wiki.example/find?q=%s")]);
+    fn your_bangs_win_and_switched_off_ones_are_gone() {
+        let mine = user(&[("w", "https://wiki.example/find?q=%s")], &["yt"]);
         assert_eq!(
             expand_bang_with("!w two words", &mine),
             Some("https://wiki.example/find?q=two+words".into())
@@ -521,14 +385,24 @@ mod tests {
             Some("https://wiki.example/".into())
         );
         assert_eq!(find_bang("!w", &mine).unwrap().source, BangSource::Custom);
+        assert_eq!(expand_bang_with("!yt cats", &mine), None);
+        assert!(
+            kagi_bang("yt").is_some(),
+            "Kagi's own is still known for a reset"
+        );
     }
 
     #[test]
-    fn search_lists_exact_keys_first() {
-        let found = search_bangs("mdn", &CustomBangs::new(), 50);
-        let first = found.iter().find(|b| b.source == BangSource::Kagi).unwrap();
-        assert_eq!(first.triggers[0], "mdn");
-        assert!(search_bangs("youtube", &CustomBangs::new(), 5).len() <= 5);
+    fn search_lists_exact_keys_first_and_everything_when_empty() {
+        let found = search_bangs("mdn", &BangOverrides::default(), 50);
+        assert_eq!(found[0].triggers[0], "mdn");
+        assert!(search_bangs("youtube", &BangOverrides::default(), 5).len() <= 5);
+        let all = search_bangs("", &BangOverrides::default(), usize::MAX);
+        assert!(all.len() > 10_000);
+        let without_yt = search_bangs("", &user(&[], &["yt"]), usize::MAX);
+        assert!(without_yt
+            .iter()
+            .all(|b| !b.triggers.contains(&"yt".to_string())));
     }
 
     #[test]
