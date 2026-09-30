@@ -42,6 +42,7 @@ feats:
 [/] - add vertical sidebar like zen browser
 [*] - make it so every browser related error is shown in :error/:errors (thinking of the future, where the shell's AI can fix the shells issues itself)
 [$] - allow the easy addition of bangs via the AI like: "could you add a !osrs bang that searches the old school runescape wiki please?"
+[] - add :update that will fetch the newest release (because i kind of keep updating everyday, so downloading a new version everytime might get annoying)
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
