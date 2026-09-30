@@ -29,6 +29,14 @@ rules were stripped.
 | `yoyo.txt` | [Peter Lowe's Ad and tracking server list](https://pgl.yoyo.org/adservers/) | No formal license. The maintainer permits combining and redistributing it; contact pgl@yoyo.org for anything beyond that. |
 | `blocklist-extra.txt` | This project | MIT |
 
+## Bangs
+
+`crates/core/data/kagi-bangs.json` is Kagi's bang list, compiled into the executable.
+
+- Upstream: <https://github.com/kagisearch/bangs> (release in `crates/core/data/kagi-bangs.version`)
+- License: MIT, Copyright (c) 2024 Kagi Search; the full text is in
+  `crates/core/data/kagi-bangs.LICENSE`.
+
 ## Rust dependencies
 
 The executables statically link many Rust crates, each under its own license (mostly

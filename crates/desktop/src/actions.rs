@@ -100,6 +100,40 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         }],
     },
     ActionSpec {
+        name: "bang",
+        summary: "Add or replace one of the user's bangs: typing '!key words' in an \
+                  open/search target then searches a site for those words (e.g. key \
+                  'osrs', url 'https://oldschool.runescape.wiki/?search=%s'). Use when \
+                  the user asks for a bang or a search shortcut for a site. Thousands \
+                  of bangs already exist (Kagi's list); adding one with the same key \
+                  replaces it for this user.",
+        params: &[
+            ParamSpec {
+                name: "key",
+                values: &[],
+                required: true,
+                desc: "The key typed after '!': letters, digits, '.', '-' or '_'.",
+            },
+            ParamSpec {
+                name: "url",
+                values: &[],
+                required: true,
+                desc: "The site's search URL with %s where the search words go, \
+                       e.g. https://example.com/search?q=%s.",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "unbang",
+        summary: "Remove one of the user's own bangs.",
+        params: &[ParamSpec {
+            name: "key",
+            values: &[],
+            required: true,
+            desc: "The bang's key, without the '!'.",
+        }],
+    },
+    ActionSpec {
         name: "profile",
         summary: "Save, switch to, or delete a PROFILE — a named workspace holding the \
                   open tabs, the split layout, the window size/position and the UI \
@@ -560,6 +594,8 @@ impl App {
                 }
             }
             "unalias" => self.remove_alias(str_arg("name")),
+            "bang" => self.set_bang(str_arg("key"), str_arg("url")),
+            "unbang" => self.remove_bang(str_arg("key")),
             "restore" => Ok(self.restore_defaults()),
             "theme" => self.set_theme(args),
             "install_scheme" => {

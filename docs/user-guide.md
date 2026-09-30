@@ -219,9 +219,14 @@ Other protections and toggles:
   history; `Tab` or `Ctrl+Right` accepts it. On commands with fixed choices (`:adblock`,
   `:clear`, `:theme`, …) `Tab`/`Shift+Tab` cycle them.
 - **Bangs**: a `!key` anywhere in a search jumps to that site's search, DuckDuckGo-style.
-  `!yt lofi` searches YouTube, `dragon scimitar !osrs` the RuneScape wiki. There are bangs
-  for Wikipedia, GitHub, Stack Overflow, MDN, npm, crates.io, docs.rs and more (see
-  `:help bangs`). A bang with no query opens the site's home page.
+  `!yt lofi` searches YouTube, `dragon scimitar !osrs` the RuneScape wiki. A bang with no
+  query opens the site's home page. Besides a hand-picked set, the browser ships the
+  13,000+ bangs from [Kagi's list](https://github.com/kagisearch/bangs) (the ones Helium
+  uses), offline: `:bangs <word>` searches them by key or name, `:bang <key>` says what one
+  does. Add your own with `:bang <key> <url>`, putting `%s` where the search goes
+  (`:bang osrs https://oldschool.runescape.wiki/?search=%s`); yours come first, so one can
+  replace a built-in bang. `:unbang <key>` removes it. `:ai` can add them too ("add a !mdn
+  bang for MDN").
 - **Maths**: type an expression (`+ - * / % ^`, parentheses) to see the result live;
   `Enter` replaces the line with it so you can keep going.
 - **Aliases**: `:alias gh open github.com` makes `:gh` open GitHub; `:unalias gh` removes it.

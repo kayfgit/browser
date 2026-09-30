@@ -69,7 +69,8 @@ message, so give PRs conventional titles.
 
 ## Releasing
 
-1. Merge work into `main` with conventional commit messages.
+1. Merge work into `main` with conventional commit messages. To ship Kagi's latest
+   bang list, run `pwsh crates/core/data/update-bangs.ps1` and commit the result first.
 2. release-please keeps a **release pull request** open that bumps the version in
    `Cargo.toml` (and `Cargo.lock`) and updates `CHANGELOG.md`.
 3. Merging that pull request tags the version and creates the GitHub Release. The
