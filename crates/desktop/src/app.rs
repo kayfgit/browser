@@ -108,6 +108,9 @@ pub(crate) enum UserEvent {
     /// A hint was activated in copy mode (`yf`): put this link address on the
     /// clipboard instead of going there, and return the shell to Normal.
     HintCopy(String),
+    /// Hint mode picked a control: click it at `(x, y)` (CSS px) as trusted input, so
+    /// the page treats it as a user gesture. See [`EngineView::trusted_click`].
+    HintClick(f64, f64),
     /// A web pane was clicked (pointerdown): focus the pane under the cursor.
     PaneClick,
     /// A `:read` extraction finished: render this Document in an engine-free read

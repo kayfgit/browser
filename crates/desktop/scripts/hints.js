@@ -100,8 +100,27 @@
       return;
     }
     try { el.focus(); } catch (e) {}
+    // Prefer a trusted click from the shell: a click dispatched from script isn't a
+    // user gesture, so the page refuses it things like a clipboard write (a "copy"
+    // button would do nothing). The shell clicks a POINT, so only when the element's
+    // center really is the element, not an overlay above it.
+    var r = el.getBoundingClientRect();
+    var x = r.left + r.width / 2, y = r.top + r.height / 2;
+    var hit = window.top === window && document.elementFromPoint(x, y);
+    if (hit && (hit === el || el.contains(hit))) {
+      window.__hintClickEl = el;
+      window.__hintClickAt = Date.now();
+      window.__post('hint-click:' + x + ',' + y);
+      return;
+    }
     fireClick(el);
   }
+  // The shell couldn't inject the trusted click: fall back to the synthetic one.
+  window.__hintFallback = function () {
+    var el = window.__hintClickEl;
+    window.__hintClickEl = null;
+    if (el) fireClick(el);
+  };
   // `mode` is 'follow' | 'newtab' | 'copy' | 'scroll' — the shell re-sends it on every
   // keystroke, since holding Shift flips follow↔newtab mid-pick.
   window.__hintInput = function (s, mode) {

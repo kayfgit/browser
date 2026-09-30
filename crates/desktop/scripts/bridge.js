@@ -114,7 +114,8 @@
     // Hint mode dispatches synthetic pointer events to activate page controls.
     // They must not select the pane under the unrelated physical mouse cursor.
     if (!e.isTrusted) return;
-    post('pane-click');
+    // Hint mode's trusted clicks land on the hinted element, not under the mouse.
+    if (Date.now() - (window.__hintClickAt || 0) > 1000) post('pane-click');
     // Report a control press HERE, at the start of the gesture, not on the click that
     // ends it. The webview takes OS keyboard focus on mousedown, and the shell's
     // periodic reclaim poll pulls it straight back unless it has been told the page

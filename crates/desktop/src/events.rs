@@ -235,6 +235,8 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
     match event {
         // Already unwrapped and routed to its view at the top of `handle`.
         UserEvent::Engine { .. } => {}
+        // Only a page sends it, and `route_engine_event` handles it for that page.
+        UserEvent::HintClick(..) => {}
         // Consumed by `engines::servo::intercept` at the top of `handle`.
         #[cfg(all(windows, feature = "servo-engine"))]
         UserEvent::Servo(_) => {}

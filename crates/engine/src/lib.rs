@@ -171,6 +171,13 @@ pub trait EngineView {
     fn focus(&self) -> EngineResult;
     fn focus_parent(&self) -> EngineResult;
     fn evaluate_script(&self, script: &str) -> EngineResult;
+    /// Click at `(x, y)`, in CSS pixels from the top-left of the page's viewport, as
+    /// real user input. Unlike a click dispatched from script, the page treats it as a
+    /// user gesture (clipboard writes, pop-ups, fullscreen). Providers that can't
+    /// inject trusted input return an error, and the caller falls back.
+    fn trusted_click(&self, _x: f64, _y: f64) -> EngineResult {
+        Err("this engine can't inject trusted input".into())
+    }
 
     // Optional services are queried explicitly, rather than successful no-ops.
     // Runtime versions can still reject an operation even if its service exists.
