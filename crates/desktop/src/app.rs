@@ -1026,7 +1026,9 @@ impl App {
     pub(crate) fn refresh_tab_url_record(&mut self, index: usize, record: bool) {
         let mut visited = None;
         if let Some(tab) = self.tabs.get_mut(index) {
-            if tab.term().is_some() {
+            // A source view doesn't navigate, and WebView2 reports its address without
+            // the `view-source:` prefix, which would turn it back into the page.
+            if tab.term().is_some() || tab.url.starts_with("view-source:") {
                 return;
             }
             let Some(wv) = tab.webview() else { return };
