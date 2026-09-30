@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.1](https://github.com/kayfgit/browser/compare/v0.2.0...v0.2.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* :freeze stops the web engine instead of only suspending pages ([5d4bbce](https://github.com/kayfgit/browser/commit/5d4bbcea3cd8563fa64f229dcd710ff6facbe839))
+* closing a split focuses the pane you were in before, not the first one ([7ef0a68](https://github.com/kayfgit/browser/commit/7ef0a68d3a682493f21c547af0f9d90f15f3d1eb))
+* hint-clicking a copy button actually copies ([fbc993f](https://github.com/kayfgit/browser/commit/fbc993fff54c9f849cf8b07e52cf41a8805057c9))
+* leave passthrough and insert from inside iframes; drop the dead keyboard hook ([bfb5f3a](https://github.com/kayfgit/browser/commit/bfb5f3a36789511eb71620df1a348b3be9e76913))
+* typing in a scrolled-up terminal jumps back to the prompt ([f60c1f0](https://github.com/kayfgit/browser/commit/f60c1f0e4dd8a9ba12d4f10289afee8886482b2c))
+
+
+### Performance
+
+* cut the browser's idle memory from about 160 MB to 22 MB ([8708264](https://github.com/kayfgit/browser/commit/8708264f93f2e46675d897912f92fec6edceb10f))
+
 ## [0.2.0](https://github.com/kayfgit/browser/compare/v0.1.0...v0.2.0) (2026-09-29)
 
 
