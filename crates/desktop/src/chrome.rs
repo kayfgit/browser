@@ -998,7 +998,7 @@ impl App {
                 }
                 // A split window shows how many panes it holds, tmux-style.
                 if panes > 1 {
-                    label.push_str(&format!(" ⁝{panes}"));
+                    label.push_str(&format!(" ¦{panes}"));
                 }
                 let page = t.page_state();
                 Some(TabEntry {
@@ -1080,7 +1080,7 @@ impl App {
             ModeKind::Hint => vec![
                 (
                     match self.hint_act {
-                        HintAct::NewTab => "[HINT ↗]",
+                        HintAct::NewTab => "[HINT »]",
                         HintAct::Copy => "[HINT y]",
                         HintAct::Follow => "[HINT]",
                         HintAct::Scroll => "[SCROLL HINT]",
