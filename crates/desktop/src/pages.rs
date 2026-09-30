@@ -618,8 +618,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("delprofile", ":delprofile <name> · :dp", "delete a saved profile (the tabs stay open)"),
     ("scratch", ":scratch · :scr · :sc", "clean slate: park everything you have open and start empty; :scratch again brings the parked layout back"),
     ("write", ":w · :write", "save the current session (open tabs + UI state) to disk"),
-    ("wq", ":wq · :x", "save the session, then quit"),
-    ("quit", ":quit · :q", "quit WITHOUT saving (the last :w'd session is kept)"),
+    ("quit", ":quit · :leave · :l", "quit WITHOUT saving (the last :w'd session is kept; :w first to save). :q, :wq and :x don't quit, so a vim habit can't close the browser"),
 ];
 
 /// Help sections: element id, TOC label, and the extra `:help` aliases that reach

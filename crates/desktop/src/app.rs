@@ -385,7 +385,7 @@ pub(crate) struct App {
     pub(crate) term_resize: crate::term::ResizeDebounce,
     pub(crate) quit: bool,
     /// Whether `teardown` has already run. It fires from multiple places (window
-    /// close, `:q`, then `LoopDestroyed`); without this guard the second call would
+    /// close, `:quit`, then `LoopDestroyed`); without this guard the second call would
     /// re-save the session with the now-cleared tab list, wiping the good snapshot.
     pub(crate) torn_down: bool,
     /// `:res` resource monitor: the previous per-pid (cpu_100ns, io_bytes) sample
@@ -1234,15 +1234,15 @@ impl App {
     /// rather than leaving a stuck thread that deadlocks process teardown.
     pub(crate) fn teardown(&mut self) {
         // Idempotent: only the first call tears down (see `torn_down`). The session is
-        // NOT auto-saved here — saving is explicit (`:w` / `:wq`), vim-style, so just
-        // closing the window or `:q` leaves the last written session untouched.
+        // NOT auto-saved here — saving is explicit (`:w`), vim-style, so just
+        // closing the window or `:quit` leaves the last written session untouched.
         if self.torn_down {
             return;
         }
         self.torn_down = true;
         // Vanish NOW: dropping the webviews and joining PTY readers below can take
         // a beat, and destroying the webview children mid-way exposes the parent's
-        // painted background (the "default page flashes for a second on :wq" bug).
+        // painted background (the "default page flashes for a second on quit" bug).
         // Hidden, the rest of the shutdown is invisible and the close feels instant.
         self.window.set_visible(false);
         // Any pinned-open engine goes with the tabs — nothing must outlive teardown and
@@ -1265,7 +1265,7 @@ impl App {
     /// Write the open tabs + UI state to the current session file so the next launch
     /// restores them — `session.toml`, or the active profile / scratch stash (see
     /// [`current_session_path`](Self::current_session_path)). Explicit only: run by
-    /// `:w` / `:wq` (vim-style) and by a profile switch, never automatically on exit.
+    /// `:w` (vim-style) and by a profile switch, never automatically on exit.
     /// No-op during headless test runs so they don't clobber a real session.
     pub(crate) fn save_session(&self) {
         if std::env::var("BROWSER_TEST_QUIT_MS").is_ok() {
@@ -1322,7 +1322,7 @@ impl App {
             });
         }
         // Encode each window's split tree (dropping windows whose tabs were all skipped),
-        // so `:wq` remembers the layout and reopening restores it.
+        // so `:w` remembers the layout and reopening restores it.
         let windows = self
             .windows
             .iter()

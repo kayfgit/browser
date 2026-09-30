@@ -1,5 +1,5 @@
 //! Read another process's live working directory — the no-setup fallback for
-//! saving a terminal's cwd on `:w`/`:wq`. Shells that keep their physical cwd in
+//! saving a terminal's cwd on `:w`. Shells that keep their physical cwd in
 //! sync with `cd` (nushell, cmd — verified live; bash too) need no shell
 //! integration at all: at save time we walk the pty-host's process tree to the
 //! deepest live descendant (the innermost shell/program — a cmd nested inside nu

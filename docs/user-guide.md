@@ -127,8 +127,9 @@ be any tab type.
 
 **Sessions** are saved explicitly, vim-style: `:w` saves the open tabs (including splits
 and terminal working directories), window position and size, zoom, ad blocking and search
-settings, and `:wq` saves and quits. Quitting with `:q` or closing the window does *not*
-save, so the last written session stays as it was. The next launch without a URL argument
+settings. `:quit` (or `:leave`, `:l`) quits, and like closing the window it does *not*
+save, so the last written session stays as it was. Vim's `:q`, `:wq` and `:x` don't
+quit the browser, so a habit from a terminal can't close it. The next launch without a URL argument
 restores it.
 
 **Profiles** are named snapshots of a whole workspace:

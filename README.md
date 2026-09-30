@@ -74,7 +74,7 @@ Launch **browser** from the Start Menu, or run `browser <url>` in a terminal.
 | `i` | type into a page field (`Esc` to leave) |
 | `Ctrl+V` | passthrough: every key goes to the page (`Ctrl+S` or `Shift+Esc` to leave) |
 | `v` | select text with vim motions, `y` to copy |
-| `:w` / `:q` | save the session / quit |
+| `:w` / `:quit` | save the session / quit |
 
 `:commands` (or `:help <topic>`) opens the full reference inside the browser. The
 [user guide](docs/user-guide.md) covers every mode and feature in detail.

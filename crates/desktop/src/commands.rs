@@ -78,6 +78,8 @@ pub(crate) const BUILTIN_VERBS: &[&str] = &[
     "wq",
     "x",
     "quit",
+    "leave",
+    "l",
     "q",
     "q!",
     "saveprofile",
@@ -203,8 +205,8 @@ pub(crate) const COMMANDS: &[&str] = &[
     "delprofile",
     "scratch",
     "write",
-    "wq",
     "quit",
+    "leave",
     // Last, so it can't shadow `:f`/`:fo`… (fullscreen/forward/freeze) — `:fa` is
     // unambiguous and reaches it.
     "favorites",
@@ -438,18 +440,18 @@ impl App {
                 }
             }
             // Session is saved explicitly (vim-style): `:w` writes the current tabs +
-            // UI state, `:q` quits without saving, `:wq`/`:x` writes then quits.
-            // Writes the SESSION, never a profile — `:saveprofile` is the only thing
-            // that touches a profile snapshot.
+            // UI state and `:quit` quits without saving. Writes the SESSION, never a
+            // profile — `:saveprofile` is the only thing that touches a profile snapshot.
             "write" | "w" => {
                 self.save_session();
                 self.set_status("session written");
             }
-            "wq" | "x" => {
-                self.save_session();
-                self.quit = true;
-            }
-            "quit" | "q" | "q!" => self.quit = true,
+            "quit" | "leave" | "l" => self.quit = true,
+            // Vim's quit commands don't quit the browser: reaching for them in a
+            // terminal that turned out to be in Normal mode closed everything.
+            "q" | "q!" | "wq" | "x" => self.set_status(
+                ":q doesn't quit the browser — use :quit or :leave (:l); :w saves first",
+            ),
             // Profiles: named snapshots of the workspace (tabs + splits + window + UI
             // state). `:saveprofile` is the ONLY writer — `:w` records the live session
             // instead, so a snapshot never changes behind your back. See `profiles.rs`.
