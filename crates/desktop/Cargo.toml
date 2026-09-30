@@ -51,6 +51,11 @@ tao.workspace = true
 wry.workspace = true
 softbuffer.workspace = true
 fontdue.workspace = true
+# Fallback fonts are read one glyph at a time instead (fontdue parses every glyph of a
+# face up front: Yu Gothic alone takes ~190 MB), from a memory-mapped file.
+ttf-parser = "0.21"
+ab_glyph_rasterizer = "0.1"
+memmap2 = "0.9"
 # default-features off drops the image/png clipboard stack — we only do text.
 arboard = { version = "3", default-features = false }
 alacritty_terminal = "0.26.0"

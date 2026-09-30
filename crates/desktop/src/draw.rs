@@ -101,24 +101,194 @@ pub fn parse_color(s: &str) -> Option<Rgb> {
     })
 }
 
-/// Fonts are shared by every [`Painter`], and each fallback face loads only when a
-/// glyph reaches it. fontdue parses every glyph outline up front, so a face costs far
-/// more memory than its file: Segoe UI Symbol (2.4 MB on disk) takes about 45 MB, and
-/// the CJK faces together over 600 MB. Loading them eagerly, once per painter, made up
-/// most of an idle browser's memory.
+/// Fonts are shared by every [`Painter`]. fontdue parses every glyph outline when it
+/// loads a face, so a face costs far more memory than its file: Segoe UI Symbol (2.4 MB
+/// on disk) takes about 45 MB, Yu Gothic about 190 MB, and drawing a list with some CJK
+/// in it pulled in over 600 MB that was never freed. So only the primary faces, drawn
+/// all the time, go through fontdue; each fallback is a [`LazyFace`], mapped when a
+/// glyph first reaches it and read one glyph at a time.
 ///
 /// The system monospace face (Consolas → Segoe UI → Arial), which covers normal text.
 /// Keep the shell's own UI text within it: one symbol it lacks loads a fallback face.
 static SYSTEM_FONT: OnceLock<Font> = OnceLock::new();
 
-/// A fallback face for glyphs the primary lacks, loaded on first use (`None` when it
+/// A fallback face for glyphs the primary lacks, opened on first use (`None` when it
 /// isn't installed or doesn't parse).
 struct Fallback {
     path: &'static str,
     /// Only characters in CJK, kana and Hangul ranges try this face, so an icon no font
-    /// has (a private-use prompt glyph, say) can't load hundreds of MB of CJK faces.
+    /// has (a private-use prompt glyph, say) doesn't open every CJK face.
     cjk_only: bool,
-    face: OnceLock<Option<Font>>,
+    face: OnceLock<Option<LazyFace>>,
+}
+
+/// A font read straight from its memory-mapped file, one glyph at a time: it costs no
+/// private memory (the OS pages the file in and out as needed), at the price of parsing
+/// and rasterizing each glyph when it's drawn. Fine for fallbacks, which draw few.
+struct LazyFace {
+    data: memmap2::Mmap,
+}
+
+impl LazyFace {
+    fn open(path: &str) -> Option<Self> {
+        let file = std::fs::File::open(path).ok()?;
+        // SAFETY: system font files aren't modified while they're in use.
+        let data = unsafe { memmap2::Mmap::map(&file) }.ok()?;
+        ttf_parser::Face::parse(&data, 0).ok()?;
+        Some(LazyFace { data })
+    }
+
+    fn face(&self) -> ttf_parser::Face<'_> {
+        ttf_parser::Face::parse(&self.data, 0).expect("parsed when opened")
+    }
+
+    fn has(&self, ch: char) -> bool {
+        self.face().glyph_index(ch).is_some()
+    }
+
+    fn advance(&self, ch: char, px: f32) -> f32 {
+        let face = self.face();
+        let scale = px / face.units_per_em() as f32;
+        face.glyph_index(ch)
+            .and_then(|g| face.glyph_hor_advance(g))
+            .map_or(0.0, |a| a as f32 * scale)
+    }
+
+    fn rasterize(&self, ch: char, px: f32) -> Glyph {
+        let face = self.face();
+        let scale = px / face.units_per_em() as f32;
+        let Some(id) = face.glyph_index(ch) else {
+            return Glyph::default();
+        };
+        let advance = face.glyph_hor_advance(id).map_or(0.0, |a| a as f32 * scale);
+        let Some(bbox) = face.glyph_bounding_box(id) else {
+            // Nothing to draw (a space): just the advance.
+            return Glyph {
+                advance,
+                ..Glyph::default()
+            };
+        };
+        let xmin = (bbox.x_min as f32 * scale).floor();
+        let ymin = (bbox.y_min as f32 * scale).floor();
+        let xmax = (bbox.x_max as f32 * scale).ceil();
+        let ymax = (bbox.y_max as f32 * scale).ceil();
+        let (width, height) = ((xmax - xmin) as usize, (ymax - ymin) as usize);
+        if width == 0 || height == 0 {
+            return Glyph {
+                advance,
+                ..Glyph::default()
+            };
+        }
+        let mut outline = Outline {
+            raster: ab_glyph_rasterizer::Rasterizer::new(width, height),
+            scale,
+            xmin,
+            ymax,
+            start: ab_glyph_rasterizer::point(0.0, 0.0),
+            last: ab_glyph_rasterizer::point(0.0, 0.0),
+        };
+        face.outline_glyph(id, &mut outline);
+        let mut coverage = vec![0u8; width * height];
+        outline.raster.for_each_pixel(|i, alpha| {
+            coverage[i] = (alpha.clamp(0.0, 1.0) * 255.0) as u8;
+        });
+        Glyph {
+            xmin: xmin as i32,
+            ymin: ymin as i32,
+            width,
+            height,
+            advance,
+            coverage,
+        }
+    }
+}
+
+/// Feeds a glyph outline (font units, y up) into a rasterizer (pixels, y down).
+struct Outline {
+    raster: ab_glyph_rasterizer::Rasterizer,
+    scale: f32,
+    xmin: f32,
+    ymax: f32,
+    start: ab_glyph_rasterizer::Point,
+    last: ab_glyph_rasterizer::Point,
+}
+
+impl Outline {
+    fn at(&self, x: f32, y: f32) -> ab_glyph_rasterizer::Point {
+        ab_glyph_rasterizer::point(x * self.scale - self.xmin, self.ymax - y * self.scale)
+    }
+}
+
+impl ttf_parser::OutlineBuilder for Outline {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.start = self.at(x, y);
+        self.last = self.start;
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        let p = self.at(x, y);
+        self.raster.draw_line(self.last, p);
+        self.last = p;
+    }
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        let (c, p) = (self.at(x1, y1), self.at(x, y));
+        self.raster.draw_quad(self.last, c, p);
+        self.last = p;
+    }
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        let (c1, c2, p) = (self.at(x1, y1), self.at(x2, y2), self.at(x, y));
+        self.raster.draw_cubic(self.last, c1, c2, p);
+        self.last = p;
+    }
+    fn close(&mut self) {
+        if self.last != self.start {
+            self.raster.draw_line(self.last, self.start);
+        }
+        self.last = self.start;
+    }
+}
+
+/// One rasterized glyph: its coverage bitmap (row-major, top row first), where it sits
+/// relative to the pen and baseline (y up, like fontdue's metrics), and its advance.
+#[derive(Default)]
+struct Glyph {
+    xmin: i32,
+    ymin: i32,
+    width: usize,
+    height: usize,
+    advance: f32,
+    coverage: Vec<u8>,
+}
+
+/// The face that draws a character: a fully parsed primary one, or a lazy fallback.
+enum Face<'a> {
+    Parsed(&'a Font),
+    Lazy(&'a LazyFace),
+}
+
+impl Face<'_> {
+    fn advance(&self, ch: char, px: f32) -> f32 {
+        match self {
+            Face::Parsed(font) => font.metrics(ch, px).advance_width,
+            Face::Lazy(face) => face.advance(ch, px),
+        }
+    }
+
+    fn rasterize(&self, ch: char, px: f32) -> Glyph {
+        match self {
+            Face::Parsed(font) => {
+                let (m, coverage) = font.rasterize(ch, px);
+                Glyph {
+                    xmin: m.xmin,
+                    ymin: m.ymin,
+                    width: m.width,
+                    height: m.height,
+                    advance: m.advance_width,
+                    coverage,
+                }
+            }
+            Face::Lazy(face) => face.rasterize(ch, px),
+        }
+    }
 }
 
 const fn fallback(path: &'static str, cjk_only: bool) -> Fallback {
@@ -183,10 +353,10 @@ impl Painter {
     /// The first font that has a glyph for `ch` (else the primary, which renders its
     /// `.notdef`): the custom and system faces first — the hot path for ordinary text
     /// — then the [`FALLBACKS`] in order, each loaded when a glyph first reaches it.
-    fn font_for(&self, ch: char) -> &Font {
+    fn font_for(&self, ch: char) -> Face<'_> {
         let has = |f: &&Font| f.lookup_glyph_index(ch) != 0;
         if let Some(f) = self.custom.iter().chain([self.system]).find(has) {
-            return f;
+            return Face::Parsed(f);
         }
         let cjk = is_cjk(ch);
         FALLBACKS
@@ -194,11 +364,12 @@ impl Painter {
             .filter(|fb| cjk || !fb.cjk_only)
             .find_map(|fb| {
                 fb.face
-                    .get_or_init(|| load_face(fb.path))
+                    .get_or_init(|| LazyFace::open(fb.path))
                     .as_ref()
-                    .filter(has)
+                    .filter(|f| f.has(ch))
             })
-            .unwrap_or(self.custom.as_ref().unwrap_or(self.system))
+            .map(Face::Lazy)
+            .unwrap_or(Face::Parsed(self.custom.as_ref().unwrap_or(self.system)))
     }
 
     pub fn line_height(&self) -> usize {
@@ -221,7 +392,7 @@ impl Painter {
     pub fn measure(&self, s: &str) -> usize {
         let mut pen = 0f32;
         for ch in s.chars() {
-            pen += self.font_for(ch).metrics(ch, self.px).advance_width;
+            pen += self.font_for(ch).advance(ch, self.px);
         }
         pen as usize
     }
@@ -232,7 +403,7 @@ impl Painter {
     /// drifts, because each run boundary floors the pen — the drift grows with the
     /// column and the font size.
     pub fn advance(&self, ch: char) -> f32 {
-        self.font_for(ch).metrics(ch, self.px).advance_width
+        self.font_for(ch).advance(ch, self.px)
     }
 
     /// Draw a string with its baseline at `baseline`, left edge at `x`.
@@ -296,10 +467,10 @@ impl Painter {
         let top = clip_y0.max(0);
         let mut pen = x as f32;
         for ch in s.chars() {
-            let (m, bitmap) = self.font_for(ch).rasterize(ch, self.px);
+            let m = self.font_for(ch).rasterize(ch, self.px);
             for row in 0..m.height {
                 for col in 0..m.width {
-                    let cov = bitmap[row * m.width + col];
+                    let cov = m.coverage[row * m.width + col];
                     if cov == 0 {
                         continue;
                     }
@@ -319,7 +490,7 @@ impl Painter {
                     buf[idx] = blend(buf[idx], color, cov);
                 }
             }
-            pen += m.advance_width;
+            pen += m.advance;
         }
         pen as i32
     }
@@ -382,11 +553,6 @@ fn system_font() -> Result<&'static Font> {
     let font = Font::from_bytes(load_system_font()?, FontSettings::default())
         .map_err(|e| anyhow!("parsing font: {e}"))?;
     Ok(SYSTEM_FONT.get_or_init(|| font))
-}
-
-fn load_face(path: &str) -> Option<Font> {
-    let bytes = std::fs::read(path).ok()?;
-    Font::from_bytes(bytes, FontSettings::default()).ok()
 }
 
 /// Whether `ch` is in a CJK, kana or Hangul block — the characters the CJK fallback
@@ -491,7 +657,43 @@ pub fn find_font(query: &str) -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_cjk, parse_color};
+    use super::{is_cjk, parse_color, Face, LazyFace, Painter};
+
+    #[test]
+    fn a_lazy_face_draws_the_same_glyph_as_fontdue() {
+        // Arial through both paths: same advance, same box, near-identical coverage.
+        let path = r"C:\Windows\Fonts\arial.ttf";
+        let lazy = LazyFace::open(path).expect("arial is installed");
+        let parsed = fontdue::Font::from_bytes(
+            std::fs::read(path).unwrap(),
+            fontdue::FontSettings::default(),
+        )
+        .unwrap();
+        let (a, b) = (
+            Face::Lazy(&lazy).rasterize('g', 20.0),
+            Face::Parsed(&parsed).rasterize('g', 20.0),
+        );
+        assert!((a.advance - b.advance).abs() < 0.01);
+        assert!((a.xmin - b.xmin).abs() <= 1 && (a.ymin - b.ymin).abs() <= 1);
+        assert!(a.width.abs_diff(b.width) <= 1 && a.height.abs_diff(b.height) <= 1);
+        let ink = |g: &super::Glyph| g.coverage.iter().map(|&c| c as u32).sum::<u32>();
+        let (ia, ib) = (ink(&a), ink(&b));
+        assert!(ia.abs_diff(ib) * 20 < ib, "ink {ia} vs {ib}");
+    }
+
+    #[test]
+    fn cjk_text_is_drawn_from_a_fallback_face() {
+        let p = Painter::new(16.0).unwrap();
+        assert!(matches!(p.font_for('漢'), Face::Lazy(_)));
+        assert!(p.advance('漢') > 0.0);
+        assert!(p
+            .font_for('漢')
+            .rasterize('漢', 16.0)
+            .coverage
+            .iter()
+            .any(|&c| c > 0));
+        assert!(matches!(p.font_for('a'), Face::Parsed(_)));
+    }
 
     #[test]
     fn only_cjk_kana_and_hangul_reach_the_cjk_fonts() {
