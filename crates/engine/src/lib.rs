@@ -178,6 +178,10 @@ pub trait EngineView {
     fn trusted_click(&self, _x: f64, _y: f64) -> EngineResult {
         Err("this engine can't inject trusted input".into())
     }
+    /// Open the engine's developer tools for this page.
+    fn open_devtools(&self) -> EngineResult {
+        Err("this engine has no developer tools".into())
+    }
 
     // Optional services are queried explicitly, rather than successful no-ops.
     // Runtime versions can still reject an operation even if its service exists.

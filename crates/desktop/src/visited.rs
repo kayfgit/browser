@@ -39,9 +39,10 @@ impl Visited {
     }
 
     /// Move `url` to the front, stamped `at`, dropping any older copy and anything
-    /// past the cap. Internal `browser://` pages and empty URLs aren't recorded.
+    /// past the cap. Internal `browser://` pages, `view-source:` tabs and empty URLs
+    /// aren't recorded.
     pub(crate) fn record(&mut self, url: &str, at: u64) {
-        if url.is_empty() || url.starts_with("browser://") {
+        if url.is_empty() || url.starts_with("browser://") || url.starts_with("view-source:") {
             return;
         }
         self.entries.retain(|v| v.url != url);

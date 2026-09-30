@@ -111,6 +111,10 @@ pub(crate) enum UserEvent {
     /// Hint mode picked a control: click it at `(x, y)` (CSS px) as trusted input, so
     /// the page treats it as a user gesture. See [`EngineView::trusted_click`].
     HintClick(f64, f64),
+    /// The page's right-click menu asked for its developer tools.
+    Inspect,
+    /// The page's right-click menu asked to view its source.
+    ViewSource,
     /// A web pane was clicked (pointerdown): focus the pane under the cursor.
     PaneClick,
     /// A `:read` extraction finished: render this Document in an engine-free read

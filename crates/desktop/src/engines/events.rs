@@ -126,6 +126,14 @@ impl App {
                 self.open_web_provider(&url, self.nojs, false, true, private, &provider);
                 None
             }
+            UserEvent::Inspect => {
+                self.inspect_tab(index);
+                None
+            }
+            UserEvent::ViewSource => {
+                self.view_source_of(index);
+                None
+            }
             UserEvent::HintClick(x, y) => {
                 if self.active == Some(index) && self.mode == crate::ModeKind::Hint {
                     if let Some(view) = self.tabs[index].webview() {

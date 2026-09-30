@@ -157,6 +157,7 @@ Pages and engines:
 - [navguard.rs](crates/desktop/src/navguard.rs) and [blocklist.rs](crates/desktop/src/blocklist.rs): blocking ad redirects and known-bad domains.
 - [extensions.rs](crates/desktop/src/extensions.rs), [bundled_extensions.rs](crates/desktop/src/bundled_extensions.rs): the extension picker and the bundled uBlock Origin Lite.
 - [favicon.rs](crates/desktop/src/favicon.rs), [freeze.rs](crates/desktop/src/freeze.rs), [data.rs](crates/desktop/src/data.rs): tab icons, `:freeze`, clearing browsing data.
+- [devtools.rs](crates/desktop/src/devtools.rs): `:inspect` (developer tools) and `:source` (view source).
 
 Tabs the shell draws itself:
 

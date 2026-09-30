@@ -617,6 +617,8 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("profiles", ":profiles · :profs", "list the saved profiles in a vim tab (same picker as bare :profile)"),
     ("delprofile", ":delprofile <name> · :dp", "delete a saved profile (the tabs stay open)"),
     ("scratch", ":scratch · :scr · :sc", "clean slate: park everything you have open and start empty; :scratch again brings the parked layout back"),
+    ("inspect", ":inspect · :devtools", "open the developer tools for this page (also F12, Ctrl+Shift+I, or right-click → Inspect)"),
+    ("source", ":source · :viewsource · :src", "view this page's source in a new tab (also Ctrl+Shift+U, or right-click → View page source)"),
     ("write", ":w · :write", "save the current session (open tabs + UI state) to disk"),
     ("quit", ":quit · :leave · :l", "quit WITHOUT saving (the last :w'd session is kept; :w first to save). :q, :wq and :x don't quit, so a vim habit can't close the browser"),
 ];

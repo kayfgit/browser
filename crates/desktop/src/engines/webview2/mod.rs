@@ -214,6 +214,9 @@ pub(crate) fn build(
         // Ctrl+F/P, F12, …) so our own keybindings own the keyboard. Standard
         // editing keys (Ctrl+C/V/X) are unaffected.
         .with_browser_accelerator_keys(false)
+        // DevTools for `:inspect` (F12). With the accelerator keys off, the page can't
+        // open them on its own; only the shell does.
+        .with_devtools(true)
         // Browser process flags — see BROWSER_ARGS. MUST match every other
         // webview (terminal included) or WebView2 creation fails with 0x8007139F.
         .with_additional_browser_args(BROWSER_ARGS)
@@ -317,6 +320,13 @@ pub(crate) fn build(
             }
             "caret-exit" => {
                 let _ = ipc_proxy.send_event(UserEvent::CaretExit);
+            }
+            // Right-click menu: "Inspect" and "View page source".
+            "inspect" => {
+                let _ = ipc_proxy.send_event(UserEvent::Inspect);
+            }
+            "view-source" => {
+                let _ = ipc_proxy.send_event(UserEvent::ViewSource);
             }
             "fs-enter" => {
                 let _ = ipc_proxy.send_event(UserEvent::PageFullscreen(true));
@@ -757,6 +767,10 @@ impl EngineView for WebView2View {
         self.inner
             .evaluate_script(script)
             .map_err(|e| e.to_string())
+    }
+    fn open_devtools(&self) -> EngineResult {
+        self.inner.open_devtools();
+        Ok(())
     }
     fn trusted_click(&self, x: f64, y: f64) -> EngineResult {
         // A click may follow a link or submit a form cross-site; mark it as wanted so
