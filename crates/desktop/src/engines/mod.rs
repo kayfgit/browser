@@ -3,6 +3,7 @@ mod events;
 #[cfg(all(windows, feature = "servo-engine"))]
 pub(crate) mod servo;
 mod shell;
+pub(crate) use shell::unavailable_content;
 mod webview2;
 
 pub(crate) fn with_window_target<R>(

@@ -114,6 +114,9 @@ pub(crate) enum TabContent {
     Ai(crate::ai::AiState),
     /// An empty split-pane placeholder ("open something" prompt).
     Blank,
+    /// A web tab whose view was dropped by `:freeze`; `:unfreeze` rebuilds it from the
+    /// tab's URL with this provider.
+    Frozen { provider: String },
 }
 
 pub(crate) struct Tab {
@@ -216,7 +219,9 @@ impl Tab {
     pub(crate) fn provider(&self) -> Option<&str> {
         match &self.content {
             TabContent::Web(view, _) => Some(&view.identity().provider),
-            TabContent::Unavailable { provider, .. } => Some(provider),
+            TabContent::Unavailable { provider, .. } | TabContent::Frozen { provider } => {
+                Some(provider)
+            }
             _ => None,
         }
     }
