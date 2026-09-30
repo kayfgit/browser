@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "ab_glyph_rasterizer"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
+
+[[package]]
 name = "accesskit"
 version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -715,6 +721,7 @@ dependencies = [
 name = "browser"
 version = "0.2.0"
 dependencies = [
+ "ab_glyph_rasterizer",
  "adblock",
  "alacritty_terminal",
  "anyhow",
@@ -731,6 +738,7 @@ dependencies = [
  "euclid",
  "flate2",
  "fontdue",
+ "memmap2",
  "png",
  "portable-pty",
  "pulldown-cmark",
@@ -746,6 +754,7 @@ dependencies = [
  "tao",
  "tar",
  "toml 1.1.2+spec-1.1.0",
+ "ttf-parser",
  "url",
  "webview2-com",
  "windows 0.61.3",
