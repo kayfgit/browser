@@ -455,6 +455,11 @@ impl PtyTerm {
         self.vt.grid_mut().scroll_display(Scroll::Bottom);
     }
 
+    /// Whether the viewport is showing scrollback rather than the live screen.
+    pub fn scrolled_back(&self) -> bool {
+        self.vt.grid().display_offset() > 0
+    }
+
     /// Start a selection at the vi cursor (`lines` = linewise `V` vs charwise `v`).
     pub fn start_selection(&mut self, lines: bool) {
         let ty = if lines {
@@ -1139,5 +1144,20 @@ mod tests {
             0,
             "camera should be back at the live line"
         );
+    }
+
+    #[test]
+    fn output_keeps_a_scrolled_back_view_where_it_is() {
+        // Why typing has to snap the view itself: the program's echo alone doesn't.
+        let mut pty = PtyTerm::new(20, 5, DEFAULT_SCROLLBACK);
+        for i in 0..20 {
+            pty.feed(format!("line{i}\r\n").as_bytes());
+        }
+        pty.scroll_display(3);
+        assert!(pty.scrolled_back());
+        pty.feed(b"typed");
+        assert!(pty.scrolled_back(), "output must not move the view");
+        pty.scroll_to_bottom();
+        assert!(!pty.scrolled_back());
     }
 }
