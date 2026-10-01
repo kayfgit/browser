@@ -19,10 +19,16 @@ pub struct ViewId(u64);
 impl ViewId {
     pub fn allocate() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        Self(
-            NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-                .expect("view identity space exhausted"),
-        )
+        // A compare-exchange loop rather than `fetch_update`, which Rust 1.99 renamed
+        // to `try_update`: this builds on toolchains before and after the rename.
+        let mut id = NEXT.load(Ordering::Relaxed);
+        loop {
+            let next = id.checked_add(1).expect("view identity space exhausted");
+            match NEXT.compare_exchange_weak(id, next, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => return Self(id),
+                Err(current) => id = current,
+            }
+        }
     }
 }
 
