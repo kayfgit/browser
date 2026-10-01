@@ -33,6 +33,7 @@ issues:
 [?] - saving a session with :w sometimes doesnt work, no idea why
 [/?] - random not responding after new update 26/07/2026 22:54
 [*] - add a way for users to freely install extensions
+[] - fix the skip ad button not being pressable with hint mode
 
 feats:
 [] - make ";" toggle browser hud visibility
