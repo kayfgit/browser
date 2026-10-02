@@ -237,6 +237,8 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
         UserEvent::Engine { .. } => {}
         // Only a page sends these, and `route_engine_event` handles them for that page.
         UserEvent::HintClick(..) | UserEvent::Inspect | UserEvent::ViewSource => {}
+        UserEvent::UpdateChecked { release, manual } => app.on_update_checked(release, manual),
+        UserEvent::UpdateDownloaded(result) => app.on_update_downloaded(result),
         // Consumed by `engines::servo::intercept` at the top of `handle`.
         #[cfg(all(windows, feature = "servo-engine"))]
         UserEvent::Servo(_) => {}

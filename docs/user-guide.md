@@ -16,6 +16,7 @@ and `:help <topic>` jumps to one (`:help theme`, `:help selection`, `:help bangs
 - [Resource monitor](#resource-monitor)
 - [Errors](#errors)
 - [The `:ai` assistant](#the-ai-assistant)
+- [Updates](#updates)
 - [What's new](#whats-new)
 - [Experimental: the Servo engine](#experimental-the-servo-engine)
 
@@ -268,6 +269,16 @@ chats. The `:commands` page lists everything it can do.
 Answers are rendered: headings, lists, tables, links and code blocks show formatted,
 and `v`/`y` select and copy the text without the markdown syntax. `H`/`L` step
 through saved chats.
+
+## Updates
+
+`:update` checks for a newer version and, if there is one, shows what's in it.
+`:update install` downloads it, checks it against the checksum published with the
+release, and installs it: Windows asks for permission (the installer is for all users),
+then the browser restarts with your tabs. Nothing updates on its own. Once a day at
+launch the browser checks quietly and, if there's a newer version, says so in the status
+bar; `:update off` stops that (`:update on` turns it back on). This only works for a
+copy installed with the installer; a copy built from source updates with `git pull`.
 
 ## What's new
 

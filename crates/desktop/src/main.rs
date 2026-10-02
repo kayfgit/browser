@@ -70,6 +70,7 @@ mod shellkeys;
 mod status;
 mod tabs;
 mod term;
+mod update;
 mod vim;
 mod visited;
 // Re-exported so modules (and the Servo engine) can keep using `crate::ADBLOCK_JS`.
@@ -266,6 +267,7 @@ fn main() -> Result<()> {
         pane_focus: panes::PaneFocus::default(),
         pending_prefix: None,
         layout_history: layout::LayoutHistory::default(),
+        update_available: None,
         cli_scratch,
         pane_resize_at: Instant::now(),
         pane_move_orig: None,
@@ -319,6 +321,7 @@ fn main() -> Result<()> {
             config::save(&app.config);
             app.set_status(note);
         }
+        app.check_for_update_at_launch();
     }
 
     #[cfg(all(windows, feature = "servo-engine"))]

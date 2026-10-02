@@ -169,6 +169,7 @@ Tabs the shell draws itself:
 - [schemes.rs](crates/desktop/src/schemes.rs): installing terminal colour schemes.
 - [ai.rs](crates/desktop/src/ai.rs), [markdown.rs](crates/desktop/src/markdown.rs): the `:ai` tab and rendering its answers.
 - [news.rs](crates/desktop/src/news.rs): `:news`, from the changelog.
+- [update.rs](crates/desktop/src/update.rs): `:update`, checking GitHub for a newer release and installing it.
 - [bookmarks.rs](crates/desktop/src/bookmarks.rs): `:save` / `:saved`.
 - [bangs.rs](crates/desktop/src/bangs.rs): your own bangs (`:bang`) and the `:bangs` search page.
 - [procmon.rs](crates/desktop/src/procmon.rs): the resource numbers behind `:res`.
