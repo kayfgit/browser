@@ -510,7 +510,7 @@ impl App {
             "unfreeze" | "thaw" => self.unfreeze(),
             "reload" | "r" => self.reload_active(),
             // Developer tools and page source for the active page (F12, Ctrl+Shift+U).
-            // Check for a newer release, install it, or turn the launch check on/off.
+            // Check for a newer release, install it now, or choose how updates happen.
             "update" | "upgrade" => self.update_command(rest),
             "inspect" | "devtools" => self.inspect_active(),
             "source" | "viewsource" | "src" => self.view_source_active(),
@@ -714,7 +714,7 @@ pub(crate) fn arg_candidates(app: &App, verb: &str, prior: &[&str]) -> Option<Ve
         ("model", []) => own(crate::ai::MODELS),
         ("ads" | "adblock", []) => own(&["on", "native", "off"]),
         ("clear", []) => own(&["history", "cookies", "cache", "all"]),
-        ("update" | "upgrade", []) => own(&["check", "install", "on", "off"]),
+        ("update" | "upgrade", []) => own(&["check", "install", "auto", "notify", "off"]),
         ("clear", [_]) => own(PERIODS),
         ("history" | "hist", []) => own(&["clear"]),
         ("history" | "hist", ["clear"]) => own(PERIODS),

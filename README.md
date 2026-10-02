@@ -40,12 +40,12 @@ With no pages open, the browser sits at about 30 MB with zero engine processes.
 ## Install
 
 Download `browser-x86_64-pc-windows-msvc.msi` from the
-[latest release](../../releases/latest) and run it. It installs for all users (admin
-rights needed) and adds a Start Menu shortcut and a `browser` command.
+[latest release](../../releases/latest) and run it. It installs just for you, without
+admin rights, into `%LOCALAPPDATA%\Programs\browser`, adds a Start Menu shortcut and a
+`browser` command, and from then on the browser updates itself (see `:update`).
 
-To install just for yourself without admin rights, run this in PowerShell instead. It
-puts the browser in `%LOCALAPPDATA%\Programs\browser` and adds the `browser` command,
-but no Start Menu shortcut:
+Or run this in PowerShell, which installs the same way but without a Start Menu shortcut
+or automatic updates:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/kayfgit/browser/releases/latest/download/browser-installer.ps1 | iex"

@@ -272,13 +272,21 @@ through saved chats.
 
 ## Updates
 
-`:update` checks for a newer version and, if there is one, shows what's in it.
-`:update install` downloads it, checks it against the checksum published with the
-release, and installs it: Windows asks for permission (the installer is for all users),
-then the browser restarts with your tabs. Nothing updates on its own. Once a day at
-launch the browser checks quietly and, if there's a newer version, says so in the status
-bar; `:update off` stops that (`:update on` turns it back on). This only works for a
-copy installed with the installer; a copy built from source updates with `git pull`.
+The browser updates itself. It checks at launch and every few hours; a newer version is
+downloaded in the background, checked against the checksum published with the release,
+and installed when you quit, so the next launch is the new version. The status bar shows
+`[0.4.0 installs when you quit]` meanwhile. Nothing asks for permission: the installer
+is per-user.
+
+`:update` checks now and shows what's in the new version; `:update install` installs it
+right away and restarts the browser with your tabs. `:update notify` only announces new
+versions (install them with `:update install`), `:update off` stops checking, and
+`:update auto` goes back to the default.
+
+Copies installed by 0.3.0 or earlier live in Program Files; the first `:update install`
+moves them to the per-user install (Windows asks once, to remove the old copy). Updating
+only works for a copy installed with the installer; a copy built from source updates with
+`git pull`.
 
 ## What's new
 

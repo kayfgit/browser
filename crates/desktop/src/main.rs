@@ -268,6 +268,7 @@ fn main() -> Result<()> {
         pending_prefix: None,
         layout_history: layout::LayoutHistory::default(),
         update_available: None,
+        staged_update: None,
         cli_scratch,
         pane_resize_at: Instant::now(),
         pane_move_orig: None,
@@ -322,6 +323,7 @@ fn main() -> Result<()> {
             app.set_status(note);
         }
         app.check_for_update_at_launch();
+        update::start_periodic_checks(app.proxy.clone());
     }
     // A previous `:update install` leaves its installer in the temp folder.
     if !is_test {

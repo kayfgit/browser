@@ -74,7 +74,8 @@
             InstallerVersion='450'
             Languages='1033'
             Compressed='yes'
-            InstallScope='perMachine'
+            InstallScope='perUser'
+            InstallPrivileges='limited'
             SummaryCodepage='1252'
             />
 
@@ -85,64 +86,68 @@
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
         <Property Id='DiskPrompt' Value='browser Installation'/>
 
+        <!--
+          Installed per user, into %LOCALAPPDATA%\Programs\browser, so neither installing
+          nor updating needs administrator rights (`:update` installs silently). Windows
+          Installer requires components under the user profile to use an HKCU registry
+          value as their key path (ICE38) and to remove the folders they create (ICE64).
+          InstallDir also tells the updater that this copy came from this installer.
+        -->
         <Directory Id='TARGETDIR' Name='SourceDir'>
-            <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
-                <Directory Id='APPLICATIONFOLDER' Name='browser'>
-                    
-                    <!--
-                      Enabling the license sidecar file in the installer is a four step process:
-
-                      1. Uncomment the `Component` tag and its contents.
-                      2. Change the value for the `Source` attribute in the `File` tag to a path
-                         to the file that should be included as the license sidecar file. The path
-                         can, and probably should be, relative to this file.
-                      3. Change the value for the `Name` attribute in the `File` tag to the
-                         desired name for the file when it is installed alongside the `bin` folder
-                         in the installation directory. This can be omitted if the desired name is
-                         the same as the file name.
-                      4. Uncomment the `ComponentRef` tag with the Id attribute value of "License"
-                         further down in this file.
-                    -->
-                    <!-- Paths are relative to crates/desktop (cargo-wix's bind path). -->
-                    <Component Id='License' Guid='*'>
-                        <File Id='LicenseFile' Name='LICENSE.txt' DiskId='1' Source='..\..\LICENSE' KeyPath='yes'/>
-                    </Component>
-                    <Component Id='Notices' Guid='*'>
-                        <File Id='NoticesFile' Name='THIRD_PARTY_NOTICES.md' DiskId='1' Source='..\..\THIRD_PARTY_NOTICES.md' KeyPath='yes'/>
-                    </Component>
-
-                    <Directory Id='Bin' Name='bin'>
-                        <Component Id='Path' Guid='74A64A9E-90DA-43E4-9945-59106CCE9B42' KeyPath='yes'>
-                            <Environment
-                                Id='PATH'
-                                Name='PATH'
-                                Value='[Bin]'
-                                Permanent='no'
-                                Part='last'
-                                Action='set'
-                                System='yes'/>
-                        </Component>
-                        <Component Id='binary0' Guid='*'>
-                            <File
-                                Id='exe0'
-                                Name='browser.exe'
-                                DiskId='1'
-                                Source='$(var.CargoTargetBinDir)\browser.exe'
+            <Directory Id='LocalAppDataFolder'>
+                <Directory Id='ProgramsFolder' Name='Programs'>
+                    <Directory Id='APPLICATIONFOLDER' Name='browser'>
+                        <!-- Paths are relative to crates/desktop (cargo-wix's bind path). -->
+                        <Component Id='AppFiles' Guid='CC6B1015-EF30-4CCC-82EB-3EC663D0217B'>
+                            <File Id='LicenseFile' Name='LICENSE.txt' DiskId='1' Source='..\..\LICENSE'/>
+                            <File Id='NoticesFile' Name='THIRD_PARTY_NOTICES.md' DiskId='1' Source='..\..\THIRD_PARTY_NOTICES.md'/>
+                            <RemoveFolder Id='RemoveProgramsFolder' Directory='ProgramsFolder' On='uninstall'/>
+                            <RemoveFolder Id='RemoveAppFolder' On='uninstall'/>
+                            <RegistryValue
+                                Root='HKCU'
+                                Key='Software\kayf\browser'
+                                Name='InstallDir'
+                                Type='string'
+                                Value='[APPLICATIONFOLDER]'
                                 KeyPath='yes'/>
                         </Component>
-                        <Component Id='binary1' Guid='*'>
-                            <File
-                                Id='exe1'
-                                Name='browser-pty-host.exe'
-                                DiskId='1'
-                                Source='$(var.CargoTargetBinDir)\browser-pty-host.exe'
-                                KeyPath='yes'/>
-                        </Component>
+
+                        <Directory Id='Bin' Name='bin'>
+                            <Component Id='Binaries' Guid='924A5001-09E4-4198-8152-686F4A3E4E53'>
+                                <File Id='exe0' Name='browser.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\browser.exe'/>
+                                <File Id='exe1' Name='browser-pty-host.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\browser-pty-host.exe'/>
+                                <RemoveFolder Id='RemoveBin' On='uninstall'/>
+                                <RegistryValue
+                                    Root='HKCU'
+                                    Key='Software\kayf\browser'
+                                    Name='Binaries'
+                                    Type='integer'
+                                    Value='1'
+                                    KeyPath='yes'/>
+                            </Component>
+                            <Component Id='Path' Guid='92C9F8A6-2163-4757-9CD4-BD110E35A4C8'>
+                                <Environment
+                                    Id='PATH'
+                                    Name='PATH'
+                                    Value='[Bin]'
+                                    Permanent='no'
+                                    Part='last'
+                                    Action='set'
+                                    System='no'/>
+                                <RegistryValue
+                                    Root='HKCU'
+                                    Key='Software\kayf\browser'
+                                    Name='Path'
+                                    Type='integer'
+                                    Value='1'
+                                    KeyPath='yes'/>
+                            </Component>
+                        </Directory>
                     </Directory>
                 </Directory>
             </Directory>
             <Directory Id='ProgramMenuFolder'>
-                <Component Id='StartMenuShortcut' Guid='AEEBBF81-5782-44DD-B550-1E389B4B2149'>
+                <Component Id='StartMenuShortcut' Guid='3C96EE6F-2A75-489B-9151-B28335FB192B'>
                     <Shortcut
                         Id='BrowserShortcut'
                         Name='browser'
@@ -169,17 +174,14 @@
             AllowAdvertise='no'
             Display='expand'
             Absent='disallow'>
-            <ComponentRef Id='License'/>
-            <ComponentRef Id='Notices'/>
+            <ComponentRef Id='AppFiles'/>
+            <ComponentRef Id='Binaries'/>
             <ComponentRef Id='StartMenuShortcut'/>
-
-            <ComponentRef Id='binary0'/>
-            <ComponentRef Id='binary1'/>
 
             <Feature
                 Id='Environment'
                 Title='PATH Environment Variable'
-                Description='Add the install location of the [ProductName] executable to the PATH system environment variable. This allows the [ProductName] executable to be called from any location.'
+                Description='Add the install location of the [ProductName] executable to your PATH environment variable. This allows the [ProductName] executable to be called from any location.'
                 Level='1'
                 Absent='allow'>
                 <ComponentRef Id='Path'/>
