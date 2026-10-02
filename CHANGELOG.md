@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.3.0](https://github.com/kayfgit/browser/compare/v0.2.1...v0.3.0) (2026-10-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* :q, :wq and :x no longer quit. Use :quit (or :leave, :l); save first with :w.
+
+### Features
+
+* :update checks for a new version and installs it ([9647b6b](https://github.com/kayfgit/browser/commit/9647b6b544f2b75071b67dc664d4e3ea6542fad0))
+* 13,000+ bangs from Kagi's list, and your own with :bang ([a4b1f8d](https://github.com/kayfgit/browser/commit/a4b1f8da9c562c304b7b6ff82799b8080d8659b6))
+* inspect a page and view its source ([206ad3d](https://github.com/kayfgit/browser/commit/206ad3ddef0994c82ee9c2e33e71b20e2c4529ad))
+* Kagi's list is the only bang set; :unbang switches bangs off, :resetbangs restores ([a65ab34](https://github.com/kayfgit/browser/commit/a65ab34fe58f883792e50a473612675f67875682))
+* quit with :quit, :leave or :l; vim's :q no longer closes the browser ([dd2886e](https://github.com/kayfgit/browser/commit/dd2886e78feefe25d86406c539cadc6bfc03d896))
+* undo and redo layout changes with U and R ([1d7db58](https://github.com/kayfgit/browser/commit/1d7db58854446a3242a8de1e1d431290257a4530))
+
+
+### Bug Fixes
+
+* a view-source tab keeps its address, so undoing its close reopens the source ([904c75f](https://github.com/kayfgit/browser/commit/904c75f3a5bac1ec7bc0450f9f54beda2cf12586))
+
+
+### Performance
+
+* read fallback fonts one glyph at a time instead of parsing whole faces ([1085da4](https://github.com/kayfgit/browser/commit/1085da4c892efd1bc8269463d6fd24ff35a7fe37))
+
 ## [0.2.1](https://github.com/kayfgit/browser/compare/v0.2.0...v0.2.1) (2026-09-30)
 
 
