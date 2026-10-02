@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/kayfgit/browser/compare/v0.3.0...v0.4.0) (2026-10-02)
+
+
+### Features
+
+* install per user and update automatically on quit ([a599b31](https://github.com/kayfgit/browser/commit/a599b315331567d5a9b34bdd86f700a07fe10f25))
+
+
+### Bug Fixes
+
+* find the old per-machine copy through Windows Installer, not by name ([f356e8d](https://github.com/kayfgit/browser/commit/f356e8d1817e2170d844f01b64e49a12d2fbf807))
+* remove the downloaded installer after an update ([2debc4a](https://github.com/kayfgit/browser/commit/2debc4a79dc329ba69f2b5a3926728eaa2b8b864))
+
 ## [0.3.0](https://github.com/kayfgit/browser/compare/v0.2.1...v0.3.0) (2026-10-02)
 
 
