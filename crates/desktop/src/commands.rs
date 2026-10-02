@@ -81,6 +81,8 @@ pub(crate) const BUILTIN_VERBS: &[&str] = &[
     "quit",
     "leave",
     "l",
+    "update",
+    "upgrade",
     "inspect",
     "devtools",
     "source",
@@ -225,6 +227,7 @@ pub(crate) const COMMANDS: &[&str] = &[
     "leave",
     "inspect",
     "source",
+    "update",
     // Last, so it can't shadow `:f`/`:fo`… (fullscreen/forward/freeze) — `:fa` is
     // unambiguous and reaches it.
     "favorites",
@@ -507,6 +510,8 @@ impl App {
             "unfreeze" | "thaw" => self.unfreeze(),
             "reload" | "r" => self.reload_active(),
             // Developer tools and page source for the active page (F12, Ctrl+Shift+U).
+            // Check for a newer release, install it, or turn the launch check on/off.
+            "update" | "upgrade" => self.update_command(rest),
             "inspect" | "devtools" => self.inspect_active(),
             "source" | "viewsource" | "src" => self.view_source_active(),
             "next" | "tabnext" | "tn" => self.switch_tab(1),
@@ -709,6 +714,7 @@ pub(crate) fn arg_candidates(app: &App, verb: &str, prior: &[&str]) -> Option<Ve
         ("model", []) => own(crate::ai::MODELS),
         ("ads" | "adblock", []) => own(&["on", "native", "off"]),
         ("clear", []) => own(&["history", "cookies", "cache", "all"]),
+        ("update" | "upgrade", []) => own(&["check", "install", "on", "off"]),
         ("clear", [_]) => own(PERIODS),
         ("history" | "hist", []) => own(&["clear"]),
         ("history" | "hist", ["clear"]) => own(PERIODS),

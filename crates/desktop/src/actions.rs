@@ -738,6 +738,7 @@ impl App {
         self.config.scratch = old.scratch;
         self.config.scratch_return = old.scratch_return;
         self.config.seen_version = old.seen_version;
+        self.config.update_checked_at = old.update_checked_at;
         crate::config::save(&self.config);
         self.rebuild_theme();
         self.rebuild_term_style();

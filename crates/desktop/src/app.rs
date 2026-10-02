@@ -115,6 +115,13 @@ pub(crate) enum UserEvent {
     Inspect,
     /// The page's right-click menu asked to view its source.
     ViewSource,
+    /// An update check finished; `manual` for `:update`, not the launch check.
+    UpdateChecked {
+        release: Result<crate::update::Release, String>,
+        manual: bool,
+    },
+    /// `:update install` downloaded and verified a release: its version and installer.
+    UpdateDownloaded(Result<(String, std::path::PathBuf), String>),
     /// A web pane was clicked (pointerdown): focus the pane under the cursor.
     PaneClick,
     /// A `:read` extraction finished: render this Document in an engine-free read
@@ -468,6 +475,9 @@ pub(crate) struct App {
     pub(crate) pending_prefix: Option<(KeyPrefix, Instant)>,
     /// Layout changes `U` can undo and `R` redo.
     pub(crate) layout_history: crate::layout::LayoutHistory,
+    /// A newer release found by an update check, shown in the status bar until
+    /// installed (`:update install`).
+    pub(crate) update_available: Option<crate::update::Release>,
     /// This process was launched with `--scratch`: a throwaway slate for poking at a
     /// dev build. Run-scoped and never persisted — it redirects
     /// [`current_session_path`](Self::current_session_path) to its own file, so

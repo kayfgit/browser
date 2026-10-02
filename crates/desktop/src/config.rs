@@ -61,6 +61,13 @@ pub(crate) struct Config {
     /// point at `:news`. State, not customization: [`restore_defaults`](crate::App::restore_defaults) keeps it.
     #[serde(default)]
     pub(crate) seen_version: Option<String>,
+    /// `Some(false)` turns off the daily update check at launch (`:update off`).
+    #[serde(default)]
+    pub(crate) check_updates: Option<bool>,
+    /// When the launch update check last ran (Unix seconds). State, like
+    /// `seen_version`.
+    #[serde(default)]
+    pub(crate) update_checked_at: Option<u64>,
 }
 
 /// Appearance overrides for the shell chrome — the command/status bar height and the

@@ -1190,6 +1190,12 @@ impl App {
                 if self.frozen {
                     segs.push(("   [FROZEN]  :unfreeze".into(), draw::AI));
                 }
+                if let Some(r) = &self.update_available {
+                    segs.push((
+                        format!("   [{} available · :update]", r.version),
+                        draw::READ,
+                    ));
+                }
                 if self.active_is_read() {
                     segs.push(("   [read]".into(), draw::READ));
                     // Read-mode caret: show [VISUAL]/[VISUAL LINE] (or [SELECTION]) + hint.
