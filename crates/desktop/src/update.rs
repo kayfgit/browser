@@ -128,11 +128,32 @@ fn download(release: &Release) -> Result<PathBuf, String> {
             "the downloaded installer doesn't match its checksum — not installing it".into(),
         );
     }
-    let dir = std::env::temp_dir().join("browser-update");
+    let dir = update_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("browser-{}.msi", release.version));
     std::fs::write(&path, &msi).map_err(|e| e.to_string())?;
     Ok(path)
+}
+
+/// Where an update's installer and helper script are downloaded.
+fn update_dir() -> PathBuf {
+    std::env::temp_dir().join("browser-update")
+}
+
+/// Delete what an update left behind. By the time the browser starts again the
+/// installer has finished; the helper script may still be closing, in which case it
+/// goes on the next launch.
+pub(crate) fn clean_leftovers() {
+    remove_leftovers(&update_dir());
+}
+
+fn remove_leftovers(dir: &Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+        let _ = std::fs::remove_dir(dir);
+    }
 }
 
 /// How this copy was installed, which decides whether `:update install` can replace it.
@@ -421,6 +442,17 @@ mod tests {
             install_kind(&exe(r"C:\Program Files\browser\browser.exe"), &pf, true),
             Install::Dev
         );
+    }
+
+    #[test]
+    fn leftovers_from_an_update_are_removed() {
+        let dir = std::env::temp_dir().join(format!("browser-update-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("browser-0.4.0.msi"), b"msi").unwrap();
+        std::fs::write(dir.join("install.ps1"), b"script").unwrap();
+        remove_leftovers(&dir);
+        assert!(!dir.exists());
+        remove_leftovers(&dir); // nothing there: no error
     }
 
     /// Against the real latest release: `cargo test -p browser -- --ignored update`.
