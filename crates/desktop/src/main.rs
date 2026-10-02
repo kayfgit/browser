@@ -323,6 +323,10 @@ fn main() -> Result<()> {
         }
         app.check_for_update_at_launch();
     }
+    // A previous `:update install` leaves its installer in the temp folder.
+    if !is_test {
+        std::thread::spawn(update::clean_leftovers);
+    }
 
     #[cfg(all(windows, feature = "servo-engine"))]
     engines::with_window_target(&event_loop, || engines::servo::smoke::start(&mut app))?;
