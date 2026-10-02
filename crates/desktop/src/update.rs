@@ -20,6 +20,9 @@ use crate::{App, UserEvent};
 const RELEASES_API: &str = "https://api.github.com/repos/kayfgit/browser/releases/latest";
 const RELEASES_PAGE: &str = "https://github.com/kayfgit/browser/releases";
 const MSI_ASSET: &str = "browser-x86_64-pc-windows-msvc.msi";
+/// The installer's UpgradeCode (crates/desktop/wix/main.wxs): every version of the
+/// product, per user or per machine, shares it.
+const UPGRADE_CODE: &str = "{48D6537F-B5B7-450F-BB2A-CA44F4275E40}";
 /// How often the browser checks while it runs (and at launch, if longer ago).
 pub(crate) const CHECK_INTERVAL_SECS: u64 = 6 * 60 * 60;
 /// The address of the tab that shows a new release's notes.
@@ -291,15 +294,21 @@ fn install_script(pid: u32, msi: &Path, relaunch: Option<&Path>) -> String {
 
 /// The helper that moves a per-machine install to the per-user one: wait for this
 /// process to exit, remove the old copy (Windows asks for permission; if that's refused
-/// the old copy just starts again), install the new one silently and start it.
+/// the old copy just starts again), install the new one silently and start it. The old
+/// copy is the product Windows Installer says is per machine (AssignmentType 1): the
+/// uninstall list shows per-user installs under HKLM too, so a name match could pick
+/// the wrong one.
 fn migrate_script(pid: u32, msi: &Path, old_exe: &Path) -> String {
     format!(
         "Wait-Process -Id {pid} -ErrorAction SilentlyContinue\r\n\
          $msi = {msi}\r\n\
-         $old = Get-ItemProperty 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue |\r\n\
-         \x20   Where-Object {{ $_.DisplayName -eq 'browser' }} | Select-Object -First 1\r\n\
+         $wi = New-Object -ComObject WindowsInstaller.Installer\r\n\
+         $old = $null\r\n\
+         foreach ($c in $wi.RelatedProducts('{UPGRADE_CODE}')) {{\r\n\
+         \x20   if ($wi.ProductInfo($c, 'AssignmentType') -eq '1') {{ $old = $c }}\r\n\
+         }}\r\n\
          if ($old) {{\r\n\
-         \x20   try {{ $p = Start-Process msiexec.exe -ArgumentList ('/x ' + $old.PSChildName + ' /qn') -Verb RunAs -Wait -PassThru }} catch {{ $p = $null }}\r\n\
+         \x20   try {{ $p = Start-Process msiexec.exe -ArgumentList ('/x ' + $old + ' /qn') -Verb RunAs -Wait -PassThru }} catch {{ $p = $null }}\r\n\
          \x20   if (-not $p -or $p.ExitCode -ne 0) {{ Start-Process {old}; exit }}\r\n\
          }}\r\n\
          Start-Process msiexec.exe -ArgumentList ('/i \"' + $msi + '\" /qn') -Wait\r\n\
@@ -672,6 +681,8 @@ mod tests {
         let install = s.find("'/i \"'").unwrap();
         assert!(uninstall < install, "the old copy goes first");
         assert!(s.contains("-Verb RunAs"));
+        assert!(s.contains(&format!("RelatedProducts('{UPGRADE_CODE}')")));
+        assert!(s.contains("'AssignmentType') -eq '1'"));
         assert!(s.contains(r"Start-Process 'C:\Program Files\browser\bin\browser.exe'; exit"));
         assert!(s.contains(r"Join-Path $dir 'bin\browser.exe'"));
     }
