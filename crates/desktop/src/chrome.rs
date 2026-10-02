@@ -1190,7 +1190,12 @@ impl App {
                 if self.frozen {
                     segs.push(("   [FROZEN]  :unfreeze".into(), draw::AI));
                 }
-                if let Some(r) = &self.update_available {
+                if let Some(s) = &self.staged_update {
+                    segs.push((
+                        format!("   [{} installs when you quit]", s.version),
+                        draw::READ,
+                    ));
+                } else if let Some(r) = &self.update_available {
                     segs.push((
                         format!("   [{} available · :update]", r.version),
                         draw::READ,

@@ -61,10 +61,14 @@ pub(crate) struct Config {
     /// point at `:news`. State, not customization: [`restore_defaults`](crate::App::restore_defaults) keeps it.
     #[serde(default)]
     pub(crate) seen_version: Option<String>,
-    /// `Some(false)` turns off the daily update check at launch (`:update off`).
+    /// What the browser does about updates: `notify` or `off`; unset is `auto`
+    /// (download in the background, install on quit). See `:update`.
+    #[serde(default)]
+    pub(crate) update_mode: Option<String>,
+    /// Before `update_mode`, `:update off` saved `false` here; still honoured.
     #[serde(default)]
     pub(crate) check_updates: Option<bool>,
-    /// When the launch update check last ran (Unix seconds). State, like
+    /// When the last update check ran (Unix seconds). State, like
     /// `seen_version`.
     #[serde(default)]
     pub(crate) update_checked_at: Option<u64>,

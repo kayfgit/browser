@@ -120,8 +120,13 @@ pub(crate) enum UserEvent {
         release: Result<crate::update::Release, String>,
         manual: bool,
     },
-    /// `:update install` downloaded and verified a release: its version and installer.
-    UpdateDownloaded(Result<(String, std::path::PathBuf), String>),
+    /// A release was downloaded and verified: to install `now`, or on quit.
+    UpdateDownloaded {
+        result: Result<crate::update::Staged, String>,
+        now: bool,
+    },
+    /// Time for the periodic update check.
+    UpdateCheckDue,
     /// A web pane was clicked (pointerdown): focus the pane under the cursor.
     PaneClick,
     /// A `:read` extraction finished: render this Document in an engine-free read
@@ -478,6 +483,9 @@ pub(crate) struct App {
     /// A newer release found by an update check, shown in the status bar until
     /// installed (`:update install`).
     pub(crate) update_available: Option<crate::update::Release>,
+    /// An update downloaded in the background (`auto` mode), installed when the
+    /// browser quits.
+    pub(crate) staged_update: Option<crate::update::Staged>,
     /// This process was launched with `--scratch`: a throwaway slate for poking at a
     /// dev build. Run-scoped and never persisted — it redirects
     /// [`current_session_path`](Self::current_session_path) to its own file, so
@@ -1258,6 +1266,8 @@ impl App {
             return;
         }
         self.torn_down = true;
+        // A downloaded update installs once this process has exited.
+        self.install_staged_update();
         // Vanish NOW: dropping the webviews and joining PTY readers below can take
         // a beat, and destroying the webview children mid-way exposes the parent's
         // painted background (the "default page flashes for a second on quit" bug).

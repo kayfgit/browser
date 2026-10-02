@@ -627,7 +627,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("scratch", ":scratch · :scr · :sc", "clean slate: park everything you have open and start empty; :scratch again brings the parked layout back"),
     ("inspect", ":inspect · :devtools", "open the developer tools for this page (also F12, Ctrl+Shift+I, or right-click → Inspect)"),
     ("source", ":source · :viewsource · :src", "view this page's source in a new tab (also Ctrl+Shift+U, or right-click → View page source)"),
-    ("update", ":update · :update install · :update on|off", "check GitHub for a newer version and show what's in it; install installs it (Windows asks for permission) and restarts the browser with your tabs; on/off: the once-a-day check at launch, which only shows a notice"),
+    ("update", ":update · :update install · :update auto|notify|off", "check for a newer version and show what's in it; install installs it now and restarts the browser with your tabs. auto (the default): updates download in the background and install when you quit; notify: only announce them; off: no checks"),
     ("write", ":w · :write", "save the current session (open tabs + UI state) to disk"),
     ("quit", ":quit · :leave · :l", "quit WITHOUT saving (the last :w'd session is kept; :w first to save). :q, :wq and :x don't quit, so a vim habit can't close the browser"),
 ];

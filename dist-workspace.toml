@@ -13,7 +13,8 @@ ci = "github"
 installers = ["powershell", "msi"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["x86_64-pc-windows-msvc"]
-# Where the PowerShell installer puts the binaries (the MSI uses Program Files)
+# Where the PowerShell installer puts the binaries (the MSI installs per user into
+# the same folder's bin\, see crates/desktop/wix/main.wxs)
 install-path = "$LOCALAPPDATA/Programs/browser"
 # Where to host releases
 hosting = "github"
