@@ -75,9 +75,19 @@ try {
             $process.Id | Set-Content -LiteralPath (Join-Path $runDir 'process-id.txt')
             if (-not $process.WaitForExit(180000)) {
                 Stop-Process -Id $process.Id -Force
-                throw "Main browser exceeded its smoke deadline: $runDir"
+                Start-Sleep -Milliseconds 1500
+                $left = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($process.Id) AND Name='browser.exe'")
+                $left | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+                throw "Main browser exceeded its smoke deadline ($($left.Count) content process(es) outlived it): $runDir"
             }
             $process.Refresh()
+            # Servo's content processes must end with the browser, however it exited.
+            Start-Sleep -Milliseconds 1500
+            $orphans = @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($process.Id) AND Name='browser.exe'")
+            if ($orphans.Count) {
+                $orphans | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+                throw "$($orphans.Count) Servo content process(es) outlived the browser: $runDir"
+            }
             $result = if (Test-Path $env:BROWSER_SERVO_SMOKE_LOG) { Get-Content $env:BROWSER_SERVO_SMOKE_LOG -Raw } else { '' }
             Write-Output $result
             if ($process.ExitCode -ne 0 -or $result -notmatch '(?m)^PASS ' -or $result -match '(?m)^FAIL ') {
