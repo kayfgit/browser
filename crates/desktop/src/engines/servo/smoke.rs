@@ -38,6 +38,9 @@ pub(crate) fn start(app: &mut App) -> anyhow::Result<()> {
     let split = std::env::var("BROWSER_SERVO_SMOKE_SCENARIO").unwrap_or_default();
     let url = if split == "Example" {
         "https://example.com/".to_owned()
+    } else if split == "Visit" {
+        std::env::var("BROWSER_SERVO_SMOKE_URL")
+            .map_err(|_| anyhow::anyhow!("The Visit scenario needs BROWSER_SERVO_SMOKE_URL"))?
     } else {
         format!("http://{}/", listener.local_addr()?)
     };
@@ -62,6 +65,7 @@ pub(crate) fn start(app: &mut App) -> anyhow::Result<()> {
             step: match split.as_str() {
                 "Split" | "Example" => 20,
                 "Crash" => 40,
+                "Visit" => 70,
                 _ => 0,
             },
             due: Instant::now(),
@@ -160,7 +164,7 @@ impl Smoke {
                 key(&app.window, 0x0d, 0x1c, true)?;
                 evaluate(
                     app,
-                    "String(document.body.innerText.length > 0 && innerWidth > 0)",
+                    "String(document.body.innerText.length > 0 && innerWidth > 0 && document.visibilityState === 'visible' && !document.hidden)",
                 )?;
                 self.next(23);
             }
@@ -237,6 +241,52 @@ impl Smoke {
                 log("PASS crash isolation: a killed content process left the browser running and the pane recovered on reload");
                 app.quit = true;
                 self.next(45);
+            }
+            // Visit: a diagnostic, not a check. Open a real site in Servo, give it time,
+            // then record what the page shows and a screenshot beside the log.
+            70 if settled(app, "webview2") => {
+                app.switch_engine("servo");
+                require_provider(app, "servo")?;
+                self.next(71);
+                self.deadline = Instant::now() + Duration::from_secs(120);
+            }
+            71 if settled(app, "servo") => {
+                self.next(72);
+                self.due = Instant::now() + Duration::from_secs(25);
+            }
+            72 => {
+                evaluate(app, &visit_probe()?)?;
+                self.next(73);
+                // A heavy page may take a while to answer.
+                self.deadline = Instant::now() + Duration::from_secs(90);
+            }
+            // BROWSER_SERVO_SMOKE_REPEAT=1 runs the probe a second time, 10 s after
+            // the first, for probes that change the page and then observe the effect.
+            73 if self.proof.is_some()
+                && std::env::var_os("BROWSER_SERVO_SMOKE_REPEAT").is_some() =>
+            {
+                log(&format!("PROBE {:?}", self.proof.take().unwrap()));
+                self.next(76);
+                self.due = Instant::now() + Duration::from_secs(10);
+            }
+            76 => {
+                evaluate(app, &visit_probe()?)?;
+                self.next(77);
+                self.deadline = Instant::now() + Duration::from_secs(90);
+            }
+            73 | 77 => {
+                if let Some(result) = self.proof.take() {
+                    log(&format!("PROBE {result:?}"));
+                    let shot = std::path::PathBuf::from(
+                        std::env::var_os("BROWSER_SERVO_SMOKE_LOG").ok_or("No log path")?,
+                    )
+                    .with_file_name("visit.png");
+                    let image = active(app)?.page.capture()?;
+                    image.save(&shot).map_err(|e| e.to_string())?;
+                    log("PASS visit: page probed and screenshot saved");
+                    app.quit = true;
+                    self.next(75);
+                }
             }
             0 if settled(app, "webview2") => {
                 app.switch_engine("servo");
@@ -563,6 +613,14 @@ fn settled(app: &App, provider: &str) -> bool {
 fn active(app: &App) -> Result<Rc<State>, String> {
     view(app.active_webview().ok_or("No active view")?.identity().id)
         .ok_or("No active Servo view".into())
+}
+/// The Visit scenario's probe. BROWSER_SERVO_SMOKE_PROBE names a script file to use
+/// instead, so a probe can change without rebuilding.
+fn visit_probe() -> Result<String, String> {
+    match std::env::var_os("BROWSER_SERVO_SMOKE_PROBE") {
+        Some(path) => std::fs::read_to_string(path).map_err(|e| e.to_string()),
+        None => Ok(include_str!("visit_probe.js").to_string()),
+    }
 }
 /// A script answering the hint label shown on the element with this id.
 fn label_of(id: &str) -> String {

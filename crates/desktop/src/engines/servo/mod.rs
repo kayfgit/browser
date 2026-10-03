@@ -175,6 +175,13 @@ impl servo::WebViewDelegate for Delegate {
     }
     fn notify_load_status_changed(&self, _: WebView, status: servo::LoadStatus) {
         self.navigation.status(status);
+        if matches!(status, servo::LoadStatus::HeadParsed) {
+            if let Some(page) = view(self.id).filter(|p| !p.visible.get()) {
+                page.page
+                    .raw()
+                    .evaluate_javascript(page::visibility_script(true), |_| {});
+            }
+        }
         match status {
             servo::LoadStatus::Started => {
                 self.page.begin_load();
@@ -195,6 +202,19 @@ impl servo::WebViewDelegate for Delegate {
     }
     fn notify_page_title_changed(&self, _: WebView, _: Option<String>) {
         let _ = self.scoped.send_event(UserEvent::Redraw);
+    }
+    fn show_console_message(&self, _: WebView, level: servo::ConsoleLogLevel, message: String) {
+        // Diagnostics only: BROWSER_SERVO_CONSOLE_LOG names a file for page console output.
+        if let Some(path) = std::env::var_os("BROWSER_SERVO_CONSOLE_LOG") {
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(file, "[{level:?}] {message}");
+            }
+        }
     }
     fn notify_fullscreen_state_changed(&self, _: WebView, fullscreen: bool) {
         let _ = self
@@ -283,6 +303,7 @@ pub(super) fn build(
                     multiprocess,
                     ..Default::default()
                 })
+                .preferences(web_preferences())
                 .event_loop_waker(Box::new(Waker(opts.proxy.clone())))
                 .build(),
         );
@@ -299,7 +320,24 @@ pub(super) fn build(
         opts.adblock,
     );
     let init = format!("if(window === window.top) {{\n{}\nwindow.__mode='normal';\n{}\n{}\n{}\nwindow.__adblockDefault={ab};\n{}\nwindow.__featureDefaults={{mute:{m},css:{c},video:{v},scrollbar:{sb}}};\n{}\n{}\n}}", include_str!("bridge.js"), crate::BRIDGE_JS, crate::FIND_JS, crate::CARET_JS, crate::ADBLOCK_JS, crate::FEATURES_JS, opts.extra_init);
-    scripts.add_script(Rc::new(init.into()));
+    // Standard APIs Servo lacks, filled in for every document and frame.
+    if std::env::var_os("BROWSER_SERVO_NO_COMPAT").is_none() {
+        scripts.add_script(Rc::new(include_str!("compat.js").to_string().into()));
+    }
+    // Diagnostics: BROWSER_SERVO_NO_SCRIPTS=1 loads pages without any of the shell's
+    // scripts (no hints or modes), to tell a site's own problems from ours.
+    if std::env::var_os("BROWSER_SERVO_NO_SCRIPTS").is_none() {
+        scripts.add_script(Rc::new(init.into()));
+    }
+    if std::env::var_os("BROWSER_SERVO_CONSOLE_LOG").is_some() {
+        // Uncaught errors don't reach the console by themselves.
+        scripts.add_script(Rc::new(
+            "addEventListener('error', e => console.error('[uncaught] ' + e.message + ' @ ' + e.filename + ':' + e.lineno + ':' + e.colno));
+addEventListener('unhandledrejection', e => console.error('[unhandled rejection] ' + (e.reason && (e.reason.stack || e.reason))));"
+                .to_string()
+                .into(),
+        ));
+    }
     let url = match opts.source {
         Source::Url(url) => url::Url::parse(&url)?,
         Source::Html(html) => url::Url::parse(&format!(
@@ -362,6 +400,56 @@ pub(super) fn build(
     });
     smoke::log("Servo build: complete");
     Ok((Box::new(View(state)), status))
+}
+
+/// Web platform features Servo implements but leaves off by default; its own browser
+/// turns these on as "experimental web platform features". Common sites need them:
+/// GitHub breaks without IntersectionObserver, and YouTube loads thumbnails with it.
+/// APIs that would need a permission prompt (notifications, permissions, protocol
+/// handlers, reading the clipboard) stay off: the shell has no UI to answer one.
+fn web_preferences() -> servo::Preferences {
+    let mut p = servo::Preferences {
+        dom_intersection_observer_enabled: true,
+        dom_adoptedstylesheet_enabled: true,
+        dom_fontface_enabled: true,
+        dom_indexeddb_enabled: true,
+        dom_exec_command_enabled: true,
+        dom_offscreen_canvas_enabled: true,
+        dom_sanitizer_enabled: true,
+        dom_storage_manager_api_enabled: true,
+        layout_columns_enabled: true,
+        layout_container_queries_enabled: true,
+        layout_css_alpha_color_function_enabled: true,
+        layout_css_attr_enabled: true,
+        layout_css_ellipse_corners_enabled: true,
+        layout_css_progress_function_enabled: true,
+        layout_variable_fonts_enabled: true,
+        ..Default::default()
+    };
+    // Diagnostics: BROWSER_SERVO_PREFS="name=value,..." overrides any Servo preference.
+    if let Ok(spec) = std::env::var("BROWSER_SERVO_PREFS") {
+        for item in spec.split(',').filter(|s| !s.trim().is_empty()) {
+            let Some((name, value)) = item.split_once('=') else {
+                continue;
+            };
+            let value = match value.trim() {
+                "true" => servo::PrefValue::Bool(true),
+                "false" => servo::PrefValue::Bool(false),
+                v => v
+                    .parse()
+                    .map(servo::PrefValue::Int)
+                    .unwrap_or_else(|_| servo::PrefValue::Str(v.into())),
+            };
+            // Servo panics on an unknown name; report it instead.
+            let set = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                p.set_value(name.trim(), value)
+            }));
+            if set.is_err() {
+                smoke::log(&format!("BROWSER_SERVO_PREFS: unknown preference {name}"));
+            }
+        }
+    }
+    p
 }
 
 /// In multi-process mode Servo relaunches this executable as

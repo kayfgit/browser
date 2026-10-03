@@ -8,7 +8,12 @@ param(
     [string]$Url,
     [switch]$Scratch,
     [switch]$Release,
-    [ValidateSet('Default','Split','Example','Crash')][string]$Scenario = 'Default'
+    [ValidateSet('Default','Split','Example','Crash','Visit')][string]$Scenario = 'Default',
+    # Visit: load -Url in Servo and record its console, a probe and a screenshot.
+    # -NoScripts loads it without the shell's injected scripts, for comparison.
+    [switch]$NoScripts,
+    # Visit: a script file to evaluate instead of the built-in probe.
+    [string]$Probe
 )
 $ErrorActionPreference = 'Stop'
 $repo = $PSScriptRoot
@@ -61,7 +66,7 @@ try {
         $runDir = Join-Path $target ('desktop-smoke/' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $runDir | Out-Null
         $saved = @{}
-        foreach ($name in @('BROWSER_SERVO_DATA_DIR','BROWSER_WEBVIEW2_DATA_DIR','BROWSER_SERVO_SMOKE_LOG','BROWSER_SERVO_SMOKE_SCENARIO','BROWSER_TEST_QUIT_MS')) {
+        foreach ($name in @('BROWSER_SERVO_DATA_DIR','BROWSER_WEBVIEW2_DATA_DIR','BROWSER_SERVO_SMOKE_LOG','BROWSER_SERVO_SMOKE_SCENARIO','BROWSER_TEST_QUIT_MS','BROWSER_SERVO_SMOKE_URL','BROWSER_SERVO_CONSOLE_LOG','BROWSER_SERVO_NO_SCRIPTS','BROWSER_SERVO_SMOKE_PROBE')) {
             $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
         }
         try {
@@ -69,6 +74,13 @@ try {
             $env:BROWSER_WEBVIEW2_DATA_DIR = Join-Path $runDir 'webview2'
             $env:BROWSER_SERVO_SMOKE_LOG = Join-Path $runDir 'result.log'
             $env:BROWSER_SERVO_SMOKE_SCENARIO = $Scenario
+            if ($Scenario -eq 'Visit') {
+                if (-not $Url) { throw '-Scenario Visit needs -Url.' }
+                $env:BROWSER_SERVO_SMOKE_URL = $Url
+                $env:BROWSER_SERVO_CONSOLE_LOG = Join-Path $runDir 'console.log'
+                if ($NoScripts) { $env:BROWSER_SERVO_NO_SCRIPTS = '1' }
+                if ($Probe) { $env:BROWSER_SERVO_SMOKE_PROBE = (Resolve-Path -LiteralPath $Probe).Path }
+            }
             $env:BROWSER_TEST_QUIT_MS = '150000'
             $process = Start-Process -FilePath $exe -ArgumentList '--scratch' -PassThru -WindowStyle Hidden `
                 -RedirectStandardOutput (Join-Path $runDir 'stdout.log') -RedirectStandardError (Join-Path $runDir 'stderr.log')

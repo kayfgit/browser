@@ -341,3 +341,31 @@ Validation on 2026-10-03, all with the native smoke against the real engines:
 hints, and a trusted-click check), `Split`, and `Crash` (kills the content process,
 requires the placeholder, reloads, then requires a clean quit). Workspace fmt, clippy
 and tests passed on the default build.
+
+## Servo site compatibility
+
+Testing real sites on 2026-10-03 (the `Visit` smoke scenario) showed that the problems
+were Servo's, not the shell's scripts: pages behaved the same with them removed.
+
+- **Web features.** We built Servo without its standard web features and preferences.
+  The `webcrypto` and `brotli-compression-stream` Cargo features are now on (without
+  `webcrypto`, 0.6.0 has no `window.crypto` at all), and `web_preferences` enables the
+  preferences Servo's own browser turns on as "experimental web platform features",
+  plus `adoptedStyleSheets`. Permission-gated APIs stay off. WebGL stays out: creating
+  a context panics the content process in multi-process mode. With these, GitHub's
+  issues page renders correctly instead of showing its error screens.
+- **Compat shims** (`engines/servo/compat.js`, every document and frame):
+  `requestIdleCallback`, which Servo 0.6 lacks, and Page Visibility. Servo reports a
+  document "hidden" until its load event (servo#32687), so sites that defer rendering
+  in background tabs wait; the shim reports the pane's real state, and the shell sends
+  `visibilitychange` when a pane is hidden or shown.
+- **Orphaned content processes.** After an abrupt exit (including the shutdown time
+  limit), content processes kept running. Each one now also joins a kill-on-close job
+  that only the browser holds, and the smoke runner fails if any outlives the browser.
+
+Still open: YouTube never reaches `readyState == "complete"` in Servo, and only reveals
+its results after its load event, so its result list stays hidden although the items
+are there and lay out correctly once revealed. It isn't the passive sign-in iframe
+(removing it didn't help). GitHub also stalls intermittently after loading, without
+CPU use, which may be the same never-finishing load. Both need investigation in Servo's
+loader.
