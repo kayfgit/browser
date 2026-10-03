@@ -17,6 +17,8 @@ struct Smoke {
     proof: Option<Result<String, String>>,
     url: String,
     retired: Option<ViewId>,
+    clipboard: Option<String>,
+    tabs: usize,
 }
 
 pub(crate) fn start(app: &mut App) -> anyhow::Result<()> {
@@ -36,6 +38,9 @@ pub(crate) fn start(app: &mut App) -> anyhow::Result<()> {
     let split = std::env::var("BROWSER_SERVO_SMOKE_SCENARIO").unwrap_or_default();
     let url = if split == "Example" {
         "https://example.com/".to_owned()
+    } else if split == "Visit" {
+        std::env::var("BROWSER_SERVO_SMOKE_URL")
+            .map_err(|_| anyhow::anyhow!("The Visit scenario needs BROWSER_SERVO_SMOKE_URL"))?
     } else {
         format!("http://{}/", listener.local_addr()?)
     };
@@ -45,7 +50,7 @@ pub(crate) fn start(app: &mut App) -> anyhow::Result<()> {
             let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
             let mut request = [0u8; 4096];
             let _ = stream.read(&mut request);
-            let body = "<!doctype html><meta charset=utf-8><title>Main engine integration</title><input id=field><button id=button onclick=\"this.textContent='clicked'\">Test</button><a href='/two'>Next page</a><p>Mixed engine fixture</p>";
+            let body = "<!doctype html><meta charset=utf-8><title>Main engine integration</title><input id=field><button id=button onclick=\"this.textContent=event.isTrusted?'trusted':'untrusted'\">Test</button><a id=next href='/two'>Next page</a><div id=box style='height:60px;width:200px;overflow:auto'><div style='height:600px'>Tall box</div></div><p>Mixed engine fixture</p>";
             let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
         }
     });
@@ -57,16 +62,19 @@ pub(crate) fn start(app: &mut App) -> anyhow::Result<()> {
     app.open_web_provider(&url, false, false, true, false, "webview2");
     SMOKE.with(|s| {
         *s.borrow_mut() = Some(Smoke {
-            step: if split == "Split" || split == "Example" {
-                20
-            } else {
-                0
+            step: match split.as_str() {
+                "Split" | "Example" => 20,
+                "Crash" => 40,
+                "Visit" => 70,
+                _ => 0,
             },
             due: Instant::now(),
             deadline: Instant::now() + Duration::from_secs(30),
             proof: None,
             url,
             retired: None,
+            clipboard: None,
+            tabs: 0,
         })
     });
     log("START main-browser Servo qualification");
@@ -114,6 +122,14 @@ impl Smoke {
         self.due = Instant::now() + Duration::from_millis(400);
         self.deadline = Instant::now() + Duration::from_secs(30);
     }
+    /// The hint label a `label_of` script answered, once it has.
+    fn label(&mut self) -> Result<Option<String>, String> {
+        match self.proof.take() {
+            Some(Ok(label)) if label != "missing" => Ok(Some(label)),
+            Some(other) => Err(format!("No hint label: {other:?}")),
+            None => Ok(None),
+        }
+    }
     fn proved(&mut self) -> Result<bool, String> {
         match self.proof.take() {
             Some(Ok(s)) if s == "true" => Ok(true),
@@ -148,7 +164,7 @@ impl Smoke {
                 key(&app.window, 0x0d, 0x1c, true)?;
                 evaluate(
                     app,
-                    "String(document.body.innerText.length > 0 && innerWidth > 0)",
+                    "String(document.body.innerText.length > 0 && innerWidth > 0 && document.visibilityState === 'visible' && !document.hidden)",
                 )?;
                 self.next(23);
             }
@@ -184,6 +200,93 @@ impl Smoke {
                 log("PASS visible cold Servo switch: WebView2 split, native command-bar switches, first frame, page content and switch back");
                 app.quit = true;
                 self.next(25);
+            }
+            40 if settled(app, "webview2") => {
+                app.switch_engine("servo");
+                require_provider(app, "servo")?;
+                self.next(41);
+            }
+            41 if settled(app, "servo") => {
+                // Simulate a page crash: kill the content process running the page.
+                let killed = kill_content_processes()?;
+                if killed == 0 {
+                    return Err("No Servo content process: multi-process mode is off".into());
+                }
+                log(&format!("killed {killed} content process(es)"));
+                self.next(42);
+                self.due = Instant::now() + Duration::from_secs(2);
+            }
+            42 if app
+                .active
+                .and_then(|i| app.tabs.get(i))
+                .and_then(|t| t.unavailable())
+                .is_some() =>
+            {
+                if !views().is_empty() {
+                    return Err("The crashed page's view was not released".into());
+                }
+                log(&format!("after crash, shell status: {}", app.status.text()));
+                app.reload_active();
+                require_provider(app, "servo")?;
+                self.next(43);
+            }
+            43 if settled(app, "servo") => {
+                evaluate(
+                    app,
+                    "String(document.body.innerText.includes('Mixed engine fixture'))",
+                )?;
+                self.next(44);
+            }
+            44 if self.proved()? => {
+                log("PASS crash isolation: a killed content process left the browser running and the pane recovered on reload");
+                app.quit = true;
+                self.next(45);
+            }
+            // Visit: a diagnostic, not a check. Open a real site in Servo, give it time,
+            // then record what the page shows and a screenshot beside the log.
+            70 if settled(app, "webview2") => {
+                app.switch_engine("servo");
+                require_provider(app, "servo")?;
+                self.next(71);
+                self.deadline = Instant::now() + Duration::from_secs(120);
+            }
+            71 if settled(app, "servo") => {
+                self.next(72);
+                self.due = Instant::now() + Duration::from_secs(25);
+            }
+            72 => {
+                evaluate(app, &visit_probe()?)?;
+                self.next(73);
+                // A heavy page may take a while to answer.
+                self.deadline = Instant::now() + Duration::from_secs(90);
+            }
+            // BROWSER_SERVO_SMOKE_REPEAT=1 runs the probe a second time, 10 s after
+            // the first, for probes that change the page and then observe the effect.
+            73 if self.proof.is_some()
+                && std::env::var_os("BROWSER_SERVO_SMOKE_REPEAT").is_some() =>
+            {
+                log(&format!("PROBE {:?}", self.proof.take().unwrap()));
+                self.next(76);
+                self.due = Instant::now() + Duration::from_secs(10);
+            }
+            76 => {
+                evaluate(app, &visit_probe()?)?;
+                self.next(77);
+                self.deadline = Instant::now() + Duration::from_secs(90);
+            }
+            73 | 77 => {
+                if let Some(result) = self.proof.take() {
+                    log(&format!("PROBE {result:?}"));
+                    let shot = std::path::PathBuf::from(
+                        std::env::var_os("BROWSER_SERVO_SMOKE_LOG").ok_or("No log path")?,
+                    )
+                    .with_file_name("visit.png");
+                    let image = active(app)?.page.capture()?;
+                    image.save(&shot).map_err(|e| e.to_string())?;
+                    log("PASS visit: page probed and screenshot saved");
+                    app.quit = true;
+                    self.next(75);
+                }
             }
             0 if settled(app, "webview2") => {
                 app.switch_engine("servo");
@@ -242,7 +345,132 @@ impl Smoke {
                 self.next(7);
             }
             7 if self.proved()? => {
+                // Following a hint onto a control asks the shell for a trusted click.
                 app.exit_to_normal();
+                app.reclaim_shell_focus();
+                key(&app.window, 0x46, 0x21, false)?;
+                self.next(30);
+            }
+            30 => {
+                key(&app.window, 0x46, 0x21, true)?;
+                if app.mode != ModeKind::Hint {
+                    return Err("f did not enter hint mode".into());
+                }
+                evaluate(app, "(() => { const m = window.__hintMap || {}; const l = Object.keys(m).find(k => m[k].el.id === 'button'); if (!l) return 'no button hint'; window.__hintInput(l, 'follow'); return 'true'; })()")?;
+                self.next(31);
+            }
+            31 if self.proved()? => {
+                evaluate(app, "document.querySelector('#button').textContent")?;
+                self.next(32);
+            }
+            32 => match self.proof.take() {
+                Some(Ok(text)) if text == "trusted" => {
+                    app.exit_to_normal();
+                    // Copy mode (`yf`) yanks the link address; keep the user's clipboard.
+                    self.clipboard = arboard::Clipboard::new()
+                        .and_then(|mut c| c.get_text())
+                        .ok();
+                    app.enter_hint(crate::HintAct::Copy);
+                    evaluate(app, &label_of("next"))?;
+                    self.next(50);
+                }
+                Some(Ok(text)) if text == "untrusted" => {
+                    return Err("Hint click reached the page as script, not input".into());
+                }
+                // Input is asynchronous: ask again until the click lands.
+                Some(Ok(_)) => evaluate(app, "document.querySelector('#button').textContent")?,
+                Some(Err(error)) => return Err(error),
+                None => {}
+            },
+            50 => {
+                if let Some(label) = self.label()? {
+                    app.hint_input = label;
+                    app.hint_send();
+                    self.next(51);
+                }
+            }
+            51 if app.mode == ModeKind::Normal => {
+                let status = app.status.text();
+                if let Some(text) = self.clipboard.take() {
+                    let _ = arboard::Clipboard::new().and_then(|mut c| c.set_text(text));
+                }
+                if !status.starts_with("copied ") || !status.ends_with("/two") {
+                    return Err(format!("Copy hint did not copy the link: {status}"));
+                }
+                // New-tab mode (`F`) opens the link in another tab of the same engine.
+                app.enter_hint(crate::HintAct::NewTab);
+                evaluate(app, &label_of("next"))?;
+                self.tabs = app.tabs.len();
+                self.next(52);
+            }
+            52 => {
+                if let Some(label) = self.label()? {
+                    app.hint_input = label;
+                    app.hint_send();
+                    self.next(53);
+                }
+            }
+            53 if app.tabs.len() == self.tabs + 1 && settled(app, "servo") => {
+                let url = app.current_url().unwrap_or_default();
+                if !url.ends_with("/two") {
+                    return Err(format!("New-tab hint opened {url}"));
+                }
+                app.close_active();
+                self.next(54);
+            }
+            54 if settled(app, "servo") => {
+                if app.current_url().unwrap_or_default() != self.url {
+                    return Err("Closing the new tab did not return to the page".into());
+                }
+                // Scroll hints (`s`) select a scrollable box; `j` then scrolls it.
+                app.enter_hint(crate::HintAct::Scroll);
+                evaluate(app, &label_of("box"))?;
+                self.next(55);
+            }
+            55 => {
+                if let Some(label) = self.label()? {
+                    app.hint_input = label;
+                    app.hint_send();
+                    self.next(56);
+                }
+            }
+            56 if app.mode == ModeKind::Scroll => {
+                key(&app.window, 0x4a, 0x24, false)?;
+                self.next(57);
+            }
+            57 => {
+                key(&app.window, 0x4a, 0x24, true)?;
+                evaluate(app, "String(document.querySelector('#box').scrollTop > 0)")?;
+                self.next(58);
+            }
+            58 if self.proved()? => {
+                key(&app.window, 0x1b, 0x01, false)?;
+                self.next(59);
+            }
+            59 => {
+                key(&app.window, 0x1b, 0x01, true)?;
+                if app.mode != ModeKind::Normal {
+                    return Err("Escape did not leave scroll mode".into());
+                }
+                // Following a link (`f`) navigates this pane.
+                app.enter_hint(crate::HintAct::Follow);
+                evaluate(app, &label_of("next"))?;
+                self.next(60);
+            }
+            60 => {
+                if let Some(label) = self.label()? {
+                    app.hint_input = label;
+                    app.hint_send();
+                    self.next(61);
+                }
+            }
+            61 if settled(app, "servo")
+                && app.current_url().is_some_and(|url| url.ends_with("/two")) =>
+            {
+                log("PASS hint modes in Servo: copy, new tab, scroll and follow");
+                self.next(33);
+            }
+            33 => {
                 app.split_pane(crate::panes::SplitDir::Row);
                 app.open_web_provider(
                     &format!("{}two", self.url),
@@ -313,7 +541,7 @@ impl Smoke {
                 {
                     return Err("Reopened Servo view did not release its resources".into());
                 }
-                log("PASS main browser: engine switches, hints/input, shared runtime, mixed split, retired callbacks, unsupported modes and last-view close/reopen");
+                log("PASS main browser: engine switches, hints/input, trusted hint clicks, shared runtime, mixed split, retired callbacks, unsupported modes and last-view close/reopen");
                 app.quit = true;
                 self.next(13);
             }
@@ -386,6 +614,18 @@ fn active(app: &App) -> Result<Rc<State>, String> {
     view(app.active_webview().ok_or("No active view")?.identity().id)
         .ok_or("No active Servo view".into())
 }
+/// The Visit scenario's probe. BROWSER_SERVO_SMOKE_PROBE names a script file to use
+/// instead, so a probe can change without rebuilding.
+fn visit_probe() -> Result<String, String> {
+    match std::env::var_os("BROWSER_SERVO_SMOKE_PROBE") {
+        Some(path) => std::fs::read_to_string(path).map_err(|e| e.to_string()),
+        None => Ok(include_str!("visit_probe.js").to_string()),
+    }
+}
+/// A script answering the hint label shown on the element with this id.
+fn label_of(id: &str) -> String {
+    format!("(() => {{ const m = window.__hintMap || {{}}; return Object.keys(m).find(k => m[k].el.id === '{id}') || 'missing'; }})()")
+}
 fn evaluate(app: &App, script: &str) -> Result<(), String> {
     let proxy = app.proxy.clone();
     active(app)?
@@ -399,6 +639,51 @@ fn evaluate(app: &App, script: &str) -> Result<(), String> {
             post(&proxy, Event::SmokeReply(result));
         });
     Ok(())
+}
+/// Terminate this browser's Servo content processes: the child copies of this executable.
+fn kill_content_processes() -> Result<usize, String> {
+    use windows::Win32::{
+        Foundation::CloseHandle,
+        System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+                TH32CS_SNAPPROCESS,
+            },
+            Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE},
+        },
+    };
+    let me = std::process::id();
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let name = exe
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("No executable name")?
+        .to_ascii_lowercase();
+    let mut killed = 0;
+    unsafe {
+        let snapshot =
+            CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).map_err(|e| e.to_string())?;
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut more = Process32FirstW(snapshot, &mut entry).is_ok();
+        while more {
+            let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(0);
+            let child = String::from_utf16_lossy(&entry.szExeFile[..len]).to_ascii_lowercase();
+            if entry.th32ParentProcessID == me && child == name {
+                if let Ok(process) = OpenProcess(PROCESS_TERMINATE, false, entry.th32ProcessID) {
+                    if TerminateProcess(process, 1).is_ok() {
+                        killed += 1;
+                    }
+                    let _ = CloseHandle(process);
+                }
+            }
+            more = Process32NextW(snapshot, &mut entry).is_ok();
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    Ok(killed)
 }
 fn key(window: &Window, vk: usize, scan: usize, release: bool) -> Result<(), String> {
     let bits = 1 | (scan << 16) | if release { (1 << 30) | (1 << 31) } else { 0 };

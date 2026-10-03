@@ -70,7 +70,7 @@ impl App {
                 provider.capabilities.document_scripts && provider.capabilities.page_messages
             ));
             if provider.id == "servo" {
-                lines.push("  Experimental: top-level shell bridge; separate storage; no extensions/uBlock, downloads or full IME; limited site compatibility.".into());
+                lines.push("  Not yet: extensions/uBlock, private or no-JS tabs, downloads, full IME. Own cookies and storage; a crashed page affects only its pane.".into());
             }
         }
         lines.extend([
@@ -248,6 +248,23 @@ impl App {
             }
             Err(error) => self.set_error(format!("engine unchanged: {error:#}")),
         }
+    }
+}
+
+pub(crate) fn crashed_content(provider: &str, url: &str, reason: &str) -> TabContent {
+    TabContent::Unavailable {
+        provider: provider.into(),
+        error: reason.into(),
+        buffer: vim::TextBuffer::new(vec![
+            format!("This page crashed ({provider})"),
+            String::new(),
+            url.into(),
+            String::new(),
+            reason.into(),
+            String::new(),
+            "The rest of the browser is unaffected.".into(),
+            ":reload to open it again, or :engine webview2 to open it in another engine.".into(),
+        ]),
     }
 }
 

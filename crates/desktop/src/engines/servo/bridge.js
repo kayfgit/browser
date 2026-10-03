@@ -1,4 +1,4 @@
-// Servo 0.5 transport only. Shared shell scripts call __post as on WebView2.
+// Servo transport only (0.5 and 0.6 have no native host-message callback). Shared shell scripts call __post as on WebView2.
 // This runs in the page's realm: messages are untrusted, not privileged commands.
 (function () {
   if (window.__servoQueueDocument === document) return;

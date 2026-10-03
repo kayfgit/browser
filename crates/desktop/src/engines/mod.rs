@@ -45,7 +45,7 @@ pub(crate) const PROVIDERS: &[ProviderDescriptor] = &[
     ProviderDescriptor {
         id: "servo",
         family: "servo",
-        display_name: "Servo 0.5 (experimental)",
+        display_name: "Servo 0.6",
         capabilities: Capabilities {
             private: false,
             disable_javascript: false,

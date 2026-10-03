@@ -18,7 +18,7 @@ and `:help <topic>` jumps to one (`:help theme`, `:help selection`, `:help bangs
 - [The `:ai` assistant](#the-ai-assistant)
 - [Updates](#updates)
 - [What's new](#whats-new)
-- [Experimental: the Servo engine](#experimental-the-servo-engine)
+- [Engines: WebView2 and Servo](#engines-webview2-and-servo)
 
 ## The window
 
@@ -293,8 +293,27 @@ only works for a copy installed with the installer; a copy built from source upd
 `:news` (or `:changelog`) shows what changed in each release, newest first; `f`
 follows a commit link. The first launch after an update says so in the status bar.
 
-## Experimental: the Servo engine
+## Engines: WebView2 and Servo
 
-Development builds can include [Servo](https://servo.org/) as a second engine. It isn't
-in release builds. See [engine-integration.md](engine-integration.md) and
-[CONTRIBUTING.md](../CONTRIBUTING.md) if you want to try it.
+Web pages render in one of two engines. **WebView2** (Microsoft Edge's Chromium,
+built into Windows) is the default. **[Servo](https://servo.org/)** is an independent
+engine written in Rust, shipped with the browser.
+
+- `:engines` lists the installed engines.
+- `:engine servo` reopens the current page in Servo; `:engine webview2` goes back.
+- `:engine default servo` makes new web tabs open in Servo.
+
+Both engines can sit side by side in a split. Modes, every hint type (`f`, `F`,
+`yf`, `s`), zoom and history work the same in either.
+
+Servo's limits for now: no extensions (so no uBlock Origin) and no network-level ad
+blocking, no private (`:open -n`) or no-JavaScript (`:nojs`) tabs, no downloads, and
+selecting page text is limited. Many sites render or behave differently than in
+Chromium; YouTube, for one, shows its page but not its videos yet, so use
+`:engine webview2` there. Servo keeps its own cookies and storage, so you sign in to sites separately
+in each engine. Switching engines reopens the page's address; form contents and other
+page state don't carry over.
+
+If a Servo page crashes, only its pane is affected: it shows what happened, and
+`:reload` opens the page again. Once Servo has started, it stays loaded until you quit
+the browser.

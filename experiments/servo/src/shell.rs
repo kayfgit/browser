@@ -331,7 +331,8 @@ impl Shell {
                     const label = Object.keys(window.__hintMap).find(k => window.__hintMap[k].el.id === 'counter');
                     window.__hintInput(label, 'follow');
                     location.hash = 'bridge-route';
-                    String(escaped && document.querySelector('#counter').textContent === 'Clicks: 1')
+                    const clicks = document.querySelector('#counter').textContent;
+                    escaped && clicks === 'Clicks: 1' ? 'true' : JSON.stringify({{ escaped, clicks, label }})
                 "#,
                     bridge::HINTS
                 );

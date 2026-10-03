@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.88.0"
 name = "servo-paint-api"
-version = "0.5.0"
+version = "0.6.0"
 authors = ["The Servo Project Developers"]
 build = false
 publish = true
@@ -50,7 +50,7 @@ version = "0.5"
 version = "0.1"
 
 [dependencies.embedder_traits]
-version = "=0.5.0"
+version = "=0.6.0"
 package = "servo-embedder-traits"
 
 [dependencies.euclid]
@@ -82,7 +82,7 @@ version = "0.22"
 version = "0.4.32"
 
 [dependencies.malloc_size_of]
-version = "=0.5.0"
+version = "=0.6.0"
 package = "servo-malloc-size-of"
 
 [dependencies.malloc_size_of_derive]
@@ -93,7 +93,7 @@ version = "0.12"
 features = ["serde"]
 
 [dependencies.profile_traits]
-version = "=0.5.0"
+version = "=0.6.0"
 package = "servo-profile-traits"
 
 [dependencies.raw-window-handle]
@@ -109,16 +109,16 @@ version = "1.0.228"
 version = "0.11"
 
 [dependencies.servo-base]
-version = "=0.5.0"
+version = "=0.6.0"
 
 [dependencies.servo-geometry]
-version = "=0.5.0"
+version = "=0.6.0"
 
 [dependencies.servo-tracing]
-version = "=0.5.0"
+version = "=0.6.0"
 
 [dependencies.servo-url]
-version = "=0.5.0"
+version = "=0.6.0"
 
 [dependencies.smallvec]
 version = "1.15"
@@ -132,10 +132,10 @@ version = "0.28"
 features = ["derive"]
 
 [dependencies.stylo]
-version = "0.20"
+version = "0.21.0"
 
 [dependencies.stylo_traits]
-version = "0.20"
+version = "0.21.0"
 
 [dependencies.surfman]
 version = "0.13.0"
@@ -150,3 +150,6 @@ optional = true
 
 [dependencies.webrender_api]
 version = "0.70"
+
+[lints.clippy]
+manual_string_new = "deny"

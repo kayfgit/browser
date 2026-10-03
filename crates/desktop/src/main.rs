@@ -119,6 +119,13 @@ fn set_app_user_model_id() {
 }
 
 fn main() -> Result<()> {
+    // Servo runs page content in copies of this executable. Such a copy is not a
+    // browser: it must not touch the config, the session or the window.
+    #[cfg(all(windows, feature = "servo-engine"))]
+    if engines::servo::run_content_process() {
+        return Ok(());
+    }
+
     // Give this process a single explicit AppUserModelID *before* anything is
     // spawned. Child processes inherit it at creation time, so every descendant —
     // the on-demand WebView2 engine and its renderer/GPU/utility processes, the

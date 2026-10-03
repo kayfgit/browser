@@ -22,7 +22,7 @@ STUFF TO KEEP IN MIND:
 - I REALLY CARE ABOUT MALLEABILITY, users should be able to do absolutely anything they want with it
 
 general:
-[*] - on the installer, allow users to choose which engine to get first, if they want to change engines or want multiple engines they can download it somehow later
+[*] - ship every engine with the browser by default: the installer has all engines checked and users can uncheck the ones they dont want. package each engine separately so updates only redownload the browser (~20mb) unless an engine changed, and allow adding/removing engines later (something like :engine install gecko / :engine remove servo)
 [] - maybe freeze the adblock feature for now, it doesnt really work as intended (ill probably have to rework it)
 [] - add a demo video on the readme
 
@@ -34,19 +34,16 @@ issues:
 [/?] - random not responding after new update 26/07/2026 22:54
 [*] - add a way for users to freely install extensions
 [] - fix the skip ad button not being pressable with hint mode
+[] - :resources and every other native shell command should not override the current pane/tab, currently if i have a splitted webview2/servo open and write :res it opens on the selected pane
 
 feats:
 [] - make ";" toggle browser hud visibility
-[***] - add inspect and view source to right mouse button, aswell as a command and a keyboard shortcut. 
-[**] - make "shift+u" undo the layout, for example if i accidently close something, or move something around, U will undo it (maybe add R to redo it aswell) 
-[$/] - maybe change ":q" to ":quit" or ":leave (:l)"? i keep quitting the browser accidently when i want to quit vim because i think im in passthrough when im in normal
 [/] - add vertical sidebar like zen browser
-[*] - make it so every browser related error is shown in :error/:errors (thinking of the future, where the shell's AI can fix the shells issues itself)
-[$] - allow the easy addition of bangs via the AI like: "could you add a !osrs bang that searches the old school runescape wiki please?"
-[] - add :update that will fetch the newest release (because i kind of keep updating everyday, so downloading a new version everytime might get annoying)
+[*] - make it so every browser related error is shown in :error/:errors (like if an engine crashes/errors, extension stops working, everything)
+[] - allow splitting without having anything open (like on the welcome screen), basically treat the welcome screen as an empty pane that cannot be closed if its by itself, but closeable if theres other splits, if the user closes every split then they go back to the welcome screen
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
-[**] - maybe add a :engine command to change browser engine? might be overkill and dont know if its possible
+[~*] - maybe add a :engine command to change browser engine? might be overkill and dont know if its possible
 [/] - ctrl+: enters command bar in vim mode, allows vim motions.
 [] - maybe change the :read command into a :html toggle like :js and :css? if you think about it, removing html is basically removing the dom parsing and rendering only text, which is exactly what :read does

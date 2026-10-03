@@ -24,6 +24,75 @@ impl PageEventProxy {
     }
 }
 
+/// Decode a message the shared page scripts sent with `window.__post`. Every engine
+/// uses this one table, so a message added to the scripts reaches all of them. Messages
+/// only one engine can act on (WebView2's `nav-intent`) are handled by that adapter first.
+pub(crate) fn decode_page_message(body: &str) -> Option<UserEvent> {
+    Some(match body {
+        // Insert (light field typing): Esc / focus left the field → back to Normal.
+        "leave-passthrough" | "insert-escape" | "insert-blur" => UserEvent::ExitToNormal,
+        "page-ready" => UserEvent::FocusShell,
+        // SPA URL changes (pushState/popstate/hashchange) — no document load fires, so
+        // this is the only signal the shell gets. 'url-changed' records a back/forward
+        // step; 'url-replaced' (replaceState) only syncs the shown URL.
+        "url-changed" => UserEvent::UrlChanged { record: true },
+        "url-replaced" => UserEvent::UrlChanged { record: false },
+        "grab-focus" => UserEvent::GrabFocus,
+        "page-hold" => UserEvent::PageHold,
+        "page-edit" => UserEvent::PageEdit,
+        // Esc reached the page in Normal mode: give the keyboard back to the shell.
+        "reclaim" => UserEvent::ReclaimNormal,
+        "pane-click" => UserEvent::PaneClick,
+        "hint-exit" => UserEvent::ExitHint,
+        "hint-edit" => UserEvent::HintEdit,
+        "scroll-selected" => UserEvent::ScrollSelected,
+        "scroll-exit" => UserEvent::ScrollExit,
+        "caret-exit" => UserEvent::CaretExit,
+        // Right-click menu: "Inspect" and "View page source".
+        "inspect" => UserEvent::Inspect,
+        "view-source" => UserEvent::ViewSource,
+        "fs-enter" => UserEvent::PageFullscreen(true),
+        "fs-exit" => UserEvent::PageFullscreen(false),
+        body => {
+            let (kind, arg) = body.split_once(':')?;
+            match kind {
+                // Web caret-mode yanked a selection.
+                "caret-yank" => UserEvent::CaretYank(arg.into()),
+                // A shell key reached the page in Normal mode (see `shellKey` in
+                // bridge.js): `shell-key:<keyCode>,<shift>,<ctrl>`.
+                "shell-key" => {
+                    let mut parts = arg.split(',');
+                    let vk = parts.next()?.parse::<u16>().ok().filter(|&v| v != 0)?;
+                    let shift = parts.next() == Some("1");
+                    let ctrl = parts.next() == Some("1");
+                    UserEvent::ReplayToShell(crate::shellkeys::KeyReplay::from_vk(vk, shift, ctrl))
+                }
+                // A right-click menu item copied something (the selection, a link
+                // address, an image address).
+                "clip" => UserEvent::ClipCopy(arg.into()),
+                // A hint in new-tab mode resolved to a link.
+                "hint-open" => UserEvent::HintOpen(arg.into()),
+                // A hint picked a control: `hint-click:<x>,<y>` asks for a trusted click.
+                "hint-click" => {
+                    let (x, y) = arg.split_once(',')?;
+                    let (x, y) = (x.parse::<f64>().ok()?, y.parse::<f64>().ok()?);
+                    if !x.is_finite() || !y.is_finite() {
+                        return None;
+                    }
+                    UserEvent::HintClick(x, y)
+                }
+                // A hint in copy mode (`yf`) resolved to a link.
+                "hint-copy" => UserEvent::HintCopy(arg.into()),
+                // The page blocker neutered a scripted pop-up.
+                "popup-blocked" => UserEvent::PopupBlocked(arg.into()),
+                // The pointer moved onto/off a link (empty = off).
+                "link-hover" => UserEvent::LinkHover(arg.into()),
+                _ => return None,
+            }
+        }
+    })
+}
+
 pub(super) fn event_target(tabs: &[Tab], view: ViewId) -> Option<usize> {
     tabs.iter()
         .position(|tab| tab.webview().is_some_and(|v| v.identity().id == view))
@@ -126,6 +195,22 @@ impl App {
                 self.open_web_provider(&url, self.nojs, false, true, private, &provider);
                 None
             }
+            UserEvent::EngineCrashed(reason) => {
+                let tab = &mut self.tabs[index];
+                let provider = tab.provider().unwrap_or("unknown").to_string();
+                tab.content = super::shell::crashed_content(&provider, &tab.url, &reason);
+                if self.active == Some(index) {
+                    self.find_reset();
+                    self.hint_input.clear();
+                    self.mode = crate::ModeKind::Normal;
+                    self.page_focus_yielded = false;
+                    self.hover_link = None;
+                    self.reclaim_shell_focus();
+                }
+                self.refresh_visibility();
+                self.set_error(format!("{provider}: {reason} (:reload to reopen)"));
+                None
+            }
             UserEvent::Inspect => {
                 self.inspect_tab(index);
                 None
@@ -190,5 +275,41 @@ mod tests {
             active_ui_event(UserEvent::ReclaimNormal, 1, Some(1)),
             Some(UserEvent::ReclaimNormal)
         ));
+    }
+
+    #[test]
+    fn page_messages_decode_for_every_engine() {
+        assert!(matches!(
+            decode_page_message("hint-click:12.5,40"),
+            Some(UserEvent::HintClick(x, y)) if x == 12.5 && y == 40.0
+        ));
+        let key = crate::shellkeys::KeyReplay::from_vk(0xBA, true, false);
+        assert!(matches!(
+            decode_page_message("shell-key:186,1,0"),
+            Some(UserEvent::ReplayToShell(k)) if k == key
+        ));
+        assert!(matches!(
+            decode_page_message("reclaim"),
+            Some(UserEvent::ReclaimNormal)
+        ));
+        // Text after the first colon is kept whole: URLs contain colons.
+        assert!(matches!(
+            decode_page_message("hint-open:https://example.com:8080/a"),
+            Some(UserEvent::HintOpen(u)) if u == "https://example.com:8080/a"
+        ));
+        assert!(matches!(
+            decode_page_message("link-hover:"),
+            Some(UserEvent::LinkHover(u)) if u.is_empty()
+        ));
+        for bad in [
+            "hint-click:NaN,1",
+            "hint-click:1",
+            "shell-key:0,0,0",
+            "shell-key:x",
+            "nav-intent",
+            "unknown",
+        ] {
+            assert!(decode_page_message(bad).is_none(), "{bad}");
+        }
     }
 }

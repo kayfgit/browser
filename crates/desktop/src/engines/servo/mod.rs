@@ -1,4 +1,5 @@
-//! Opt-in in-process Servo provider. One runtime serves independently owned views.
+//! The Servo provider. One runtime serves independently owned views; page content runs
+//! in Servo's content processes (see `run_content_process` and `watchdog`).
 mod bridge;
 mod bridge_protocol;
 mod input;
@@ -6,6 +7,7 @@ mod key_ownership;
 mod native;
 mod page;
 pub(crate) mod smoke;
+mod watchdog;
 
 use super::{PageEventProxy, WebView2Options};
 use crate::{App, ModeKind, UserEvent};
@@ -35,7 +37,7 @@ pub(super) fn with_target<R>(
     TARGET.set(target, f)
 }
 thread_local! {
-    // Servo 0.5 has process-global initialization; retain it until app teardown.
+    // Servo has process-global initialization (verified on 0.5); retain it until app teardown.
     static RUNTIME: RefCell<Option<Rc<Servo>>> = const { RefCell::new(None) };
     static VIEWS: RefCell<HashMap<ViewId, Weak<State>>> = RefCell::new(HashMap::new());
     static KEYS: RefCell<key_ownership::KeyOwnership<tao::keyboard::KeyCode>> = RefCell::new(Default::default());
@@ -57,6 +59,15 @@ pub(crate) enum Event {
         view: ViewId,
         epoch: u64,
         error: String,
+    },
+    /// A content process exited abnormally; some pages may be dead (see `watchdog`).
+    ContentCrashed {
+        code: u32,
+    },
+    /// The answer to a liveness check sent after a content process died.
+    Alive {
+        view: ViewId,
+        alive: bool,
     },
 }
 fn post(proxy: &EventLoopProxy<UserEvent>, event: Event) {
@@ -86,6 +97,18 @@ struct State {
     visible: Cell<bool>,
     painted: Cell<bool>,
     frame_pending: Rc<Cell<bool>>,
+    /// While set, a liveness check is outstanding; no answer by then means dead.
+    alive_by: Cell<Option<Instant>>,
+    crashed: Cell<bool>,
+}
+impl State {
+    /// Report this page dead, once: its tab becomes a crash placeholder.
+    fn crashed(&self, reason: String) {
+        self.alive_by.set(None);
+        if !self.crashed.replace(true) {
+            let _ = self.scoped.send_event(UserEvent::EngineCrashed(reason));
+        }
+    }
 }
 struct View(Rc<State>);
 impl EngineView for View {
@@ -121,6 +144,9 @@ impl EngineView for View {
     fn evaluate_script(&self, script: &str) -> EngineResult {
         self.0.page.evaluate_script(script)
     }
+    fn trusted_click(&self, x: f64, y: f64) -> EngineResult {
+        self.0.page.trusted_click(x, y)
+    }
     fn history(&self) -> Option<&dyn History> {
         self.0.page.history()
     }
@@ -149,6 +175,13 @@ impl servo::WebViewDelegate for Delegate {
     }
     fn notify_load_status_changed(&self, _: WebView, status: servo::LoadStatus) {
         self.navigation.status(status);
+        if matches!(status, servo::LoadStatus::HeadParsed) {
+            if let Some(page) = view(self.id).filter(|p| !p.visible.get()) {
+                page.page
+                    .raw()
+                    .evaluate_javascript(page::visibility_script(true), |_| {});
+            }
+        }
         match status {
             servo::LoadStatus::Started => {
                 self.page.begin_load();
@@ -170,6 +203,19 @@ impl servo::WebViewDelegate for Delegate {
     fn notify_page_title_changed(&self, _: WebView, _: Option<String>) {
         let _ = self.scoped.send_event(UserEvent::Redraw);
     }
+    fn show_console_message(&self, _: WebView, level: servo::ConsoleLogLevel, message: String) {
+        // Diagnostics only: BROWSER_SERVO_CONSOLE_LOG names a file for page console output.
+        if let Some(path) = std::env::var_os("BROWSER_SERVO_CONSOLE_LOG") {
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(file, "[{level:?}] {message}");
+            }
+        }
+    }
     fn notify_fullscreen_state_changed(&self, _: WebView, fullscreen: bool) {
         let _ = self
             .scoped
@@ -177,14 +223,9 @@ impl servo::WebViewDelegate for Delegate {
     }
     fn notify_crashed(&self, _: WebView, reason: String, _: Option<String>) {
         self.page.end_load();
-        post(
-            &self.proxy,
-            Event::Fault {
-                view: self.id,
-                epoch: self.navigation.epoch.get(),
-                error: format!("Servo page crashed: {reason}"),
-            },
-        );
+        if let Some(page) = view(self.id) {
+            page.crashed(format!("the page crashed: {reason}"));
+        }
     }
     fn show_embedder_control(&self, _: WebView, control: servo::EmbedderControl) {
         if let servo::EmbedderControl::ContextMenu(menu) = control {
@@ -241,14 +282,28 @@ pub(super) fn build(
             return Ok(runtime);
         }
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let multiprocess = std::env::var_os("BROWSER_SERVO_SINGLE_PROCESS").is_none();
+        if multiprocess {
+            // Before the first content process exists. Without it, hard crashes go
+            // unnoticed, but pages still run isolated.
+            if let Err(error) = watchdog::start(opts.proxy.clone()) {
+                smoke::log(&format!("Servo crash watchdog unavailable: {error}"));
+            }
+        }
         let dir = storage_dir()?;
         std::fs::create_dir_all(&dir)?;
         let runtime = Rc::new(
             ServoBuilder::default()
                 .opts(servo::Opts {
                     config_dir: Some(dir),
+                    // Page scripts and layout run in content processes (see
+                    // `run_content_process`), so a page that crashes them takes down
+                    // only its own pane. BROWSER_SERVO_SINGLE_PROCESS=1 keeps
+                    // everything in-process for debugging.
+                    multiprocess,
                     ..Default::default()
                 })
+                .preferences(web_preferences())
                 .event_loop_waker(Box::new(Waker(opts.proxy.clone())))
                 .build(),
         );
@@ -265,7 +320,24 @@ pub(super) fn build(
         opts.adblock,
     );
     let init = format!("if(window === window.top) {{\n{}\nwindow.__mode='normal';\n{}\n{}\n{}\nwindow.__adblockDefault={ab};\n{}\nwindow.__featureDefaults={{mute:{m},css:{c},video:{v},scrollbar:{sb}}};\n{}\n{}\n}}", include_str!("bridge.js"), crate::BRIDGE_JS, crate::FIND_JS, crate::CARET_JS, crate::ADBLOCK_JS, crate::FEATURES_JS, opts.extra_init);
-    scripts.add_script(Rc::new(init.into()));
+    // Standard APIs Servo lacks, filled in for every document and frame.
+    if std::env::var_os("BROWSER_SERVO_NO_COMPAT").is_none() {
+        scripts.add_script(Rc::new(include_str!("compat.js").to_string().into()));
+    }
+    // Diagnostics: BROWSER_SERVO_NO_SCRIPTS=1 loads pages without any of the shell's
+    // scripts (no hints or modes), to tell a site's own problems from ours.
+    if std::env::var_os("BROWSER_SERVO_NO_SCRIPTS").is_none() {
+        scripts.add_script(Rc::new(init.into()));
+    }
+    if std::env::var_os("BROWSER_SERVO_CONSOLE_LOG").is_some() {
+        // Uncaught errors don't reach the console by themselves.
+        scripts.add_script(Rc::new(
+            "addEventListener('error', e => console.error('[uncaught] ' + e.message + ' @ ' + e.filename + ':' + e.lineno + ':' + e.colno));
+addEventListener('unhandledrejection', e => console.error('[unhandled rejection] ' + (e.reason && (e.reason.stack || e.reason))));"
+                .to_string()
+                .into(),
+        ));
+    }
     let url = match opts.source {
         Source::Url(url) => url::Url::parse(&url)?,
         Source::Html(html) => url::Url::parse(&format!(
@@ -320,12 +392,80 @@ pub(super) fn build(
         visible: Cell::new(false),
         painted: Cell::new(false),
         frame_pending,
+        alive_by: Cell::new(None),
+        crashed: Cell::new(false),
     });
     VIEWS.with(|views| {
         views.borrow_mut().insert(id, Rc::downgrade(&state));
     });
     smoke::log("Servo build: complete");
     Ok((Box::new(View(state)), status))
+}
+
+/// Web platform features Servo implements but leaves off by default; its own browser
+/// turns these on as "experimental web platform features". Common sites need them:
+/// GitHub breaks without IntersectionObserver, and YouTube loads thumbnails with it.
+/// APIs that would need a permission prompt (notifications, permissions, protocol
+/// handlers, reading the clipboard) stay off: the shell has no UI to answer one.
+fn web_preferences() -> servo::Preferences {
+    let mut p = servo::Preferences {
+        dom_intersection_observer_enabled: true,
+        dom_adoptedstylesheet_enabled: true,
+        dom_fontface_enabled: true,
+        dom_indexeddb_enabled: true,
+        dom_exec_command_enabled: true,
+        dom_offscreen_canvas_enabled: true,
+        dom_sanitizer_enabled: true,
+        dom_storage_manager_api_enabled: true,
+        layout_columns_enabled: true,
+        layout_container_queries_enabled: true,
+        layout_css_alpha_color_function_enabled: true,
+        layout_css_attr_enabled: true,
+        layout_css_ellipse_corners_enabled: true,
+        layout_css_progress_function_enabled: true,
+        layout_variable_fonts_enabled: true,
+        ..Default::default()
+    };
+    // Diagnostics: BROWSER_SERVO_PREFS="name=value,..." overrides any Servo preference.
+    if let Ok(spec) = std::env::var("BROWSER_SERVO_PREFS") {
+        for item in spec.split(',').filter(|s| !s.trim().is_empty()) {
+            let Some((name, value)) = item.split_once('=') else {
+                continue;
+            };
+            let value = match value.trim() {
+                "true" => servo::PrefValue::Bool(true),
+                "false" => servo::PrefValue::Bool(false),
+                v => v
+                    .parse()
+                    .map(servo::PrefValue::Int)
+                    .unwrap_or_else(|_| servo::PrefValue::Str(v.into())),
+            };
+            // Servo panics on an unknown name; report it instead.
+            let set = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                p.set_value(name.trim(), value)
+            }));
+            if set.is_err() {
+                smoke::log(&format!("BROWSER_SERVO_PREFS: unknown preference {name}"));
+            }
+        }
+    }
+    p
+}
+
+/// In multi-process mode Servo relaunches this executable as
+/// `browser --content-process <token>` to run page scripts and layout. Returns true
+/// when this process was one of those; it has then already run to completion.
+pub(crate) fn run_content_process() -> bool {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() != Some("--content-process") {
+        return false;
+    }
+    let Some(token) = args.next() else {
+        return false;
+    };
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    servo::run_content_process(token);
+    true
 }
 
 fn storage_dir() -> anyhow::Result<std::path::PathBuf> {
@@ -361,6 +501,13 @@ pub(crate) fn tick(app: &App) -> Option<Instant> {
     }
     let mut due = None;
     for page in pages {
+        if let Some(by) = page.alive_by.get() {
+            if Instant::now() >= by {
+                page.crashed("its Servo content process stopped".into());
+            } else {
+                due = Some(due.map_or(by, |old: Instant| old.min(by)));
+            }
+        }
         native::refresh_cursor(&page.window, page.cursor.get());
         let mut bridge = page.bridge.borrow_mut();
         let focused = native::focused(&page.window)
@@ -417,12 +564,46 @@ pub(crate) fn intercept<'a>(
                         match messages {
                             Ok(messages) => {
                                 for message in messages {
-                                    if let Some(event) = decode_message(&message) {
+                                    if let Some(event) =
+                                        super::events::decode_page_message(&message)
+                                    {
                                         let _ = page.scoped.send_event(event);
                                     }
                                 }
                             }
                             Err(e) => app.set_error(format!("Servo bridge: {e}; reload to retry")),
+                        }
+                    }
+                }
+                Event::ContentCrashed { code } => {
+                    smoke::log(&format!("Servo content process exited with {code:#x}"));
+                    // Which pages it ran isn't reported: ask each page that isn't
+                    // already being asked; only dead ones fail to answer.
+                    for page in views() {
+                        if page.crashed.get() || page.alive_by.get().is_some() {
+                            continue;
+                        }
+                        page.alive_by
+                            .set(Some(Instant::now() + std::time::Duration::from_secs(3)));
+                        let proxy = page.proxy.clone();
+                        let id = page.page.identity().id;
+                        page.page.raw().evaluate_javascript("1", move |result| {
+                            post(
+                                &proxy,
+                                Event::Alive {
+                                    view: id,
+                                    alive: result.is_ok(),
+                                },
+                            );
+                        });
+                    }
+                }
+                Event::Alive { view: id, alive } => {
+                    if let Some(page) = view(id) {
+                        if alive {
+                            page.alive_by.set(None);
+                        } else {
+                            page.crashed("its Servo content process stopped".into());
                         }
                     }
                 }
@@ -557,45 +738,25 @@ pub(crate) fn intercept<'a>(
     }
 }
 
-fn decode_message(message: &str) -> Option<UserEvent> {
-    Some(match message {
-        "leave-passthrough" | "insert-escape" | "insert-blur" => UserEvent::ExitToNormal,
-        "page-ready" => UserEvent::FocusShell,
-        "url-changed" => UserEvent::UrlChanged { record: true },
-        "url-replaced" => UserEvent::UrlChanged { record: false },
-        "grab-focus" => UserEvent::GrabFocus,
-        "page-hold" => UserEvent::PageHold,
-        "page-edit" => UserEvent::PageEdit,
-        "pane-click" => UserEvent::PaneClick,
-        "hint-exit" => UserEvent::ExitHint,
-        "hint-edit" => UserEvent::HintEdit,
-        "scroll-selected" => UserEvent::ScrollSelected,
-        "scroll-exit" => UserEvent::ScrollExit,
-        "caret-exit" => UserEvent::CaretExit,
-        "fs-enter" => UserEvent::PageFullscreen(true),
-        "fs-exit" => UserEvent::PageFullscreen(false),
-        other => {
-            if let Some(s) = other.strip_prefix("hint-open:") {
-                UserEvent::HintOpen(s.into())
-            } else if let Some(s) = other.strip_prefix("hint-copy:") {
-                UserEvent::HintCopy(s.into())
-            } else if let Some(s) = other.strip_prefix("caret-yank:") {
-                UserEvent::CaretYank(s.into())
-            } else if let Some(s) = other.strip_prefix("clip:") {
-                UserEvent::ClipCopy(s.into())
-            } else if let Some(s) = other.strip_prefix("link-hover:") {
-                UserEvent::LinkHover(s.into())
-            } else if let Some(s) = other.strip_prefix("popup-blocked:") {
-                UserEvent::PopupBlocked(s.into())
-            } else {
-                return None;
-            }
-        }
-    })
-}
-
 /// Called after all tab views have been dropped, while the shell window exists.
 pub(crate) fn shutdown() {
-    let runtime = RUNTIME.with(|slot| slot.borrow_mut().take());
+    let Some(runtime) = RUNTIME.with(|slot| slot.borrow_mut().take()) else {
+        return;
+    };
+    // Servo 0.6 waits, without a time limit, for every page to confirm it closed, and
+    // a page whose content process died never does. By now the session, terminals and
+    // any pending update are taken care of, so a stuck shutdown just ends the process.
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watch = done.clone();
+    let _ = std::thread::Builder::new()
+        .name("servo-shutdown-limit".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            if !watch.load(std::sync::atomic::Ordering::Acquire) {
+                smoke::log("Servo shutdown exceeded its limit; exiting");
+                std::process::exit(0);
+            }
+        });
     drop(runtime);
+    done.store(true, std::sync::atomic::Ordering::Release);
 }

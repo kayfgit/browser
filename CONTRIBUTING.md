@@ -100,17 +100,28 @@ After changing `dist-workspace.toml`, run `dist generate` (install it with
 read first, the rules that aren't obvious from the code, and where to start for
 common changes (a new `:command`, a key binding, a message from a page).
 
-## The Servo engine (experimental)
+## The Servo engine
 
-The `servo-engine` feature adds Servo as a second engine, selectable per pane with
-`:engine servo`. It needs the native toolchain from the
-[Servo lab](experiments/servo/README.md) and isn't part of release builds.
+Releases ship Servo as a second engine (`:engine servo`), through the `servo-engine`
+feature. A plain `cargo build` leaves it out: compiling Servo takes a long time and
+many GB of disk and memory. It also needs libclang, and on a machine with only Visual
+Studio 2019 the newer linker from the [Servo lab](experiments/servo/README.md)
+(`-UseLocalLinker`). CI's `servo` job runs clippy and rustdoc with the feature on.
 
 ```powershell
-./run-servo.ps1 -UseLocalLinker                 # run the browser with Servo available
-./run-servo.ps1 -UseLocalLinker -Scratch        # same, in a throwaway session
-./run-servo.ps1 -Action Smoke -UseLocalLinker   # isolated integration check
+./run-servo.ps1 -UseLocalLinker                         # run the browser with Servo available
+./run-servo.ps1 -UseLocalLinker -Scratch                # same, in a throwaway session
+./run-servo.ps1 -Action Smoke -UseLocalLinker           # isolated integration check
+./run-servo.ps1 -Action Smoke -UseLocalLinker -Scenario Crash   # a page crash stays in its pane
+./run-servo.ps1 -Action Smoke -UseLocalLinker -Release  # the same check on the optimized release build
 ```
+
+To see how a real site behaves in Servo, `-Scenario Visit -Url <url>` opens it in an
+isolated profile, waits, and saves the page's console (`console.log`), a probe result
+and a screenshot (`visit.png`) beside the run's logs. `-NoScripts` loads it without the
+shell's injected scripts, `-Probe <file.js>` evaluates your own script instead of the
+built-in probe, and `BROWSER_SERVO_PREFS="name=value,..."` overrides Servo preferences
+(see `web_preferences` in `engines/servo/mod.rs`), all without rebuilding.
 
 See [docs/engine-integration.md](docs/engine-integration.md) for the engine design.
 
