@@ -1,6 +1,6 @@
-# Local patch to servo-paint-api 0.5.0
+# Local patch to servo-paint-api 0.6.0
 
-Source: published `servo-paint-api` crate version 0.5.0 (MPL-2.0).
+Source: published `servo-paint-api` crate version 0.6.0 (MPL-2.0).
 Original copyright/license headers are retained in each source file.
 
 The only source change is in `SurfmanRenderingContext::new`: make the newly

@@ -9,10 +9,10 @@ publish = false
 
 [dependencies]
 browser-engine = { path = "../../crates/engine" }
-servo = "=0.5.0"
-# Servo 0.5's release lockfile uses 0.8.1. Later patches add Destination::Text,
-# which breaks servo-net's exhaustive match. Remove only when upgrading Servo.
-content-security-policy = "=0.8.1"
+servo = "=0.6.0"
+# Match Servo 0.6.0's release lockfile. Under 0.5, 0.8.3's new Destination::Text
+# broke servo-net's exhaustive match; re-check before relaxing this pin.
+content-security-policy = "=0.8.2"
 tao = "=0.35.3"
 wry = "=0.55.0"
 url = "2"

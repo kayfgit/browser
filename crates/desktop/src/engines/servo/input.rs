@@ -44,9 +44,9 @@ impl Input {
                     view.focus();
                 }
                 let button = match button {
-                    tao::event::MouseButton::Left => servo::MouseButton::Left,
-                    tao::event::MouseButton::Right => servo::MouseButton::Right,
-                    tao::event::MouseButton::Middle => servo::MouseButton::Middle,
+                    tao::event::MouseButton::Left => servo::MouseButton::Primary,
+                    tao::event::MouseButton::Right => servo::MouseButton::Secondary,
+                    tao::event::MouseButton::Middle => servo::MouseButton::Auxiliary,
                     tao::event::MouseButton::Other(n) => servo::MouseButton::Other(n),
                     _ => return,
                 };

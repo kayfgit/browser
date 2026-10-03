@@ -1,4 +1,4 @@
-//! Replaceable public-API transport for Servo 0.5, which has no native IPC callback.
+//! Replaceable public-API transport: Servo (0.5 and 0.6) has no native IPC callback.
 //! The native navigation epoch scopes replies; the page token scopes acknowledgements.
 use super::bridge_protocol::Receiver;
 use super::{post, Event};
