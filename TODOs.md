@@ -34,11 +34,13 @@ issues:
 [/?] - random not responding after new update 26/07/2026 22:54
 [*] - add a way for users to freely install extensions
 [] - fix the skip ad button not being pressable with hint mode
+[] - :resources and every other native shell command should not override the current pane/tab, currently if i have a splitted webview2/servo open and write :res it opens on the selected pane
 
 feats:
 [] - make ";" toggle browser hud visibility
 [/] - add vertical sidebar like zen browser
-[*] - make it so every browser related error is shown in :error/:errors (thinking of the future, where the shell's AI can fix the shells issues itself)
+[*] - make it so every browser related error is shown in :error/:errors (like if an engine crashes/errors, extension stops working, everything)
+[] - allow splitting without having anything open (like on the welcome screen), basically treat the welcome screen as an empty pane that cannot be closed if its by itself, but closeable if theres other splits, if the user closes every split then they go back to the welcome screen
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
