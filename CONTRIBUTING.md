@@ -116,6 +116,13 @@ Studio 2019 the newer linker from the [Servo lab](experiments/servo/README.md)
 ./run-servo.ps1 -Action Smoke -UseLocalLinker -Release  # the same check on the optimized release build
 ```
 
+To see how a real site behaves in Servo, `-Scenario Visit -Url <url>` opens it in an
+isolated profile, waits, and saves the page's console (`console.log`), a probe result
+and a screenshot (`visit.png`) beside the run's logs. `-NoScripts` loads it without the
+shell's injected scripts, `-Probe <file.js>` evaluates your own script instead of the
+built-in probe, and `BROWSER_SERVO_PREFS="name=value,..."` overrides Servo preferences
+(see `web_preferences` in `engines/servo/mod.rs`), all without rebuilding.
+
 See [docs/engine-integration.md](docs/engine-integration.md) for the engine design.
 
 ## Installing your own build

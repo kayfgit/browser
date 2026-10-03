@@ -9,6 +9,11 @@ use tao::{
     window::Window,
 };
 
+/// Tell the page whether its pane is hidden, as browsers do when a tab is switched.
+pub(super) fn visibility_script(hidden: bool) -> String {
+    format!("window.__paneHidden={hidden};document.dispatchEvent(new Event('visibilitychange'));")
+}
+
 pub struct ServoPage {
     identity: ViewIdentity,
     // Drop the view before its runtime, and the runtime before its GL surface.
@@ -45,6 +50,21 @@ impl ServoPage {
     // Used only by the lab's native input, transport and qualification probes.
     pub(super) fn raw(&self) -> &WebView {
         &self.view
+    }
+    /// What the page shows right now, for diagnostics. Unlike Servo's
+    /// `take_screenshot`, this doesn't wait for the page to stop changing.
+    pub fn capture(&self) -> Result<servo::RgbaImage, String> {
+        self.context
+            .make_current()
+            .map_err(|e| format!("Make current: {e:?}"))?;
+        self.view.paint();
+        let size = self.context.size2d().to_i32();
+        let image = self
+            .context
+            .read_to_image(servo::DeviceIntRect::from_size(size))
+            .ok_or_else(|| "Could not read the frame".to_string());
+        self.context.present();
+        image
     }
     pub fn paint(&self) -> EngineResult {
         self.context
@@ -105,6 +125,9 @@ impl EngineView for ServoPage {
             self.window.set_visible(false);
         }
         self.visible.set(Some(visible));
+        // Page Visibility: compat.js reports `visibilityState` from this flag.
+        self.view
+            .evaluate_javascript(visibility_script(!visible), |_| {});
         Ok(())
     }
     fn zoom(&self, factor: f64) -> EngineResult {

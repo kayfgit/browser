@@ -309,7 +309,8 @@ Both engines can sit side by side in a split. Modes, every hint type (`f`, `F`,
 Servo's limits for now: no extensions (so no uBlock Origin) and no network-level ad
 blocking, no private (`:open -n`) or no-JavaScript (`:nojs`) tabs, no downloads, and
 selecting page text is limited. Many sites render or behave differently than in
-Chromium. Servo keeps its own cookies and storage, so you sign in to sites separately
+Chromium; YouTube, for one, shows its page but not its videos yet, so use
+`:engine webview2` there. Servo keeps its own cookies and storage, so you sign in to sites separately
 in each engine. Switching engines reopens the page's address; form contents and other
 page state don't carry over.
 
