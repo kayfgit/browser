@@ -236,7 +236,10 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
         // Already unwrapped and routed to its view at the top of `handle`.
         UserEvent::Engine { .. } => {}
         // Only a page sends these, and `route_engine_event` handles them for that page.
-        UserEvent::HintClick(..) | UserEvent::Inspect | UserEvent::ViewSource => {}
+        UserEvent::HintClick(..)
+        | UserEvent::EngineCrashed(_)
+        | UserEvent::Inspect
+        | UserEvent::ViewSource => {}
         UserEvent::UpdateChecked { release, manual } => app.on_update_checked(release, manual),
         UserEvent::UpdateDownloaded { result, now } => app.on_update_downloaded(result, now),
         UserEvent::UpdateCheckDue => app.on_update_check_due(),

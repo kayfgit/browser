@@ -251,6 +251,23 @@ impl App {
     }
 }
 
+pub(crate) fn crashed_content(provider: &str, url: &str, reason: &str) -> TabContent {
+    TabContent::Unavailable {
+        provider: provider.into(),
+        error: reason.into(),
+        buffer: vim::TextBuffer::new(vec![
+            format!("This page crashed ({provider})"),
+            String::new(),
+            url.into(),
+            String::new(),
+            reason.into(),
+            String::new(),
+            "The rest of the browser is unaffected.".into(),
+            ":reload to open it again, or :engine webview2 to open it in another engine.".into(),
+        ]),
+    }
+}
+
 pub(crate) fn unavailable_content(provider: &str, url: &str, error: &str) -> TabContent {
     TabContent::Unavailable {
         provider: provider.into(),
