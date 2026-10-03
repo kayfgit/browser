@@ -70,7 +70,7 @@ impl App {
                 provider.capabilities.document_scripts && provider.capabilities.page_messages
             ));
             if provider.id == "servo" {
-                lines.push("  Experimental: top-level shell bridge; separate storage; no extensions/uBlock, downloads or full IME; limited site compatibility.".into());
+                lines.push("  Not yet: extensions/uBlock, private or no-JS tabs, downloads, full IME. Own cookies and storage; a crashed page affects only its pane.".into());
             }
         }
         lines.extend([

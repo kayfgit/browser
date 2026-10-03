@@ -131,6 +131,12 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      - name: "Locate libclang for Servo"
+        run: |
+          $llvm = 'C:\Program Files\LLVM\bin'
+          if (-not (Test-Path (Join-Path $llvm 'libclang.dll'))) { throw "libclang.dll not found in $llvm" }
+          "LIBCLANG_PATH=$llvm" >> $env:GITHUB_ENV
+        shell: "pwsh"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest

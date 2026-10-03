@@ -1,5 +1,5 @@
-//! Experimental implementation of the real shell contract. Native event plumbing
-//! and the polling transport remain adapter internals until provider registration.
+//! Servo's implementation of the shell's `EngineView` contract. Native event plumbing
+//! and the polling transport stay adapter internals.
 use super::native;
 use browser_engine::{EngineResult, EngineView, History, RectPx, ViewIdentity};
 use servo::{RenderingContext, Servo, WebView};

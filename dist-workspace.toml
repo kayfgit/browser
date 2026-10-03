@@ -27,3 +27,5 @@ create-release = false
 # crates/desktop/wix/main.wxs is hand-edited (Start Menu shortcut, license files),
 # so `dist generate` must not overwrite it.
 allow-dirty = ["msi"]
+# Steps run before the build: Servo needs libclang (see .github/build-setup.yml).
+github-build-setup = "../build-setup.yml"

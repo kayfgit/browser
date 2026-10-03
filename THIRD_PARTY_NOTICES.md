@@ -2,8 +2,8 @@
 
 browser's own source code is MIT-licensed (see [LICENSE](LICENSE)). The release
 build also bundles the third-party components below, which keep their own
-licenses. They are distributed unmodified, alongside browser rather than as part
-of it.
+licenses. They are distributed unmodified (except the one Servo file noted below),
+alongside browser rather than as part of it.
 
 ## uBlock Origin Lite
 
@@ -49,8 +49,19 @@ Notable ones include [wry](https://github.com/tauri-apps/wry) (Apache-2.0/MIT),
 [adblock-rust](https://github.com/brave/adblock-rust) (MPL-2.0), and
 [portable-pty](https://github.com/wezterm/wezterm) (MIT).
 
-The optional Servo engine (`servo-engine` feature, not part of release builds) is
-MPL-2.0.
+## Servo
+
+- Release builds include the [Servo](https://servo.org/) web engine (`servo-engine`
+  feature), version 0.6.0, with SpiderMonkey as its JavaScript engine.
+- License: Mozilla Public License 2.0. SpiderMonkey (through `mozjs_sys`) is also
+  MPL-2.0. Servo's own dependencies keep their licenses; `cargo tree --edges normal
+  --features servo-engine -p browser` lists them.
+- Source: <https://github.com/servo/servo/tree/v0.6.0>, and every crate at its locked
+  version on <https://crates.io>.
+- One file is modified: `rendering_context.rs` of `servo-paint-api` 0.6.0, which
+  makes a new OpenGL context current before loading OpenGL on Windows. The modified
+  source is in this repository at `experiments/servo/vendor/servo-paint-api/`, with
+  the change described in its `PATCH.md`.
 
 ## Runtime components not bundled
 

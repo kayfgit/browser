@@ -40,3 +40,32 @@ jobs:
 
       - name: tests
         run: cargo test --workspace --locked
+
+  servo:
+    name: clippy, docs (with Servo)
+    runs-on: windows-latest
+    # Servo is large: a cold build takes most of an hour.
+    timeout-minutes: 180
+    env:
+      # Servo's build generates bindings with the runner image's libclang.
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: servo
+          # Pull requests reuse main's cache instead of each saving their own copy.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: clippy
+        run: cargo clippy -p browser --features servo-engine --all-targets --locked -- -D warnings
+
+      - name: rustdoc
+        run: cargo doc -p browser --features servo-engine --no-deps --locked
+        env:
+          RUSTDOCFLAGS: --document-private-items -D warnings
