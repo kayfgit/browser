@@ -134,6 +134,9 @@ impl EngineView for ServoPage {
         self.view.evaluate_javascript(script, |_| {});
         Ok(())
     }
+    fn trusted_click(&self, x: f64, y: f64) -> EngineResult {
+        super::input::click(&self.view, x, y)
+    }
     fn history(&self) -> Option<&dyn History> {
         Some(self)
     }

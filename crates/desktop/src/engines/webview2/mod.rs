@@ -270,118 +270,22 @@ pub(crate) fn build(
                     *g = Some(std::time::Instant::now());
                 }
             }
-            "leave-passthrough" => {
-                let _ = ipc_proxy.send_event(UserEvent::ExitToNormal);
+            // TEMPORARY: YT_PROBE_JS diagnostics (BROWSER_YT_DEBUG=1) — append to
+            // %TEMP%\ytprobe.log. Remove with the probe when the bug is solved.
+            body if body.starts_with("dbg:") => {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(std::env::temp_dir().join("ytprobe.log"))
+                {
+                    let _ = writeln!(f, "{}", &body[4..]);
+                }
             }
-            // Insert (light field typing): Esc / focus left the field → back to Normal.
-            "insert-escape" | "insert-blur" => {
-                let _ = ipc_proxy.send_event(UserEvent::ExitToNormal);
-            }
-            "page-ready" => {
-                let _ = ipc_proxy.send_event(UserEvent::FocusShell);
-            }
-            // SPA URL changes (pushState/popstate/hashchange) — no document load
-            // fires, so this is the only signal the shell gets. 'url-changed'
-            // records a back/forward step; 'url-replaced' (replaceState) only
-            // syncs the shown URL.
-            "url-changed" => {
-                let _ = ipc_proxy.send_event(UserEvent::UrlChanged { record: true });
-            }
-            "url-replaced" => {
-                let _ = ipc_proxy.send_event(UserEvent::UrlChanged { record: false });
-            }
-            "grab-focus" => {
-                let _ = ipc_proxy.send_event(UserEvent::GrabFocus);
-            }
-            "page-hold" => {
-                let _ = ipc_proxy.send_event(UserEvent::PageHold);
-            }
-            "page-edit" => {
-                let _ = ipc_proxy.send_event(UserEvent::PageEdit);
-            }
-            // Esc reached the page in Normal mode: give the keyboard back to the shell.
-            "reclaim" => {
-                let _ = ipc_proxy.send_event(UserEvent::ReclaimNormal);
-            }
-            "pane-click" => {
-                let _ = ipc_proxy.send_event(UserEvent::PaneClick);
-            }
-            "hint-exit" => {
-                let _ = ipc_proxy.send_event(UserEvent::ExitHint);
-            }
-            "hint-edit" => {
-                let _ = ipc_proxy.send_event(UserEvent::HintEdit);
-            }
-            "scroll-selected" => {
-                let _ = ipc_proxy.send_event(UserEvent::ScrollSelected);
-            }
-            "scroll-exit" => {
-                let _ = ipc_proxy.send_event(UserEvent::ScrollExit);
-            }
-            "caret-exit" => {
-                let _ = ipc_proxy.send_event(UserEvent::CaretExit);
-            }
-            // Right-click menu: "Inspect" and "View page source".
-            "inspect" => {
-                let _ = ipc_proxy.send_event(UserEvent::Inspect);
-            }
-            "view-source" => {
-                let _ = ipc_proxy.send_event(UserEvent::ViewSource);
-            }
-            "fs-enter" => {
-                let _ = ipc_proxy.send_event(UserEvent::PageFullscreen(true));
-            }
-            "fs-exit" => {
-                let _ = ipc_proxy.send_event(UserEvent::PageFullscreen(false));
-            }
+            // Everything else is the engine-neutral bridge protocol.
             body => {
-                // Web caret-mode yanked a selection: `caret-yank:<text>`.
-                if let Some(text) = body.strip_prefix("caret-yank:") {
-                    let _ = ipc_proxy.send_event(UserEvent::CaretYank(text.to_string()));
-                // A right-click menu item copied something: `clip:<text>` (the
-                // selection, a link address, an image address).
-                // A shell key reached the page in Normal mode (see `shellKey` in
-                // bridge.js): `shell-key:<keyCode>,<shift>,<ctrl>`.
-                } else if let Some(spec) = body.strip_prefix("shell-key:") {
-                    let mut parts = spec.split(',');
-                    let vk = parts.next().and_then(|v| v.parse::<u16>().ok());
-                    let shift = parts.next() == Some("1");
-                    let ctrl = parts.next() == Some("1");
-                    if let Some(vk) = vk.filter(|&v| v != 0) {
-                        let key = crate::shellkeys::KeyReplay::from_vk(vk, shift, ctrl);
-                        let _ = ipc_proxy.send_event(UserEvent::ReplayToShell(key));
-                    }
-                } else if let Some(text) = body.strip_prefix("clip:") {
-                    let _ = ipc_proxy.send_event(UserEvent::ClipCopy(text.to_string()));
-                // A hint in new-tab mode resolved to a link: `hint-open:<href>`.
-                } else if let Some(href) = body.strip_prefix("hint-open:") {
-                    let _ = ipc_proxy.send_event(UserEvent::HintOpen(href.to_string()));
-                // A hint picked a control: `hint-click:<x>,<y>` asks for a trusted click.
-                } else if let Some(at) = body.strip_prefix("hint-click:") {
-                    let mut xy = at.split(',').map(|v| v.parse::<f64>());
-                    if let (Some(Ok(x)), Some(Ok(y))) = (xy.next(), xy.next()) {
-                        let _ = ipc_proxy.send_event(UserEvent::HintClick(x, y));
-                    }
-                // A hint in copy mode (`yf`) resolved to a link: `hint-copy:<href>`.
-                } else if let Some(href) = body.strip_prefix("hint-copy:") {
-                    let _ = ipc_proxy.send_event(UserEvent::HintCopy(href.to_string()));
-                // The page blocker neutered a scripted pop-up. `popup-blocked:<url>`.
-                } else if let Some(url) = body.strip_prefix("popup-blocked:") {
-                    let _ = ipc_proxy.send_event(UserEvent::PopupBlocked(url.to_string()));
-                // The pointer moved onto/off a link: `link-hover:<href>` (empty = off).
-                } else if let Some(href) = body.strip_prefix("link-hover:") {
-                    let _ = ipc_proxy.send_event(UserEvent::LinkHover(href.to_string()));
-                // TEMPORARY: YT_PROBE_JS diagnostics (BROWSER_YT_DEBUG=1) — append to
-                // %TEMP%\ytprobe.log. Remove with the probe when the bug is solved.
-                } else if let Some(m) = body.strip_prefix("dbg:") {
-                    use std::io::Write;
-                    if let Ok(mut f) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(std::env::temp_dir().join("ytprobe.log"))
-                    {
-                        let _ = writeln!(f, "{m}");
-                    }
+                if let Some(event) = super::events::decode_page_message(body) {
+                    let _ = ipc_proxy.send_event(event);
                 }
             }
         })

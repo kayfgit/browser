@@ -5,6 +5,26 @@ use tao::{
     window::Window,
 };
 
+/// Press and release the primary button at `(x, y)`, CSS pixels in the viewport.
+/// Embedder input is real user input to the page (a user gesture), unlike a click
+/// dispatched from script. Servo maps page coordinates through zoom itself.
+pub(super) fn click(view: &WebView, x: f64, y: f64) -> Result<(), String> {
+    if !x.is_finite() || !y.is_finite() {
+        return Err("click position must be finite".into());
+    }
+    let point: servo::WebViewPoint =
+        euclid::Point2D::<f32, servo::CSSPixel>::new(x as f32, y as f32).into();
+    view.notify_input_event(InputEvent::MouseMove(servo::MouseMoveEvent::new(point)));
+    for action in [servo::MouseButtonAction::Down, servo::MouseButtonAction::Up] {
+        view.notify_input_event(InputEvent::MouseButton(servo::MouseButtonEvent::new(
+            action,
+            servo::MouseButton::Primary,
+            point,
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 pub struct Input {
     point: servo::DevicePoint,
