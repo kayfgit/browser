@@ -17,6 +17,8 @@ struct Smoke {
     proof: Option<Result<String, String>>,
     url: String,
     retired: Option<ViewId>,
+    clipboard: Option<String>,
+    tabs: usize,
 }
 
 pub(crate) fn start(app: &mut App) -> anyhow::Result<()> {
@@ -45,7 +47,7 @@ pub(crate) fn start(app: &mut App) -> anyhow::Result<()> {
             let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
             let mut request = [0u8; 4096];
             let _ = stream.read(&mut request);
-            let body = "<!doctype html><meta charset=utf-8><title>Main engine integration</title><input id=field><button id=button onclick=\"this.textContent='clicked'\">Test</button><a href='/two'>Next page</a><p>Mixed engine fixture</p>";
+            let body = "<!doctype html><meta charset=utf-8><title>Main engine integration</title><input id=field><button id=button onclick=\"this.textContent=event.isTrusted?'trusted':'untrusted'\">Test</button><a id=next href='/two'>Next page</a><div id=box style='height:60px;width:200px;overflow:auto'><div style='height:600px'>Tall box</div></div><p>Mixed engine fixture</p>";
             let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
         }
     });
@@ -67,6 +69,8 @@ pub(crate) fn start(app: &mut App) -> anyhow::Result<()> {
             proof: None,
             url,
             retired: None,
+            clipboard: None,
+            tabs: 0,
         })
     });
     log("START main-browser Servo qualification");
@@ -113,6 +117,14 @@ impl Smoke {
         self.proof = None;
         self.due = Instant::now() + Duration::from_millis(400);
         self.deadline = Instant::now() + Duration::from_secs(30);
+    }
+    /// The hint label a `label_of` script answered, once it has.
+    fn label(&mut self) -> Result<Option<String>, String> {
+        match self.proof.take() {
+            Some(Ok(label)) if label != "missing" => Ok(Some(label)),
+            Some(other) => Err(format!("No hint label: {other:?}")),
+            None => Ok(None),
+        }
     }
     fn proved(&mut self) -> Result<bool, String> {
         match self.proof.take() {
@@ -242,7 +254,132 @@ impl Smoke {
                 self.next(7);
             }
             7 if self.proved()? => {
+                // Following a hint onto a control asks the shell for a trusted click.
                 app.exit_to_normal();
+                app.reclaim_shell_focus();
+                key(&app.window, 0x46, 0x21, false)?;
+                self.next(30);
+            }
+            30 => {
+                key(&app.window, 0x46, 0x21, true)?;
+                if app.mode != ModeKind::Hint {
+                    return Err("f did not enter hint mode".into());
+                }
+                evaluate(app, "(() => { const m = window.__hintMap || {}; const l = Object.keys(m).find(k => m[k].el.id === 'button'); if (!l) return 'no button hint'; window.__hintInput(l, 'follow'); return 'true'; })()")?;
+                self.next(31);
+            }
+            31 if self.proved()? => {
+                evaluate(app, "document.querySelector('#button').textContent")?;
+                self.next(32);
+            }
+            32 => match self.proof.take() {
+                Some(Ok(text)) if text == "trusted" => {
+                    app.exit_to_normal();
+                    // Copy mode (`yf`) yanks the link address; keep the user's clipboard.
+                    self.clipboard = arboard::Clipboard::new()
+                        .and_then(|mut c| c.get_text())
+                        .ok();
+                    app.enter_hint(crate::HintAct::Copy);
+                    evaluate(app, &label_of("next"))?;
+                    self.next(50);
+                }
+                Some(Ok(text)) if text == "untrusted" => {
+                    return Err("Hint click reached the page as script, not input".into());
+                }
+                // Input is asynchronous: ask again until the click lands.
+                Some(Ok(_)) => evaluate(app, "document.querySelector('#button').textContent")?,
+                Some(Err(error)) => return Err(error),
+                None => {}
+            },
+            50 => {
+                if let Some(label) = self.label()? {
+                    app.hint_input = label;
+                    app.hint_send();
+                    self.next(51);
+                }
+            }
+            51 if app.mode == ModeKind::Normal => {
+                let status = app.status.text();
+                if let Some(text) = self.clipboard.take() {
+                    let _ = arboard::Clipboard::new().and_then(|mut c| c.set_text(text));
+                }
+                if !status.starts_with("copied ") || !status.ends_with("/two") {
+                    return Err(format!("Copy hint did not copy the link: {status}"));
+                }
+                // New-tab mode (`F`) opens the link in another tab of the same engine.
+                app.enter_hint(crate::HintAct::NewTab);
+                evaluate(app, &label_of("next"))?;
+                self.tabs = app.tabs.len();
+                self.next(52);
+            }
+            52 => {
+                if let Some(label) = self.label()? {
+                    app.hint_input = label;
+                    app.hint_send();
+                    self.next(53);
+                }
+            }
+            53 if app.tabs.len() == self.tabs + 1 && settled(app, "servo") => {
+                let url = app.current_url().unwrap_or_default();
+                if !url.ends_with("/two") {
+                    return Err(format!("New-tab hint opened {url}"));
+                }
+                app.close_active();
+                self.next(54);
+            }
+            54 if settled(app, "servo") => {
+                if app.current_url().unwrap_or_default() != self.url {
+                    return Err("Closing the new tab did not return to the page".into());
+                }
+                // Scroll hints (`s`) select a scrollable box; `j` then scrolls it.
+                app.enter_hint(crate::HintAct::Scroll);
+                evaluate(app, &label_of("box"))?;
+                self.next(55);
+            }
+            55 => {
+                if let Some(label) = self.label()? {
+                    app.hint_input = label;
+                    app.hint_send();
+                    self.next(56);
+                }
+            }
+            56 if app.mode == ModeKind::Scroll => {
+                key(&app.window, 0x4a, 0x24, false)?;
+                self.next(57);
+            }
+            57 => {
+                key(&app.window, 0x4a, 0x24, true)?;
+                evaluate(app, "String(document.querySelector('#box').scrollTop > 0)")?;
+                self.next(58);
+            }
+            58 if self.proved()? => {
+                key(&app.window, 0x1b, 0x01, false)?;
+                self.next(59);
+            }
+            59 => {
+                key(&app.window, 0x1b, 0x01, true)?;
+                if app.mode != ModeKind::Normal {
+                    return Err("Escape did not leave scroll mode".into());
+                }
+                // Following a link (`f`) navigates this pane.
+                app.enter_hint(crate::HintAct::Follow);
+                evaluate(app, &label_of("next"))?;
+                self.next(60);
+            }
+            60 => {
+                if let Some(label) = self.label()? {
+                    app.hint_input = label;
+                    app.hint_send();
+                    self.next(61);
+                }
+            }
+            61 if settled(app, "servo")
+                && app.current_url().is_some_and(|url| url.ends_with("/two")) =>
+            {
+                log("PASS hint modes in Servo: copy, new tab, scroll and follow");
+                self.next(33);
+            }
+            33 => {
                 app.split_pane(crate::panes::SplitDir::Row);
                 app.open_web_provider(
                     &format!("{}two", self.url),
@@ -313,7 +450,7 @@ impl Smoke {
                 {
                     return Err("Reopened Servo view did not release its resources".into());
                 }
-                log("PASS main browser: engine switches, hints/input, shared runtime, mixed split, retired callbacks, unsupported modes and last-view close/reopen");
+                log("PASS main browser: engine switches, hints/input, trusted hint clicks, shared runtime, mixed split, retired callbacks, unsupported modes and last-view close/reopen");
                 app.quit = true;
                 self.next(13);
             }
@@ -385,6 +522,10 @@ fn settled(app: &App, provider: &str) -> bool {
 fn active(app: &App) -> Result<Rc<State>, String> {
     view(app.active_webview().ok_or("No active view")?.identity().id)
         .ok_or("No active Servo view".into())
+}
+/// A script answering the hint label shown on the element with this id.
+fn label_of(id: &str) -> String {
+    format!("(() => {{ const m = window.__hintMap || {{}}; return Object.keys(m).find(k => m[k].el.id === '{id}') || 'missing'; }})()")
 }
 fn evaluate(app: &App, script: &str) -> Result<(), String> {
     let proxy = app.proxy.clone();

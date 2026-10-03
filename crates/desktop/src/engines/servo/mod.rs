@@ -121,6 +121,9 @@ impl EngineView for View {
     fn evaluate_script(&self, script: &str) -> EngineResult {
         self.0.page.evaluate_script(script)
     }
+    fn trusted_click(&self, x: f64, y: f64) -> EngineResult {
+        self.0.page.trusted_click(x, y)
+    }
     fn history(&self) -> Option<&dyn History> {
         self.0.page.history()
     }
@@ -417,7 +420,9 @@ pub(crate) fn intercept<'a>(
                         match messages {
                             Ok(messages) => {
                                 for message in messages {
-                                    if let Some(event) = decode_message(&message) {
+                                    if let Some(event) =
+                                        super::events::decode_page_message(&message)
+                                    {
                                         let _ = page.scoped.send_event(event);
                                     }
                                 }
@@ -555,43 +560,6 @@ pub(crate) fn intercept<'a>(
         }
         event => Some(event),
     }
-}
-
-fn decode_message(message: &str) -> Option<UserEvent> {
-    Some(match message {
-        "leave-passthrough" | "insert-escape" | "insert-blur" => UserEvent::ExitToNormal,
-        "page-ready" => UserEvent::FocusShell,
-        "url-changed" => UserEvent::UrlChanged { record: true },
-        "url-replaced" => UserEvent::UrlChanged { record: false },
-        "grab-focus" => UserEvent::GrabFocus,
-        "page-hold" => UserEvent::PageHold,
-        "page-edit" => UserEvent::PageEdit,
-        "pane-click" => UserEvent::PaneClick,
-        "hint-exit" => UserEvent::ExitHint,
-        "hint-edit" => UserEvent::HintEdit,
-        "scroll-selected" => UserEvent::ScrollSelected,
-        "scroll-exit" => UserEvent::ScrollExit,
-        "caret-exit" => UserEvent::CaretExit,
-        "fs-enter" => UserEvent::PageFullscreen(true),
-        "fs-exit" => UserEvent::PageFullscreen(false),
-        other => {
-            if let Some(s) = other.strip_prefix("hint-open:") {
-                UserEvent::HintOpen(s.into())
-            } else if let Some(s) = other.strip_prefix("hint-copy:") {
-                UserEvent::HintCopy(s.into())
-            } else if let Some(s) = other.strip_prefix("caret-yank:") {
-                UserEvent::CaretYank(s.into())
-            } else if let Some(s) = other.strip_prefix("clip:") {
-                UserEvent::ClipCopy(s.into())
-            } else if let Some(s) = other.strip_prefix("link-hover:") {
-                UserEvent::LinkHover(s.into())
-            } else if let Some(s) = other.strip_prefix("popup-blocked:") {
-                UserEvent::PopupBlocked(s.into())
-            } else {
-                return None;
-            }
-        }
-    })
 }
 
 /// Called after all tab views have been dropped, while the shell window exists.
