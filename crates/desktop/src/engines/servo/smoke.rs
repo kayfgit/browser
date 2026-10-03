@@ -59,10 +59,10 @@ pub(crate) fn start(app: &mut App) -> anyhow::Result<()> {
     app.open_web_provider(&url, false, false, true, false, "webview2");
     SMOKE.with(|s| {
         *s.borrow_mut() = Some(Smoke {
-            step: if split == "Split" || split == "Example" {
-                20
-            } else {
-                0
+            step: match split.as_str() {
+                "Split" | "Example" => 20,
+                "Crash" => 40,
+                _ => 0,
             },
             due: Instant::now(),
             deadline: Instant::now() + Duration::from_secs(30),
@@ -196,6 +196,47 @@ impl Smoke {
                 log("PASS visible cold Servo switch: WebView2 split, native command-bar switches, first frame, page content and switch back");
                 app.quit = true;
                 self.next(25);
+            }
+            40 if settled(app, "webview2") => {
+                app.switch_engine("servo");
+                require_provider(app, "servo")?;
+                self.next(41);
+            }
+            41 if settled(app, "servo") => {
+                // Simulate a page crash: kill the content process running the page.
+                let killed = kill_content_processes()?;
+                if killed == 0 {
+                    return Err("No Servo content process: multi-process mode is off".into());
+                }
+                log(&format!("killed {killed} content process(es)"));
+                self.next(42);
+                self.due = Instant::now() + Duration::from_secs(2);
+            }
+            42 if app
+                .active
+                .and_then(|i| app.tabs.get(i))
+                .and_then(|t| t.unavailable())
+                .is_some() =>
+            {
+                if !views().is_empty() {
+                    return Err("The crashed page's view was not released".into());
+                }
+                log(&format!("after crash, shell status: {}", app.status.text()));
+                app.reload_active();
+                require_provider(app, "servo")?;
+                self.next(43);
+            }
+            43 if settled(app, "servo") => {
+                evaluate(
+                    app,
+                    "String(document.body.innerText.includes('Mixed engine fixture'))",
+                )?;
+                self.next(44);
+            }
+            44 if self.proved()? => {
+                log("PASS crash isolation: a killed content process left the browser running and the pane recovered on reload");
+                app.quit = true;
+                self.next(45);
             }
             0 if settled(app, "webview2") => {
                 app.switch_engine("servo");
@@ -540,6 +581,51 @@ fn evaluate(app: &App, script: &str) -> Result<(), String> {
             post(&proxy, Event::SmokeReply(result));
         });
     Ok(())
+}
+/// Terminate this browser's Servo content processes: the child copies of this executable.
+fn kill_content_processes() -> Result<usize, String> {
+    use windows::Win32::{
+        Foundation::CloseHandle,
+        System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+                TH32CS_SNAPPROCESS,
+            },
+            Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE},
+        },
+    };
+    let me = std::process::id();
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let name = exe
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("No executable name")?
+        .to_ascii_lowercase();
+    let mut killed = 0;
+    unsafe {
+        let snapshot =
+            CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).map_err(|e| e.to_string())?;
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut more = Process32FirstW(snapshot, &mut entry).is_ok();
+        while more {
+            let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(0);
+            let child = String::from_utf16_lossy(&entry.szExeFile[..len]).to_ascii_lowercase();
+            if entry.th32ParentProcessID == me && child == name {
+                if let Ok(process) = OpenProcess(PROCESS_TERMINATE, false, entry.th32ProcessID) {
+                    if TerminateProcess(process, 1).is_ok() {
+                        killed += 1;
+                    }
+                    let _ = CloseHandle(process);
+                }
+            }
+            more = Process32NextW(snapshot, &mut entry).is_ok();
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    Ok(killed)
 }
 fn key(window: &Window, vk: usize, scan: usize, release: bool) -> Result<(), String> {
     let bits = 1 | (scan << 16) | if release { (1 << 30) | (1 << 31) } else { 0 };

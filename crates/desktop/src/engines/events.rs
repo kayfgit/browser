@@ -195,6 +195,22 @@ impl App {
                 self.open_web_provider(&url, self.nojs, false, true, private, &provider);
                 None
             }
+            UserEvent::EngineCrashed(reason) => {
+                let tab = &mut self.tabs[index];
+                let provider = tab.provider().unwrap_or("unknown").to_string();
+                tab.content = super::shell::crashed_content(&provider, &tab.url, &reason);
+                if self.active == Some(index) {
+                    self.find_reset();
+                    self.hint_input.clear();
+                    self.mode = crate::ModeKind::Normal;
+                    self.page_focus_yielded = false;
+                    self.hover_link = None;
+                    self.reclaim_shell_focus();
+                }
+                self.refresh_visibility();
+                self.set_error(format!("{provider}: {reason} (:reload to reopen)"));
+                None
+            }
             UserEvent::Inspect => {
                 self.inspect_tab(index);
                 None

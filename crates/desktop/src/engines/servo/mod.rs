@@ -1,4 +1,5 @@
-//! Opt-in in-process Servo provider. One runtime serves independently owned views.
+//! The Servo provider. One runtime serves independently owned views; page content runs
+//! in Servo's content processes (see `run_content_process` and `watchdog`).
 mod bridge;
 mod bridge_protocol;
 mod input;
@@ -6,6 +7,7 @@ mod key_ownership;
 mod native;
 mod page;
 pub(crate) mod smoke;
+mod watchdog;
 
 use super::{PageEventProxy, WebView2Options};
 use crate::{App, ModeKind, UserEvent};
@@ -58,6 +60,15 @@ pub(crate) enum Event {
         epoch: u64,
         error: String,
     },
+    /// A content process exited abnormally; some pages may be dead (see `watchdog`).
+    ContentCrashed {
+        code: u32,
+    },
+    /// The answer to a liveness check sent after a content process died.
+    Alive {
+        view: ViewId,
+        alive: bool,
+    },
 }
 fn post(proxy: &EventLoopProxy<UserEvent>, event: Event) {
     let _ = proxy.send_event(UserEvent::Servo(event));
@@ -86,6 +97,18 @@ struct State {
     visible: Cell<bool>,
     painted: Cell<bool>,
     frame_pending: Rc<Cell<bool>>,
+    /// While set, a liveness check is outstanding; no answer by then means dead.
+    alive_by: Cell<Option<Instant>>,
+    crashed: Cell<bool>,
+}
+impl State {
+    /// Report this page dead, once: its tab becomes a crash placeholder.
+    fn crashed(&self, reason: String) {
+        self.alive_by.set(None);
+        if !self.crashed.replace(true) {
+            let _ = self.scoped.send_event(UserEvent::EngineCrashed(reason));
+        }
+    }
 }
 struct View(Rc<State>);
 impl EngineView for View {
@@ -180,14 +203,9 @@ impl servo::WebViewDelegate for Delegate {
     }
     fn notify_crashed(&self, _: WebView, reason: String, _: Option<String>) {
         self.page.end_load();
-        post(
-            &self.proxy,
-            Event::Fault {
-                view: self.id,
-                epoch: self.navigation.epoch.get(),
-                error: format!("Servo page crashed: {reason}"),
-            },
-        );
+        if let Some(page) = view(self.id) {
+            page.crashed(format!("the page crashed: {reason}"));
+        }
     }
     fn show_embedder_control(&self, _: WebView, control: servo::EmbedderControl) {
         if let servo::EmbedderControl::ContextMenu(menu) = control {
@@ -244,12 +262,25 @@ pub(super) fn build(
             return Ok(runtime);
         }
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let multiprocess = std::env::var_os("BROWSER_SERVO_SINGLE_PROCESS").is_none();
+        if multiprocess {
+            // Before the first content process exists. Without it, hard crashes go
+            // unnoticed, but pages still run isolated.
+            if let Err(error) = watchdog::start(opts.proxy.clone()) {
+                smoke::log(&format!("Servo crash watchdog unavailable: {error}"));
+            }
+        }
         let dir = storage_dir()?;
         std::fs::create_dir_all(&dir)?;
         let runtime = Rc::new(
             ServoBuilder::default()
                 .opts(servo::Opts {
                     config_dir: Some(dir),
+                    // Page scripts and layout run in content processes (see
+                    // `run_content_process`), so a page that crashes them takes down
+                    // only its own pane. BROWSER_SERVO_SINGLE_PROCESS=1 keeps
+                    // everything in-process for debugging.
+                    multiprocess,
                     ..Default::default()
                 })
                 .event_loop_waker(Box::new(Waker(opts.proxy.clone())))
@@ -323,12 +354,30 @@ pub(super) fn build(
         visible: Cell::new(false),
         painted: Cell::new(false),
         frame_pending,
+        alive_by: Cell::new(None),
+        crashed: Cell::new(false),
     });
     VIEWS.with(|views| {
         views.borrow_mut().insert(id, Rc::downgrade(&state));
     });
     smoke::log("Servo build: complete");
     Ok((Box::new(View(state)), status))
+}
+
+/// In multi-process mode Servo relaunches this executable as
+/// `browser --content-process <token>` to run page scripts and layout. Returns true
+/// when this process was one of those; it has then already run to completion.
+pub(crate) fn run_content_process() -> bool {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() != Some("--content-process") {
+        return false;
+    }
+    let Some(token) = args.next() else {
+        return false;
+    };
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    servo::run_content_process(token);
+    true
 }
 
 fn storage_dir() -> anyhow::Result<std::path::PathBuf> {
@@ -364,6 +413,13 @@ pub(crate) fn tick(app: &App) -> Option<Instant> {
     }
     let mut due = None;
     for page in pages {
+        if let Some(by) = page.alive_by.get() {
+            if Instant::now() >= by {
+                page.crashed("its Servo content process stopped".into());
+            } else {
+                due = Some(due.map_or(by, |old: Instant| old.min(by)));
+            }
+        }
         native::refresh_cursor(&page.window, page.cursor.get());
         let mut bridge = page.bridge.borrow_mut();
         let focused = native::focused(&page.window)
@@ -428,6 +484,38 @@ pub(crate) fn intercept<'a>(
                                 }
                             }
                             Err(e) => app.set_error(format!("Servo bridge: {e}; reload to retry")),
+                        }
+                    }
+                }
+                Event::ContentCrashed { code } => {
+                    smoke::log(&format!("Servo content process exited with {code:#x}"));
+                    // Which pages it ran isn't reported: ask each page that isn't
+                    // already being asked; only dead ones fail to answer.
+                    for page in views() {
+                        if page.crashed.get() || page.alive_by.get().is_some() {
+                            continue;
+                        }
+                        page.alive_by
+                            .set(Some(Instant::now() + std::time::Duration::from_secs(3)));
+                        let proxy = page.proxy.clone();
+                        let id = page.page.identity().id;
+                        page.page.raw().evaluate_javascript("1", move |result| {
+                            post(
+                                &proxy,
+                                Event::Alive {
+                                    view: id,
+                                    alive: result.is_ok(),
+                                },
+                            );
+                        });
+                    }
+                }
+                Event::Alive { view: id, alive } => {
+                    if let Some(page) = view(id) {
+                        if alive {
+                            page.alive_by.set(None);
+                        } else {
+                            page.crashed("its Servo content process stopped".into());
                         }
                     }
                 }
@@ -564,6 +652,23 @@ pub(crate) fn intercept<'a>(
 
 /// Called after all tab views have been dropped, while the shell window exists.
 pub(crate) fn shutdown() {
-    let runtime = RUNTIME.with(|slot| slot.borrow_mut().take());
+    let Some(runtime) = RUNTIME.with(|slot| slot.borrow_mut().take()) else {
+        return;
+    };
+    // Servo 0.6 waits, without a time limit, for every page to confirm it closed, and
+    // a page whose content process died never does. By now the session, terminals and
+    // any pending update are taken care of, so a stuck shutdown just ends the process.
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watch = done.clone();
+    let _ = std::thread::Builder::new()
+        .name("servo-shutdown-limit".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            if !watch.load(std::sync::atomic::Ordering::Acquire) {
+                smoke::log("Servo shutdown exceeded its limit; exiting");
+                std::process::exit(0);
+            }
+        });
     drop(runtime);
+    done.store(true, std::sync::atomic::Ordering::Release);
 }
