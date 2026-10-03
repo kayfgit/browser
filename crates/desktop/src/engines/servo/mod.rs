@@ -35,7 +35,7 @@ pub(super) fn with_target<R>(
     TARGET.set(target, f)
 }
 thread_local! {
-    // Servo 0.5 has process-global initialization; retain it until app teardown.
+    // Servo has process-global initialization (verified on 0.5); retain it until app teardown.
     static RUNTIME: RefCell<Option<Rc<Servo>>> = const { RefCell::new(None) };
     static VIEWS: RefCell<HashMap<ViewId, Weak<State>>> = RefCell::new(HashMap::new());
     static KEYS: RefCell<key_ownership::KeyOwnership<tao::keyboard::KeyCode>> = RefCell::new(Default::default());

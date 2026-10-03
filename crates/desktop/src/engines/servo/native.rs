@@ -59,7 +59,7 @@ pub fn wheel_line_pixels(window: &Window, horizontal: bool) -> f64 {
         f64::from(window.inner_size().height) / 3.0
     } else {
         // Tao already multiplies notches by the OS-configured line count.
-        // Servo 0.5's compositor consumes physical pixels regardless of deltaMode.
+        // Servo's compositor consumes physical pixels regardless of deltaMode (verified on 0.5).
         24.0 * window.scale_factor()
     }
 }
