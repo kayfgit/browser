@@ -1,11 +1,16 @@
 # Servo / WebView2 qualification lab
 
 This is an isolated Windows experiment for stage 3 of the
-[engine roadmap](../../docs/engine-switching-research.md). It puts Servo 0.5.0 in
+[engine roadmap](../../docs/engine-switching-research.md). It puts Servo 0.6.0 in
 a Tao child window on the left and WebView2 in a separate child surface on the
 right. One Tao event loop drives both. It does **not** install or register a Servo
-provider itself. The main browser now has a separate opt-in `servo-engine` feature;
+provider itself. The main browser ships its own Servo provider (`servo-engine` feature);
 use the repository-root `run-servo.ps1` to test `:engine servo` in the real shell.
+
+Since 2026-10-03 the lab's smoke test stops at its first shell-bridge probe: it still
+expects a hint on a button to click synchronously, while the shared hint script now asks
+the host for a trusted click (`hint-click:<x>,<y>`). The main browser's smoke test covers
+that path; the lab probe needs the same update before it passes again.
 
 ## Shared shell bridge
 
@@ -50,8 +55,8 @@ must account for that rather than copying that guard unchanged.
 
 The lab has its own Cargo workspace and committed lockfile. Ordinary desktop
 builds do not resolve or compile Servo. The content-security-policy dependency is
-pinned to the version in Servo v0.5.0's release lockfile: 0.8.3 adds an enum variant
-that breaks compilation of servo-net 0.5.0.
+pinned to the version in Servo v0.6.0's release lockfile (0.8.2). Under 0.5.0, 0.8.3's
+new enum variant broke compilation of servo-net.
 
 The lab also carries a small
 [servo-paint-api patch](vendor/servo-paint-api/PATCH.md). The original Windows path

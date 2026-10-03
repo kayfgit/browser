@@ -12,6 +12,9 @@ description = "A modal, mode-dispatching browser — only what's needed, when ne
 [package.metadata.dist]
 # Ship the third-party notices in the release archive (the MSI adds them too).
 include = ["../../THIRD_PARTY_NOTICES.md"]
+# Releases ship both engines. Plain `cargo build` stays WebView2-only: Servo takes
+# hours and many GB to compile (see run-servo.ps1 for local Servo builds).
+features = ["servo-engine"]
 
 [package.metadata.wix]
 upgrade-guid = "48D6537F-B5B7-450F-BB2A-CA44F4275E40"

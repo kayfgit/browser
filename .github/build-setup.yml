@@ -1,0 +1,9 @@
+# Extra steps cargo-dist runs before building release artifacts (`github-build-setup`
+# in dist-workspace.toml). Servo's build generates bindings with libclang, which the
+# Windows runner image ships with its LLVM install.
+- name: Locate libclang for Servo
+  shell: pwsh
+  run: |
+    $llvm = 'C:\Program Files\LLVM\bin'
+    if (-not (Test-Path (Join-Path $llvm 'libclang.dll'))) { throw "libclang.dll not found in $llvm" }
+    "LIBCLANG_PATH=$llvm" >> $env:GITHUB_ENV

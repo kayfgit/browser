@@ -297,3 +297,47 @@ and switching back; the broader visible smoke passed input/hints, multiple Servo
 views, stale callbacks and close/reopen. A pixel-coverage regression verifies that
 presentation rectangles exclude all web pixels while covering every remaining
 pixel exactly once, including borders, overlapping/clipped children and frozen mode.
+
+## Servo 0.6.0 and shipping
+
+On 2026-10-03 Servo was upgraded to 0.6.0, the base of its next LTS line, and became
+a regular engine: release builds (cargo-dist, `[package.metadata.dist] features`)
+include it, and the `:engines` listing no longer calls it experimental. A plain
+`cargo build` still leaves it out, because compiling Servo is slow and memory-hungry.
+
+The upgrade's only embedding-API change that affected the adapter was the mouse-button
+rename (`Left`/`Middle`/`Right` became `Primary`/`Auxiliary`/`Secondary`). The vendored
+`servo-paint-api` patch is still needed: 0.6.0 still loads OpenGL before making the new
+WGL context current. `content-security-policy` follows 0.6.0's release lockfile (0.8.2).
+
+**Crash isolation.** Servo runs in multi-process mode: page scripts and layout run in
+content processes, which Servo starts as `browser --content-process <token>` (the
+first thing `main` checks). `BROWSER_SERVO_SINGLE_PROCESS=1` turns this off for
+debugging. Servo reports a panicking page through `notify_crashed`, but a hard crash or
+a killed process leaves its pages silently dead, so `engines/servo/watchdog.rs` puts
+the browser in an observe-only job object and receives a notification when a content
+process exits abnormally. Every Servo page then gets a liveness check; pages that fail
+it or don't answer within three seconds become a crash placeholder
+(`UserEvent::EngineCrashed`) that keeps the URL, and `:reload` builds a fresh view.
+Reloading or scripting the dead page itself doesn't work in 0.6.0 (it trips an
+assertion in the replacement content process). Servo 0.6 also waits without limit at
+shutdown for a dead page to confirm it closed, so `servo::shutdown` exits the process
+after five seconds; the session, terminals and updates are handled before that point.
+Release builds now unwind on panic instead of aborting, so a panic in one of Servo's
+threads in the browser process can't take the whole browser down.
+
+Crashes in the browser-process parts of Servo (networking, the compositor, OpenGL)
+are not isolated. Moving all of Servo into its own host process is the next step, and
+the one that separately packaged engines and Gecko need anyway.
+
+**Shared page messages.** WebView2 and Servo previously decoded the page bridge's
+messages separately, and Servo's copy had fallen behind: it dropped `hint-click`
+(hints on buttons did nothing), `shell-key` and `reclaim`. Both now use
+`engines::events::decode_page_message`. Servo implements trusted clicks with embedder
+mouse input, which pages treat as a user gesture.
+
+Validation on 2026-10-03, all with the native smoke against the real engines:
+`Default` (now including follow on inputs, buttons and links, new-tab, copy and scroll
+hints, and a trusted-click check), `Split`, and `Crash` (kills the content process,
+requires the placeholder, reloads, then requires a clean quit). Workspace fmt, clippy
+and tests passed on the default build.

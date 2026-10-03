@@ -10,7 +10,7 @@
     Start Menu shortcut named "browser", and adds the install dir to the user PATH
     so you can launch it by typing `browser`.
 
-    -Servo instead installs the experimental WebView2 + Servo development build
+    -Servo instead installs the unoptimized WebView2 + Servo development build
     produced by run-servo.ps1 (it needs the Servo lab's native tools).
 
     Everything is per-user (no admin needed) and reversible via uninstall.ps1.
