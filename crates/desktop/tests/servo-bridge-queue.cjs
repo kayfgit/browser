@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
 const vm = require('node:vm');
-const script = readFileSync(join(__dirname, '../../../crates/desktop/src/engines/servo/bridge.js'), 'utf8');
+const script = readFileSync(join(__dirname, '../src/engines/servo/bridge.js'), 'utf8');
 function page() {
   const context = vm.createContext({ window: {}, document: {} });
   vm.runInContext(script, context);

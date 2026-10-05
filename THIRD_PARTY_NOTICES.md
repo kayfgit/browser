@@ -60,7 +60,7 @@ Notable ones include [wry](https://github.com/tauri-apps/wry) (Apache-2.0/MIT),
   version on <https://crates.io>.
 - One file is modified: `rendering_context.rs` of `servo-paint-api` 0.6.0, which
   makes a new OpenGL context current before loading OpenGL on Windows. The modified
-  source is in this repository at `experiments/servo/vendor/servo-paint-api/`, with
+  source is in this repository at `vendor/servo-paint-api/`, with
   the change described in its `PATCH.md`.
 
 ## Runtime components not bundled

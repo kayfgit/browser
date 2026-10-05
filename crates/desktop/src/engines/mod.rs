@@ -24,6 +24,17 @@ pub(crate) fn with_window_target<R>(
 #[cfg(test)]
 mod tests;
 
+// The Servo adapter's message queue and key routing are plain Rust; build their tests
+// without the Servo feature too, so every CI run covers them.
+#[cfg(all(test, not(all(windows, feature = "servo-engine"))))]
+#[allow(dead_code)]
+#[path = "servo/bridge_protocol.rs"]
+mod servo_bridge_protocol;
+#[cfg(all(test, not(all(windows, feature = "servo-engine"))))]
+#[allow(dead_code)]
+#[path = "servo/key_ownership.rs"]
+mod servo_key_ownership;
+
 pub(crate) use events::PageEventProxy;
 pub(crate) use webview2::{keep_alive as keep_webview2_alive, BuildOptions as WebView2Options};
 

@@ -23,7 +23,6 @@
     }
     return stringify({ version: 1, document: id, dropped, messages: queue.slice(0, 32) });
   };
-  // Keep the original input qualification lab usable until F6 enables shell mode.
-  window.__mode = 'passthrough';
+  // Servo pages keep Servo's native context menu (the shared bridge draws its own on WebView2).
   window.__shellNativeContextMenu = true;
 })();

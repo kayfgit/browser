@@ -62,7 +62,7 @@ mod tests {
         assert_eq!(keys.route('a', true, false, false), Route::Page);
     }
     #[test]
-    fn leaving_the_lab_does_not_leave_a_key_stuck_owned() {
+    fn clearing_ownership_does_not_leave_a_key_stuck_owned() {
         let mut keys = KeyOwnership::default();
         keys.route('i', true, false, true);
         keys.clear();

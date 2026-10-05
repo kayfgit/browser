@@ -22,11 +22,6 @@ pub fn focused(window: &Window) -> bool {
     unsafe { GetFocus() == hwnd(window) }
 }
 
-#[allow(dead_code)] // Also compiled by the standalone native-input qualification lab.
-pub fn focused_handle() -> isize {
-    unsafe { GetFocus().0 as isize }
-}
-
 pub fn focus(window: &Window) -> bool {
     // Tao's set_focus activates a top-level window; it does not assign keyboard
     // focus to a WS_CHILD. Keep activation with the parent and focus this child.
@@ -61,16 +56,6 @@ pub fn wheel_line_pixels(window: &Window, horizontal: bool) -> f64 {
         // Tao already multiplies notches by the OS-configured line count.
         // Servo's compositor consumes physical pixels regardless of deltaMode (verified on 0.5).
         24.0 * window.scale_factor()
-    }
-}
-
-#[allow(dead_code)] // The lab compares the observed scroll with this OS setting.
-pub fn wheel_notch_pixels(window: &Window) -> f64 {
-    let lines = scroll_lines(false);
-    if lines == u32::MAX {
-        f64::from(window.inner_size().height)
-    } else {
-        f64::from(lines) * 24.0 * window.scale_factor()
     }
 }
 
@@ -159,8 +144,8 @@ pub fn show_context_menu(
                     action,
                     enabled,
                 } => {
-                    // The lab has no new-view host yet; don't offer actions that
-                    // would silently discard the requested new view.
+                    // The browser doesn't host views Servo opens itself yet; don't
+                    // offer actions that would silently discard the requested view.
                     let enabled = *enabled
                         && !matches!(
                             action,

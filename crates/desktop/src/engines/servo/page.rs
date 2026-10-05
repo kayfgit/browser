@@ -47,7 +47,7 @@ impl ServoPage {
         }
     }
 
-    // Used only by the lab's native input, transport and qualification probes.
+    // For the adapter's native input, message transport and smoke tests.
     pub(super) fn raw(&self) -> &WebView {
         &self.view
     }
