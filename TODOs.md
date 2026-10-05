@@ -47,3 +47,4 @@ maybes:
 [~*] - maybe add a :engine command to change browser engine? might be overkill and dont know if its possible
 [/] - ctrl+: enters command bar in vim mode, allows vim motions.
 [] - maybe change the :read command into a :html toggle like :js and :css? if you think about it, removing html is basically removing the dom parsing and rendering only text, which is exactly what :read does
+[] - maybe add the zen browser glance feature, where i can preview a link in a floating window
