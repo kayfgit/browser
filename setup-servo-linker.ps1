@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param()
 $ErrorActionPreference = 'Stop'
-$tools = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../target/servo-tools'))
+$tools = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'target/servo-tools'))
 [void][IO.Directory]::CreateDirectory($tools)
 $packages = @(
     @{
@@ -39,4 +39,4 @@ $signature = Get-AuthenticodeSignature -LiteralPath $linker
 if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
     throw 'The extracted linker does not have a valid Microsoft signature.'
 }
-Write-Host 'Verified local linker and C++ libraries. Use run.ps1 -UseLocalLinker.'
+Write-Host 'Verified local linker and C++ libraries. Use run-servo.ps1 -UseLocalLinker.'

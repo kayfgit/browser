@@ -83,4 +83,4 @@ inherits = "release"
 lto = "thin"
 
 [patch.crates-io]
-servo-paint-api = { path = "experiments/servo/vendor/servo-paint-api" }
+servo-paint-api = { path = "vendor/servo-paint-api" }

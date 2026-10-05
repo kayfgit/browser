@@ -21,10 +21,8 @@
 
 # Browser runtime data and native smoke-test output (also outside target/)
 *.WebView2/
-lab-data/
 desktop-smoke/
 installed-smoke/
-servo-smoke.png
 
 # Local config overrides (sample lives at config/config.toml)
 /config/local.toml

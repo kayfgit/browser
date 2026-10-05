@@ -43,7 +43,7 @@ try {
         $linker = Join-Path $tools 'msvc-linker/Contents/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/link.exe'
         $cpp = Join-Path $tools 'msvc-onecore/Contents/VC/Tools/MSVC/14.44.35207/lib/onecore/x64'
         $crt = Join-Path $tools 'msvc-crt/Contents/VC/Tools/MSVC/14.44.35207/lib/x64'
-        if (-not (Test-Path $linker)) { throw 'Run experiments/servo/setup-linker.ps1 first.' }
+        if (-not (Test-Path $linker)) { throw 'Run setup-servo-linker.ps1 first.' }
         $cargoArgs += @('--',"-Clinker=$linker",'-L',"native=$cpp",'-L',"native=$crt")
     }
     & cargo @cargoArgs

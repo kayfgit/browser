@@ -105,8 +105,8 @@ common changes (a new `:command`, a key binding, a message from a page).
 Releases ship Servo as a second engine (`:engine servo`), through the `servo-engine`
 feature. A plain `cargo build` leaves it out: compiling Servo takes a long time and
 many GB of disk and memory. It also needs libclang, and on a machine with only Visual
-Studio 2019 the newer linker from the [Servo lab](experiments/servo/README.md)
-(`-UseLocalLinker`). CI's `servo` job runs clippy and rustdoc with the feature on.
+Studio 2019 a newer linker: `setup-servo-linker.ps1` downloads and verifies Microsoft's
+v143 linker into `target/servo-tools` (then pass `-UseLocalLinker`). CI's `servo` job runs clippy and rustdoc with the feature on.
 
 ```powershell
 ./run-servo.ps1 -UseLocalLinker                         # run the browser with Servo available

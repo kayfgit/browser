@@ -90,7 +90,8 @@ negotiate protocol versions. Gecko remains a separate feasibility experiment.
 
 ## Stage 3: Servo qualification lab
 
-The isolated [Servo/WebView2 lab](../experiments/servo/README.md) now contains a
+The isolated Servo/WebView2 lab (`experiments/servo`, removed on 2026-10-05; see the
+end of this document) now contains a
 Servo 0.5.0 child surface beside WebView2 in one Tao window and event loop. It has
 its own workspace/lockfile, fresh engine-specific profiles, a local interactive
 fixture and a smoke mode with an external startup/shutdown deadline. Normal desktop
@@ -369,3 +370,13 @@ are there and lay out correctly once revealed. It isn't the passive sign-in ifra
 (removing it didn't help). GitHub also stalls intermittently after loading, without
 CPU use, which may be the same never-finishing load. Both need investigation in Servo's
 loader.
+
+## Servo lab retired
+
+On 2026-10-05 the standalone qualification lab (`experiments/servo`) was removed: the
+browser's own Servo smoke tests (`run-servo.ps1 -Action Smoke`, with the Split, Crash and
+Visit scenarios) cover everything it qualified. The production pieces it held moved:
+the patched `servo-paint-api` to `vendor/servo-paint-api`, the linker setup to
+`setup-servo-linker.ps1`, and its bridge-queue Node test to
+`crates/desktop/tests/servo-bridge-queue.cjs`. The message-queue and key-routing unit
+tests now also run in builds without Servo. The lab's code remains in git history.

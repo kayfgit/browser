@@ -10,7 +10,7 @@ creation. Without this change, the standalone embedder panics with
 `Reading GL_VERSION failed` inside glow before it can attach a window surface.
 If activation fails, explicitly destroy the native context before returning.
 
-Both the main workspace's optional Servo provider and the lab use this patch.
+The browser's Servo provider uses this patch through the workspace's `[patch.crates-io]`.
 Remove it when updating to an upstream release that fixes this initialization
 order. Both native smoke tests exercise the affected path. No shared Cargo
 registry files were modified.

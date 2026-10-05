@@ -110,7 +110,8 @@ in the tab strip.
 | [crates/tui](crates/tui/src/lib.rs), [crates/cli](crates/cli/src/main.rs) | The original terminal-only reader. Legacy, not shipped. |
 
 Also: [docs/](docs/user-guide.md) (user guide and engine design notes) and
-[experiments/servo](experiments/servo/README.md) (the Servo qualification lab).
+[vendor/servo-paint-api](vendor/servo-paint-api/PATCH.md) (our patched copy of one Servo
+crate).
 
 ### crates/desktop
 
