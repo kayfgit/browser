@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0](https://github.com/kayfgit/browser/compare/v0.4.0...v0.5.0) (2026-10-07)
+
+
+### Features
+
+* a crashing Servo page only takes down its own pane ([b64fc9a](https://github.com/kayfgit/browser/commit/b64fc9a15775735dc486659354783f85fa76c20a))
+* ship Servo as a second engine in releases ([c824442](https://github.com/kayfgit/browser/commit/c82444252d98cb2956bf12d92e363c000aed93d3))
+* upgrade the Servo engine to 0.6.0 ([51f0686](https://github.com/kayfgit/browser/commit/51f0686b17b64fd8767d32f8399d6d1b1c9133f6))
+
+
+### Bug Fixes
+
+* GitHub and other modern sites work in Servo ([1ea55df](https://github.com/kayfgit/browser/commit/1ea55dfe192915e26e18cc82eed7555ada793d4a))
+* hints on buttons and keys a page hands back now work in Servo panes ([c6b47cc](https://github.com/kayfgit/browser/commit/c6b47ccd7a583bbb464b8c4848de9f71202fb818))
+* Servo's page processes no longer outlive the browser ([7c0c0d8](https://github.com/kayfgit/browser/commit/7c0c0d8826258c90e7aca687bb305a18cf7b2cfc))
+
 ## [0.4.0](https://github.com/kayfgit/browser/compare/v0.3.0...v0.4.0) (2026-10-02)
 
 
