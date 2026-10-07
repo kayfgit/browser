@@ -1,7 +1,9 @@
-# browser
+# browser (im bad with names)
 
 A keyboard-driven, modal browser for Windows that only runs the heavy machinery
 when a page actually needs it.
+
+https://github.com/user-attachments/assets/61babbe2-3704-4593-adb3-fc9c70efba8a
 
 Most browsers keep a full Chromium engine running for everything. Here the window
 itself is a small native Rust program, and each tab runs on the lightest backend
