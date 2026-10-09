@@ -46,13 +46,6 @@ Download `browser-x86_64-pc-windows-msvc.msi` from the
 admin rights, into `%LOCALAPPDATA%\Programs\browser`, adds a Start Menu shortcut and a
 `browser` command, and from then on the browser updates itself (see `:update`).
 
-Or run this in PowerShell, which installs the same way but without a Start Menu shortcut
-or automatic updates:
-
-```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/kayfgit/browser/releases/latest/download/browser-installer.ps1 | iex"
-```
-
 You need the [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/).
 Windows 11 ships with it; on Windows 10 install the Evergreen runtime if pages don't load.
 
