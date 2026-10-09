@@ -386,7 +386,7 @@ impl App {
             }
         });
 
-        // New tab normally; under a split it fills the focused pane (place_tab).
+        // New tab normally; under a split it fills the focused pane if blank (place_tab).
         self.place_tab(
             Tab {
                 id: crate::layout::TabId::new(),
