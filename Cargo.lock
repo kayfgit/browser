@@ -707,7 +707,7 @@ dependencies = [
 
 [[package]]
 name = "browser"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ab_glyph_rasterizer",
  "adblock",
@@ -754,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "browser-backend-search"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "browser-core",
@@ -767,7 +767,7 @@ dependencies = [
 
 [[package]]
 name = "browser-backend-text"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "browser-core",
@@ -781,7 +781,7 @@ dependencies = [
 
 [[package]]
 name = "browser-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "browser-core",
@@ -791,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "browser-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "directories",
@@ -804,11 +804,11 @@ dependencies = [
 
 [[package]]
 name = "browser-engine"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "browser-tui"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "browser-backend-search",
