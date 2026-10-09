@@ -1104,7 +1104,7 @@ impl App {
             ModeKind::Scroll => vec![
                 ("[SCROLL]".into(), accent),
                 (
-                    "  hjkl · g/G · Ctrl+D/U · PgUp/PgDn · v select · Esc exit".into(),
+                    "  hjkl · gg/G · Ctrl+D/U · PgUp/PgDn · v select · Esc exit".into(),
                     draw::DIM,
                 ),
             ],

@@ -36,6 +36,11 @@ pub(crate) const WINDOW_PREFIX_TIMEOUT: Duration = Duration::from_millis(500);
 /// later key — and the command bar shows the prefix while it's live.
 pub(crate) const YANK_PREFIX_TIMEOUT: Duration = Duration::from_millis(2000);
 
+/// How long a lone `g` waits for the second `g` of `gg` (jump to top) — vim's own
+/// default `timeoutlen`. A stale `g` is dropped so it can't turn a much later `g`
+/// into a jump.
+pub(crate) const GO_PREFIX_TIMEOUT: Duration = Duration::from_millis(1000);
+
 /// A Normal-mode prefix key waiting for the key that completes it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum KeyPrefix {
@@ -45,6 +50,9 @@ pub(crate) enum KeyPrefix {
     /// `y`: the next key picks what to yank — `f` hints the links and copies the
     /// picked address, `y` copies this page's URL.
     Yank,
+    /// `g`: a second `g` jumps to the top (`gg`, as in vim); any other key drops the
+    /// prefix and runs its own binding.
+    Go,
 }
 
 impl KeyPrefix {
@@ -54,6 +62,7 @@ impl KeyPrefix {
         match self {
             KeyPrefix::Window => WINDOW_PREFIX_TIMEOUT,
             KeyPrefix::Yank => YANK_PREFIX_TIMEOUT,
+            KeyPrefix::Go => GO_PREFIX_TIMEOUT,
         }
     }
 }

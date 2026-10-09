@@ -5,6 +5,7 @@
 use tao::event::KeyEvent;
 use tao::keyboard::{Key, KeyCode};
 
+use crate::app::KeyPrefix;
 use crate::{read_view, App, ModeKind, HINT_JS};
 
 /// What picking a hint does with its target.
@@ -276,6 +277,11 @@ impl App {
             self.exit_to_normal();
             return;
         }
+        // `gg` = top, as on the page itself: a lone `g` only arms the prefix.
+        let go_armed = self
+            .pending_prefix
+            .take()
+            .is_some_and(|(p, at)| p == KeyPrefix::Go && at.elapsed() <= p.timeout());
         let action = if self.modifiers.control_key() {
             match key.physical_key {
                 KeyCode::KeyD => "half-down",
@@ -294,6 +300,10 @@ impl App {
                 Key::Character("k") | Key::ArrowUp => "up",
                 Key::Character("h") | Key::ArrowLeft => "left",
                 Key::Character("l") | Key::ArrowRight => "right",
+                Key::Character("g") if !go_armed => {
+                    self.pending_prefix = Some((KeyPrefix::Go, std::time::Instant::now()));
+                    return;
+                }
                 Key::Character("g") | Key::Home => "top",
                 Key::Character("G") | Key::End => "bottom",
                 Key::Character(" ") if self.modifiers.shift_key() => "page-up",
