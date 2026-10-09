@@ -29,3 +29,7 @@ create-release = false
 allow-dirty = ["msi"]
 # Steps run before the build: Servo needs libclang (see .github/build-setup.yml).
 github-build-setup = "../build-setup.yml"
+# Link the dynamic C runtime: Servo's prebuilt SpiderMonkey uses it, and the linker
+# refuses to mix it with the static one. The MSI ships the runtime DLLs it needs
+# beside browser.exe (build-setup.yml collects them, wix/main.wxs installs them).
+msvc-crt-static = false
