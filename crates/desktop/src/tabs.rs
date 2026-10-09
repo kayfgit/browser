@@ -479,13 +479,20 @@ impl App {
     /// evicts is recorded on the closed-tab stack (so `U` can bring it back) and its
     /// terminal, if any, is shut down deterministically first.
     ///
-    /// Under a split, new content lands in the focused pane (in place) — that's how a
-    /// fresh blank pane gets filled by `:te`/`:read`/internal pages, so `new_tab` is
-    /// ignored here. An EXPLICIT new-tab request (`:open -t`, `:tabopen`, an `F` hint,
-    /// a popup) escapes the split instead — see
+    /// Under a split, new content fills the focused pane only when that pane is a
+    /// fresh BLANK one (that's how `:split` then `:te`/`:read`/`:res` fills it). A pane
+    /// already showing something is never clobbered: the new tab opens as its own
+    /// tab-strip window and the split stays intact behind it — the ":res opened over
+    /// my webview pane" bug. An EXPLICIT new-tab request (`:open -t`, `:tabopen`, an
+    /// `F` hint, a popup) always escapes the split — see
     /// [`place_tab_escaping_split`](Self::place_tab_escaping_split).
     pub(crate) fn place_tab(&mut self, tab: Tab, new_tab: bool) {
-        let replace = (!new_tab || self.is_split()) && self.active.is_some();
+        let fills_blank = self.is_split()
+            && self
+                .active
+                .and_then(|i| self.tabs.get(i))
+                .is_some_and(Tab::is_blank);
+        let replace = (!new_tab || fills_blank) && self.active.is_some();
         self.place_tab_replacing(tab, replace);
     }
 
@@ -818,7 +825,7 @@ impl App {
     /// by read mode (`read = true`, tinted green + `f` hint) and the `:error(s)`
     /// pages (`read = false`). Activates and focuses the new tab.
     pub(crate) fn push_native_tab(&mut self, doc: browser_core::Document, url: String, read: bool) {
-        // place_tab is split-aware: a new tab normally, or the focused pane in place.
+        // place_tab is split-aware: a new tab, or a split's focused pane if it's blank.
         self.place_tab(native_read_tab(doc, url, read), true);
         self.window.set_focus();
         self.clear_status();
