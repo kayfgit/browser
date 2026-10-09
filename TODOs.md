@@ -37,6 +37,7 @@ issues:
 [] - :resources and every other native shell command should not override the current pane/tab, currently if i have a splitted webview2/servo open and write :res it opens on the selected pane
 [] - after running ":ai open github and wikipedia side by side please" it opened github.com on the left, splitted vertically but didnt open wikipedia, and then gave me: "! groq 429: Rate limit reached for model `openai/gpt-oss-120b` in organization `org_01kva1e35pet7tkmy9tte02502` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Used 5616, Requested 5181. Please try again in 20.9775s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing"
 [] - "gg" should go to the top, not just "g"
+[] - random not responding 08/10/2026 i forgot the time
 
 feats:
 [] - make ";" toggle browser hud visibility
