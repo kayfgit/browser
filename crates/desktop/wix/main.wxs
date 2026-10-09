@@ -116,6 +116,11 @@
                             <Component Id='Binaries' Guid='924A5001-09E4-4198-8152-686F4A3E4E53'>
                                 <File Id='exe0' Name='browser.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\browser.exe'/>
                                 <File Id='exe1' Name='browser-pty-host.exe' DiskId='1' Source='$(var.CargoTargetBinDir)\browser-pty-host.exe'/>
+                                <!-- The Visual C++ runtime the binaries link (dynamic CRT, see
+                                     dist-workspace.toml), collected by .github/build-setup.yml. -->
+                                <File Id='vcrt0' Name='msvcp140.dll' DiskId='1' Source='..\..\target\vc-runtime\msvcp140.dll'/>
+                                <File Id='vcrt1' Name='vcruntime140.dll' DiskId='1' Source='..\..\target\vc-runtime\vcruntime140.dll'/>
+                                <File Id='vcrt2' Name='vcruntime140_1.dll' DiskId='1' Source='..\..\target\vc-runtime\vcruntime140_1.dll'/>
                                 <RemoveFolder Id='RemoveBin' On='uninstall'/>
                                 <RegistryValue
                                     Root='HKCU'

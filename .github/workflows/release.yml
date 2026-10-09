@@ -137,6 +137,21 @@ jobs:
           if (-not (Test-Path (Join-Path $llvm 'libclang.dll'))) { throw "libclang.dll not found in $llvm" }
           "LIBCLANG_PATH=$llvm" >> $env:GITHUB_ENV
         shell: "pwsh"
+      - name: "Collect the Visual C++ runtime for the installer"
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $crt = Get-ChildItem (Join-Path $vs 'VC\Redist\MSVC') -Directory |
+            Where-Object { $_.Name -match '^\d+\.' } | Sort-Object { [version]$_.Name } -Descending |
+            ForEach-Object { Get-ChildItem (Join-Path $_.FullName 'x64') -Directory -Filter 'Microsoft.VC*.CRT' -ErrorAction SilentlyContinue } |
+            Select-Object -First 1
+          if (-not $crt) { throw "Visual C++ runtime not found under $vs" }
+          $out = Join-Path $env:GITHUB_WORKSPACE 'target\vc-runtime'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          foreach ($dll in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') {
+            Copy-Item (Join-Path $crt.FullName $dll) $out
+          }
+          Get-ChildItem $out | ForEach-Object { '{0} {1}' -f $_.Name, $_.VersionInfo.FileVersion }
+        shell: "pwsh"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest

@@ -10,8 +10,14 @@ default-run = "browser"
 description = "A modal, mode-dispatching browser — only what's needed, when needed."
 
 [package.metadata.dist]
-# Ship the third-party notices in the release archive (the MSI adds them too).
-include = ["../../THIRD_PARTY_NOTICES.md"]
+# Ship the third-party notices in the release archive (the MSI adds them too), and the
+# Visual C++ runtime the binaries link (collected by .github/build-setup.yml).
+include = [
+    "../../THIRD_PARTY_NOTICES.md",
+    "../../target/vc-runtime/msvcp140.dll",
+    "../../target/vc-runtime/vcruntime140.dll",
+    "../../target/vc-runtime/vcruntime140_1.dll",
+]
 # Releases ship both engines. Plain `cargo build` stays WebView2-only: Servo takes
 # hours and many GB to compile (see run-servo.ps1 for local Servo builds).
 features = ["servo-engine"]

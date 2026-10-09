@@ -63,6 +63,12 @@ Notable ones include [wry](https://github.com/tauri-apps/wry) (Apache-2.0/MIT),
   source is in this repository at `vendor/servo-paint-api/`, with
   the change described in its `PATCH.md`.
 
+## Microsoft Visual C++ runtime
+
+The installer places `msvcp140.dll`, `vcruntime140.dll` and `vcruntime140_1.dll` beside
+`browser.exe`. They are Microsoft's redistributable Visual C++ runtime files, shipped
+unmodified under the Visual Studio license terms for redistributable code.
+
 ## Runtime components not bundled
 
 - Microsoft Edge WebView2 Runtime: installed by Windows, under Microsoft's own terms.
