@@ -10,12 +10,11 @@ cargo-dist-version = "0.32.0"
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
-installers = ["powershell", "msi"]
+# MSI only: it installs the Visual C++ runtime the browser needs; dist's PowerShell
+# installer would install the executables alone.
+installers = ["msi"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["x86_64-pc-windows-msvc"]
-# Where the PowerShell installer puts the binaries (the MSI installs per user into
-# the same folder's bin\, see crates/desktop/wix/main.wxs)
-install-path = "$LOCALAPPDATA/Programs/browser"
 # Where to host releases
 hosting = "github"
 # Whether to install an updater program

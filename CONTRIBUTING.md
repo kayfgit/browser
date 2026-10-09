@@ -75,8 +75,8 @@ message, so give PRs conventional titles.
    `Cargo.toml` (and `Cargo.lock`) and updates `CHANGELOG.md`.
 3. Merging that pull request tags the version and creates the GitHub Release. The
    `release-please` workflow then starts `release.yml`, where
-   [cargo-dist](https://opensource.axo.dev/cargo-dist/) builds the MSI installer, a
-   PowerShell installer and a zip, and uploads them to the release.
+   [cargo-dist](https://opensource.axo.dev/cargo-dist/) builds the MSI installer and a
+   zip, and uploads them to the release.
 
 Nobody edits the version by hand. Release pull requests are opened by GitHub Actions,
 so CI doesn't run on them; they only change the version and changelog.
