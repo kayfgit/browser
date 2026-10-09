@@ -24,7 +24,6 @@ STUFF TO KEEP IN MIND:
 general:
 [*] - ship every engine with the browser by default: the installer has all engines checked and users can uncheck the ones they dont want. package each engine separately so updates only redownload the browser (~20mb) unless an engine changed, and allow adding/removing engines later (something like :engine install gecko / :engine remove servo)
 [] - maybe freeze the adblock feature for now, it doesnt really work as intended (ill probably have to rework it)
-[x] - add a demo video on the readme
 
 issues:
 [?/] - random not responding after exiting cs2 (might have to do with constant changes to resolution)
@@ -33,18 +32,20 @@ issues:
 [?] - saving a session with :w sometimes doesnt work, no idea why
 [/?] - random not responding after new update 26/07/2026 22:54
 [*] - add a way for users to freely install extensions
-[] - fix the skip ad button not being pressable with hint mode
-[] - :resources and every other native shell command should not override the current pane/tab, currently if i have a splitted webview2/servo open and write :res it opens on the selected pane
+[~*] - fix the skip ad button not being pressable with hint mode
+[~*] - fix the captcha button not being pressable with hint mode
+[x] - :resources and every other native shell command should not override the current pane/tab, currently if i have a splitted webview2/servo open and write :res it opens on the selected pane
 [] - after running ":ai open github and wikipedia side by side please" it opened github.com on the left, splitted vertically but didnt open wikipedia, and then gave me: "! groq 429: Rate limit reached for model `openai/gpt-oss-120b` in organization `org_01kva1e35pet7tkmy9tte02502` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Used 5616, Requested 5181. Please try again in 20.9775s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing"
-[] - "gg" should go to the top, not just "g"
+[x] - "gg" should go to the top, not just "g"
 [] - random not responding 08/10/2026 i forgot the time
+[] - pressing the right mouse button on a youtube video opens both the shells menu and the youtube's menu, should only open youtube's own menu
 
 feats:
 [] - make ";" toggle browser hud visibility
 [/] - add vertical sidebar like zen browser
 [*] - make it so every browser related error is shown in :error/:errors (like if an engine crashes/errors, extension stops working, everything)
-[] - allow splitting without having anything open (like on the welcome screen), basically treat the welcome screen as an empty pane that cannot be closed if its by itself, but closeable if theres other splits, if the user closes every split then they go back to the welcome screen
-[] - fix the downloads, currently it just downloads stuff with no warning or feedback whatsoever
+[*] - allow splitting without having anything open (like on the welcome screen), basically treat the welcome screen as an empty pane that cannot be closed if its by itself, but closeable if theres other splits, if the user closes every split then they go back to the welcome screen
+[***] - fix the downloads, currently it just downloads stuff with no warning or feedback whatsoever
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
