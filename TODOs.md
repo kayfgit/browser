@@ -32,11 +32,7 @@ issues:
 [?] - saving a session with :w sometimes doesnt work, no idea why
 [/?] - random not responding after new update 26/07/2026 22:54
 [*] - add a way for users to freely install extensions
-[~*] - fix the skip ad button not being pressable with hint mode
-[~*] - fix the captcha button not being pressable with hint mode
-[x] - :resources and every other native shell command should not override the current pane/tab, currently if i have a splitted webview2/servo open and write :res it opens on the selected pane
 [] - after running ":ai open github and wikipedia side by side please" it opened github.com on the left, splitted vertically but didnt open wikipedia, and then gave me: "! groq 429: Rate limit reached for model `openai/gpt-oss-120b` in organization `org_01kva1e35pet7tkmy9tte02502` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Used 5616, Requested 5181. Please try again in 20.9775s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing"
-[x] - "gg" should go to the top, not just "g"
 [] - random not responding 08/10/2026 i forgot the time
 [] - pressing the right mouse button on a youtube video opens both the shells menu and the youtube's menu, should only open youtube's own menu
 
