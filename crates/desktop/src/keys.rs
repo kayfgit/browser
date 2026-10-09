@@ -151,6 +151,15 @@ impl App {
             }
             return;
         }
+        // `gg` jumps to the top. Anything else after a lone `g` just drops the prefix
+        // and runs its own binding below (so `gG` still jumps to the bottom).
+        if prefix == Some(KeyPrefix::Go)
+            && !self.modifiers.control_key()
+            && matches!(&key.logical_key, Key::Character(s) if *s == "g")
+        {
+            self.scroll_edge(false);
+            return;
+        }
         // Once a `/` search is live, `n`/`N` step through matches and Esc clears it
         // (qutebrowser-style) — in every tab type, so this takes precedence over both
         // the vim pager and the normal tab/scroll bindings.
@@ -286,7 +295,8 @@ impl App {
                 "l" => self.scroll_x(80),
                 // Reopen the last closed tab (vim-style undo; also Ctrl+Shift+T).
                 "u" => self.reopen_closed(),
-                "g" => self.scroll_edge(false),
+                // `g` arms the `gg` prefix (handled at the top of `key_normal`).
+                "g" => self.pending_prefix = Some((KeyPrefix::Go, std::time::Instant::now())),
                 "G" => self.scroll_edge(true),
                 "/" => self.enter_find(),
                 "i" => {

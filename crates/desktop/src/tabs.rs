@@ -1124,7 +1124,7 @@ impl App {
         }
     }
 
-    /// Jump to the top (`g`) or bottom (`G`) of the active page/document.
+    /// Jump to the top (`gg`) or bottom (`G`) of the active page/document.
     pub(crate) fn scroll_edge(&mut self, bottom: bool) {
         let view = self.content_view_h();
         if let Some(nr) = self.active_native_mut() {

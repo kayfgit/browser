@@ -42,7 +42,7 @@ Zoom comes in two independent kinds:
 The browser is modal, like vim or qutebrowser. The mode decides where your keys go.
 
 - **Normal**: the browser has the keyboard. `j`/`k` scroll, `h`/`l` scroll sideways,
-  `Ctrl+D`/`Ctrl+U` move half a page, `g`/`G` jump to top/bottom, `H`/`L` go
+  `Ctrl+D`/`Ctrl+U` move half a page, `gg`/`G` jump to top/bottom, `H`/`L` go
   back/forward, `r` reloads. `n`/`p` switch tabs, `1`–`9` jump to a tab
   (`Shift+1`–`9` for tabs 11–19), `<`/`>` move the current tab, `x` closes it and
   `u` (or `Ctrl+Shift+T`) reopens the last closed one. `U` undoes the last layout change
@@ -64,7 +64,7 @@ The browser is modal, like vim or qutebrowser. The mode decides where your keys 
   typing the label in UPPERCASE) opens links in a new tab, and `yf` copies the link
   address instead. A hint on a text field focuses it and enters Insert. `Esc` cancels.
 - **Scroll**: `s` labels scrollable boxes inside the page (a chat log, a code panel).
-  Pick one and `h`/`j`/`k`/`l`, `g`/`G`, `Ctrl+D`/`Ctrl+U` or `PgUp`/`PgDn` scroll only
+  Pick one and `h`/`j`/`k`/`l`, `gg`/`G`, `Ctrl+D`/`Ctrl+U` or `PgUp`/`PgDn` scroll only
   that box, which gets a cyan outline. `Esc` releases it.
 - **Selection**: `v` or `V` puts a cursor in the middle of the view. Move it with vim
   motions (`h`/`j`/`k`/`l`, `w`/`b`/`e`, `0`/`$`, `gg`/`G`), press `v` for a character
