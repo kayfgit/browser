@@ -23,12 +23,10 @@ STUFF TO KEEP IN MIND:
 
 general:
 [*] - ship every engine with the browser by default: the installer has all engines checked and users can uncheck the ones they dont want. package each engine separately so updates only redownload the browser (~20mb) unless an engine changed, and allow adding/removing engines later (something like :engine install gecko / :engine remove servo)
-[x] - maybe freeze the adblock feature for now, it doesnt really work as intended (ill probably have to rework it)
 
 issues:
 [?/] - random not responding after exiting cs2 (might have to do with constant changes to resolution)
 [?] - sometimes crashes after taking a windows screenshot (prntscreen button)
-[x] - opening youtube with ublock origin activated makes it open in a half-open half-not state.
 [?] - saving a session with :w sometimes doesnt work, no idea why
 [/?] - random not responding after new update 26/07/2026 22:54
 [*] - add a way for users to freely install extensions
@@ -36,20 +34,18 @@ issues:
 [] - random not responding 08/10/2026 i forgot the time
 [] - pressing the right mouse button on a youtube video opens both the shells menu and the youtube's menu, should only open youtube's own menu
 [] - normal mode on terminal has that annoying "[COPY] hjkl/w/b move..." text, need that removed.
-[] - the inline :ai status still doesnt show markdown, its fixed on the actual :ai tab but not inline
 
 feats:
 [] - make ";" toggle browser hud visibility
 [/] - add vertical sidebar like zen browser
 [*] - make it so every browser related error is shown in :error/:errors (like if an engine crashes/errors, extension stops working, everything)
 [*] - allow splitting without having anything open (like on the welcome screen), basically treat the welcome screen as an empty pane that cannot be closed if its by itself, but closeable if theres other splits, if the user closes every split then they go back to the welcome screen
-[x] - fix the downloads, currently it just downloads stuff with no warning or feedback whatsoever
 [] - allow clicking on a external link and opening it in the browser
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
 [~*] - maybe add a :engine command to change browser engine? might be overkill and dont know if its possible
-[/] - ctrl+: enters command bar in vim mode, allows vim motions.
+[/] - ctrl+: enters command bar in vim mode, allows vim motions on the command bar itself.
 [] - maybe change the :read command into a :html toggle like :js and :css? if you think about it, removing html is basically removing the dom parsing and rendering only text, which is exactly what :read does
 [] - maybe add the zen browser glance feature, where i can preview a link in a floating window
 [] - maybe add webkit as a third engine, so web devs on windows/linux can check their sites against apple's engine without a mac. use playwright's prebuilt windows webkit build (downloaded only on :engine install webkit) instead of building it ourselves. its webkit, not safari: no apple fonts, some codecs missing, no ios touch/viewport stuff, so it catches most "broken in safari" bugs but not all. first do a quick spike to check it can draw inside our panes
