@@ -36,6 +36,7 @@ issues:
 [] - random not responding 08/10/2026 i forgot the time
 [] - pressing the right mouse button on a youtube video opens both the shells menu and the youtube's menu, should only open youtube's own menu
 [] - normal mode on terminal has that annoying "[COPY] hjkl/w/b move..." text, need that removed.
+[] - the inline :ai status still doesnt show markdown, its fixed on the actual :ai tab but not inline
 
 feats:
 [] - make ";" toggle browser hud visibility
