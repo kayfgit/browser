@@ -52,3 +52,4 @@ maybes:
 [/] - ctrl+: enters command bar in vim mode, allows vim motions.
 [] - maybe change the :read command into a :html toggle like :js and :css? if you think about it, removing html is basically removing the dom parsing and rendering only text, which is exactly what :read does
 [] - maybe add the zen browser glance feature, where i can preview a link in a floating window
+[] - maybe add webkit as a third engine, so web devs on windows/linux can check their sites against apple's engine without a mac. use playwright's prebuilt windows webkit build (downloaded only on :engine install webkit) instead of building it ourselves. its webkit, not safari: no apple fonts, some codecs missing, no ios touch/viewport stuff, so it catches most "broken in safari" bugs but not all. first do a quick spike to check it can draw inside our panes
