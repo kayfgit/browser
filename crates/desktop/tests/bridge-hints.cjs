@@ -30,8 +30,9 @@ function page() {
         getBoundingClientRect() { return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }; },
       };
     },
-    documentElement: { appendChild() {} },
+    documentElement: { appendChild(el) { appended.push(el); } },
   };
+  const appended = [];
   const button = {
     tagName: 'BUTTON',
     closest(selector) { return selector.split(',').includes('button') ? this : null; },
@@ -69,7 +70,7 @@ function page() {
     setTimeout(fn) { timers.push(fn); },
   });
   vm.runInContext(script('BRIDGE_JS'), context);
-  return { context, window, document, button, messages, clicks, timers };
+  return { context, window, document, button, messages, clicks, timers, appended };
 }
 
 test('hinted button still clicks without selecting the pane under the mouse', () => {
@@ -106,6 +107,20 @@ test('default provider still suppresses the native context menu', () => {
   let prevented = false;
   p.button.dispatchEvent({ type: 'contextmenu', preventDefault() { prevented = true; } });
   assert.equal(prevented, true);
+  // ...and shows its own menu once the page has had its turn.
+  p.timers.splice(0).forEach((fn) => fn());
+  assert.equal(p.appended.length, 1);
+});
+
+test('a page with its own right-click menu gets only that menu', () => {
+  const p = page();
+  // The page's own handler (YouTube's player) cancels the event to show its menu.
+  p.document.addEventListener('contextmenu', (e) => e.preventDefault());
+  let prevented = false;
+  p.button.dispatchEvent({ type: 'contextmenu', preventDefault() { prevented = true; } });
+  assert.equal(prevented, true, 'the native menu is still cancelled');
+  p.timers.splice(0).forEach((fn) => fn());
+  assert.equal(p.appended.length, 0, "no shell menu on top of the page's");
 });
 
 // A page with real hit-testing: `stack` lists elements topmost first, and

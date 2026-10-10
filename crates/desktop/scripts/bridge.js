@@ -238,8 +238,18 @@
   function ctxClose() { if (__ctxMenu) { __ctxMenu.remove(); __ctxMenu = null; } }
   document.addEventListener('contextmenu', function (e) {
     if (window.__shellNativeContextMenu) return;
-    e.preventDefault(); // always kill the broken native menu
+    // A page with its own right-click menu (YouTube's player) says so by cancelling the
+    // event in its handler, which runs after this one; then only its menu should show.
+    // Note whether it does, cancel the broken native menu ourselves either way, and
+    // build ours once the page's handlers have run — only if the page left it to us.
+    var cancel = e.preventDefault;
+    var pageMenu = false;
+    e.preventDefault = function () { pageMenu = true; return cancel.call(e); };
+    cancel.call(e);
     ctxClose();
+    setTimeout(function () { if (!pageMenu) ctxOpen(e); }, 0);
+  }, true);
+  function ctxOpen(e) {
     var items = [];
     var sel = '';
     try { sel = String(window.getSelection ? window.getSelection() : ''); } catch (err) {}
@@ -276,7 +286,7 @@
     if (r.right > innerWidth) menu.style.left = Math.max(0, innerWidth - r.width) + 'px';
     if (r.bottom > innerHeight) menu.style.top = Math.max(0, innerHeight - r.height) + 'px';
     __ctxMenu = menu;
-  }, true);
+  }
   // Dismiss the menu on an outside click (but not a click INSIDE it — that path
   // runs the item's own handler), on scroll, or Escape. (No window-blur close: the
   // shell's focus-reclaim blurs the webview routinely, which would shut it early.)
