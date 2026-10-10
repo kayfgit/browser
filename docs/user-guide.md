@@ -210,7 +210,11 @@ change takes hold. If the extension can't be switched on or off, the reason show
 
 Other protections and toggles:
 
-- Downloads of executables and installers are blocked unless you run `:downloads`.
+- Every download asks first: the bar shows the file, its size and the site, and `y` or
+  `Enter` saves it to your Downloads folder (`n` or `Esc` cancels). Programs and installers
+  get a red warning. Progress shows in the status bar; `:downloads` lists this session's
+  downloads (`Enter` opens one, `e` shows it in its folder, `d` cancels or forgets it), and
+  `:downloads dir <path>` changes where they go.
 - Edge's "translate this page?" bar is disabled, and links routed through Google's
   `translate.goog` proxy go to the real site instead.
 - Favicons come from WebView2's own cache, never from a third-party favicon service.

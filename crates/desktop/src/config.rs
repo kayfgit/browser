@@ -72,6 +72,9 @@ pub(crate) struct Config {
     /// `seen_version`.
     #[serde(default)]
     pub(crate) update_checked_at: Option<u64>,
+    /// Where downloads are saved (`:downloads dir`); unset is the Windows Downloads folder.
+    #[serde(default)]
+    pub(crate) download_dir: Option<PathBuf>,
 }
 
 /// Appearance overrides for the shell chrome — the command/status bar height and the

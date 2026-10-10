@@ -1115,6 +1115,32 @@ impl App {
                     draw::DIM,
                 ),
             ],
+            ModeKind::DownloadAsk => match self.downloads.question() {
+                Some(d) => {
+                    let size = d
+                        .total
+                        .map(|n| format!(" ({})", crate::procmon::fmt_bytes(n)))
+                        .unwrap_or_default();
+                    let from = url::Url::parse(&d.url)
+                        .ok()
+                        .and_then(|u| u.host_str().map(str::to_string))
+                        .unwrap_or_default();
+                    // Keys before the source site: a long name or host must not push them
+                    // off a narrow bar.
+                    let mut segs = vec![("[DOWNLOAD]".into(), accent)];
+                    if d.risky {
+                        segs.push((
+                            " program/installer, only if you trust it:".into(),
+                            draw::ERR,
+                        ));
+                    }
+                    segs.push((format!(" {}{size}", d.name), fg));
+                    segs.push(("   y/Enter save · n/Esc cancel".into(), draw::DIM));
+                    segs.push((format!("   from {from}"), draw::DIM));
+                    segs
+                }
+                None => vec![("[DOWNLOAD]".into(), accent)],
+            },
             ModeKind::Caret => vec![
                 ("[SELECTION]".into(), accent),
                 (
@@ -1189,6 +1215,9 @@ impl App {
                 }
                 if self.frozen {
                     segs.push(("   [FROZEN]  :unfreeze".into(), draw::AI));
+                }
+                if let Some(note) = self.downloads.status() {
+                    segs.push((format!("   {note}"), accent));
                 }
                 if let Some(s) = &self.staged_update {
                     segs.push((
