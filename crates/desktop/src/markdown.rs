@@ -74,6 +74,54 @@ pub(crate) fn render(
     }
 }
 
+/// `text` rendered as markdown on ONE line, for the status bar: coloured segments in
+/// the same colours as the `:ai` tab (code, bold, links, list markers), with plain
+/// text in `base`. Line breaks become ` · `, so a short multi-line answer still reads
+/// as one line; a list item's own marker stands in for the separator, and rules and
+/// blank lines are dropped.
+pub(crate) fn inline_segments(text: &str, base: Rgb) -> Vec<(String, Rgb)> {
+    let (mut lines, mut styles) = (Vec::new(), Vec::new());
+    render(text, usize::MAX / 2, &mut lines, &mut styles);
+    let mut segs: Vec<(String, Rgb)> = Vec::new();
+    for (line, style) in lines.iter().zip(&styles) {
+        let chars: Vec<char> = line.chars().collect();
+        if chars.iter().all(|c| c.is_whitespace() || *c == '─') {
+            continue;
+        }
+        // Where the line's text starts (past any indent), and its colour runs.
+        let first = chars.iter().position(|c| !c.is_whitespace()).unwrap_or(0);
+        let mut runs: Vec<(usize, usize, Rgb)> = Vec::new();
+        let mut at = first;
+        for run in &style.runs {
+            let (start, end) = (run.start.max(first), run.end.min(chars.len()));
+            if start >= end {
+                continue;
+            }
+            if start > at {
+                runs.push((at, start, FG));
+            }
+            runs.push((start, end, run.color));
+            at = end;
+        }
+        if at < chars.len() {
+            runs.push((at, chars.len(), FG));
+        }
+        let starts_with_marker = runs.first().is_some_and(|r| r.2 == MARKER);
+        if !segs.is_empty() {
+            segs.push((if starts_with_marker { "  " } else { " · " }.into(), MUTED));
+        }
+        for (start, end, color) in runs {
+            let color = if color == FG { base } else { color };
+            let text: String = chars[start..end].iter().collect();
+            match segs.last_mut() {
+                Some(last) if last.1 == color => last.0.push_str(&text),
+                _ => segs.push((text, color)),
+            }
+        }
+    }
+    segs
+}
+
 /// Models sometimes wrap a whole reply in a ```` ```markdown ```` fence when asked for
 /// markdown, which would render as one big code block. Render the inside instead.
 fn unwrap_markdown_fence(text: &str) -> &str {
@@ -738,6 +786,35 @@ pub(crate) fn to_document(md: &str, url: &str) -> browser_core::Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn flat(segs: &[(String, Rgb)]) -> String {
+        segs.iter().map(|(t, _)| t.as_str()).collect()
+    }
+
+    #[test]
+    fn inline_replies_drop_the_markup_and_keep_the_colours() {
+        let base = crate::draw::AI;
+        let segs = inline_segments("Opened **GitHub** and ran `:split`.", base);
+        assert_eq!(flat(&segs), "Opened GitHub and ran :split.");
+        assert!(segs.contains(&("GitHub".into(), STRONG)), "{segs:?}");
+        assert!(segs.contains(&(":split".into(), CODE)), "{segs:?}");
+        assert_eq!(segs[0], ("Opened ".into(), base));
+    }
+
+    #[test]
+    fn inline_replies_put_lines_and_list_items_on_one_line() {
+        let segs = inline_segments(
+            "Done:\n\n- opened github\n- split the pane",
+            crate::draw::AI,
+        );
+        let text = flat(&segs);
+        assert!(!text.contains('\n'), "{text:?}");
+        assert!(text.starts_with("Done:"), "{text:?}");
+        assert!(
+            text.contains("opened github") && text.contains("split the pane"),
+            "{text:?}"
+        );
+    }
 
     #[test]
     fn documents_keep_headings_lists_and_followable_links() {
