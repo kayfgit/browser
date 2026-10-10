@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.0](https://github.com/kayfgit/browser/compare/v0.6.0...v0.7.0) (2026-10-10)
+
+
+### Features
+
+* block ad and tracker requests in Servo pages ([25d5bad](https://github.com/kayfgit/browser/commit/25d5bad1ed60dceb14b2894a5e1c0fcf85442f44))
+
+
+### Bug Fixes
+
+* hints click YouTube's skip-ad button and captcha checkboxes ([ca1c894](https://github.com/kayfgit/browser/commit/ca1c8948dc5967303d607fb02aeec06abc0ea5a5))
+* internal pages no longer replace the focused pane of a split ([8e0fd0a](https://github.com/kayfgit/browser/commit/8e0fd0a7cd40290925827c8c58588c0f3e56b544))
+* jump to the top with gg instead of a single g ([b67712f](https://github.com/kayfgit/browser/commit/b67712f558dddda1584b3e3fa6f202e85ba0e1e0))
+* keep uBlock Origin Lite on and make it the only WebView2 ad blocker ([d86d396](https://github.com/kayfgit/browser/commit/d86d396c37a572c4ad97da66b8692425e6db88e7))
+* stop reloading uBlock Origin Lite under loading pages ([c7a2aba](https://github.com/kayfgit/browser/commit/c7a2aba6f3c164976192c921cde06963c9d391fc))
+
 ## [0.6.0](https://github.com/kayfgit/browser/compare/v0.4.0...v0.6.0) (2026-10-09)
 
 
