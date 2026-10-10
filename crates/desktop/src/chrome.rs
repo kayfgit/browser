@@ -359,20 +359,31 @@ pub(crate) fn paint_pane(
             }
             let baseline = (y_top + line_h * 3 / 4) as usize;
             if vb.left < line.len() {
-                let text: String = line[vb.left..].iter().collect();
-                p.text_rect(
-                    buf,
-                    wz,
-                    hz,
-                    left,
-                    baseline,
-                    &text,
-                    draw::FG,
-                    left,
-                    right,
-                    top,
-                    bottom,
-                );
+                // An optional tint colours the line from its column on (see
+                // `TextBuffer::tints`); the part before it keeps the text colour.
+                let (split, tint) = match vb.tints.get(r).copied().flatten() {
+                    Some((col, rgb)) => (col.clamp(vb.left, line.len()), rgb),
+                    None => (line.len(), draw::FG),
+                };
+                for (from, to, colour) in [(vb.left, split, draw::FG), (split, line.len(), tint)] {
+                    if from >= to {
+                        continue;
+                    }
+                    let text: String = line[from..to].iter().collect();
+                    p.text_rect(
+                        buf,
+                        wz,
+                        hz,
+                        col_x(line, from),
+                        baseline,
+                        &text,
+                        colour,
+                        left,
+                        right,
+                        top,
+                        bottom,
+                    );
+                }
             }
             if focused && r == vb.cy {
                 let cx0 = col_x(line, vb.cx);
@@ -1115,32 +1126,7 @@ impl App {
                     draw::DIM,
                 ),
             ],
-            ModeKind::DownloadAsk => match self.downloads.question() {
-                Some(d) => {
-                    let size = d
-                        .total
-                        .map(|n| format!(" ({})", crate::procmon::fmt_bytes(n)))
-                        .unwrap_or_default();
-                    let from = url::Url::parse(&d.url)
-                        .ok()
-                        .and_then(|u| u.host_str().map(str::to_string))
-                        .unwrap_or_default();
-                    // Keys before the source site: a long name or host must not push them
-                    // off a narrow bar.
-                    let mut segs = vec![("[DOWNLOAD]".into(), accent)];
-                    if d.risky {
-                        segs.push((
-                            " program/installer, only if you trust it:".into(),
-                            draw::ERR,
-                        ));
-                    }
-                    segs.push((format!(" {}{size}", d.name), fg));
-                    segs.push(("   y/Enter save · n/Esc cancel".into(), draw::DIM));
-                    segs.push((format!("   from {from}"), draw::DIM));
-                    segs
-                }
-                None => vec![("[DOWNLOAD]".into(), accent)],
-            },
+            ModeKind::Ask => self.ask_segments(),
             ModeKind::Caret => vec![
                 ("[SELECTION]".into(), accent),
                 (

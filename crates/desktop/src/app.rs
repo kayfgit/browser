@@ -179,6 +179,14 @@ pub(crate) enum UserEvent {
     /// Something happened to a download: a page started one (ask the user), progress, or
     /// its end. From any tab — downloads don't belong to the tab on screen.
     Download(crate::downloads::DownloadEvent),
+    /// A site asks for a permission ("download multiple files", camera, …); the engine
+    /// holds the request until [`answer_permission`](crate::engines::answer_permission).
+    PermissionAsk {
+        id: u64,
+        url: String,
+        /// What it wants, finishing "`<site>` wants to …".
+        what: String,
+    },
     /// The network blocklist engine finished compiling and is now live.
     BlocklistReady,
     /// The bundled ad blocker (uBO Lite) couldn't be installed, enabled or disabled in a
@@ -325,9 +333,9 @@ pub(crate) enum ModeKind {
     /// to an injected page caret that moves/extends a real DOM Selection; `y` yanks,
     /// `Esc` collapses then exits. (Engine-free read tabs use `NativeRead.caret`.)
     Caret,
-    /// A page started a download and the bar asks whether to save it: y/Enter saves it to
-    /// the downloads folder, n/Esc declines. See [`ask_download`](App::ask_download).
-    DownloadAsk,
+    /// The bar asks a yes/no question for the engine — a site's permission request, or
+    /// whether to save a download: y/Enter yes, n/Esc no. See [`ask_next`](App::ask_next).
+    Ask,
 }
 
 pub(crate) struct App {
@@ -381,6 +389,8 @@ pub(crate) struct App {
     pub(crate) extension_request: u64,
     /// This session's downloads and the "save it?" questions still to ask (`:downloads`).
     pub(crate) downloads: crate::downloads::Downloads,
+    /// Sites' permission requests still to ask about (see `prompts`).
+    pub(crate) permissions: crate::prompts::Permissions,
     /// The uBlock-style network blocklist engine ([`blocklist`](crate::blocklist)),
     /// shared (cloned `Arc`) into every tab's navigation handler. It blocks navigations
     /// to known ad/redirect/malware domains BY NAME — the race-free primary guard, the

@@ -163,7 +163,7 @@ impl Downloads {
 fn progress(d: &Download) -> String {
     match d.total {
         Some(total) if total > 0 => format!("{}%", d.received * 100 / total),
-        _ => crate::procmon::fmt_bytes(d.received),
+        _ => fmt_size(d.received),
     }
 }
 
@@ -207,39 +207,62 @@ pub(crate) fn unique_path(dir: &Path, name: &str) -> PathBuf {
 /// How many lines the `:downloads` page puts above the first download.
 pub(crate) const PAGE_HEADER: usize = 3;
 
-/// The `:downloads` page: a header, then one row per download (newest first).
-pub(crate) fn page_lines(list: &[Download], dir: &Path) -> Vec<String> {
-    let mut lines = vec![
-        format!(
-            "downloads — {}   (Enter open · e show in folder · d cancel / forget)",
-            list.len()
+/// One `:downloads` line: its text, and where its status starts and in which colour.
+pub(crate) type PageLine = (String, Option<(usize, crate::draw::Rgb)>);
+
+/// The `:downloads` page: a header, then one row per download (newest first) — the
+/// file name, its size, and its state, coloured: green done, yellow downloading, red
+/// failed, accent waiting for an answer.
+pub(crate) fn page_lines(list: &[Download], dir: &Path) -> Vec<PageLine> {
+    let mut lines: Vec<PageLine> = vec![
+        (
+            format!(
+                "downloads — {}   (Enter open · e show in folder · d cancel / forget)",
+                list.len()
+            ),
+            None,
         ),
-        format!(
-            "saved to {}   (:downloads dir <path> to change)",
-            dir.display()
+        (
+            format!(
+                "saved to {}   (:downloads dir <path> to change)",
+                dir.display()
+            ),
+            None,
         ),
-        String::new(),
+        (String::new(), None),
     ];
     debug_assert_eq!(lines.len(), PAGE_HEADER);
     if list.is_empty() {
-        lines.push("nothing downloaded yet this session".into());
+        lines.push(("nothing downloaded yet this session".into(), None));
     }
+    let width = list
+        .iter()
+        .map(|d| short(&d.name, 60).chars().count())
+        .max()
+        .unwrap_or(0);
     for d in list {
-        let (state, size) = match &d.state {
-            State::Asking => ("asking".to_string(), size_of(d)),
+        let (state, colour, size) = match &d.state {
+            State::Asking => (
+                "waiting for you".to_string(),
+                crate::draw::ACCENT,
+                size_of(d),
+            ),
             State::Running => (
                 format!("↓ {}", progress(d)),
+                crate::draw::GRAB,
                 format!(
-                    "{}/{}",
-                    crate::procmon::fmt_bytes(d.received),
-                    d.total.map(crate::procmon::fmt_bytes).unwrap_or("?".into())
+                    "{} / {}",
+                    fmt_size(d.received),
+                    d.total.map(fmt_size).unwrap_or_else(|| "?".into())
                 ),
             ),
-            State::Done => ("done".into(), size_of(d)),
-            State::Declined => ("declined".into(), size_of(d)),
-            State::Failed(reason) => (format!("failed: {reason}"), size_of(d)),
+            State::Done => ("done".into(), crate::draw::READ, size_of(d)),
+            State::Declined => ("not downloaded".into(), crate::draw::DIM, size_of(d)),
+            State::Failed(reason) => (format!("failed: {reason}"), crate::draw::ERR, size_of(d)),
         };
-        lines.push(format!("{state:<24} {size:>18}   {}", d.name));
+        let head = format!("{:<width$}   {size:>17}   ", short(&d.name, 60));
+        let at = head.chars().count();
+        lines.push((format!("{head}{state}"), Some((at, colour))));
     }
     lines
 }
@@ -247,8 +270,23 @@ pub(crate) fn page_lines(list: &[Download], dir: &Path) -> Vec<String> {
 fn size_of(d: &Download) -> String {
     d.total
         .or((d.received > 0).then_some(d.received))
-        .map(crate::procmon::fmt_bytes)
+        .map(fmt_size)
         .unwrap_or_else(|| "—".into())
+}
+
+/// A file size the way a person reads it: `512 B`, `14.8 KB`, `2.4 MB`, `1.20 GB`.
+pub(crate) fn fmt_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    let b = bytes as f64;
+    if b < KB {
+        format!("{bytes} B")
+    } else if b < KB * KB {
+        format!("{:.1} KB", b / KB)
+    } else if b < KB * KB * KB {
+        format!("{:.1} MB", b / (KB * KB))
+    } else {
+        format!("{:.2} GB", b / (KB * KB * KB))
+    }
 }
 
 /// The download on `:downloads` page row `row`, if that row is one.
@@ -278,7 +316,7 @@ impl crate::App {
             return;
         };
         match &d.state {
-            State::Asking => self.ask_download(),
+            State::Asking => self.ask_next(),
             State::Done if ended => {
                 self.set_status(format!("downloaded {} — :downloads", short(&d.name, 60)))
             }
@@ -291,48 +329,15 @@ impl crate::App {
             )),
             _ => {}
         }
-        if self.mode == crate::ModeKind::DownloadAsk && self.downloads.question().is_none() {
-            // The question it was showing went away (the download failed meanwhile).
-            self.mode = crate::ModeKind::Normal;
-        }
+        // The question on screen may have gone away (the download failed meanwhile).
+        self.drop_stale_question();
         self.refresh_downloads_page();
         self.window.request_redraw();
     }
 
-    /// Show the pending "save it?" question, unless you're busy: a question that arrives
-    /// while you type a command (or resize, pick a hint, …) waits until you're back in
-    /// Normal mode. Typing into a page doesn't count as busy — the download came from it.
-    pub(crate) fn ask_download(&mut self) {
-        use crate::ModeKind;
-        if self.downloads.question().is_none() {
-            return;
-        }
-        match self.mode {
-            ModeKind::DownloadAsk => return,
-            ModeKind::Normal => {}
-            ModeKind::Insert => self.exit_to_normal(),
-            ModeKind::Passthrough if !self.active_is_term() && !self.active_is_ai() => {
-                self.exit_to_normal()
-            }
-            _ => return,
-        }
-        self.mode = ModeKind::DownloadAsk;
-        self.reclaim_shell_focus();
-        self.window.request_redraw();
-    }
-
-    /// Keys while a download question is showing: y/Enter saves it, n/Esc declines.
-    pub(crate) fn key_download_ask(&mut self, key: &tao::event::KeyEvent) {
-        use tao::keyboard::Key;
-        let yes = match &key.logical_key {
-            Key::Enter => true,
-            Key::Escape => false,
-            Key::Character(c) if c.eq_ignore_ascii_case("y") => true,
-            Key::Character(c) if c.eq_ignore_ascii_case("n") => false,
-            _ => return,
-        };
+    /// Answer the download question on screen: save it to the downloads folder, or not.
+    pub(crate) fn answer_download(&mut self, yes: bool) {
         let Some(d) = self.downloads.question().cloned() else {
-            self.mode = crate::ModeKind::Normal;
             return;
         };
         let dir = self.download_dir();
@@ -357,11 +362,7 @@ impl crate::App {
             )),
             None => self.set_status(format!("didn't download {}", short(&d.name, 60))),
         }
-        if self.downloads.question().is_none() {
-            self.mode = crate::ModeKind::Normal;
-        }
         self.refresh_downloads_page();
-        self.window.request_redraw();
     }
 
     /// `:downloads` — this session's downloads in a vim page (Enter opens the file, `e`
@@ -370,10 +371,14 @@ impl crate::App {
         if self.active_url() == Some("browser://downloads") {
             return self.refresh_downloads_page();
         }
-        let lines = page_lines(&self.downloads.list, &self.download_dir());
+        let (lines, tints) = page_lines(&self.downloads.list, &self.download_dir())
+            .into_iter()
+            .unzip();
+        let mut buffer = crate::vim::TextBuffer::new(lines);
+        buffer.tints = tints;
         let mut tab = crate::Tab::blank();
         tab.url = "browser://downloads".into();
-        tab.content = crate::tabs::TabContent::Pager(crate::vim::TextBuffer::new(lines));
+        tab.content = crate::tabs::TabContent::Pager(buffer);
         self.place_tab(tab, true);
         self.window.set_focus();
         self.clear_status();
@@ -384,13 +389,16 @@ impl crate::App {
         if self.active_url() != Some("browser://downloads") {
             return;
         }
-        let lines = page_lines(&self.downloads.list, &self.download_dir());
+        let (lines, tints) = page_lines(&self.downloads.list, &self.download_dir())
+            .into_iter()
+            .unzip();
         if let Some(buf) = self
             .active
             .and_then(|i| self.tabs.get_mut(i))
             .and_then(|t| t.vim_mut())
         {
             buf.set_lines(lines);
+            buf.tints = tints;
         }
         self.window.request_redraw();
     }
@@ -531,10 +539,24 @@ mod tests {
         ask(&mut d, 1, "old.pdf");
         ask(&mut d, 2, "new.zip");
         let lines = page_lines(&d.list, Path::new("C:/dl"));
-        assert!(lines[PAGE_HEADER].ends_with("new.zip"));
+        let (row, tint) = &lines[PAGE_HEADER];
+        assert!(row.starts_with("new.zip"), "the name comes first: {row}");
+        assert!(row.ends_with("waiting for you"));
+        assert_eq!(
+            *tint,
+            Some((row.find("waiting").unwrap(), crate::draw::ACCENT))
+        );
         assert_eq!(at_row(&d.list, PAGE_HEADER).unwrap().id, 2);
         assert_eq!(at_row(&d.list, PAGE_HEADER + 1).unwrap().id, 1);
         assert!(at_row(&d.list, 0).is_none());
+    }
+
+    #[test]
+    fn sizes_read_naturally() {
+        assert_eq!(fmt_size(512), "512 B");
+        assert_eq!(fmt_size(15_155), "14.8 KB");
+        assert_eq!(fmt_size(2_516_582), "2.4 MB");
+        assert_eq!(fmt_size(1_288_490_189), "1.20 GB");
     }
 
     #[test]

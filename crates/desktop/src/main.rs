@@ -62,6 +62,7 @@ mod panes;
 mod proc_cwd;
 mod procmon;
 mod profiles;
+mod prompts;
 mod pty_term;
 mod read_view;
 mod schemes;
@@ -236,6 +237,7 @@ fn main() -> Result<()> {
         term_clicks: None,
         extension_request: 0,
         downloads: Default::default(),
+        permissions: Default::default(),
         blocker: blocklist::new_shared(),
         mute: false,
         no_css: false,

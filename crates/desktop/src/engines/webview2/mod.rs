@@ -9,6 +9,7 @@ mod favicon;
 mod input;
 mod keys;
 mod navigation;
+pub(crate) mod permissions;
 mod suspension;
 
 use crate::tabs::{
@@ -375,6 +376,8 @@ pub(crate) fn build(
     );
     // Downloads ask first and report progress to the shell (see `downloads`).
     downloads::install(&webview, opts.proxy.clone());
+    // Permission requests are answered from the bar, not Edge's unreachable bubble.
+    permissions::install(&webview, opts.proxy.clone());
     // The shell's leave/reclaim keys and the reset chord, inside iframes too.
     keys::install(&webview, proxy.clone());
     // NOTE: there is deliberately no `WebResourceRequested` sub-resource blocker here.
