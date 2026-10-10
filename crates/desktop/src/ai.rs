@@ -1326,7 +1326,10 @@ impl App {
                 Some(m) if m.role == AiRole::Err => {
                     self.warn_status("the ai hit an error — see the :ai tab")
                 }
-                Some(m) if m.role == AiRole::Ai => self.flash_status_colored(m.text, draw::AI),
+                // The answer is markdown, like in the :ai tab: render it (one line).
+                Some(m) if m.role == AiRole::Ai => {
+                    self.flash_status_segments(crate::markdown::inline_segments(&m.text, draw::AI))
+                }
                 _ => {}
             }
         }

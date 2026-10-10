@@ -17,14 +17,14 @@ pub(crate) enum Tone {
     Info,
     /// A failure or warning, red.
     Error,
-    /// A one-off colour, e.g. the `:ai` answer in purple.
-    Color(Rgb),
 }
 
 #[derive(Default)]
 pub(crate) struct Status {
     text: String,
     tone: Tone,
+    /// When set, the message is these coloured pieces (their text joined is `text`).
+    segments: Vec<(String, Rgb)>,
     clear_at: Option<Instant>,
 }
 
@@ -33,7 +33,25 @@ impl Status {
     pub(crate) fn show(&mut self, text: String, tone: Tone, now: Instant) {
         self.text = text;
         self.tone = tone;
+        self.segments.clear();
         self.clear_at = Some(now + STATUS_TIMEOUT);
+    }
+
+    /// Show a message made of coloured pieces (a rendered `:ai` answer).
+    pub(crate) fn show_segments(&mut self, segments: Vec<(String, Rgb)>, now: Instant) {
+        self.text = segments.iter().map(|(t, _)| t.as_str()).collect();
+        self.tone = Tone::Info;
+        self.segments = segments;
+        self.clear_at = Some(now + STATUS_TIMEOUT);
+    }
+
+    /// The message as coloured pieces: its own, or its text in its one colour.
+    pub(crate) fn segments(&self) -> Vec<(String, Rgb)> {
+        if self.segments.is_empty() {
+            vec![(self.text.clone(), self.color())]
+        } else {
+            self.segments.clone()
+        }
     }
 
     pub(crate) fn clear(&mut self) {
@@ -48,7 +66,6 @@ impl Status {
         match self.tone {
             Tone::Info => draw::DIM,
             Tone::Error => draw::ERR,
-            Tone::Color(c) => c,
         }
     }
 
@@ -87,7 +104,14 @@ mod tests {
         let mut s = Status::default();
         s.show("no".into(), Tone::Error, Instant::now());
         assert_eq!(s.color(), draw::ERR);
-        s.show("ai".into(), Tone::Color(draw::AI), Instant::now());
-        assert_eq!(s.color(), draw::AI);
+        // A message in coloured pieces keeps them; its text is their concatenation.
+        let parts = vec![
+            ("ran ".to_string(), draw::AI),
+            (":split".to_string(), draw::READ),
+        ];
+        s.show_segments(parts.clone(), Instant::now());
+        assert_eq!((s.text(), s.segments()), ("ran :split", parts));
+        s.show("plain".into(), Tone::Info, Instant::now());
+        assert_eq!(s.segments(), vec![("plain".to_string(), draw::DIM)]);
     }
 }

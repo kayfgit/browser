@@ -1198,12 +1198,9 @@ impl App {
         self.status.show(msg.into(), Tone::Info, Instant::now());
     }
 
-    /// Like [`set_status`](Self::set_status) but paints the status in `color` instead
-    /// of the default dim — used for the background `:ai` answer so it reads as the
-    /// AI's reply (purple) rather than a generic status line. Auto-clears like the rest.
-    pub(crate) fn flash_status_colored(&mut self, msg: impl Into<String>, color: crate::draw::Rgb) {
-        self.status
-            .show(msg.into(), Tone::Color(color), Instant::now());
+    /// Show a status message made of coloured pieces (a rendered `:ai` answer).
+    pub(crate) fn flash_status_segments(&mut self, segments: Vec<(String, crate::draw::Rgb)>) {
+        self.status.show_segments(segments, Instant::now());
     }
 
     /// Show a warning (red) that isn't logged to `:errors`. Used for a background

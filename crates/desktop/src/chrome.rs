@@ -1300,7 +1300,8 @@ impl App {
                     segs.push((label, draw::FIND_CUR));
                 }
                 if !self.status.text().is_empty() {
-                    segs.push((format!("   {}", self.status.text()), self.status.color()));
+                    segs.push(("   ".into(), draw::DIM));
+                    segs.extend(self.status.segments());
                 }
                 segs
             }
