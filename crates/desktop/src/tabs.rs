@@ -801,7 +801,7 @@ impl App {
             return;
         };
         let before = self.layout_now();
-        let closed: Vec<_> = self
+        let mut closed: Vec<_> = self
             .reopen_info(i)
             .map(|how| (self.tabs[i].id, how))
             .into_iter()
@@ -816,6 +816,16 @@ impl App {
         // Drop the tab and fix the pane tree (prune its leaf, collapse to single-pane
         // when one remains); focus the surviving pane.
         self.active = self.drop_tab(i);
+        // The last pane of a split left empty is just the welcome screen again (the
+        // welcome screen splits into empty panes — see `split_pane`). Part of the same
+        // close, so `U` brings the whole split back.
+        if let Some(a) = self.active {
+            let content_tabs = self.tabs.iter().filter(|t| t.ai().is_none()).count();
+            if content_tabs == 1 && self.tabs[a].is_blank() {
+                closed.extend(self.reopen_info(a).map(|how| (self.tabs[a].id, how)));
+                self.active = self.drop_tab(a);
+            }
+        }
         // Closing a tab must never surface the background AI singleton: if the survivor
         // we'd land on is the AI tab, step away to a real tab (or the welcome screen).
         if self

@@ -119,6 +119,8 @@ Splits work like tmux: a tab in the tab bar can hold several panes, and each pan
 be any tab type.
 
 - `Ctrl+W` then `s` / `v` splits stacked / side by side (also `:split` / `:vsplit`).
+  It works on the welcome screen too, which splits into empty panes; closing every pane
+  but one empty one brings the welcome screen back.
 - `Ctrl+W` then `h`/`j`/`k`/`l` moves focus; `H`/`J`/`K`/`L` resizes (keep tapping,
   `Esc` to finish).
 - `Ctrl+W` then `c` closes the focused pane; `Ctrl+W` then `m` grabs it so `h`/`j`/`k`/`l`

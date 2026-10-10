@@ -538,6 +538,15 @@ impl App {
     /// grows the ACTIVE window's tree, so it stays "inside" the same tab-strip entry
     /// (tmux-style) rather than spawning another tab.
     pub(crate) fn split_pane(&mut self, dir: SplitDir) {
+        let before = self.layout_now();
+        let mut created = Vec::new();
+        // The welcome screen splits like an empty pane: it becomes one first. Closing
+        // every pane but one empty one turns it back into the welcome screen.
+        if self.active.is_none() {
+            let idx = self.push_tab_window(Tab::blank());
+            self.active = Some(idx);
+            created.push(self.tabs[idx].id);
+        }
         let Some(a) = self.active else {
             self.set_status("no pane to split — open something first");
             return;
@@ -548,7 +557,6 @@ impl App {
             self.set_status("can't split this — open a page first");
             return;
         };
-        let before = self.layout_now();
         let new_idx = self.tabs.len();
         self.tabs.push(Tab::blank());
         let tree = std::mem::replace(&mut self.windows[w], PaneNode::Leaf(new_idx));
@@ -559,7 +567,7 @@ impl App {
         self.refresh_visibility();
         self.window.set_focus();
         self.window.request_redraw();
-        let created = vec![self.tabs[new_idx].id];
+        created.push(self.tabs[new_idx].id);
         self.record_layout(ChangeKind::Split, before, created, Vec::new());
     }
 
