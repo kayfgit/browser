@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.9.0](https://github.com/kayfgit/browser/compare/v0.8.0...v0.9.0) (2026-10-10)
+
+
+### Features
+
+* open links from other apps in the running browser, and :default ([c0bba08](https://github.com/kayfgit/browser/commit/c0bba087a2cb68fde8643ee98c03c4c32fe4067f))
+* split from the welcome screen ([6dc718e](https://github.com/kayfgit/browser/commit/6dc718eca1470879ba3f6ab1a78c6743c239d425))
+
+
+### Bug Fixes
+
+* a page's own right-click menu no longer gets the browser's on top ([9e5cd58](https://github.com/kayfgit/browser/commit/9e5cd58c3ded56bbaafc385cb41331125f9ef5df))
+* drop the key list from the terminal's copy-mode status ([82d5f75](https://github.com/kayfgit/browser/commit/82d5f75b600c1588b84e89e681fc9784711e6411))
+* render markdown in the :ai answer shown in the status bar ([d7c5c79](https://github.com/kayfgit/browser/commit/d7c5c79a50e3535e9d34de0a86d9cf4641c5ef55))
+
 ## [0.8.0](https://github.com/kayfgit/browser/compare/v0.7.0...v0.8.0) (2026-10-10)
 
 
