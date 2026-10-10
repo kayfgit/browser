@@ -1340,6 +1340,18 @@ impl App {
         self.window.request_redraw();
     }
 
+    /// A link handed over by a later launch (see `external`): open it in a new tab and
+    /// bring the window to the front. An empty one only brings the window forward.
+    pub(crate) fn open_external(&mut self, target: &str) {
+        if !target.is_empty() && crate::external::acceptable(target) {
+            self.open_tab(target, self.nojs, true);
+        }
+        self.window.set_minimized(false);
+        self.window.set_focus();
+        self.reclaim_shell_focus();
+        self.window.request_redraw();
+    }
+
     /// Reload every web page in the active window (all panes of a split), e.g. so an
     /// extension switched on or off takes hold.
     pub(crate) fn reload_visible_web_panes(&mut self) {

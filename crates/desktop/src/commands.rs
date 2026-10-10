@@ -57,6 +57,7 @@ pub(crate) const BUILTIN_VERBS: &[&str] = &[
     "exts",
     "downloads",
     "dl",
+    "default",
     "mute",
     "audio",
     "css",
@@ -174,6 +175,7 @@ pub(crate) const COMMANDS: &[&str] = &[
     "ads",
     "adblock",
     "extensions",
+    "default",
     "downloads",
     "mute",
     "audio",
@@ -394,6 +396,18 @@ impl App {
             // extension under the cursor on/off. See `open_extensions_page`.
             "extensions" | "ext" | "exts" => self.open_extensions_page(),
             // This session's downloads; `dir [path]` shows/changes where they're saved.
+            // Register with Windows as a browser and open Default apps to pick it.
+            "default" => {
+                let result = match rest.trim() {
+                    "" => crate::external::register(),
+                    "remove" | "off" | "undo" => crate::external::unregister(),
+                    other => Err(format!("unknown default argument '{other}' — use: remove")),
+                };
+                match result {
+                    Ok(msg) => self.set_status(msg),
+                    Err(e) => self.set_error(e),
+                }
+            }
             "downloads" | "dl" => match rest.trim().split_once(' ').unwrap_or((rest.trim(), "")) {
                 ("", _) => self.open_downloads_page(),
                 ("dir", path) => self.set_download_dir(path),
