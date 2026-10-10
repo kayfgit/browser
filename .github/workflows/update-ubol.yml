@@ -1,0 +1,72 @@
+# Keep the bundled uBlock Origin Lite fresh. Its filter lists ship inside the
+# extension, so a stale copy means stale YouTube/anti-adblock fixes.
+#
+# Weekly (or on demand), run update-ubol.ps1. If uBOL-home has a newer release, commit
+# it on `ubol-update/<tag>` and open a PR, closing any older one it replaces. The
+# commit is a `fix:`, so release-please puts it in the next release.
+#
+# A PR opened with GITHUB_TOKEN doesn't trigger other workflows, so CI is started
+# explicitly with `gh workflow run`. Its checks still show on the PR.
+name: update uBOL
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays, 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: update-ubol
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the latest uBlock Origin Lite
+        shell: pwsh
+        run: ./update-ubol.ps1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Open a PR if it changed
+        run: |
+          git add -A crates/desktop/extensions/uBOLite.chromium
+          if git diff --cached --quiet; then
+            echo "uBlock Origin Lite is already up to date."
+            exit 0
+          fi
+          version=$(jq -r .version crates/desktop/extensions/uBOLite.chromium/manifest.json)
+          branch="ubol-update/$version"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "$branch already exists; nothing to do."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -q -m "fix: update uBlock Origin Lite to $version" \
+            -m "Brings the bundled filter lists up to date (automated, update-ubol.yml)."
+          git push -q origin "$branch"
+
+          url=$(gh pr create --base main --head "$branch" \
+            --title "fix: update uBlock Origin Lite to $version" \
+            --body "Automated weekly bump of the bundled uBlock Origin Lite to [$version](https://github.com/uBlockOrigin/uBOL-home/releases/tag/$version), so its filter lists (YouTube and anti-adblock fixes included) stay current. The archive's SHA-256 was checked against the release's digest by \`update-ubol.ps1\`.")
+          echo "Opened $url"
+
+          # Older bump PRs are superseded by this one.
+          gh pr list --state open --json number,headRefName \
+            --jq ".[] | select(.headRefName | startswith(\"ubol-update/\")) | select(.headRefName != \"$branch\") | .number" |
+            while read -r old; do
+              gh pr close "$old" --delete-branch --comment "Superseded by $url."
+            done
+
+          gh workflow run ci.yml --ref "$branch"
+        env:
+          GH_TOKEN: ${{ github.token }}
