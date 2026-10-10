@@ -32,15 +32,15 @@ issues:
 [*] - add a way for users to freely install extensions
 [] - after running ":ai open github and wikipedia side by side please" it opened github.com on the left, splitted vertically but didnt open wikipedia, and then gave me: "! groq 429: Rate limit reached for model `openai/gpt-oss-120b` in organization `org_01kva1e35pet7tkmy9tte02502` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Used 5616, Requested 5181. Please try again in 20.9775s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing"
 [] - random not responding 08/10/2026 i forgot the time
-[] - pressing the right mouse button on a youtube video opens both the shells menu and the youtube's menu, should only open youtube's own menu
-[] - normal mode on terminal has that annoying "[COPY] hjkl/w/b move..." text, need that removed.
+[x] - pressing the right mouse button on a youtube video opens both the shells menu and the youtube's menu, should only open youtube's own menu
+[x] - normal mode on terminal has that annoying "[COPY] hjkl/w/b move..." text, need that removed.
 
 feats:
 [] - make ";" toggle browser hud visibility
 [/] - add vertical sidebar like zen browser
 [*] - make it so every browser related error is shown in :error/:errors (like if an engine crashes/errors, extension stops working, everything)
-[*] - allow splitting without having anything open (like on the welcome screen), basically treat the welcome screen as an empty pane that cannot be closed if its by itself, but closeable if theres other splits, if the user closes every split then they go back to the welcome screen
-[] - allow clicking on a external link and opening it in the browser
+[x] - allow splitting without having anything open (like on the welcome screen), basically treat the welcome screen as an empty pane that cannot be closed if its by itself, but closeable if theres other splits, if the user closes every split then they go back to the welcome screen
+[x] - allow clicking on a external link and opening it in the browser
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
