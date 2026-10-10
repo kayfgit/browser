@@ -359,13 +359,24 @@ pub(crate) fn paint_pane(
             }
             let baseline = (y_top + line_h * 3 / 4) as usize;
             if vb.left < line.len() {
-                // An optional tint colours the line from its column on (see
-                // `TextBuffer::tints`); the part before it keeps the text colour.
-                let (split, tint) = match vb.tints.get(r).copied().flatten() {
-                    Some((col, rgb)) => (col.clamp(vb.left, line.len()), rgb),
-                    None => (line.len(), draw::FG),
+                // Colour switches along the line: the page's own (`TextBuffer::tints`),
+                // else the page's default colours (`page_colors`). Text before the
+                // first switch keeps the normal colour.
+                let switches = match vb.tints.get(r) {
+                    Some(own) if !own.is_empty() => own.clone(),
+                    _ => crate::page_colors::line_colors(&t.url, r, line),
                 };
-                for (from, to, colour) in [(vb.left, split, draw::FG), (split, line.len(), tint)] {
+                let mut runs = vec![(vb.left, draw::FG)];
+                for (at, colour) in switches {
+                    let at = at.min(line.len());
+                    if at <= vb.left {
+                        runs[0].1 = colour;
+                    } else {
+                        runs.push((at, colour));
+                    }
+                }
+                for (i, &(from, colour)) in runs.iter().enumerate() {
+                    let to = runs.get(i + 1).map_or(line.len(), |r| r.0);
                     if from >= to {
                         continue;
                     }
@@ -1373,6 +1384,10 @@ fn elide_to_width(p: &Painter, s: &str, max_px: i32) -> String {
 
 /// A short tab label: the host without scheme/`www.`, truncated.
 pub(crate) fn short_label(url: &str) -> String {
+    // The browser's own pages read as their name (`res`, `commands`), not "browser:".
+    if let Some(page) = url.strip_prefix("browser://") {
+        return truncate_label(page);
+    }
     let s = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
@@ -1534,6 +1549,13 @@ mod tab_cell_tests {
     /// Total painted width of a cell: prefix + favicon slot + label.
     fn used(p: &Painter, c: &TabCell) -> usize {
         (c.label_x - c.x) + p.measure(&c.label)
+    }
+
+    #[test]
+    fn internal_pages_are_labelled_by_name() {
+        assert_eq!(short_label("browser://res"), "res");
+        assert_eq!(short_label("browser://commands"), "commands");
+        assert_eq!(short_label("https://www.github.com/kayfgit"), "github.com");
     }
 
     #[test]

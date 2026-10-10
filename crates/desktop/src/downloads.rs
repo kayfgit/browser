@@ -207,8 +207,8 @@ pub(crate) fn unique_path(dir: &Path, name: &str) -> PathBuf {
 /// How many lines the `:downloads` page puts above the first download.
 pub(crate) const PAGE_HEADER: usize = 3;
 
-/// One `:downloads` line: its text, and where its status starts and in which colour.
-pub(crate) type PageLine = (String, Option<(usize, crate::draw::Rgb)>);
+/// One `:downloads` line: its text and its colour switches (see `vim::Tint`).
+pub(crate) type PageLine = (String, Vec<crate::vim::Tint>);
 
 /// The `:downloads` page: a header, then one row per download (newest first) — the
 /// file name, its size, and its state, coloured: green done, yellow downloading, red
@@ -220,20 +220,24 @@ pub(crate) fn page_lines(list: &[Download], dir: &Path) -> Vec<PageLine> {
                 "downloads — {}   (Enter open · e show in folder · d cancel / forget)",
                 list.len()
             ),
-            None,
+            // The shared title colours (see `page_colors`).
+            Vec::new(),
         ),
         (
             format!(
                 "saved to {}   (:downloads dir <path> to change)",
                 dir.display()
             ),
-            None,
+            vec![(0, crate::draw::DIM)],
         ),
-        (String::new(), None),
+        (String::new(), Vec::new()),
     ];
     debug_assert_eq!(lines.len(), PAGE_HEADER);
     if list.is_empty() {
-        lines.push(("nothing downloaded yet this session".into(), None));
+        lines.push((
+            "nothing downloaded yet this session".into(),
+            vec![(0, crate::draw::DIM)],
+        ));
     }
     let width = list
         .iter()
@@ -262,7 +266,7 @@ pub(crate) fn page_lines(list: &[Download], dir: &Path) -> Vec<PageLine> {
         };
         let head = format!("{:<width$}   {size:>17}   ", short(&d.name, 60));
         let at = head.chars().count();
-        lines.push((format!("{head}{state}"), Some((at, colour))));
+        lines.push((format!("{head}{state}"), vec![(at, colour)]));
     }
     lines
 }
@@ -544,7 +548,7 @@ mod tests {
         assert!(row.ends_with("waiting for you"));
         assert_eq!(
             *tint,
-            Some((row.find("waiting").unwrap(), crate::draw::ACCENT))
+            vec![(row.find("waiting").unwrap(), crate::draw::ACCENT)]
         );
         assert_eq!(at_row(&d.list, PAGE_HEADER).unwrap().id, 2);
         assert_eq!(at_row(&d.list, PAGE_HEADER + 1).unwrap().id, 1);

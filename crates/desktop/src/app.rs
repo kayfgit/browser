@@ -813,6 +813,16 @@ impl App {
             if let Some(caret) = nr.caret.as_mut() {
                 caret.set_lines(nr.layout.text_lines().to_vec());
             }
+            if let Some(text) = nr.jump.take() {
+                if let Some(row) = nr
+                    .layout
+                    .text_lines()
+                    .iter()
+                    .position(|l| l.contains(&text))
+                {
+                    nr.scroll = row as i32 * nr.layout.line_h;
+                }
+            }
             let max = (nr.layout.height - view).max(0);
             nr.scroll = nr.scroll.clamp(0, max);
         }

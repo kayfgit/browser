@@ -366,6 +366,9 @@ pub(crate) struct NativeRead {
     /// `lines` mirror `layout.text_lines()` so a row maps 1:1 to a visual line;
     /// `None` means plain scroll mode.
     pub(crate) caret: Option<vim::TextBuffer>,
+    /// Text to scroll to once the page is laid out (`:help <topic>`): the first visual
+    /// line containing it goes to the top. Taken when used.
+    pub(crate) jump: Option<String>,
 }
 
 /// Strip a leading `-t` / `--tab` flag from a command argument, returning
@@ -432,6 +435,7 @@ pub(crate) fn native_read_tab(doc: browser_core::Document, url: String, read: bo
             layout_px: 0.0,
             dirty: true,
             caret: None,
+            jump: None,
         }),
     }
 }
@@ -604,40 +608,6 @@ impl App {
             "read" => self.start_read(&c.url, false, true),
             _ => self.restore_web_tab(&c),
         }
-    }
-
-    /// Build a child webview from either a URL or an inline HTML document, with
-    /// the full shell bridge (keybindings, focus reclaim, hint mode). Returns the
-    /// webview together with the [`PageState`] its engine callbacks report into —
-    /// both belong in the same `TabContent::Web`.
-    pub(crate) fn build_content_webview(
-        &self,
-        source: Source,
-        disable_js: bool,
-        extra_init: &str,
-    ) -> Result<(Box<dyn EngineView>, PageState)> {
-        self.build_content_webview_private(source, disable_js, extra_init, false)
-    }
-
-    /// [`build_content_webview`](Self::build_content_webview) with control over
-    /// privacy: `private` runs the webview InPrivate (WebView2's in-private profile —
-    /// no cookies/storage persist past the tab). Only the CONTROLLER option differs;
-    /// the environment options (browser args, extensions) must stay identical to
-    /// every other webview or WebView2 creation fails with 0x8007139F.
-    pub(crate) fn build_content_webview_private(
-        &self,
-        source: Source,
-        disable_js: bool,
-        extra_init: &str,
-        private: bool,
-    ) -> Result<(Box<dyn EngineView>, PageState)> {
-        self.build_provider_view(
-            self.default_engine(),
-            source,
-            disable_js,
-            extra_init,
-            private,
-        )
     }
 
     pub(crate) fn build_provider_view(

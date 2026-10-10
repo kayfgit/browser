@@ -2,7 +2,7 @@
 //! (bangs / queries / URLs), and the `:search` template resolver.
 
 use crate::panes::SplitDir;
-use crate::{commands_document, parse_open_flags, parse_tab_flag, program_exists, App, ModeKind};
+use crate::{parse_open_flags, parse_tab_flag, program_exists, App, ModeKind};
 
 /// Every verb [`App::run_command`] handles itself, short forms included. Aliases can't
 /// take these names: an alias named `open` would silently change what `:open` does.
@@ -634,7 +634,7 @@ impl App {
             "commands" | "help" => {
                 let topic = rest.trim();
                 let anchor = crate::pages::help_anchor(topic);
-                self.open_local_page("commands", commands_document(anchor.as_deref()));
+                self.open_commands_page(anchor.as_deref());
                 if !topic.is_empty() && anchor.is_none() {
                     self.set_status(format!("no help topic '{topic}' — showing the full page"));
                 }

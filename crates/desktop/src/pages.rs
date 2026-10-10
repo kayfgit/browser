@@ -4,7 +4,7 @@
 use std::time::Instant;
 
 use crate::tabs::{TabContent, TabNav};
-use crate::{procmon, vim, App, Source, Tab};
+use crate::{procmon, vim, App, Tab};
 
 /// One recorded failure: when it happened, the command that triggered it (if
 /// known), and the message. Rendered by `:error` / `:errors`.
@@ -322,6 +322,22 @@ impl App {
         self.clear_status();
     }
 
+    /// `:commands` / `:help [topic]` — every keybind and command, in a native read tab
+    /// (wrapped, coloured, searchable). A topic scrolls to its line.
+    pub(crate) fn open_commands_page(&mut self, anchor: Option<&str>) {
+        let mut doc = crate::markdown::to_document(&commands_markdown(), "browser://commands");
+        doc.title = "Commands & keybindings".into();
+        self.show_read_document(doc, false, true);
+        let jump = anchor.and_then(help_jump_text);
+        if let Some(nr) = self
+            .active
+            .and_then(|i| self.tabs.get_mut(i))
+            .and_then(|t| t.native_mut())
+        {
+            nr.jump = jump;
+        }
+    }
+
     /// `:alias` (no args) — list the defined command aliases in a read-only vim tab,
     /// `:name → expansion` per line (selectable/yankable like the other pagers).
     pub(crate) fn open_alias_page(&mut self) {
@@ -392,90 +408,10 @@ impl App {
         self.window.set_focus();
         self.clear_status();
     }
-
-    /// Open an internal HTML page (e.g. `:commands`) in a new tab.
-    pub(crate) fn open_local_page(&mut self, label: &str, html: String) {
-        match self.build_content_webview(Source::Html(html), false, "") {
-            Ok((webview, page)) => {
-                self.place_tab(
-                    Tab {
-                        id: crate::layout::TabId::new(),
-                        content: TabContent::Web(webview, page),
-                        url: format!("browser://{label}"),
-                        nojs: false,
-                        read: false,
-                        research: false,
-                        private: false,
-                        nav: TabNav::default(),
-                    },
-                    true,
-                );
-                self.window.set_focus();
-                self.clear_status();
-            }
-            Err(e) => self.set_error(format!("failed to open {label}: {e:#}")),
-        }
-    }
 }
 
 /// Maximum number of past errors kept in the session log (oldest dropped first).
 pub(crate) const ERROR_LOG_CAP: usize = 200;
-
-/// Stylesheet for the internal `:commands` page.
-const HELP_CSS: &str = "\
-html{background:#1e1e1e;color:#d0d0d0;scroll-behavior:smooth}body{margin:0}\
-main{max-width:880px;margin:34px auto 90px;padding:0 26px;\
-font:15px/1.55 'Segoe UI',system-ui,-apple-system,Roboto,sans-serif}\
-h1{color:#fff;font-size:1.6em;margin:0 0 4px;letter-spacing:.2px}\
-p.sub{color:#8a8a8a;margin:0 0 4px}\
-nav{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 4px}\
-nav a{color:#9ec7ee;background:#262b31;border:1px solid #343a42;border-radius:999px;\
-padding:3px 13px;text-decoration:none;font-size:.85em;white-space:nowrap}\
-nav a:hover{background:#313c4b;border-color:#4a5866;color:#fff}\
-section{margin-top:36px}\
-h2{color:#6cb6ff;font-size:.95em;text-transform:uppercase;letter-spacing:1.4px;\
-margin:0 0 8px;padding-bottom:7px;border-bottom:1px solid #2d2d2d}\
-[id]{scroll-margin-top:16px}\
-table{border-collapse:collapse;width:100%}\
-td{padding:7px 14px 7px 8px;vertical-align:top}\
-tr+tr>td{border-top:1px solid #262626}\
-tr:hover>td{background:#232629}\
-td.k{white-space:nowrap;color:#e6a55e;font-family:Consolas,monospace;font-size:.92em;\
-width:1%;padding-right:28px}\
-td.d{color:#c6c6c6}\
-.act{padding:10px 12px;margin:0 -12px;border-radius:8px}\
-.act+.act{border-top:1px solid #262626}\
-.act:hover{background:#232629}\
-.act .sig{font-family:Consolas,monospace;font-size:.95em;color:#e6a55e}\
-.act .sig .p{display:inline-block;color:#8fb3d9;background:#25292e;border:1px solid #31363d;\
-border-radius:5px;padding:0 6px;margin:2px 0 2px 6px;font-size:.88em}\
-.act p{margin:6px 0 0;color:#b3b3b3}\
-tr.jump>td,.act.jump{background:#243650}\
-tr.jump>td{border-top-color:#243650}\
-kbd,code{background:#2a2a2a;border:1px solid #3d3d3d;border-radius:4px;padding:1px 6px;\
-font-family:Consolas,monospace;font-size:.9em;color:#eee}\
-code{border:none;padding:1px 5px;color:#9ec7ee}";
-
-/// Minimal HTML-escaping for text interpolated into the internal pages.
-pub(crate) fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-/// Render rows of (key, description) into a `<table>`, escaping both columns.
-pub(crate) fn help_table(rows: &[(&str, &str)]) -> String {
-    let mut s = String::from("<table>");
-    for (k, d) in rows {
-        s.push_str(&format!(
-            "<tr><td class=\"k\">{}</td><td class=\"d\">{}</td></tr>",
-            html_escape(k),
-            html_escape(d)
-        ));
-    }
-    s.push_str("</table>");
-    s
-}
 
 /// Build the plain-text lines shown by `:error` / `:errors` in the vim pager. Each
 /// error becomes a header line (`[HH:MM:SS] :command — error N`) followed by its
@@ -653,12 +589,12 @@ const HELP_SECTIONS: &[(&str, &str, &[&str])] = &[
     ),
     (
         "sec-cmdline",
-        "Command line",
+        "Command-line editing",
         &["cmdline", "commandline", "editing", "bar", "commandbar"],
     ),
     (
         "sec-modes",
-        "Modes",
+        "Other modes",
         &["modes", "mode", "passthrough", "hint", "insert"],
     ),
     (
@@ -725,53 +661,32 @@ pub(crate) fn help_anchor(topic: &str) -> Option<String> {
         .map(|(id, _, _)| id.to_string())
 }
 
-/// Render [`CMD_ROWS`] as the commands table, each row carrying its `:help` anchor.
-fn cmd_table() -> String {
-    let mut s = String::from("<table>");
-    for (id, k, d) in CMD_ROWS {
-        s.push_str(&format!(
-            "<tr id=\"cmd-{id}\"><td class=\"k\">{}</td><td class=\"d\">{}</td></tr>",
-            html_escape(k),
-            html_escape(d)
-        ));
-    }
-    s.push_str("</table>");
-    s
-}
-
-/// Render the action registry as cards: the signature line (name + one wrapping
-/// chip per param) with the summary below — long signatures like `theme`'s wrap
-/// instead of blowing the table layout apart.
-fn action_cards() -> String {
-    let mut s = String::new();
-    for a in crate::actions::ACTIONS {
-        let mut sig = html_escape(a.name);
-        for p in a.params {
-            let slot = if p.values.is_empty() {
-                p.name.to_string()
-            } else {
-                p.values.join("|")
-            };
-            let slot = if p.required {
-                format!("&lt;{}&gt;", html_escape(&slot))
-            } else {
-                format!("[{}]", html_escape(&slot))
-            };
-            sig.push_str(&format!("<span class=\"p\">{slot}</span>"));
+/// Escape `text` for Markdown, leaving `backtick` code spans working: the command
+/// descriptions use them, while `<path>` or `*` would otherwise be read as HTML or
+/// emphasis.
+fn md(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(c, '\\' | '*' | '_' | '<' | '>' | '[' | ']' | '#' | '|') {
+            out.push('\\');
         }
-        s.push_str(&format!(
-            "<div class=\"act\" id=\"act-{}\"><div class=\"sig\">{sig}</div><p>{}</p></div>",
-            a.name,
-            html_escape(a.summary)
-        ));
+        out.push(c);
     }
-    s
+    out
 }
 
-/// The `:commands` page: every keybind and command (not customizable yet). `jump`
-/// is an element id to scroll to and highlight on load (`:help <topic>`).
-pub(crate) fn commands_document(jump: Option<&str>) -> String {
-    let normal = help_table(&[
+/// A Markdown list of `key — what it does` rows, the key as code.
+fn md_rows(rows: &[(&str, &str)]) -> String {
+    rows.iter()
+        .map(|(k, d)| format!("- `{k}` — {}\n", md(d)))
+        .collect()
+}
+
+/// The `:commands` page as Markdown, shown in the native read view (wrapped, coloured,
+/// `/` to search, `v` to select, `f` to follow a link). `:help <topic>` scrolls to a
+/// line of it — see [`help_jump_text`].
+pub(crate) fn commands_markdown() -> String {
+    let normal = md_rows(&[
         (":", "open the command bar"),
         ("o / O", "open a page in THIS tab / in a new tab (prefills “open ” / “open -t ”)"),
         ("j / k", "scroll down / up"),
@@ -803,7 +718,7 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
         ("+ / - / )", "zoom the page content in / out / reset (web tabs)"),
         ("Ctrl +/-/0", "zoom the browser UI and terminals in / out / reset"),
     ]);
-    let cmdline = help_table(&[
+    let cmdline = md_rows(&[
         ("Enter", "run the command"),
         ("Esc / Ctrl+C", "cancel (Ctrl+C copies first if text is selected)"),
         ("Left / Right", "move the caret a character"),
@@ -818,13 +733,14 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
         ("Ctrl+Delete", "delete the next word"),
         ("Ctrl+U", "delete to the start of the line"),
     ]);
-    let modes = help_table(&[
+    let modes = md_rows(&[
         ("Insert", "i (or clicking / hinting a text field) types into a page field; Esc (which also closes the field's popup), clicking away or navigating leaves"),
         ("Passthrough", "Ctrl+V sends every key to the page and survives clicks and navigation; Ctrl+S or Shift+Esc leaves. On a terminal i enters it; Esc goes to the shell and Ctrl+S leaves"),
         ("Hint", "type a label to follow it (type it UPPERCASE to open in a new tab); entered with yf only links are labelled and the label copies the address; Esc cancels"),
         ("Resize / Move", "hjkl to size / reposition the window; Esc finishes"),
+        ("Questions", "a download or a site's permission request asks in the bar: y / Enter yes, n / Esc no"),
     ]);
-    let vimpager = help_table(&[
+    let pager = md_rows(&[
         ("h j k l · arrows", "move the cursor"),
         ("w / b / e", "next / previous / end of word"),
         ("0 / ^ / $", "start / first non-blank / end of line"),
@@ -843,65 +759,85 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
             "yank inner/around a text object (word, (), {}, [], <>, quotes)",
         ),
     ]);
-    // Commands come from CMD_ROWS (anchored rows); actions render as cards straight
-    // from the one action registry, so help and AI never drift.
-    let cmds = cmd_table();
-    let actions = action_cards();
-    let toc: String = HELP_SECTIONS
+    let commands: String = CMD_ROWS
         .iter()
-        .map(|(id, label, _)| format!("<a href=\"#{id}\">{label}</a>"))
+        .map(|(_, sig, d)| format!("- `{sig}` — {}\n", md(d)))
         .collect();
-    // `:help <topic>`: scroll to the target and highlight it. The ids are our own
-    // generated slugs (never user text), so embedding one in the script is safe.
-    let jump_script = jump
-        .map(|id| {
-            format!(
-                "<script>(function(){{var el=document.getElementById('{}');if(!el)return;\
-                 requestAnimationFrame(function(){{el.scrollIntoView();el.classList.add('jump');}});\
-                 }})();</script>",
-                id.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_', "")
-            )
-        })
-        .unwrap_or_default();
+    // Actions come straight from the one registry, so help and the AI never drift.
+    let actions: String = crate::actions::ACTIONS
+        .iter()
+        .map(|a| format!("- `{}` — {}\n", action_signature(a), md(a.summary)))
+        .collect();
     format!(
-        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
-         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-         <title>commands</title><style>{HELP_CSS}</style></head><body><main>\
-         <h1>Commands &amp; keybindings</h1>\
-         <p class=\"sub\">Not customizable yet — these are the built-in bindings. \
-         <code>:help &lt;topic&gt;</code> jumps straight to a command, action, or section — \
-         e.g. <code>:help theme</code>, <code>:help selection</code>, <code>:help bangs</code>.</p>\
-         <nav>{toc}</nav>\
-         <section id=\"sec-normal\"><h2>Normal mode</h2>{normal}</section>\
-         <section id=\"sec-cmdline\"><h2>Command-line editing</h2>{cmdline}</section>\
-         <section id=\"sec-modes\"><h2>Other modes</h2>{modes}</section>\
-         <section id=\"sec-pager\"><h2>Vim pager (:error · :errors · :res · :version · read-mode v/V)</h2>{vimpager}</section>\
-         <section id=\"sec-commands\"><h2>Commands</h2>{cmds}</section>\
-         <section id=\"sec-actions\"><h2>AI actions</h2>\
-         <p class=\"sub\">Operations the <code>:ai</code> assistant can perform on request — \
-         e.g. \u{201C}open github and gmail side by side\u{201D}, \u{201C}wipe my cookies\u{201D}, \
-         \u{201C}make ‘gh’ open github\u{201D}. Several map to the commands above; \
-         <code>:restore</code> (or Ctrl+Alt+Shift+R) resets all customization.</p>{actions}</section>\
-         <section id=\"sec-bangs\"><h2>Bangs</h2>\
-         <p class=\"sub\">A <code>!key</code> token in any open/search target jumps to that \
-         site's search (no query → the site's home). Trailing form works too: \
-         <code>dragon scimitar !osrs</code>. The bangs are the 13,000+ of \
-         <a href=\"https://github.com/kagisearch/bangs\">Kagi's list</a> (the ones Helium \
-         uses): <code>:bangs</code> lists them all (<code>/</code> searches the list), \
-         <code>:bangs &lt;word&gt;</code> filters by key or name, and \
-         <code>:bang &lt;key&gt;</code> says what one does. \
-         <code>:bang &lt;key&gt; &lt;url&gt;</code> adds your own, with <code>%s</code> where \
-         the search goes (<code>:bang rs https://runescape.wiki/?search=%s</code>); it wins over \
-         Kagi's for the same key. <code>:unbang &lt;key&gt;</code> removes one (yours, or \
-         switches off Kagi's) and <code>:resetbangs [key]</code> brings it back, or every \
-         bang with no key.</p></section>\
-         <section id=\"sec-maths\"><h2>Quick maths</h2>\
-         <p class=\"sub\">Type an arithmetic expression in the command bar \
-         (<code>+ - * / %  ^</code>, parentheses) to see the result live, e.g. \
-         <code>:20*8</code> → <code>= 160</code>. Press Enter to replace the line with the \
-         result so you can copy it or keep calculating (<code>160+10</code>).</p></section>\
-         </main>{jump_script}</body></html>"
+        "Not customizable yet — these are the built-in bindings. `:help <topic>` jumps \
+         straight to a command, action or section, e.g. `:help theme`, `:help selection`, \
+         `:help bangs`. `/` searches this page.\n\n\
+         ## Normal mode\n\n{normal}\n\
+         ## Command-line editing\n\n{cmdline}\n\
+         ## Other modes\n\n{modes}\n\
+         ## Vim pager\n\n\
+         The engine-free pages (`:errors`, `:res`, `:history`, `:version`, …) and `v` on a \
+         read page.\n\n{pager}\n\
+         ## Commands\n\n{commands}\n\
+         ## AI actions\n\n\
+         Operations the `:ai` assistant can perform on request — e.g. “open github and gmail \
+         side by side”, “wipe my cookies”, “make ‘gh’ open github”. Several map to the \
+         commands above; `:restore` (or Ctrl+Alt+Shift+R) resets all customization.\n\n\
+         {actions}\n\
+         ## Bangs\n\n\
+         A `!key` token in any open/search target jumps to that site's search (no query → \
+         the site's home). Trailing form works too: `dragon scimitar !osrs`. The bangs are \
+         the 13,000+ of [Kagi's list](https://github.com/kagisearch/bangs) (the ones Helium \
+         uses): `:bangs` lists them all (`/` searches the list), `:bangs <word>` filters by \
+         key or name, and `:bang <key>` says what one does. `:bang <key> <url>` adds your \
+         own, with `%s` where the search goes (`:bang rs https://runescape.wiki/?search=%s`); \
+         it wins over Kagi's for the same key. `:unbang <key>` removes one (yours, or \
+         switches off Kagi's) and `:resetbangs [key]` brings it back, or every bang with no \
+         key.\n\n\
+         ## Quick maths\n\n\
+         Type an arithmetic expression in the command bar (`+ - * / % ^`, parentheses) to \
+         see the result live, e.g. `:20*8` → `= 160`. Press Enter to replace the line with \
+         the result so you can copy it or keep calculating (`160+10`).\n"
     )
+}
+
+/// An AI action's signature: its name, then each parameter — `<required>` or
+/// `[optional]`, a fixed set of values written `a|b|c`.
+fn action_signature(a: &crate::actions::ActionSpec) -> String {
+    let mut sig = a.name.to_string();
+    for p in a.params {
+        let slot = if p.values.is_empty() {
+            p.name.to_string()
+        } else {
+            p.values.join("|")
+        };
+        if p.required {
+            sig.push_str(&format!(" <{slot}>"));
+        } else {
+            sig.push_str(&format!(" [{slot}]"));
+        }
+    }
+    sig
+}
+
+/// The text of the `:commands` line a [`help_anchor`] id points at, for scrolling there.
+pub(crate) fn help_jump_text(anchor: &str) -> Option<String> {
+    if let Some(id) = anchor.strip_prefix("cmd-") {
+        return CMD_ROWS
+            .iter()
+            .find(|(row, _, _)| *row == id)
+            .map(|(_, sig, _)| sig.chars().take(24).collect());
+    }
+    if let Some(name) = anchor.strip_prefix("act-") {
+        return crate::actions::ACTIONS
+            .iter()
+            .find(|a| a.name == name)
+            .map(|a| action_signature(a).chars().take(24).collect());
+    }
+    HELP_SECTIONS
+        .iter()
+        .find(|(id, _, _)| *id == anchor)
+        .map(|(_, label, _)| (*label).to_string())
 }
 
 /// The `:extensions` picker body: a header plus one row per installed extension —
@@ -1100,30 +1036,27 @@ mod tests {
     }
 
     #[test]
-    fn commands_document_carries_anchors_and_jump_script() {
-        let plain = commands_document(None);
-        // Every section, command row, and action card is addressable.
-        for (id, _, _) in HELP_SECTIONS {
+    fn every_help_topic_has_a_line_to_jump_to() {
+        let page = crate::markdown::to_document(&commands_markdown(), "browser://commands");
+        let text: String = page
+            .blocks
+            .iter()
+            .map(|b| format!("{b:?}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for topic in help_topics() {
+            let anchor = help_anchor(&topic).unwrap();
+            let jump =
+                help_jump_text(&anchor).unwrap_or_else(|| panic!("no jump text for {anchor}"));
             assert!(
-                plain.contains(&format!("id=\"{id}\"")),
-                "missing section {id}"
+                text.contains(&jump),
+                "'{topic}' → '{jump}' isn't on the page"
             );
         }
-        assert!(plain.contains("id=\"cmd-theme\""));
-        assert!(plain.contains("id=\"act-theme\""));
-        // Action params render as individual chips (required <…> vs optional […]),
-        // so the long `theme` signature wraps instead of stretching a table column.
-        assert!(plain.contains("<span class=\"p\">&lt;history|cookies|cache|all&gt;</span>"));
-        assert!(plain.contains("<span class=\"p\">[term_scheme]</span>"));
+        // Markdown-looking text in a description stays text.
         assert!(
-            !plain.contains("<script>"),
-            "no jump script without a topic"
-        );
-        // With a topic, the jump script targets exactly that id.
-        let jumped = commands_document(Some("cmd-theme"));
-        assert!(
-            jumped.contains("getElementById('cmd-theme')"),
-            "jump script missing"
+            text.contains("dir <path>"),
+            "a <path> must not vanish as HTML"
         );
     }
 

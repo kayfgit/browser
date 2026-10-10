@@ -57,6 +57,7 @@ mod layout;
 mod markdown;
 mod navguard;
 mod news;
+mod page_colors;
 mod pages;
 mod panes;
 mod proc_cwd;
@@ -80,7 +81,6 @@ use commands::COMMANDS;
 use draw::Painter;
 use find::FindState;
 use hints::HintAct;
-use pages::commands_document;
 pub(crate) use scripts::{
     BRIDGE_JS, CARET_JS, FEATURES_JS, FIND_JS, HINT_JS, IPC_PRELUDE, NAVGUARD_JS, RESEARCH_JS,
 };
