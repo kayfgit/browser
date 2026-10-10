@@ -44,6 +44,7 @@ impl App {
             ModeKind::Hint => self.key_hint(key),
             ModeKind::Scroll => self.key_scroll(key),
             ModeKind::Caret | ModeKind::ScrollCaret => self.key_caret(key),
+            ModeKind::DownloadAsk => self.key_download_ask(key),
             // Light field typing (web only): the page has focus and the bridge + hook own
             // the leave key; this is the shell-side fallback for the beat right after
             // entering, before focus lands on the page. Esc leaves. Ctrl+V is left to the
@@ -91,6 +92,10 @@ impl App {
                 }
             }
             ModeKind::Normal => self.key_normal(key),
+        }
+        // A download question that arrived while you were busy shows once you're back.
+        if self.mode == ModeKind::Normal {
+            self.ask_download();
         }
         self.window.request_redraw();
     }
@@ -218,6 +223,10 @@ impl App {
                     }
                 }
             }
+        }
+        // `:downloads`: Enter opens, `e` shows in folder, `d` cancels/forgets.
+        if self.active_is_vim() && !self.modifiers.control_key() && self.key_downloads_page(key) {
+            return;
         }
         // A `:error`/`:errors` tab is a read-only vim pager: let it claim the motion/
         // visual/yank keys first; anything it doesn't want (`:`, n/p, x, …) falls

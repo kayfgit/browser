@@ -43,6 +43,7 @@ mod commands;
 mod config;
 mod data;
 mod devtools;
+mod downloads;
 mod draw;
 mod engines;
 mod events;
@@ -234,7 +235,7 @@ fn main() -> Result<()> {
         term_drag: None,
         term_clicks: None,
         extension_request: 0,
-        allow_risky_downloads: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        downloads: Default::default(),
         blocker: blocklist::new_shared(),
         mute: false,
         no_css: false,

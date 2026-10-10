@@ -477,13 +477,7 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
                 }
             }
         }
-        UserEvent::DownloadBlocked(name) => {
-            let short: String = name.chars().take(60).collect();
-            app.set_error(format!(
-                "blocked download of {short} — executable/installer. :downloads to allow"
-            ));
-            app.window.request_redraw();
-        }
+        UserEvent::Download(event) => app.on_download(event),
         UserEvent::DataCleared {
             label,
             ai_id,

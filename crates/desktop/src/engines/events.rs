@@ -233,7 +233,6 @@ impl App {
             // These notify the user, but cannot change another tab's document or mode.
             event @ (UserEvent::RedirectBlocked(_)
             | UserEvent::PopupBlocked(_)
-            | UserEvent::DownloadBlocked(_)
             | UserEvent::Redraw) => Some(event),
             event => active_ui_event(event, index, self.active),
         }

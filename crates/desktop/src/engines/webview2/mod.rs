@@ -3,6 +3,7 @@
 //! is checked against the runtime before loading the requested location.
 
 mod data;
+pub(crate) mod downloads;
 mod extensions;
 mod favicon;
 mod input;
@@ -11,8 +12,8 @@ mod navigation;
 mod suspension;
 
 use crate::tabs::{
-    deproxy_translate, download_name, is_risky_download, is_translate_proxy, origin_of,
-    ublock_extensions_dir, url_is_ad_host, PageState,
+    deproxy_translate, is_translate_proxy, origin_of, ublock_extensions_dir, url_is_ad_host,
+    PageState,
 };
 use crate::{UserEvent, BRIDGE_JS, CARET_JS, FEATURES_JS, FIND_JS, IPC_PRELUDE, NAVGUARD_JS};
 use anyhow::Result;
@@ -56,7 +57,6 @@ pub(crate) struct BuildOptions<'a> {
     pub proxy: EventLoopProxy<UserEvent>,
     pub adblock_on: Arc<AtomicBool>,
     pub blocker: crate::blocklist::SharedBlocker,
-    pub allow_risky_downloads: Arc<AtomicBool>,
 }
 
 /// The WebView2 user-data folder (cookies, cache, extensions) every view shares.
@@ -167,9 +167,6 @@ pub(crate) fn build(
     let intent_set = nav_intent.clone();
     // The uBlock-style domain blocklist engine — the race-free primary redirect guard.
     let blocker = opts.blocker.clone();
-    // Download guard: block executable/installer types unless the user opted in.
-    let dl_allow = opts.allow_risky_downloads.clone();
-    let dl_proxy = proxy.clone();
     // Wry falls back to a regular controller on runtimes without Environment10.
     // Build blank, verify the real storage mode, and only then load user content.
     let mut isolated_context = data_dir().map(|dir| wry::WebContext::new(Some(dir)));
@@ -352,18 +349,6 @@ pub(crate) fn build(
                 UserEvent::PopupBlocked(url)
             });
             NewWindowResponse::Deny
-        })
-        // Drive-by install guard. A scam page (or a redirect we missed) can kick off
-        // a download of an `.exe`/`.msi`/etc. that a careless click would run. Block
-        // executable/installer types by default and warn loudly; everything else
-        // (zip, pdf, images, media …) downloads normally. `:downloads` opts in.
-        .with_download_started_handler(move |url, path| {
-            if dl_allow.load(Ordering::Relaxed) || !is_risky_download(&url, path) {
-                return true;
-            }
-            let name = download_name(&url, path);
-            let _ = dl_proxy.send_event(UserEvent::DownloadBlocked(name));
-            false
         });
     if disable_js {
         builder = builder.with_javascript_disabled();
@@ -388,6 +373,8 @@ pub(crate) fn build(
         nav_intent.clone(),
         proxy.clone(),
     );
+    // Downloads ask first and report progress to the shell (see `downloads`).
+    downloads::install(&webview, opts.proxy.clone());
     // The shell's leave/reclaim keys and the reset chord, inside iframes too.
     keys::install(&webview, proxy.clone());
     // NOTE: there is deliberately no `WebResourceRequested` sub-resource blocker here.

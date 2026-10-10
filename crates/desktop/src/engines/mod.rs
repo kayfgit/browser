@@ -36,6 +36,7 @@ mod servo_bridge_protocol;
 mod servo_key_ownership;
 
 pub(crate) use events::PageEventProxy;
+pub(crate) use webview2::downloads::{answer as answer_download, cancel as cancel_download};
 pub(crate) use webview2::{keep_alive as keep_webview2_alive, BuildOptions as WebView2Options};
 
 use browser_engine::{Capabilities, ProviderDescriptor, ViewRequirements};

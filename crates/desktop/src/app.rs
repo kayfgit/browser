@@ -3,8 +3,6 @@
 //! status/error reporting, wheel routing, teardown, and session save/restore.
 
 use std::rc::Rc;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub(crate) use browser_engine::ExtensionInfo as ExtInfo;
@@ -169,9 +167,9 @@ pub(crate) enum UserEvent {
     /// not an ad domain). New tabs here are shell-managed rather than OS popups, so the
     /// native window is suppressed and the URL re-opened as a managed tab. Carries the URL.
     OpenPopupTab(String),
-    /// The download guard blocked an executable/installer download → warn in the status
-    /// bar. Carries the file name. Toggle `:downloads` to permit such files.
-    DownloadBlocked(String),
+    /// Something happened to a download: a page started one (ask the user), progress, or
+    /// its end. From any tab — downloads don't belong to the tab on screen.
+    Download(crate::downloads::DownloadEvent),
     /// The network blocklist engine finished compiling and is now live.
     BlocklistReady,
     /// The bundled ad blocker (uBO Lite) couldn't be installed, enabled or disabled in a
@@ -318,6 +316,9 @@ pub(crate) enum ModeKind {
     /// to an injected page caret that moves/extends a real DOM Selection; `y` yanks,
     /// `Esc` collapses then exits. (Engine-free read tabs use `NativeRead.caret`.)
     Caret,
+    /// A page started a download and the bar asks whether to save it: y/Enter saves it to
+    /// the downloads folder, n/Esc declines. See [`ask_download`](App::ask_download).
+    DownloadAsk,
 }
 
 pub(crate) struct App {
@@ -369,10 +370,8 @@ pub(crate) struct App {
     /// Monotonic request token: stale extension-list responses must not replace a
     /// newer picker. Each picker owns its source view and its own cached items.
     pub(crate) extension_request: u64,
-    /// Whether to allow downloads of executable/installer file types. Off by default:
-    /// a drive-by `.exe`/`.msi` (the "you almost clicked install" trap) is blocked with
-    /// a warning. Toggled with `:downloads`. Shared into every tab's download handler.
-    pub(crate) allow_risky_downloads: Arc<AtomicBool>,
+    /// This session's downloads and the "save it?" questions still to ask (`:downloads`).
+    pub(crate) downloads: crate::downloads::Downloads,
     /// The uBlock-style network blocklist engine ([`blocklist`](crate::blocklist)),
     /// shared (cloned `Arc`) into every tab's navigation handler. It blocks navigations
     /// to known ad/redirect/malware domains BY NAME — the race-free primary guard, the

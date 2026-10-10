@@ -11,7 +11,6 @@ use crate::blocklist::AD_HOSTS;
 use crate::panes::{PaneNode, PaneRect, FOCUS_BORDER};
 use crate::term::TermSession;
 use crate::{read_view, session, vim, App, ModeKind, UserEvent, CLOSED_CAP, RESEARCH_JS};
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 /// The folder of unpacked extensions to load into WebView2 (uBlock Origin Lite).
@@ -670,7 +669,6 @@ impl App {
                 proxy: self.proxy.clone(),
                 adblock_on: self.adblock.shared_flag(),
                 blocker: self.blocker.clone(),
-                allow_risky_downloads: self.allow_risky_downloads.clone(),
             },
         )
     }
@@ -1390,19 +1388,6 @@ impl App {
                     wv.evaluate_script(&format!("window.__setAdblock&&window.__setAdblock({on})"));
             }
         }
-    }
-
-    /// Toggle whether executable/installer downloads (`.exe`, `.msi`, …) are allowed.
-    /// Off by default so a drive-by install is blocked; flip it on to grab a real one.
-    pub(crate) fn toggle_downloads(&mut self) {
-        let on = !self.allow_risky_downloads.load(Ordering::Relaxed);
-        self.allow_risky_downloads.store(on, Ordering::Relaxed);
-        self.set_status(if on {
-            "downloads ON — executable/installer files allowed"
-        } else {
-            "downloads OFF — executable/installer files blocked"
-        });
-        self.window.request_redraw();
     }
 
     /// Flip a live page-feature toggle ([`FEATURES_JS`](crate::FEATURES_JS)) on every open web tab via

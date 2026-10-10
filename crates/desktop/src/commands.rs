@@ -393,9 +393,14 @@ impl App {
             // `:extensions` — the installed-extension picker (a vim tab); Enter toggles the
             // extension under the cursor on/off. See `open_extensions_page`.
             "extensions" | "ext" | "exts" => self.open_extensions_page(),
-            // Allow/deny executable-installer downloads (off by default — blocks
-            // drive-by `.exe`/`.msi` installs).
-            "downloads" | "dl" => self.toggle_downloads(),
+            // This session's downloads; `dir [path]` shows/changes where they're saved.
+            "downloads" | "dl" => match rest.trim().split_once(' ').unwrap_or((rest.trim(), "")) {
+                ("", _) => self.open_downloads_page(),
+                ("dir", path) => self.set_download_dir(path),
+                (other, _) => {
+                    self.set_error(format!("unknown downloads argument '{other}' — use: dir"))
+                }
+            },
             // Live page-feature toggles (apply instantly to every open web tab).
             "mute" | "audio" => {
                 self.mute = !self.mute;
