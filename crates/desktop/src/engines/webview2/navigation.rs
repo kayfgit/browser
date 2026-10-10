@@ -4,7 +4,7 @@ use crate::{
     UserEvent,
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     rc::Rc,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -12,7 +12,7 @@ use std::{
     },
 };
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
-use webview2_com::{take_pwstr, NavigationStartingEventHandler};
+use webview2_com::{take_pwstr, ContentLoadingEventHandler, NavigationStartingEventHandler};
 use windows_core::{BOOL, PWSTR};
 use wry::{WebView, WebViewExtWindows};
 
@@ -69,10 +69,30 @@ pub(crate) fn install(
         Ok(c) => c,
         Err(_) => return,
     };
-    // The current top-frame registrable domain ("youtube.com"), updated on every
-    // allowed navigation. `NavigationStarting` only ever fires on the UI thread, so a
-    // plain `Rc<RefCell<…>>` is enough — no locking, no cross-thread sharing.
+    // The current top-frame registrable domain ("youtube.com"): set on every allowed
+    // navigation, and corrected to the document that actually loads (below) — a
+    // navigation can end in a redirect elsewhere, or in a download that loads nothing.
+    // These events only ever fire on the UI thread, so a plain `Rc` is enough.
     let current_site: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+    // The navigation this guard last let through. A server redirect continues the same
+    // navigation (same id), so it's part of what was already allowed — a GitHub release
+    // download answers the click with a redirect to another domain, and so do many
+    // mirrors and link shorteners. A forced redirect is a NEW navigation and still needs
+    // intent.
+    let allowed: Rc<Cell<u64>> = Rc::new(Cell::new(0));
+    let loaded_site = current_site.clone();
+    let loaded = ContentLoadingEventHandler::create(Box::new(move |core, _| {
+        if let Some(core) = core {
+            let mut p = PWSTR::null();
+            if unsafe { core.Source(&mut p) }.is_ok() {
+                let site = site_of(&take_pwstr(p));
+                if !site.is_empty() {
+                    *loaded_site.borrow_mut() = site;
+                }
+            }
+        }
+        Ok(())
+    }));
     let handler = NavigationStartingEventHandler::create(Box::new(
         move |_sender: Option<ICoreWebView2>, args| {
             let Some(args) = args else { return Ok(()) };
@@ -92,12 +112,22 @@ pub(crate) fn install(
                 return Ok(());
             }
             let target = site_of(&uri);
+            let mut id = 0u64;
+            let _ = unsafe { args.NavigationId(&mut id) };
+            let redirected = unsafe {
+                let mut b = BOOL::default();
+                args.IsRedirected(&mut b).is_ok() && b.as_bool()
+            };
+            if redirected && id == allowed.get() {
+                return Ok(());
+            }
             // Blocker off, or a non-web target (`about:`/`data:`/`blob:`) we can't reason
             // about → defer to the other guards; only advance origin for real web pages.
             if !adblock_on.load(Ordering::Relaxed) || target.is_empty() {
                 if !target.is_empty() {
                     *current_site.borrow_mut() = target;
                 }
+                allowed.set(id);
                 return Ok(());
             }
             let prev = current_site.borrow().clone();
@@ -119,9 +149,11 @@ pub(crate) fn install(
                 return Ok(());
             }
             *current_site.borrow_mut() = target;
+            allowed.set(id);
             Ok(())
         },
     ));
     let mut token = 0i64;
     let _ = unsafe { core.add_NavigationStarting(&handler, &mut token) };
+    let _ = unsafe { core.add_ContentLoading(&loaded, &mut token) };
 }
