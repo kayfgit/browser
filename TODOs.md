@@ -23,12 +23,12 @@ STUFF TO KEEP IN MIND:
 
 general:
 [*] - ship every engine with the browser by default: the installer has all engines checked and users can uncheck the ones they dont want. package each engine separately so updates only redownload the browser (~20mb) unless an engine changed, and allow adding/removing engines later (something like :engine install gecko / :engine remove servo)
-[] - maybe freeze the adblock feature for now, it doesnt really work as intended (ill probably have to rework it)
+[x] - maybe freeze the adblock feature for now, it doesnt really work as intended (ill probably have to rework it)
 
 issues:
 [?/] - random not responding after exiting cs2 (might have to do with constant changes to resolution)
 [?] - sometimes crashes after taking a windows screenshot (prntscreen button)
-[*-] - opening youtube with ublock origin activated makes it open in a half-open half-not state.
+[x] - opening youtube with ublock origin activated makes it open in a half-open half-not state.
 [?] - saving a session with :w sometimes doesnt work, no idea why
 [/?] - random not responding after new update 26/07/2026 22:54
 [*] - add a way for users to freely install extensions
