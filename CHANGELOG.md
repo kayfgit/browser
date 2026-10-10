@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.8.0](https://github.com/kayfgit/browser/compare/v0.7.0...v0.8.0) (2026-10-10)
+
+
+### Features
+
+* answer site permission requests from the bar instead of Edge's pop-up ([289c4a8](https://github.com/kayfgit/browser/commit/289c4a8b27ad04dcb9beb8491ecb23ba5a19696e))
+* ask before every download and show its progress ([3b59727](https://github.com/kayfgit/browser/commit/3b597279ac3df3ca056134b1d88a70ecc9fcf653))
+* colour the browser's own pages and show :commands natively ([ce86cc1](https://github.com/kayfgit/browser/commit/ce86cc1b2258f24b2c8185611ecbe3652b17bf54))
+
+
+### Bug Fixes
+
+* Esc in Insert mode also closes the page's popup and leaves the field ([b4fd059](https://github.com/kayfgit/browser/commit/b4fd059e837df6634cd7df237d8b3d50932df854))
+* Esc in Insert mode reaches the page, so its popup closes ([a04f1dc](https://github.com/kayfgit/browser/commit/a04f1dcbeb1016d1d6f096c45cf04db3846177f8))
+* let server redirects of an allowed navigation through the redirect guard ([330f344](https://github.com/kayfgit/browser/commit/330f3440200f13af8826cd439fdaa575f3db0c62))
+
 ## [0.7.0](https://github.com/kayfgit/browser/compare/v0.6.0...v0.7.0) (2026-10-10)
 
 
