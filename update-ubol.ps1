@@ -1,13 +1,17 @@
 #Requires -Version 7
 # Replace the bundled uBlock Origin Lite (crates/desktop/extensions/uBOLite.chromium)
 # with a release from github.com/uBlockOrigin/uBOL-home. Its filter lists ship inside
-# the extension, so a stale copy means stale YouTube/anti-adblock fixes: run this before
-# each release. Defaults to the latest release; -Tag picks a specific one.
+# the extension, so a stale copy means stale YouTube/anti-adblock fixes. The update-ubol
+# workflow runs this weekly and opens a PR; run it by hand to bump sooner. Defaults to
+# the latest release; -Tag picks a specific one.
 [CmdletBinding()]
 param([string]$Tag)
 $ErrorActionPreference = 'Stop'
 $api = 'https://api.github.com/repos/uBlockOrigin/uBOL-home/releases/' + ($Tag ? "tags/$Tag" : 'latest')
-$release = Invoke-RestMethod -Uri $api -Headers @{ 'User-Agent' = 'browser-update-ubol' }
+$headers = @{ 'User-Agent' = 'browser-update-ubol' }
+# In CI, authenticate: the anonymous API limit is shared by every job on the runner's IP.
+if ($env:GITHUB_TOKEN) { $headers.Authorization = "Bearer $env:GITHUB_TOKEN" }
+$release = Invoke-RestMethod -Uri $api -Headers $headers
 $asset = $release.assets | Where-Object { $_.name -like '*.chromium.zip' } | Select-Object -First 1
 if (-not $asset) { throw "Release $($release.tag_name) has no chromium build." }
 if ($asset.digest -notmatch '^sha256:([0-9a-f]{64})$') {
