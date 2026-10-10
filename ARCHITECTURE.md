@@ -160,6 +160,7 @@ Pages and engines:
 - [extensions.rs](crates/desktop/src/extensions.rs), [bundled_extensions.rs](crates/desktop/src/bundled_extensions.rs): the extension picker and the bundled uBlock Origin Lite.
 - [favicon.rs](crates/desktop/src/favicon.rs), [freeze.rs](crates/desktop/src/freeze.rs), [data.rs](crates/desktop/src/data.rs): tab icons, `:freeze`, clearing browsing data.
 - [devtools.rs](crates/desktop/src/devtools.rs): `:inspect` (developer tools) and `:source` (view source).
+- [page_colors.rs](crates/desktop/src/page_colors.rs): the colours of the engine-free `browser://` pages, applied per page and line as they're drawn.
 - [prompts.rs](crates/desktop/src/prompts.rs): the yes/no questions the bar asks for the engine, a site's permission request or saving a download, replacing Edge's keyboard-unreachable bubbles. The WebView2 side is [engines/webview2/permissions.rs](crates/desktop/src/engines/webview2/permissions.rs).
 - [downloads.rs](crates/desktop/src/downloads.rs): downloads, shell side: answering the "save it?" question, status-bar progress and the `:downloads` page. The WebView2 side (holding a download at the prompt, progress, cancel) is [engines/webview2/downloads.rs](crates/desktop/src/engines/webview2/downloads.rs).
 
