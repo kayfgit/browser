@@ -32,6 +32,9 @@ pub struct KeyResult {
     pub yanked: Option<String>,
 }
 
+/// A line tint: from this column on, draw the line in this colour.
+pub type Tint = (usize, (u8, u8, u8));
+
 /// A read-only text buffer with a cursor, optional visual selection, and vim-ish
 /// motions. Rendered as a monospace grid by the shell painter.
 pub struct TextBuffer {
@@ -54,6 +57,10 @@ pub struct TextBuffer {
     last_find: Option<(char, char)>,
     /// Scratch: did the last [`TextBuffer::dispatch`] handle the key?
     last_consumed: bool,
+    /// Optional colour per line: `(column, rgb)` draws that line from `column` on in
+    /// `rgb` (the rest stays the normal text colour). Pages set it after their lines,
+    /// e.g. the `:downloads` status column.
+    pub tints: Vec<Option<Tint>>,
 }
 
 impl TextBuffer {
@@ -74,6 +81,7 @@ impl TextBuffer {
             pending: String::new(),
             last_find: None,
             last_consumed: false,
+            tints: Vec::new(),
         }
     }
 

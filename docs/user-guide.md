@@ -215,6 +215,9 @@ Other protections and toggles:
   get a red warning. Progress shows in the status bar; `:downloads` lists this session's
   downloads (`Enter` opens one, `e` shows it in its folder, `d` cancels or forgets it), and
   `:downloads dir <path>` changes where they go.
+- When a site asks for a permission (camera, microphone, location, notifications,
+  downloading several files at once, …) the bar asks you instead of Edge's pop-up:
+  `y` or `Enter` allows it, `n` or `Esc` blocks it. The site remembers your answer.
 - Edge's "translate this page?" bar is disabled, and links routed through Google's
   `translate.goog` proxy go to the real site instead.
 - Favicons come from WebView2's own cache, never from a third-party favicon service.

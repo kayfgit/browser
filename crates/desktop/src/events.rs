@@ -487,6 +487,7 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
             }
         }
         UserEvent::Download(event) => app.on_download(event),
+        UserEvent::PermissionAsk { id, url, what } => app.on_permission_ask(id, &url, what),
         UserEvent::DataCleared {
             label,
             ai_id,

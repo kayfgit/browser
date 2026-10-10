@@ -44,7 +44,7 @@ impl App {
             ModeKind::Hint => self.key_hint(key),
             ModeKind::Scroll => self.key_scroll(key),
             ModeKind::Caret | ModeKind::ScrollCaret => self.key_caret(key),
-            ModeKind::DownloadAsk => self.key_download_ask(key),
+            ModeKind::Ask => self.key_ask(key),
             // Light field typing (web only): the page has focus and the bridge + hook own
             // the leave key; this is the shell-side fallback for the beat right after
             // entering, before focus lands on the page. Esc leaves. Ctrl+V is left to the
@@ -93,9 +93,9 @@ impl App {
             }
             ModeKind::Normal => self.key_normal(key),
         }
-        // A download question that arrived while you were busy shows once you're back.
+        // A question that arrived while you were busy shows once you're back.
         if self.mode == ModeKind::Normal {
-            self.ask_download();
+            self.ask_next();
         }
         self.window.request_redraw();
     }
