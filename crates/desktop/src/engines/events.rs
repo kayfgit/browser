@@ -104,6 +104,7 @@ fn active_ui_event(event: UserEvent, source: usize, active: Option<usize>) -> Op
     }
     match event {
         event @ (UserEvent::ExitToNormal
+        | UserEvent::InsertEscape
         | UserEvent::FocusShell
         | UserEvent::GrabFocus
         | UserEvent::PageHold

@@ -3,7 +3,8 @@
 //!
 //! WebView2 raises the event in the host for Esc, function keys and Ctrl/Alt chords
 //! before the page sees them, wherever focus is inside the web view. Marking one
-//! handled keeps it from the page.
+//! handled keeps it from the page; Esc in Insert is the one shell key the page still
+//! gets (see [`shellkeys::page_sees_too`]).
 
 use webview2_com::AcceleratorKeyPressedEventHandler;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -50,8 +51,10 @@ pub(crate) fn install(webview: &WebView, proxy: crate::engines::PageEventProxy) 
             )
         });
         if let Some(event) = decision {
-            // SAFETY: a live event-args object.
-            unsafe { args.SetHandled(true)? };
+            if !shellkeys::page_sees_too(mode, vk, shift) {
+                // SAFETY: a live event-args object.
+                unsafe { args.SetHandled(true)? };
+            }
             let _ = proxy.send_event(event);
         }
         Ok(())

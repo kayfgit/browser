@@ -24,7 +24,8 @@ pub(crate) const MODE_OTHER: u8 = 0;
 /// Normal mode on a web tab: the shell should hold the keyboard; Esc in the page
 /// hands it back.
 pub(crate) const MODE_NORMAL_WEB: u8 = 1;
-/// Web Insert (typing into a field): Esc leaves. Ctrl+V is left to the page (paste).
+/// Web Insert (typing into a field): Esc leaves (and reaches the page too, closing its
+/// popup). Ctrl+V is left to the page (paste).
 pub(crate) const MODE_INSERT: u8 = 2;
 /// Web Passthrough (every key to the page): only Ctrl+S or Shift+Esc leave. Plain Esc
 /// reaches the page, since a web terminal or editor needs it.
@@ -68,10 +69,19 @@ pub(crate) fn accelerator(
         MODE_PASSTHROUGH if (ctrl && !alt && vk == VK_S) || (shift && vk == VK_ESCAPE) => {
             Some(UserEvent::ExitToNormal)
         }
-        MODE_INSERT if vk == VK_ESCAPE && !shift => Some(UserEvent::ExitToNormal),
+        MODE_INSERT if vk == VK_ESCAPE && !shift => Some(UserEvent::InsertEscape),
         MODE_NORMAL_WEB if vk == VK_ESCAPE && !ctrl && !alt => Some(UserEvent::ReclaimNormal),
         _ => None,
     }
+}
+
+/// Whether a key the shell takes ([`accelerator`]) should ALSO reach the page. Only Esc
+/// in Insert: leaving a field with Esc should close what the page tied to it (a search
+/// popup, a dropdown) exactly as in any browser — so the page gets the Esc too, and the
+/// shell still leaves Insert even when the field sits in an iframe the page script
+/// doesn't cover.
+pub(crate) fn page_sees_too(mode: u8, vk: u32, shift: bool) -> bool {
+    mode == MODE_INSERT && vk == VK_ESCAPE && !shift
 }
 
 /// With `BROWSER_KEY_DEBUG` set, append a line to `%TEMP%\browser-keys.log`: every
@@ -227,7 +237,7 @@ mod tests {
     fn insert_leaves_on_esc_and_normal_reclaims_on_esc() {
         assert!(matches!(
             accelerator(MODE_INSERT, ESC, false, false, false),
-            Some(UserEvent::ExitToNormal)
+            Some(UserEvent::InsertEscape)
         ));
         assert!(matches!(
             accelerator(MODE_NORMAL_WEB, ESC, false, false, false),
@@ -235,6 +245,10 @@ mod tests {
         ));
         // Ctrl+V pastes in Insert.
         assert!(accelerator(MODE_INSERT, 0x56, true, false, false).is_none());
+        // Esc in Insert also reaches the page (closing its popup); nothing else is shared.
+        assert!(page_sees_too(MODE_INSERT, ESC, false));
+        assert!(!page_sees_too(MODE_NORMAL_WEB, ESC, false));
+        assert!(!page_sees_too(MODE_PASSTHROUGH, ESC, true));
         assert!(accelerator(MODE_OTHER, ESC, false, false, false).is_none());
     }
 
