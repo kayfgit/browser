@@ -819,7 +819,7 @@ pub(crate) fn commands_document(jump: Option<&str>) -> String {
         ("Ctrl+U", "delete to the start of the line"),
     ]);
     let modes = help_table(&[
-        ("Insert", "i (or clicking / hinting a text field) types into a page field; Esc, clicking away or navigating leaves"),
+        ("Insert", "i (or clicking / hinting a text field) types into a page field; Esc (which also closes the field's popup), clicking away or navigating leaves"),
         ("Passthrough", "Ctrl+V sends every key to the page and survives clicks and navigation; Ctrl+S or Shift+Esc leaves. On a terminal i enters it; Esc goes to the shell and Ctrl+S leaves"),
         ("Hint", "type a label to follow it (type it UPPERCASE to open in a new tab); entered with yf only links are labelled and the label copies the address; Esc cancels"),
         ("Resize / Move", "hjkl to size / reposition the window; Esc finishes"),

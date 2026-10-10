@@ -15,6 +15,7 @@ function page() {
   const listeners = new Map();
   const messages = [];
   const clicks = [];
+  const timers = [];
   const document = {
     addEventListener(type, fn) {
       if (!listeners.has(type)) listeners.set(type, []);
@@ -65,10 +66,10 @@ function page() {
     location: { href: 'https://example.test/' },
     innerWidth: 800, innerHeight: 600,
     getComputedStyle() { return { visibility: 'visible', display: 'block' }; },
-    setTimeout() {},
+    setTimeout(fn) { timers.push(fn); },
   });
   vm.runInContext(script('BRIDGE_JS'), context);
-  return { context, window, button, messages, clicks };
+  return { context, window, document, button, messages, clicks, timers };
 }
 
 test('hinted button still clicks without selecting the pane under the mouse', () => {
@@ -213,4 +214,40 @@ test('invisible reCAPTCHA badges and image challenges get no label', () => {
     { src: 'https://www.google.com/recaptcha/api2/bframe?k=x' });
   const p = hitPage({ iframes: [badge, grid], stack: [badge, grid] });
   assert.deepEqual(Object.keys(p.window.__hintMap), []);
+});
+
+// Insert mode: Esc must reach the page (GitHub's search popup closes on it) and then
+// leave the field and Insert, reported once.
+function escapeInField(p) {
+  let prevented = false;
+  let blurred = 0;
+  const field = { tagName: 'INPUT', getAttribute: () => 'search', blur() { blurred++; } };
+  p.document.activeElement = field;
+  p.window.__mode = 'insert';
+  p.button.dispatchEvent({
+    type: 'keydown', key: 'Escape', shiftKey: false,
+    preventDefault() { prevented = true; }, stopPropagation() { prevented = true; },
+  });
+  return { prevented: () => prevented, blurred: () => blurred };
+}
+
+test('Esc in Insert reaches the page, then leaves the field and Insert', () => {
+  const p = page();
+  const esc = escapeInField(p);
+  assert.equal(esc.prevented(), false, 'the page must see the Esc');
+  assert.deepEqual(p.messages, [], 'the exit waits until the page has handled it');
+  p.timers.splice(0).forEach((fn) => fn());
+  assert.equal(esc.blurred(), 1);
+  assert.equal(p.window.__mode, 'normal');
+  p.timers.splice(0).forEach((fn) => fn()); // the focusout check, if any
+  assert.deepEqual(p.messages, ['insert-escape']);
+});
+
+test('Esc leaves Insert alone if the page already left it', () => {
+  const p = page();
+  const esc = escapeInField(p);
+  p.window.__mode = 'normal'; // e.g. the shell switched modes meanwhile
+  p.timers.splice(0).forEach((fn) => fn());
+  assert.equal(esc.blurred(), 0);
+  assert.deepEqual(p.messages, []);
 });
