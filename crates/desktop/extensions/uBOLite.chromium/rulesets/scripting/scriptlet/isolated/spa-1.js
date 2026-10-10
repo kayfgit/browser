@@ -72,6 +72,8 @@ function getSafeCookieValuesFn() {
         'decline', 'declined',
         'closed', 'next', 'mandatory',
         'disagree', 'agree',
+        'set', 'unset',
+        'given',
     ];
 }
 
@@ -280,28 +282,20 @@ function removeNodeText(
 function replaceNodeTextFn(
     nodeName = '',
     pattern = '',
-    replacement = ''
+    replacement = '',
+    ...varargs
 ) {
     const safe = safeSelf();
     const logPrefix = safe.makeLogPrefix('replace-node-text.fn', ...Array.from(arguments));
     const reNodeName = safe.patternToRegex(nodeName, 'i', true);
     const rePattern = safe.patternToRegex(pattern, 'gms');
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
+    const extraArgs = safe.parseVarargs(varargs);
     const reIncludes = extraArgs.includes || extraArgs.condition
         ? safe.patternToRegex(extraArgs.includes || extraArgs.condition, 'ms')
         : null;
     const reExcludes = extraArgs.excludes
         ? safe.patternToRegex(extraArgs.excludes, 'ms')
         : null;
-    const stop = (takeRecord = true) => {
-        if ( takeRecord ) {
-            handleMutations(observer.takeRecords());
-        }
-        observer.disconnect();
-        if ( safe.logLevel > 1 ) {
-            safe.uboLog(logPrefix, 'Quitting');
-        }
-    };
     const textContentFactory = (( ) => {
         const out = { createScript: s => s };
         const { trustedTypes: tt } = self;
@@ -314,19 +308,19 @@ function replaceNodeTextFn(
         }
         return out;
     })();
-    let sedCount = extraArgs.sedCount || 0;
+    let sedCount = extraArgs.sedCount ?? Number.MAX_SAFE_INTEGER;
     const handleNode = node => {
         const before = node.textContent;
         if ( reIncludes ) {
             reIncludes.lastIndex = 0;
-            if ( safe.RegExp_test.call(reIncludes, before) === false ) { return true; }
+            if ( safe.RegExp_test(reIncludes, before) === false ) { return; }
         }
         if ( reExcludes ) {
             reExcludes.lastIndex = 0;
-            if ( safe.RegExp_test.call(reExcludes, before) ) { return true; }
+            if ( safe.RegExp_test(reExcludes, before) ) { return; }
         }
         rePattern.lastIndex = 0;
-        if ( safe.RegExp_test.call(rePattern, before) === false ) { return true; }
+        if ( safe.RegExp_test(rePattern, before) === false ) { return; }
         rePattern.lastIndex = 0;
         const after = pattern !== ''
             ? before.replace(rePattern, replacement)
@@ -338,44 +332,65 @@ function replaceNodeTextFn(
             safe.uboLog(logPrefix, `Text before:\n${before.trim()}`);
         }
         safe.uboLog(logPrefix, `Text after:\n${after.trim()}`);
-        return sedCount === 0 || (sedCount -= 1) !== 0;
+        sedCount -= 1;
+    };
+    const handleTree = root => {
+        const treeWalker = document.createTreeWalker(root,
+            NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
+        );
+        const { currentScript } = document;
+        let count = 0;
+        for (;;) {
+            const node = treeWalker.nextNode();
+            if ( node === null ) { break; }
+            count += 1;
+            if ( node === currentScript ) { continue; }
+            if ( reNodeName.test(node.nodeName) ) {
+                handleNode(node);
+            } else if ( node.nodeName === 'TEMPLATE' ) {
+                count += handleTree(node.content);
+            } else {
+                continue;
+            }
+            if ( sedCount === 0 ) { break; }
+        }
+        return count;
+    };
+    if ( document.documentElement ) {
+        const count = handleTree(document.documentElement);
+        safe.uboLog(logPrefix, `${count} nodes present before installing mutation observer`);
+    }
+    const stay = Boolean(extraArgs.stay);
+    if ( sedCount === 0 && stay === false ) { return; }
+    const stop = (takeRecord = true) => {
+        const mutations = takeRecord ? observer.takeRecords() : [];
+        observer.disconnect();
+        handleMutations(mutations);
+        if ( safe.logLevel > 1 ) {
+            safe.uboLog(logPrefix, 'Quitting');
+        }
     };
     const handleMutations = mutations => {
         for ( const mutation of mutations ) {
             for ( const node of mutation.addedNodes ) {
-                if ( reNodeName.test(node.nodeName) === false ) { continue; }
-                if ( handleNode(node) ) { continue; }
-                stop(false); return;
+                if ( reNodeName.test(node.nodeName) ) {
+                    handleNode(node);
+                } else if ( node.nodeName === 'TEMPLATE' ) {
+                    handleTree(node.content);
+                } else {
+                    continue;
+                }
+                if ( sedCount === 0 ) { return stop(false); }
             }
         }
     };
     const observer = new MutationObserver(handleMutations);
     observer.observe(document, { childList: true, subtree: true });
-    if ( document.documentElement ) {
-        const treeWalker = document.createTreeWalker(
-            document.documentElement,
-            NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
-        );
-        let count = 0;
-        for (;;) {
-            const node = treeWalker.nextNode();
-            count += 1;
-            if ( node === null ) { break; }
-            if ( reNodeName.test(node.nodeName) === false ) { continue; }
-            if ( node === document.currentScript ) { continue; }
-            if ( handleNode(node) ) { continue; }
-            stop(); break;
-        }
-        safe.uboLog(logPrefix, `${count} nodes present before installing mutation observer`);
-    }
-    if ( extraArgs.stay ) { return; }
+    if ( stay ) { return; }
     runAt(( ) => {
-        const quitAfter = extraArgs.quitAfter || 0;
-        if ( quitAfter !== 0 ) {
-            setTimeout(( ) => { stop(); }, quitAfter);
-        } else {
-            stop();
-        }
+        const quitAfter = extraArgs.quitAfter ?? 0;
+        if ( quitAfter === 0 ) { return stop(); }
+        setTimeout(( ) => { stop(); }, quitAfter);
     }, 'interactive');
 }
 
@@ -409,15 +424,14 @@ function runAt(fn, when) {
 }
 
 function safeSelf() {
-    if ( scriptletGlobals.safeSelf ) {
-        return scriptletGlobals.safeSelf;
+    if ( safeSelf.safe ) {
+        return safeSelf.safe;
     }
     const self = globalThis;
     const safe = {
         'Array_from': Array.from,
         'Error': self.Error,
-        'Function_toStringFn': self.Function.prototype.toString,
-        'Function_toString': thisArg => safe.Function_toStringFn.call(thisArg),
+        'Function_toString': Function.prototype.call.bind(self.Function.prototype.toString),
         'Math_floor': Math.floor,
         'Math_max': Math.max,
         'Math_min': Math.min,
@@ -430,7 +444,7 @@ function safeSelf() {
         'Object_hasOwn': Object.hasOwn.bind(Object),
         'Object_toString': Object.prototype.toString,
         'RegExp': self.RegExp,
-        'RegExp_test': self.RegExp.prototype.test,
+        'RegExp_test': Function.prototype.call.bind(self.RegExp.prototype.test),
         'RegExp_exec': self.RegExp.prototype.exec,
         'Request_clone': self.Request.prototype.clone,
         'String': self.String,
@@ -441,10 +455,8 @@ function safeSelf() {
         'removeEventListener': self.EventTarget.prototype.removeEventListener,
         'fetch': self.fetch,
         'JSON': self.JSON,
-        'JSON_parseFn': self.JSON.parse,
-        'JSON_stringifyFn': self.JSON.stringify,
-        'JSON_parse': (...args) => safe.JSON_parseFn.call(safe.JSON, ...args),
-        'JSON_stringify': (...args) => safe.JSON_stringifyFn.call(safe.JSON, ...args),
+        'JSON_parse': Function.prototype.call.bind(self.JSON.parse, self.JSON),
+        'JSON_stringify': Function.prototype.call.bind(self.JSON.stringify, self.JSON),
         'log': console.log.bind(console),
         // Properties
         logLevel: 0,
@@ -497,7 +509,7 @@ function safeSelf() {
         testPattern(details, haystack) {
             if ( details.matchAll ) { return true; }
             if ( details.re ) {
-                return this.RegExp_test.call(details.re, haystack) === details.expect;
+                return this.RegExp_test(details.re, haystack) === details.expect;
             }
             return haystack.includes(details.pattern) === details.expect;
         },
@@ -515,21 +527,20 @@ function safeSelf() {
             }
             return /^/;
         },
-        getExtraArgs(args, offset = 0) {
-            const entries = args.slice(offset).reduce((out, v, i, a) => {
-                if ( (i & 1) === 0 ) {
-                    const rawValue = a[i+1];
-                    const value = /^\d+$/.test(rawValue)
-                        ? parseInt(rawValue, 10)
-                        : rawValue;
-                    out.push([ a[i], value ]);
-                }
+        parseVarargs(varargs) {
+            const entries = varargs.reduce((out, v, i, a) => {
+                if ( i & 1 ) { return out; }
+                const rawValue = a[i+1];
+                const value = /^\d+$/.test(rawValue)
+                    ? parseInt(rawValue, 10)
+                    : rawValue;
+                out.push([ a[i], value ]);
                 return out;
             }, []);
             return this.Object_fromEntries(entries);
         },
     };
-    scriptletGlobals.safeSelf = safe;
+    safeSelf.safe = safe;
     if ( scriptletGlobals.bcSecret === undefined ) { return safe; }
     // This is executed only when the logger is opened
     safe.logLevel = scriptletGlobals.logLevel || 1;
@@ -590,7 +601,8 @@ function safeSelf() {
 function setAttr(
     selector = '',
     attr = '',
-    value = ''
+    value = '',
+    ...varargs
 ) {
     const safe = safeSelf();
     const logPrefix = safe.makeLogPrefix('set-attr', selector, attr, value);
@@ -604,7 +616,7 @@ function setAttr(
             return;
         }
     }
-    const options = safe.getExtraArgs(Array.from(arguments), 3);
+    const options = safe.parseVarargs(varargs);
     setAttrFn(false, logPrefix, selector, attr, value, options);
 }
 
@@ -681,7 +693,8 @@ function setAttrFn(
 function setCookie(
     name = '',
     value = '',
-    path = ''
+    path = '',
+    ...varargs
 ) {
     if ( name === '' ) { return; }
     const safe = safeSelf();
@@ -702,7 +715,7 @@ function setCookie(
         value,
         '',
         path,
-        safe.getExtraArgs(Array.from(arguments), 3)
+        safe.parseVarargs(varargs)
     );
 
     if ( done ) {
@@ -781,9 +794,9 @@ function setCookieReload(name, value, path, ...args) {
     setCookie(name, value, path, 'reload', '1', ...args);
 }
 
-function setLocalStorageItem(key = '', value = '') {
+function setLocalStorageItem(key = '', value = '', ...varargs) {
     const safe = safeSelf();
-    const options = safe.getExtraArgs(Array.from(arguments), 2)
+    const options = safe.parseVarargs(varargs)
     setLocalStorageItemFn('local', false, key, value, options);
 }
 
@@ -865,9 +878,9 @@ function setLocalStorageItemFn(
     }
 }
 
-function setSessionStorageItem(key = '', value = '') {
+function setSessionStorageItem(key = '', value = '', ...varargs) {
     const safe = safeSelf();
-    const options = safe.getExtraArgs(Array.from(arguments), 2)
+    const options = safe.parseVarargs(varargs)
     setLocalStorageItemFn('session', false, key, value, options);
 }
 
@@ -964,19 +977,7 @@ function urlSkip(url, blocked, steps) {
 
 const scriptletGlobals = {}; // eslint-disable-line
 
-const $scriptletFunctions$ = /* 9 */
-[setLocalStorageItem,setCookie,setSessionStorageItem,removeNodeText,setCookieReload,hrefSanitizer,removeClass,preventRefresh,setAttr];
-
-const $scriptletArgs$ = /* 37 */ ["/^adblock/","$remove$","unlock","1","modalVisited","true","adsCompleted","finalReloadDone","script","modifiedParagraphs.add","force_ad","2","visited","last_ads","yes","Ads","clicked_ads","adtura","modal_promo",".download-links a[href^=\"https://unlock.uberxviral.com/#\"]","[href]","base64decode","_theme-banner-upper","html","bgPartners2019",".videoContainer > div.beachPartners + div","CLI_02_Dxxxxxxxxxxxxxxx","a[href*=\"://ouo.io/\"]","?s","adwallLocked","nf_done_clicks_v3_new","3","a[data-stream][target=\"_blank\"]","data-clicks","ads-popup","url_popup","player"];
-
-const $scriptletArglists$ = /* 27 */ "0,0,1;1,2,3;1,4,5;1,6,3;2,7,3;0,7,3;3,8,9;1,10,11;1,12,3;0,13,14;1,15,11;1,16,11;4,17,3;1,18,3;5,19,20,21;6,22,23;6,24,25;1,12,14;1,26,3;7;5,27,28;0,29,1;2,30,31;8,32,33,11;3,8,34;3,8,35;1,36,3";
-
-const $scriptletArglistRefs$ = /* 60 */ "11;19;19;19;19;19;24;19;25;13;26;15;1;26;26;26;9;26;20;26;12;14,26;23;2,3,4,5;19;26;26;7;26;10;9;26;2,3,4,5;16;19;0;9;26;26;7;6;26;9;26;22;8;9;18;9;22;9;8;9;9;17;9;9;21;9;17";
-
-const $scriptletHostnames$ = /* 60 */ ["1i1.in","4br.me","enrt.eu","ent4.net","fir3.net","cl1ca.com","elpais.bo","seulink.*","animeid.tv","estacio.br","pelis1.com","canalnet.tv","fgtd.online","homecine.cc","homecine.to","homecine.tv","maxvip.site","pornhot.net","hentai-id.tv","iputitas.net","pelisflix2.*","pelismart.tv","plplayer.com","redecanais.*","encurtalink.*","pelispedia.is","smartpelis.tv","techdiniz.com","flixseries.org","guiasaude.info","infoinvest.org","malfollado.com","redecanaistv.*","beachcam.meo.pt","dev.encurta.app","devilnovels.com","gastroponto.com","metroseries.net","seriesmetro.net","trueliketop.org","cursomecanet.com","papayaseries.net","saudeecomida.com","seriesbanana.com","esportesdavez.com","guiacripto.online","meufinanceiro.org","portecnologia.com","receitastop.click","redirectnflix.com","guiavidaesaude.com","sabornutritivo.com","blog.whatsappgb.top","comidaefamilia.food","nutricaohoje.website","fomedereceitas.online","receitasdocheff.online","diariodocomercio.com.br","investimentosfacil.online","receitasoncaseiras.online"];
-
-const $scriptletFromRegexes$ = /* 0 */ [];
-
+const $hasHostnames$ = true;
 const $hasEntities$ = true;
 const $hasAncestors$ = false;
 const $hasRegexes$ = false;
@@ -1024,8 +1025,10 @@ const entries = (( ) => {
 })();
 if ( entries.length === 0 ) { return; }
 
-const todoIndices = new Set();
-if ( $scriptletHostnames$.length ) {
+const todo = new Set();
+
+if ( $hasHostnames$ ) {
+    const $scriptletHostnames$ = /* 64 */ ["1i1.in","4br.me","enrt.eu","ent4.net","fir3.net","cl1ca.com","elpais.bo","seulink.*","3xyaoi.com","animeid.tv","estacio.br","pelis1.com","canalnet.tv","fgtd.online","homecine.cc","homecine.to","homecine.tv","maxvip.site","pornhot.net","hentai-id.tv","iputitas.net","pelisflix2.*","pelismart.tv","plplayer.com","redecanais.*","encurtalink.*","pelispedia.is","smartpelis.tv","techdiniz.com","flixseries.org","guiasaude.info","infoinvest.org","malfollado.com","portalyaoi.com","redecanaistv.*","animegratis.org","beachcam.meo.pt","dev.encurta.app","devilnovels.com","gastroponto.com","metroseries.net","seriesmetro.net","trueliketop.org","cursomecanet.com","papayaseries.net","saudeecomida.com","seriesbanana.com","esportesdavez.com","guiacripto.online","meufinanceiro.org","portecnologia.com","receitastop.click","redirectnflix.com","guiavidaesaude.com","sabornutritivo.com","blog.whatsappgb.top","comidaefamilia.food","saopaulosecreto.com","nutricaohoje.website","fomedereceitas.online","receitasdocheff.online","diariodocomercio.com.br","investimentosfacil.online","receitasoncaseiras.online"];
     const collectArglistRefIndices = (out, hn, r) => {
         let l = 0, i = 0, d = 0;
         let candidate = '';
@@ -1060,6 +1063,7 @@ if ( $scriptletHostnames$.length ) {
             }
         }
     };
+    const todoIndices = new Set();
     indicesFromHostname(todoIndices, entries[0]);
     if ( $hasAncestors$ ) {
         for ( const entry of entries ) {
@@ -1067,20 +1071,20 @@ if ( $scriptletHostnames$.length ) {
             indicesFromHostname(todoIndices, entry, '>>');
         }
     }
-    $scriptletHostnames$.length = 0;
-}
-
-// Collect arglist references
-const todo = new Set();
-if ( todoIndices.size !== 0 ) {
-    const arglistRefs = $scriptletArglistRefs$.split(';');
-    for ( const i of todoIndices ) {
-        for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
-            todo.add(ref);
+    // Collect arglist references
+    if ( todoIndices.size ) {
+        const $scriptletArglistRefs$ = /* 64 */ "14;22;22;22;22;22;29;22;1;30;16;31;18;3;31;31;31;12;31;23;31;15;17,31;28;4,5,6,7;22;31;31;9;31;13;12;31;24;4,5,6,7;25;19;22;2;12;31;31;9;8;31;12;31;27;10;12;21;12;27;12;10;12;12;11;20;12;12;26;12;20";
+        const arglistRefs = $scriptletArglistRefs$.split(';');
+        for ( const i of todoIndices ) {
+            for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
+                todo.add(ref);
+            }
         }
     }
 }
+
 if ( $hasRegexes$ ) {
+    const $scriptletFromRegexes$ = /* 0 */ [];
     const { hns } = entries[0];
     for ( let i = 0, n = $scriptletFromRegexes$.length; i < n; i += 3 ) {
         const needle = $scriptletFromRegexes$[i+0];
@@ -1097,10 +1101,13 @@ if ( $hasRegexes$ ) {
         }
     }
 }
-if ( todo.size === 0 ) { return; }
 
-// Execute scriplets
-{
+// Execute scriptlets
+if ( todo.size && todo.has(0) === false ) {
+    const $scriptletFunctions$ = /* 9 */
+[removeNodeText,setLocalStorageItem,setCookie,setSessionStorageItem,hrefSanitizer,setCookieReload,removeClass,preventRefresh,setAttr];
+    const $scriptletArgs$ = /* 46 */ ["script","/_adBlockDetectorExecuted|checkForbiddenBrowsers/","/^adblock/","$remove$","unlock","1","modalVisited","true","adsCompleted","finalReloadDone","modifiedParagraphs.add","force_ad","2","visited","a[href^=\"https://adesampa.com.br/\"]","[href]","removeParam","last_ads","yes","Ads","clicked_ads","adtura","modal_promo",".download-links a[href^=\"https://unlock.uberxviral.com/#\"]","base64decode","_theme-banner-upper","html","bgPartners2019",".videoContainer > div.beachPartners + div","CLI_02_Dxxxxxxxxxxxxxxx","a[href*=\"://ouo.io/\"]","?s","a.reward_ads[data-url]","href","[data-url]","iframe[data-src]","src","[data-src]","adwallLocked","nf_done_clicks_v3_new","3","a[data-stream][target=\"_blank\"]","data-clicks","ads-popup","url_popup","player"];
+    const $scriptletArglists$ = /* 32 */ ";0,0,1;1,2,3;2,4,5;2,6,7;2,8,5;3,9,5;1,9,5;0,0,10;2,11,12;2,13,5;4,14,15,16;1,17,18;2,19,12;2,20,12;5,21,5;2,22,5;4,23,15,24;6,25,26;6,27,28;2,13,18;2,29,5;7;4,30,31;8,32,33,34;8,35,36,37;1,38,3;3,39,40;8,41,42,12;0,0,43;0,0,44;2,45,5";
     const arglists = $scriptletArglists$.split(';');
     const args = $scriptletArgs$;
     for ( const ref of todo ) {

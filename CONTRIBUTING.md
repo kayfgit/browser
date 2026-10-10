@@ -16,8 +16,9 @@ the same folder.
 
 Release builds keep their data in `%LOCALAPPDATA%\browser\data` (WebView2 profile,
 unpacked uBlock Origin Lite) and `%APPDATA%\browser\data` (session, profiles,
-config). Debug builds keep the WebView2 profile next to the executable and load the
-extension straight from the source tree.
+config). Debug builds keep the WebView2 profile next to the executable and unpack the
+extension to `target/debug/bundled/extensions`. To update the bundled uBlock Origin Lite,
+run `./update-ubol.ps1` (it checks the release's SHA-256), ideally before each release.
 
 Launch development builds with `--scratch` so they can't touch your real session or
 profiles:

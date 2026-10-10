@@ -20,7 +20,6 @@
 */
 
 import { hostnameCompare, isHnRegexOrPath } from './make-utils.js';
-import { builtinScriptlets } from '../resources/scriptlets.js';
 import { literalStrFromRegex } from './regex-analyzer.js';
 import { safeReplace } from './safe-replace.js';
 
@@ -32,7 +31,7 @@ const worldTemplate = {
     scriptletFunctions: new Map(),
     allFunctions: new Map(),
     args: new Map(),
-    arglists: new Map(),
+    arglists: new Map([['',0]]),
     hostnames: new Map(),
     regexesOrPaths: new Map(),
     matches: new Set(),
@@ -64,6 +63,29 @@ function createScriptletCoreCode(worldDetails, resourceEntry) {
 
 /******************************************************************************/
 
+function compileBroadExclusion(details) {
+    if ( Boolean(details.excludeMatches?.length) === false ) { return; }
+    for ( const worldDetails of Object.values(worlds) ) {
+        for ( const hn of details.excludeMatches ) {
+            if ( isHnRegexOrPath(hn) ) {
+                const refs = worldDetails.regexesOrPaths.get(hn) ?? new Set();
+                if ( refs.size === 0 ) {
+                    worldDetails.regexesOrPaths.set(hn, refs);
+                }
+                refs.add(0);
+                continue;
+            }
+            const refs = worldDetails.hostnames.get(hn) ?? new Set();
+            if ( refs.size === 0 ) {
+                worldDetails.hostnames.set(hn, refs);
+            }
+            refs.add(0);
+        }
+    }
+}
+
+/******************************************************************************/
+
 export function reset() {
     worlds.ISOLATED = structuredClone(worldTemplate);
     worlds.MAIN = structuredClone(worldTemplate);
@@ -72,6 +94,9 @@ export function reset() {
 /******************************************************************************/
 
 export function compile(rulesetId, details) {
+    if ( details.args.length === 0 ) {
+        return compileBroadExclusion(details);
+    }
     if ( details.args[0].endsWith('.js') === false ) {
         details.args[0] += '.js';
     }
@@ -80,7 +105,10 @@ export function compile(rulesetId, details) {
     }
     const scriptletToken = details.args[0];
     const resourceEntry = resourceDetails.get(scriptletToken);
-    if ( resourceEntry === undefined ) { return; }
+    if ( resourceEntry === undefined ) {
+        console.log(`make-scriptlets.js / compile(): Can't find ${scriptletToken} scriptlet`);
+        return;
+    }
     if ( resourceEntry.requiresTrust && details.trustedSource !== true ) {
         console.log(`Rejecting +js(${details.args.join()}): ${rulesetId} is not trusted`);
         return;
@@ -174,7 +202,8 @@ export function commit(rulesetId, template) {
                     JSON.stringify(Array.from(a[1])).slice(1,-1),
                 ];
             }).flat();
-        let content = safeReplace(template, 'self.$hasEntities$', JSON.stringify(worldDetails.hasEntities));
+        let content = safeReplace(template, 'self.$hasHostnames$', JSON.stringify(hostnames.length !== 0));
+        content = safeReplace(content, 'self.$hasEntities$', JSON.stringify(worldDetails.hasEntities));
         content = safeReplace(content, 'self.$hasAncestors$', JSON.stringify(worldDetails.hasAncestors));
         content = safeReplace(content, 'self.$hasRegexes$', JSON.stringify(scriptletFromRegexes.length !== 0));
         content = safeReplace(content,
@@ -219,8 +248,38 @@ export function commit(rulesetId, template) {
 
 /******************************************************************************/
 
-function init() {
-    for ( const scriptlet of builtinScriptlets ) {
+export async function importScriptlet(details) {
+    const funcBody = details.code.replace(/\/\*.+?\*\//gs, '').trim();
+    const textEncoder = new TextEncoder();
+    const funcBuf = textEncoder.encode(funcBody);
+    const hashBuf = await globalThis.crypto.subtle.digest('SHA-256', funcBuf);
+    const digestBuf = new Uint32Array(hashBuf);
+    const digestStr = [ digestBuf[0], digestBuf[1] ]
+        .map(a => a.toString(36).slice(-4).padStart(4,'0'))
+        .join('');
+    const funcName = `zeta_${digestStr}`;
+    const { name } = details;
+    const entry = {
+        name: funcName,
+        code: `function ${funcName}() { // ${name}\n${funcBody}\n}`,
+        world: 'MAIN',
+        requiresTrust: details.requiresTrust === true,
+    };
+    resourceDetails.set(funcName, entry);
+    resourceAliases.set(name, funcName);
+    if ( typeof details.alias === 'string' ) {
+        resourceAliases.set(details.alias, funcName);
+    } else if ( Array.isArray(details.alias) ) {
+        for ( const alias of details.alias ) {
+            resourceAliases.set(alias, funcName);
+        }
+    }
+}
+
+/******************************************************************************/
+
+export function init(scriptlets) {
+    for ( const scriptlet of scriptlets ) {
         const { name, aliases, fn } = scriptlet;
         const entry = {
             name: fn.name,
@@ -236,7 +295,5 @@ function init() {
         }
     }
 }
-
-init();
 
 /******************************************************************************/

@@ -78,28 +78,7 @@ function abortCurrentScriptFn(
     const logPrefix = safe.makeLogPrefix('abort-current-script', target, needle, context);
     const reNeedle = safe.patternToRegex(needle);
     const reContext = safe.patternToRegex(context);
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
     const thisScript = document.currentScript;
-    const chain = safe.String_split.call(target, '.');
-    let owner = window;
-    let prop;
-    for (;;) {
-        prop = chain.shift();
-        if ( chain.length === 0 ) { break; }
-        if ( prop in owner === false ) { break; }
-        owner = owner[prop];
-        if ( owner instanceof Object === false ) { return; }
-    }
-    let value;
-    let desc = Object.getOwnPropertyDescriptor(owner, prop);
-    if (
-        desc instanceof Object === false ||
-        desc.get instanceof Function === false
-    ) {
-        value = owner[prop];
-        desc = undefined;
-    }
-    const debug = shouldDebug(extraArgs);
     const exceptionToken = getExceptionTokenFn();
     const scriptTexts = new WeakMap();
     const textContentGetter = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent').get;
@@ -107,8 +86,7 @@ function abortCurrentScriptFn(
         let text = textContentGetter.call(elem);
         if ( text.trim() !== '' ) { return text; }
         if ( scriptTexts.has(elem) ) { return scriptTexts.get(elem); }
-        const [ , mime, content ] =
-            /^data:([^,]*),(.+)$/.exec(elem.src.trim()) ||
+        const [ , mime, content ] = /^data:([^,]*),(.+)$/.exec(elem.src.trim()) ||
             [ '', '', '' ];
         try {
             switch ( true ) {
@@ -128,50 +106,28 @@ function abortCurrentScriptFn(
         const e = document.currentScript;
         if ( e instanceof HTMLScriptElement === false ) { return; }
         if ( e === thisScript ) { return; }
-        if ( context !== '' && reContext.test(e.src) === false ) {
-            // eslint-disable-next-line no-debugger
-            if ( debug === 'nomatch' || debug === 'all' ) { debugger; }
-            return;
-        }
+        if ( context !== '' && reContext.test(e.src) === false ) { return; }
         if ( safe.logLevel > 1 && context !== '' ) {
             safe.uboLog(logPrefix, `Matched src\n${e.src}`);
         }
         const scriptText = getScriptText(e);
-        if ( reNeedle.test(scriptText) === false ) {
-            // eslint-disable-next-line no-debugger
-            if ( debug === 'nomatch' || debug === 'all' ) { debugger; }
-            return;
-        }
+        if ( reNeedle.test(scriptText) === false ) { return; }
         if ( safe.logLevel > 1 ) {
             safe.uboLog(logPrefix, `Matched text\n${scriptText}`);
         }
-        // eslint-disable-next-line no-debugger
-        if ( debug === 'match' || debug === 'all' ) { debugger; }
         safe.uboLog(logPrefix, 'Aborted');
         throw new ReferenceError(exceptionToken);
     };
-    // eslint-disable-next-line no-debugger
-    if ( debug === 'install' ) { debugger; }
-    try {
-        Object.defineProperty(owner, prop, {
-            get: function() {
-                validate();
-                return desc instanceof Object
-                    ? desc.get.call(owner)
-                    : value;
-            },
-            set: function(a) {
-                validate();
-                if ( desc instanceof Object ) {
-                    desc.set.call(owner, a);
-                } else {
-                    value = a;
-                }
-            }
-        });
-    } catch(ex) {
-        safe.uboErr(logPrefix, `Error: ${ex}`);
-    }
+    let currentValue = trapPropertyFn(target, {
+        get: function() {
+            validate();
+            return currentValue;
+        },
+        set: function(a) {
+            validate();
+            currentValue = a;
+        }
+    }, { canThrow: true });
 }
 
 function abortOnPropertyRead(
@@ -248,12 +204,13 @@ function abortOnPropertyWrite(
 
 function abortOnStackTrace(
     chain = '',
-    needle = ''
+    needle = '',
+    ...varargs
 ) {
     if ( typeof chain !== 'string' ) { return; }
     const safe = safeSelf();
     const needleDetails = safe.initPattern(needle, { canNegate: true });
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 2);
+    const extraArgs = safe.parseVarargs(varargs);
     if ( needle === '' ) { extraArgs.log = 'all'; }
     const makeProxy = function(owner, chain) {
         const pos = chain.indexOf('.');
@@ -478,12 +435,13 @@ function getRandomTokenFn() {
 function jsonPrune(
     rawPrunePaths = '',
     rawNeedlePaths = '',
-    stackNeedle = ''
+    stackNeedle = '',
+    ...varargs
 ) {
     const safe = safeSelf();
     const logPrefix = safe.makeLogPrefix('json-prune', rawPrunePaths, rawNeedlePaths, stackNeedle);
     const stackNeedleDetails = safe.initPattern(stackNeedle, { canNegate: true });
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
+    const extraArgs = safe.parseVarargs(varargs);
     proxyApplyFn('JSON.parse', function(context) {
         const objBefore = context.reflect();
         if ( rawPrunePaths === '' ) {
@@ -727,6 +685,51 @@ function matchesStackTraceFn(
         safe.uboLog(stack.replace(/\t/g, '\n'));
     }
     return r;
+}
+
+function modifyXhrResponseFn(
+    propsToMatch = '',
+    modifierFn = ''
+) {
+    if ( typeof propsToMatch !== 'string' ) { return; }
+    const safe = safeSelf();
+    if ( modifyXhrResponseFn.xhrInstances === undefined ) {
+        modifyXhrResponseFn.xhrInstances = new WeakMap();
+    }
+    const propNeedles = parsePropertiesToMatchFn(propsToMatch, 'url');
+    const NativeXMLHttpRequest = self.XMLHttpRequest;
+    const TrappedXMLHttpRequest = class XMLHttpRequest extends NativeXMLHttpRequest {
+        open(method, url, ...args) {
+            const haystack = { method, url };
+            if ( propsToMatch === '' ) {
+                safe.uboLog(`modifyXhrResponseFn() / Called: ${safe.JSON_stringify(haystack, null, 2)}`);
+            } else if ( matchObjectPropertiesFn(propNeedles, haystack) ) {
+                modifyXhrResponseFn.xhrInstances.set(this, modifierFn);
+            }
+            return super.open(method, url, ...args);
+        }
+        get response() {
+            const modifierFn = modifyXhrResponseFn.xhrInstances.get(this);
+            return modifierFn
+                ? modifierFn(this, super.response)
+                : super.response;
+        }
+        get responseText() {
+            const modifierFn = modifyXhrResponseFn.xhrInstances.get(this);
+            return modifierFn
+                ? modifierFn(this, super.responseText)
+                : super.responseText;
+        }
+        get responseXML() {
+            const modifierFn = modifyXhrResponseFn.xhrInstances.get(this);
+            return modifierFn
+                ? modifierFn(this, super.responseXML)
+                : super.responseXML;
+        }
+    };
+    proxyToStringFn(TrappedXMLHttpRequest.prototype.open, NativeXMLHttpRequest.prototype.open);
+    proxyToStringFn(TrappedXMLHttpRequest, NativeXMLHttpRequest);
+    self.XMLHttpRequest = TrappedXMLHttpRequest;
 }
 
 function noEvalIf(
@@ -980,10 +983,11 @@ function parsePropertiesToMatchFn(propsToMatch, implicit = '') {
 
 function preventAddEventListener(
     type = '',
-    pattern = ''
+    pattern = '',
+    ...varargs
 ) {
     const safe = safeSelf();
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 2);
+    const extraArgs = safe.parseVarargs(varargs);
     const logPrefix = safe.makeLogPrefix('prevent-addEventListener', type, pattern);
     const reType = safe.patternToRegex(type, undefined, true);
     const rePattern = safe.patternToRegex(pattern);
@@ -1015,8 +1019,8 @@ function preventAddEventListener(
         return parts.join('');
     };
     const shouldPrevent = (thisArg, type, handler) => {
-        const matchesType = safe.RegExp_test.call(reType, type);
-        const matchesHandler = safe.RegExp_test.call(rePattern, handler);
+        const matchesType = safe.RegExp_test(reType, type);
+        const matchesHandler = safe.RegExp_test(rePattern, handler);
         const matchesEither = matchesType || matchesHandler;
         const matchesBoth = matchesType && matchesHandler;
         if ( safe.logLevel > 1 && matchesEither ) {
@@ -1050,22 +1054,23 @@ function preventAddEventListener(
         }
         return context.reflect();
     };
+    const protect = owner => {
+        const { addEventListener } = owner;
+        Object.defineProperty(owner, 'addEventListener', {
+            set() { },
+            get() { return addEventListener; }
+        });
+    };
     runAt(( ) => {
         proxyApplyFn('EventTarget.prototype.addEventListener', proxyFn);
-        if ( extraArgs.protect ) {
-            const { addEventListener } = EventTarget.prototype;
-            Object.defineProperty(EventTarget.prototype, 'addEventListener', {
-                set() { },
-                get() { return addEventListener; }
-            });
+        if ( extraArgs.protect ) { protect(EventTarget.prototype); }
+        if ( Object.hasOwn(document, 'addEventListener') ) {
+            proxyApplyFn('document.addEventListener', proxyFn);
+            if ( extraArgs.protect ) { protect(document); }
         }
-        proxyApplyFn('document.addEventListener', proxyFn);
-        if ( extraArgs.protect ) {
-            const { addEventListener } = document;
-            Object.defineProperty(document, 'addEventListener', {
-                set() { },
-                get() { return addEventListener; }
-            });
+        if ( Object.hasOwn(window, 'addEventListener') ) {
+            proxyApplyFn('window.addEventListener', proxyFn);
+            if ( extraArgs.protect ) { protect(window); }
         }
     }, extraArgs.runAt);
 }
@@ -1078,7 +1083,8 @@ function preventFetchFn(
     trusted = false,
     propsToMatch = '',
     responseBody = '',
-    responseType = ''
+    responseType = '',
+    ...varargs
 ) {
     const safe = safeSelf();
     const setTimeout = self.setTimeout;
@@ -1089,7 +1095,7 @@ function preventFetchFn(
         responseBody,
         responseType
     );
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 4);
+    const extraArgs = safe.parseVarargs(varargs);
     const propNeedles = parsePropertiesToMatchFn(propsToMatch, 'url');
     const validResponseProps = {
         ok: [ false, true ],
@@ -1232,7 +1238,7 @@ function preventSetTimeout(
 }
 
 function preventXhr(...args) {
-    return preventXhrFn(false, ...args);
+    preventXhrFn(false, ...args);
 }
 
 function preventXhrFn(
@@ -1405,7 +1411,8 @@ function preventXhrFn(
 
 function proxyApplyFn(
     target = '',
-    handler = ''
+    handler = '',
+    options = {}
 ) {
     let context = globalThis;
     let prop = target;
@@ -1466,20 +1473,22 @@ function proxyApplyFn(
         };
         proxyApplyFn.isCtor = new Map();
         proxyApplyFn.proxies = new WeakMap();
-        proxyApplyFn.nativeToString = Function.prototype.toString;
-        const proxiedToString = new Proxy(Function.prototype.toString, {
-            apply(target, thisArg) {
-                let proxied = thisArg;
-                for(;;) {
-                    const fn = proxyApplyFn.proxies.get(proxied);
-                    if ( fn === undefined ) { break; }
-                    proxied = fn;
+        if ( (options.skipToString || proxyApplyFn.skipToString) !== true ) {
+            proxyApplyFn.nativeToString = Function.prototype.toString;
+            const proxiedToString = new Proxy(Function.prototype.toString, {
+                apply(target, thisArg) {
+                    let proxied = thisArg;
+                    for(;;) {
+                        const fn = proxyApplyFn.proxies.get(proxied);
+                        if ( fn === undefined ) { break; }
+                        proxied = fn;
+                    }
+                    return proxyApplyFn.nativeToString.call(proxied);
                 }
-                return proxyApplyFn.nativeToString.call(proxied);
-            }
-        });
-        proxyApplyFn.proxies.set(proxiedToString, proxyApplyFn.nativeToString);
-        Function.prototype.toString = proxiedToString;
+            });
+            proxyApplyFn.proxies.set(proxiedToString, proxyApplyFn.nativeToString);
+            Function.prototype.toString = proxiedToString;
+        }
     }
     if ( proxyApplyFn.isCtor.has(target) === false ) {
         proxyApplyFn.isCtor.set(target, fn.prototype?.constructor === fn);
@@ -1499,74 +1508,119 @@ function proxyApplyFn(
     context[prop] = proxiedTarget;
 }
 
+function proxyToStringFn(proxiedFn, nativeFn) {
+    if ( proxyToStringFn.proxies === undefined ) {
+        proxyToStringFn.proxies = new WeakMap();
+        proxyToStringFn.nativeToString = Function.prototype.toString;
+        const proxiedToString = new Proxy(Function.prototype.toString, {
+            apply(target, thisArg) {
+                let proxied = thisArg;
+                for(;;) {
+                    const fn = proxyToStringFn.proxies.get(proxied);
+                    if ( fn === undefined ) { break; }
+                    proxied = fn;
+                }
+                return proxyToStringFn.nativeToString.call(proxied);
+            }
+        });
+        proxyToStringFn.proxies.set(proxiedToString, proxyToStringFn.nativeToString);
+        Function.prototype.toString = proxiedToString;
+    }
+    proxyToStringFn.proxies.set(proxiedFn, nativeFn);
+}
+
 function removeAttr(
     rawToken = '',
     rawSelector = '',
-    behavior = ''
+    behavior = '',
+    ...varargs
 ) {
     if ( typeof rawToken !== 'string' ) { return; }
     if ( rawToken === '' ) { return; }
     const safe = safeSelf();
-    const logPrefix = safe.makeLogPrefix('remove-attr', rawToken, rawSelector, behavior);
+    const logPrefix = safe.makeLogPrefix('remove-attr',
+        rawToken, rawSelector, behavior, ...varargs
+    );
     const tokens = safe.String_split.call(rawToken, /\s*\|\s*/);
-    const selector = tokens
-        .map(a => `${rawSelector}[${CSS.escape(a)}]`)
-        .join(',');
+    const selector = tokens.map(a => {
+        const b = CSS.escape(a);
+        return rawSelector.includes(`[${b}]`) ? rawSelector : `${rawSelector}[${b}]`;
+    }).join(',');
+    const lazily = /\basap\b/.test(behavior) === false;
+    const options = safe.parseVarargs(varargs);
     if ( safe.logLevel > 1 ) {
         safe.uboLog(logPrefix, `Target selector:\n\t${selector}`);
     }
-    const asap = /\basap\b/.test(behavior);
-    let timerId;
-    const rmattrAsync = ( ) => {
-        if ( timerId !== undefined ) { return; }
-        timerId = onIdleFn(( ) => {
-            timerId = undefined;
+    const rmattrFromNode = node => {
+        for ( const attr of tokens ) {
+            if ( node.hasAttribute(attr) === false ) { continue; }
+            node.removeAttribute(attr);
+            safe.uboLog(logPrefix, `Removed attribute '${attr}'`);
+        }
+    };
+    const rmattr = nodes => {
+        for ( const node of nodes ?? document.querySelectorAll(selector) ) {
+            rmattrFromNode(node);
+        }
+    };
+    const rmAttrLazily = ( ) => {
+        if ( rmAttrLazily.timer !== undefined ) { return; }
+        rmAttrLazily.timer = onIdleFn(( ) => {
+            rmAttrLazily.timer = undefined;
             rmattr();
         }, { timeout: 17 });
     };
-    const rmattr = ( ) => {
-        if ( timerId !== undefined ) {
-            offIdleFn(timerId);
-            timerId = undefined;
-        }
-        try {
-            const nodes = document.querySelectorAll(selector);
-            for ( const node of nodes ) {
-                for ( const attr of tokens ) {
-                    if ( node.hasAttribute(attr) === false ) { continue; }
-                    node.removeAttribute(attr);
-                    safe.uboLog(logPrefix, `Removed attribute '${attr}'`);
+    const mutationHandler = mutations => {
+        for ( const { addedNodes, removedNodes } of mutations ) {
+            for ( const node of addedNodes ) {
+                if ( node.nodeType !== 1 ) { continue; }
+                if ( lazily ) { return rmAttrLazily(); }
+                if ( node.matches(selector) ) {
+                    rmattrFromNode(node);
+                }
+                if ( node.childElementCount ) {
+                    rmattr(node.querySelectorAll(selector));
                 }
             }
-        } catch {
+            if ( lazily ) { return; }
+            for ( const node of removedNodes ) {
+                if ( node.nodeType !== 1 ) { continue; }
+                if ( node.matches(selector) ) {
+                    rmattrFromNode(node);
+                }
+            }
         }
     };
-    const mutationHandler = mutations => {
-        if ( timerId !== undefined ) { return; }
-        let skip = true;
-        for ( let i = 0; i < mutations.length && skip; i++ ) {
-            const { type, addedNodes, removedNodes } = mutations[i];
-            if ( type === 'attributes' ) { skip = false; }
-            for ( let j = 0; j < addedNodes.length && skip; j++ ) {
-                if ( addedNodes[j].nodeType === 1 ) { skip = false; break; }
-            }
-            for ( let j = 0; j < removedNodes.length && skip; j++ ) {
-                if ( removedNodes[j].nodeType === 1 ) { skip = false; break; }
-            }
+    const stop = ( ) => {
+        if ( start.observer ) {
+            start.observer.disconnect();
+            start.observer = undefined;
         }
-        if ( skip ) { return; }
-        asap ? rmattr() : rmattrAsync();
+        if ( rmAttrLazily.timer ) {
+            offIdleFn(rmAttrLazily.timer);
+            rmAttrLazily.timer = undefined;
+        }
+        if ( safe.logLevel > 1 ) {
+            safe.uboLog(logPrefix, 'Quitting');
+        }
     };
     const start = ( ) => {
         rmattr();
-        if ( /\bstay\b/.test(behavior) === false ) { return; }
-        const observer = new MutationObserver(mutationHandler);
-        observer.observe(document, {
+        if ( /\bstay\b/.test(behavior) === false ) {
+            if ( options.quitAfter === undefined ) { return; }
+        }
+        start.observer = new MutationObserver(mutationHandler);
+        start.observer.observe(document, {
             attributes: true,
             attributeFilter: tokens,
             childList: true,
             subtree: true,
         });
+        if ( options.quitAfter ) {
+            runAt(( ) => {
+                self.setTimeout(stop, options.quitAfter * 1000);
+            }, 'load');
+        }
     };
     runAt(( ) => { start(); }, safe.String_split.call(behavior, /\s+/));
 }
@@ -1613,15 +1667,14 @@ function runAtHtmlElementFn(fn) {
 }
 
 function safeSelf() {
-    if ( scriptletGlobals.safeSelf ) {
-        return scriptletGlobals.safeSelf;
+    if ( safeSelf.safe ) {
+        return safeSelf.safe;
     }
     const self = globalThis;
     const safe = {
         'Array_from': Array.from,
         'Error': self.Error,
-        'Function_toStringFn': self.Function.prototype.toString,
-        'Function_toString': thisArg => safe.Function_toStringFn.call(thisArg),
+        'Function_toString': Function.prototype.call.bind(self.Function.prototype.toString),
         'Math_floor': Math.floor,
         'Math_max': Math.max,
         'Math_min': Math.min,
@@ -1634,7 +1687,7 @@ function safeSelf() {
         'Object_hasOwn': Object.hasOwn.bind(Object),
         'Object_toString': Object.prototype.toString,
         'RegExp': self.RegExp,
-        'RegExp_test': self.RegExp.prototype.test,
+        'RegExp_test': Function.prototype.call.bind(self.RegExp.prototype.test),
         'RegExp_exec': self.RegExp.prototype.exec,
         'Request_clone': self.Request.prototype.clone,
         'String': self.String,
@@ -1645,10 +1698,8 @@ function safeSelf() {
         'removeEventListener': self.EventTarget.prototype.removeEventListener,
         'fetch': self.fetch,
         'JSON': self.JSON,
-        'JSON_parseFn': self.JSON.parse,
-        'JSON_stringifyFn': self.JSON.stringify,
-        'JSON_parse': (...args) => safe.JSON_parseFn.call(safe.JSON, ...args),
-        'JSON_stringify': (...args) => safe.JSON_stringifyFn.call(safe.JSON, ...args),
+        'JSON_parse': Function.prototype.call.bind(self.JSON.parse, self.JSON),
+        'JSON_stringify': Function.prototype.call.bind(self.JSON.stringify, self.JSON),
         'log': console.log.bind(console),
         // Properties
         logLevel: 0,
@@ -1701,7 +1752,7 @@ function safeSelf() {
         testPattern(details, haystack) {
             if ( details.matchAll ) { return true; }
             if ( details.re ) {
-                return this.RegExp_test.call(details.re, haystack) === details.expect;
+                return this.RegExp_test(details.re, haystack) === details.expect;
             }
             return haystack.includes(details.pattern) === details.expect;
         },
@@ -1719,21 +1770,20 @@ function safeSelf() {
             }
             return /^/;
         },
-        getExtraArgs(args, offset = 0) {
-            const entries = args.slice(offset).reduce((out, v, i, a) => {
-                if ( (i & 1) === 0 ) {
-                    const rawValue = a[i+1];
-                    const value = /^\d+$/.test(rawValue)
-                        ? parseInt(rawValue, 10)
-                        : rawValue;
-                    out.push([ a[i], value ]);
-                }
+        parseVarargs(varargs) {
+            const entries = varargs.reduce((out, v, i, a) => {
+                if ( i & 1 ) { return out; }
+                const rawValue = a[i+1];
+                const value = /^\d+$/.test(rawValue)
+                    ? parseInt(rawValue, 10)
+                    : rawValue;
+                out.push([ a[i], value ]);
                 return out;
             }, []);
             return this.Object_fromEntries(entries);
         },
     };
-    scriptletGlobals.safeSelf = safe;
+    safeSelf.safe = safe;
     if ( scriptletGlobals.bcSecret === undefined ) { return safe; }
     // This is executed only when the logger is opened
     safe.logLevel = scriptletGlobals.logLevel || 1;
@@ -1800,12 +1850,13 @@ function setConstant(
 function setConstantFn(
     trusted = false,
     chain = '',
-    rawValue = ''
+    rawValue = '',
+    ...varargs
 ) {
     if ( chain === '' ) { return; }
     const safe = safeSelf();
     const logPrefix = safe.makeLogPrefix('set-constant', chain, rawValue);
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
+    const extraArgs = safe.parseVarargs(varargs);
     function setConstant(chain, rawValue) {
         const trappedProp = (( ) => {
             const pos = chain.lastIndexOf('.');
@@ -1947,9 +1998,77 @@ function setConstantFn(
     }, extraArgs.runAt);
 }
 
-function shouldDebug(details) {
-    if ( details instanceof Object === false ) { return false; }
-    return scriptletGlobals.canDebug && details.debug;
+function trapPropertyFn(propChain, handler, options = {}) {
+    if ( propChain === '' ) { return; }
+    let owner = self;
+    let prop = propChain;
+    for (;;) {
+        const pos = prop.indexOf('.');
+        if ( pos === -1 ) { break; }
+        owner = owner[prop.slice(0, pos)];
+        if ( owner instanceof Object === false ) { return; }
+        prop = prop.slice(pos + 1);
+    }
+    const safe = safeSelf();
+    if ( trapPropertyFn.db === undefined ) {
+        trapPropertyFn.db = new WeakMap();
+        trapPropertyFn.entryFromContext = (owner, prop) => {
+            const handlers = trapPropertyFn.db.get(owner);
+            return handlers?.get(prop);
+        };
+        trapPropertyFn.getter = (owner, prop) => {
+            const entry = trapPropertyFn.entryFromContext(owner, prop);
+            if ( entry === undefined ) { return; }
+            let r = entry.value;
+            for ( const desc of entry.stack ) {
+                try { r = desc.get(); } catch (e) {
+                    if ( entry.canThrow ) { throw e; }
+                }
+            }
+            return r;
+        };
+        trapPropertyFn.setter = (owner, prop, value) => {
+            const entry = trapPropertyFn.entryFromContext(owner, prop);
+            if ( entry === undefined ) { return; }
+            entry.value = value;
+            for ( const desc of entry.stack ) {
+                try { desc.set(value); } catch (e) {
+                    if ( entry.canThrow ) { throw e; }
+                }
+            }
+        };
+    }
+    const { db } = trapPropertyFn;
+    const handlers = db.get(owner) || new Map();
+    if ( handlers.size === 0 ) {
+        db.set(owner, handlers);
+    }
+    const entry = handlers.get(prop) || {
+        value: owner[prop],
+        stack: [],
+    };
+    entry.stack.push(handler);
+    if ( entry.stack.length > 1 ) { return entry.value; }
+    Object.assign(entry, options);
+    handlers.set(prop, entry);
+    const desc = safe.Object_getOwnPropertyDescriptor(owner, prop);
+    if ( desc instanceof safe.Object ) {
+        if ( desc.get || desc.set ) {
+            entry.stack.push(desc);
+        }
+    }
+    try {
+        safe.Object_defineProperty(owner, prop, {
+            get() {
+                return trapPropertyFn.getter(owner, prop);
+            },
+            set(value) {
+                trapPropertyFn.setter(owner, prop, value);
+            }
+        });
+    } catch {
+    }
+    return entry.value;
 }
 
 function validateConstantFn(trusted, raw, extraArgs = {}) {
@@ -2007,14 +2126,15 @@ function validateConstantFn(trusted, raw, extraArgs = {}) {
 function xmlPrune(
     selector = '',
     selectorCheck = '',
-    urlPattern = ''
+    urlPattern = '',
+    ...varargs
 ) {
     if ( typeof selector !== 'string' ) { return; }
     if ( selector === '' ) { return; }
     const safe = safeSelf();
     const logPrefix = safe.makeLogPrefix('xml-prune', selector, selectorCheck, urlPattern);
     const reUrl = safe.patternToRegex(urlPattern);
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
+    const extraArgs = safe.parseVarargs(varargs);
     const queryAll = (xmlDoc, selector) => {
         const isXpath = /^xpath\(.+\)$/.test(selector);
         if ( isXpath === false ) {
@@ -2105,61 +2225,651 @@ function xmlPrune(
             });
         }
     });
-    self.XMLHttpRequest.prototype.open = new Proxy(self.XMLHttpRequest.prototype.open, {
-        apply: async (target, thisArg, args) => {
-            if ( reUrl.test(urlFromArg(args[1])) === false ) {
-                return Reflect.apply(target, thisArg, args);
-            }
-            thisArg.addEventListener('readystatechange', function() {
-                if ( thisArg.readyState !== 4 ) { return; }
-                const type = thisArg.responseType;
-                if (
-                    type === 'document' ||
-                    type === '' && thisArg.responseXML instanceof XMLDocument
-                ) {
-                    pruneFromDoc(thisArg.responseXML);
-                    const serializer = new XMLSerializer();
-                    const textout = serializer.serializeToString(thisArg.responseXML);
-                    Object.defineProperty(thisArg, 'responseText', { value: textout });
-                    if ( typeof thisArg.response === 'string' ) {
-                        Object.defineProperty(thisArg, 'response', { value: textout });
-                    }
-                    return;
-                }
-                if (
-                    type === 'text' ||
-                    type === '' && typeof thisArg.responseText === 'string'
-                ) {
-                    const textin = thisArg.responseText;
-                    const textout = pruneFromText(textin);
-                    if ( textout === textin ) { return; }
-                    Object.defineProperty(thisArg, 'response', { value: textout });
-                    Object.defineProperty(thisArg, 'responseText', { value: textout });
-                    return;
-                }
-            });
-            return Reflect.apply(target, thisArg, args);
+    modifyXhrResponseFn(urlPattern, (xhr, before) => {
+        if ( before instanceof XMLDocument ) {
+            return pruneFromDoc(before);
         }
+        if ( typeof before === 'string' ) {
+            return pruneFromText(before);
+        }
+        return before;
     });
+}
+
+function zeta_j7s0f4ys() { // google-ima.js
+'use strict';
+
+
+
+
+
+if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
+  const VERSION = "3.764.0";
+  const ima = {};
+
+  class AdDisplayContainer {
+    constructor(containerElement) {
+      const divElement = document.createElement("div");
+      divElement.style.setProperty("display", "none", "important");
+      divElement.style.setProperty("visibility", "collapse", "important");
+      containerElement.appendChild(divElement);
+    }
+    destroy() {}
+    initialize() {}
+  }
+
+  class ImaSdkSettings {
+    constructor() {
+      this.c = true;
+      this.f = {};
+      this.i = false;
+      this.l = "";
+      this.p = "";
+      this.r = 0;
+      this.t = "";
+      this.v = "";
+    }
+    getCompanionBackfill() {}
+    getDisableCustomPlaybackForIOS10Plus() {
+      return this.i;
+    }
+    getFeatureFlags() {
+      return this.f;
+    }
+    getLocale() {
+      return this.l;
+    }
+    getNumRedirects() {
+      return this.r;
+    }
+    getPlayerType() {
+      return this.t;
+    }
+    getPlayerVersion() {
+      return this.v;
+    }
+    getPpid() {
+      return this.p;
+    }
+    isCookiesEnabled() {
+      return this.c;
+    }
+    setAutoPlayAdBreaks() {}
+    setCompanionBackfill() {}
+    setCookiesEnabled(c) {
+      this.c = !!c;
+    }
+    setDisableCustomPlaybackForIOS10Plus(i) {
+      this.i = !!i;
+    }
+    setFeatureFlags(f) {
+      this.f = f;
+    }
+    setLocale(l) {
+      this.l = l;
+    }
+    setNumRedirects(r) {
+      this.r = r;
+    }
+    setPlayerType(t) {
+      this.t = t;
+    }
+    setPlayerVersion(v) {
+      this.v = v;
+    }
+    setPpid(p) {
+      this.p = p;
+    }
+    setSessionId() {}
+    setVpaidAllowed() {}
+    setVpaidMode() {}
+
+    // https://github.com/uBlockOrigin/uBlock-issues/issues/2265#issuecomment-1637094149
+    getDisableFlashAds() {
+    }
+    setDisableFlashAds() {
+    }
+  }
+  ImaSdkSettings.CompanionBackfillMode = {
+    ALWAYS: "always",
+    ON_MASTER_AD: "on_master_ad",
+  };
+  ImaSdkSettings.VpaidMode = {
+    DISABLED: 0,
+    ENABLED: 1,
+    INSECURE: 2,
+  };
+
+  class EventHandler {
+    constructor() {
+      this.listeners = new Map();
+    }
+
+    _dispatch(e) {
+      let listeners = this.listeners.get(e.type);
+      listeners = listeners ? Array.from(listeners.values()) : [];
+      for (const listener of listeners) {
+        try {
+          listener(e);
+        } catch (r) {
+          console.error(r);
+        }
+      }
+    }
+
+    addEventListener(types, c, options, context) {
+      if (!Array.isArray(types)) {
+        types = [types];
+      }
+
+      for (const t of types) {
+        if (!this.listeners.has(t)) {
+          this.listeners.set(t, new Map());
+        }
+        this.listeners.get(t).set(c, c.bind(context || this));
+      }
+    }
+
+    removeEventListener(types, c) {
+      if (!Array.isArray(types)) {
+        types = [types];
+      }
+
+      for (const t of types) {
+        const typeSet = this.listeners.get(t);
+        if (typeSet) {
+          typeSet.delete(c);
+        }
+      }
+    }
+  }
+
+  class AdsLoader extends EventHandler {
+    constructor() {
+      super();
+      this.settings = new ImaSdkSettings();
+    }
+    contentComplete() {}
+    destroy() {}
+    getSettings() {
+      return this.settings;
+    }
+    getVersion() {
+      return VERSION;
+    }
+    requestAds(_r, _c) {
+      requestAnimationFrame(() => {
+        const { ADS_MANAGER_LOADED } = AdsManagerLoadedEvent.Type;
+        const event = new ima.AdsManagerLoadedEvent(ADS_MANAGER_LOADED, _r, _c);
+        this._dispatch(event);
+      });
+      const error = new ima.AdError(
+        "adPlayError",
+        1205, 1205,
+        "The browser prevented playback initiated without user interaction.",
+        _r, _c
+      );
+      requestAnimationFrame( () => {
+        this._dispatch(new ima.AdErrorEvent(error));
+      });
+    }
+  }
+
+  class AdsManager extends EventHandler {
+    constructor() {
+      super();
+      this.volume = 1;
+      this._enablePreloading = false;
+    }
+    collapse() {}
+    configureAdsManager() {}
+    destroy() {}
+    discardAdBreak() {}
+    expand() {}
+    focus() {}
+    getAdSkippableState() {
+      return false;
+    }
+    getCuePoints() {
+      return [0];
+    }
+    getCurrentAd() {
+      return currentAd;
+    }
+    getCurrentAdCuePoints() {
+      return [];
+    }
+    getRemainingTime() {
+      return 0;
+    }
+    getVolume() {
+      return this.volume;
+    }
+    init() {
+      if (this._enablePreloading) {
+        this._dispatch(new ima.AdEvent(AdEvent.Type.LOADED));
+      }
+    }
+    isCustomClickTrackingUsed() {
+      return false;
+    }
+    isCustomPlaybackUsed() {
+      return false;
+    }
+    pause() {}
+    requestNextAdBreak() {}
+    resize() {}
+    resume() {}
+    setVolume(v) {
+      this.volume = v;
+    }
+    skip() {}
+    start() {
+      requestAnimationFrame(() => {
+        for (const type of [
+          AdEvent.Type.LOADED,
+          AdEvent.Type.STARTED,
+          AdEvent.Type.CONTENT_PAUSE_REQUESTED,
+          AdEvent.Type.AD_BUFFERING,
+          AdEvent.Type.FIRST_QUARTILE,
+          AdEvent.Type.MIDPOINT,
+          AdEvent.Type.THIRD_QUARTILE,
+          AdEvent.Type.COMPLETE,
+          AdEvent.Type.ALL_ADS_COMPLETED,
+          AdEvent.Type.CONTENT_RESUME_REQUESTED,
+        ]) {
+          try {
+            this._dispatch(new ima.AdEvent(type));
+          } catch (e) {
+            console.error(e);
+          }
+        }
+      });
+    }
+    stop() {}
+    updateAdsRenderingSettings() {}
+  }
+
+  class AdsRenderingSettings {}
+
+  class AdsRequest {
+    setAdWillAutoPlay() {}
+    setAdWillPlayMuted() {}
+    setContinuousPlayback() {}
+  }
+
+  class AdPodInfo {
+    getAdPosition() {
+      return 1;
+    }
+    getIsBumper() {
+      return false;
+    }
+    getMaxDuration() {
+      return -1;
+    }
+    getPodIndex() {
+      return 1;
+    }
+    getTimeOffset() {
+      return 0;
+    }
+    getTotalAds() {
+      return 1;
+    }
+  }
+
+  class Ad {
+    constructor() {
+      this._pi = new AdPodInfo();
+    }
+    getAdId() {
+      return "";
+    }
+    getAdPodInfo() {
+      return this._pi;
+    }
+    getAdSystem() {
+      return "";
+    }
+    getAdvertiserName() {
+      return "";
+    }
+    getApiFramework() {
+      return null;
+    }
+    getCompanionAds() {
+      return [];
+    }
+    getContentType() {
+      return "";
+    }
+    getCreativeAdId() {
+      return "";
+    }
+    getCreativeId() {
+      return "";
+    }
+    getDealId() {
+      return "";
+    }
+    getDescription() {
+      return "";
+    }
+    getDuration() {
+      return 8.5;
+    }
+    getHeight() {
+      return 0;
+    }
+    getMediaUrl() {
+      return null;
+    }
+    getMinSuggestedDuration() {
+      return -2;
+    }
+    getSkipTimeOffset() {
+      return -1;
+    }
+    getSurveyUrl() {
+      return null;
+    }
+    getTitle() {
+      return "";
+    }
+    getTraffickingParameters() {
+      return {};
+    }
+    getTraffickingParametersString() {
+      return "";
+    }
+    getUiElements() {
+      return [""];
+    }
+    getUniversalAdIdRegistry() {
+      return "unknown";
+    }
+    getUniversalAdIds() {
+      return [new UniversalAdIdInfo()];
+    }
+    getUniversalAdIdValue() {
+      return "unknown";
+    }
+    getVastMediaBitrate() {
+      return 0;
+    }
+    getVastMediaHeight() {
+      return 0;
+    }
+    getVastMediaWidth() {
+      return 0;
+    }
+    getWidth() {
+      return 0;
+    }
+    getWrapperAdIds() {
+      return [""];
+    }
+    getWrapperAdSystems() {
+      return [""];
+    }
+    getWrapperCreativeIds() {
+      return [""];
+    }
+    isLinear() {
+      return true;
+    }
+    isSkippable() {
+      return true;
+    }
+  }
+
+  class CompanionAd {
+    getAdSlotId() {
+      return "";
+    }
+    getContent() {
+      return "";
+    }
+    getContentType() {
+      return "";
+    }
+    getHeight() {
+      return 1;
+    }
+    getWidth() {
+      return 1;
+    }
+  }
+
+  class AdError {
+    constructor(type, code, vast, message, request, context) {
+      this.errorCode = code;
+      this.message = message;
+      this.type = type;
+      this.adsRequest = request;
+      this.userRequestContext = context;
+      this.vastErrorCode = vast;
+    }
+    getErrorCode() {
+      return this.errorCode;
+    }
+    getInnerError() {
+        return null;
+    }
+    getMessage() {
+      return this.message;
+    }
+    getType() {
+      return this.type;
+    }
+    getVastErrorCode() {
+      return this.vastErrorCode;
+    }
+    toString() {
+      return `AdError ${this.errorCode}: ${this.message}`;
+    }
+  }
+  AdError.ErrorCode = {};
+  AdError.Type = {};
+
+  const isEngadget = () => {
+    try {
+      for (const ctx of Object.values(window.vidible._getContexts())) {
+        const player = ctx.getPlayer();
+        if (!player) { continue;}
+        const div = player.div;
+        if (!div) { continue; }
+        if (div.innerHTML.includes("www.engadget.com")) {
+          return true;
+        }
+      }
+    } catch {
+    }
+    return false;
+  };
+
+  const currentAd = isEngadget() ? undefined : new Ad();
+
+  class AdEvent {
+    constructor(type) {
+      this.type = type;
+    }
+    getAd() {
+      return currentAd;
+    }
+    getAdData() {
+      return {};
+    }
+  }
+  AdEvent.Type = {
+    AD_BREAK_READY: "adBreakReady",
+    AD_BUFFERING: "adBuffering",
+    AD_CAN_PLAY: "adCanPlay",
+    AD_METADATA: "adMetadata",
+    AD_PROGRESS: "adProgress",
+    ALL_ADS_COMPLETED: "allAdsCompleted",
+    CLICK: "click",
+    COMPLETE: "complete",
+    CONTENT_PAUSE_REQUESTED: "contentPauseRequested",
+    CONTENT_RESUME_REQUESTED: "contentResumeRequested",
+    DURATION_CHANGE: "durationChange",
+    EXPANDED_CHANGED: "expandedChanged",
+    FIRST_QUARTILE: "firstQuartile",
+    IMPRESSION: "impression",
+    INTERACTION: "interaction",
+    LINEAR_CHANGE: "linearChange",
+    LINEAR_CHANGED: "linearChanged",
+    LOADED: "loaded",
+    LOG: "log",
+    MIDPOINT: "midpoint",
+    PAUSED: "pause",
+    RESUMED: "resume",
+    SKIPPABLE_STATE_CHANGED: "skippableStateChanged",
+    SKIPPED: "skip",
+    STARTED: "start",
+    THIRD_QUARTILE: "thirdQuartile",
+    USER_CLOSE: "userClose",
+    VIDEO_CLICKED: "videoClicked",
+    VIDEO_ICON_CLICKED: "videoIconClicked",
+    VIEWABLE_IMPRESSION: "viewable_impression",
+    VOLUME_CHANGED: "volumeChange",
+    VOLUME_MUTED: "mute",
+  };
+
+  class AdErrorEvent {
+    constructor(error) {
+      this.type = "adError";
+      this.error = error;
+    }
+    getError() {
+      return this.error;
+    }
+    getUserRequestContext() {
+      return this.error?.userRequestContext || {};
+    }
+  }
+  AdErrorEvent.Type = {
+    AD_ERROR: "adError",
+  };
+
+  const manager = new AdsManager();
+
+  class AdsManagerLoadedEvent {
+    constructor(type, request, context) {
+      this.type = type;
+      this.adsRequest = request;
+      this.userRequestContext = context;
+    }
+    getAdsManager(c, settings) {
+      if (settings && settings.enablePreloading) {
+        manager._enablePreloading = true;
+      }
+      return manager;
+    }
+    getUserRequestContext() {
+      return this.userRequestContext || {};
+    }
+  }
+  AdsManagerLoadedEvent.Type = {
+    ADS_MANAGER_LOADED: "adsManagerLoaded",
+  };
+
+  class CustomContentLoadedEvent {}
+  CustomContentLoadedEvent.Type = {
+    CUSTOM_CONTENT_LOADED: "deprecated-event",
+  };
+
+  class CompanionAdSelectionSettings {}
+  CompanionAdSelectionSettings.CreativeType = {
+    ALL: "All",
+    FLASH: "Flash",
+    IMAGE: "Image",
+  };
+  CompanionAdSelectionSettings.ResourceType = {
+    ALL: "All",
+    HTML: "Html",
+    IFRAME: "IFrame",
+    STATIC: "Static",
+  };
+  CompanionAdSelectionSettings.SizeCriteria = {
+    IGNORE: "IgnoreSize",
+    SELECT_EXACT_MATCH: "SelectExactMatch",
+    SELECT_NEAR_MATCH: "SelectNearMatch",
+  };
+
+  class AdCuePoints {
+    getCuePoints() {
+      return [];
+    }
+  }
+
+  class AdProgressData {}
+
+  class UniversalAdIdInfo {
+    getAdIdRegistry() {
+      return "";
+    }
+    getAdIdValue() {
+      return "";
+    }
+  }
+
+  Object.assign(ima, {
+    AdCuePoints,
+    AdDisplayContainer,
+    AdError,
+    AdErrorEvent,
+    AdEvent,
+    AdPodInfo,
+    AdProgressData,
+    AdsLoader,
+    AdsManager: manager,
+    AdsManagerLoadedEvent,
+    AdsRenderingSettings,
+    AdsRequest,
+    CompanionAd,
+    CompanionAdSelectionSettings,
+    CustomContentLoadedEvent,
+    gptProxyInstance: {},
+    ImaSdkSettings,
+    OmidAccessMode: {
+      DOMAIN: "domain",
+      FULL: "full",
+      LIMITED: "limited",
+    },
+    OmidVerificationVendor: {
+      1: "OTHER",
+      2: "GOOGLE",
+      GOOGLE: 2,
+      OTHER: 1
+    },
+    settings: new ImaSdkSettings(),
+    UiElements: {
+      AD_ATTRIBUTION: "adAttribution",
+      COUNTDOWN: "countdown",
+    },
+    UniversalAdIdInfo,
+    VERSION,
+    ViewMode: {
+      FULLSCREEN: "fullscreen",
+      NORMAL: "normal",
+    },
+  });
+
+  if (!window.google) {
+    window.google = {};
+  }
+
+  window.google.ima = ima;
+}
 }
 
 /******************************************************************************/
 
 const scriptletGlobals = {}; // eslint-disable-line
 
-const $scriptletFunctions$ = /* 19 */
-[preventFetch,preventSetTimeout,abortOnStackTrace,preventAddEventListener,abortCurrentScript,setConstant,preventXhr,abortOnPropertyWrite,noEvalIf,preventRequestAnimationFrame,adjustSetTimeout,adjustSetInterval,abortOnPropertyRead,removeAttr,preventSetInterval,noWindowOpenIf,jsonPrune,m3uPrune,xmlPrune];
-
-const $scriptletArgs$ = /* 333 */ ["cloudfront.net","offsetHeight","300","doubleclick","document.createElement","detect","load","innerHTML","Image","error","/ads/banner","popunders","noopFunc","/\\.offsetHeight\\s*?===\\s*?0/","adsBlocked","false","adblock","EventTarget.prototype.addEventListener","detectAdBlock","scriptObj","DOMContentLoaded","bait","detected","googlesyndication","checkAdBlock","_wp_chunks","offsetHeight === 0","pagead2.googlesyndication.com","/=window\\.setInterval\\([\\s\\S]*?\\.push\\(/","document.getElementById","showAdblockAlert","/adsbygoogle.js","__ANTI_ADBLOCK_CORE__","/detect|\\.onerror|window\\.open/","decodeURIComponent(atob","advanced_ads_check_adblocker","googleads.g.doubleclick.net","googletagmanager.com","connect.facebook.net","static.ads-twitter.com","google-analytics.com","ULTIMATE_BAIT_REMOVED","adsbygoogle","click","overlay-notification","break;case",".offsetParent===","/window\\.getComputedStyle|adblock-/","unlock","*","0.001","seconds","popads.net","blockAdBlock","method:HEAD","isAdBlocked","String.fromCharCode(_0x","_an.ABMode","undefined","href","a[href]#clickfakeplayer","_0x","500","mode:no-cors","adClickCount","0","close","atob","wp-content/","checkAdsStatus","DHAntiAdBlocker","true","/pagead2\\.googlesyndication.com/ method:HEAD","www3.doubleclick.net","siteAccessPopup()","Por favor","console[_0x","widgets.outbrain.com","window.getComputedStyle","pagead2.googlesyndication.com/pagead/js/adsbygoogle.js","widgets.outbrain.com/outbrain.js","hasAdblock","contador","adsbygoogle.js","detectedAdblock","ad blocker","/mopinion\\.com|iubenda\\.com|bannersnack\\.com|unblockia\\.com|googlesyndication\\.com/","block_ads","fetch","/alert|bloqueador|\\.catch|\\.type/","adBlockerOn","hasAdblocker","banner-ads",".clientHeight","setNptTechAdblockerCookie","possivelAdblockDetectado","eazyAdUnBlockerHttp","antiAdBlockerStyle","Promise[\\'all\\'](urls","/googlesyndication\\.com|iubenda\\.com|unblockia\\.com|bannersnack\\.com|mopinion\\.com/",".html(","/adBlock|\\.height\\(\\)/","playFunction","imasdk.googleapis.com","AdBlockDetector.prototype.test","falseFunc","detect-modal","googletag","{}","googletag._loaded_","securepubads.g.doubleclick.net/pagead/ppub_config","canRunAds","blockAdBlock._options","checkAdblockUser","addEventListener","displayMessage","adManagerBlocked","call-zone-adxs","adBlockFunction","document.getElementsByTagName","$MICROSITE_INFO.blockAdBlock","","adblock.check","app.AdBlock.init","/pagead2\\.googlesyndication\\.com|ads-api\\.twitter\\.com/","alert","eval","history.go","$","blockWall","/^(?!.*(chrome-extension:)).*$/ method:HEAD","Por favor, desative","/adblock|Por favor, desative|adsbygoogle\\.js/","cdo","document.addEventListener",".innerHTML","!document.getElementById(","ads-twitter.com","Object.prototype.autoRecov","/Adblock|\\.height\\(\\)/","jQuery","/Adblock|dummy|detect/","]]=== 0",".adsbygoogle",".offsetHeight === 0","adregain_wall","ad_nodes","hb_now","Object.prototype.adblockerEnabled","0=== _0x","adsbygoogle.loaded","adBlockCheck","pp_show_popupmessage","easySettings.adblock","onload","AdBlock","adblockDetected","null","gothamBatAdblock","/hasAdblock|window\\.getComputedStyle/","PLAYER LIBERADO","/hasAdblock|detectadb|ad-placement/","/outbrain\\.com|adligature\\.com|quantserve\\.com|srvtrck\\.com/","//cdn.taboola.com/libtrc/unpkg/tfa.js","Bl0ckAdBl0ckCo","ppAdblocks","mMCheckAgainBlock","daadb_get_data","adsbygoogle.length","WSL2.config.enableAdblockEcommerce","ads_unblocked","Adblock","ai_front","cicklow_","better_ads_adblock","adBlockDetected","isAdsDisplayed","ATESTADO","1","Lata","/;return \\{clear:function\\(\\)\\{/","/Tamamo_Blocker|aadb_recheck/","loadingAds","dclm_ajax_var.disclaimer_redirect_url","e(!0)","popunder","ShowRewards","window.open","userout","String.prototype.concat","popup","resumeVideoFromAd","initPopunder","URL_VAST_YOUTUBE","__configuredDFPTags","vast_meta_url","ads","ads.policy.skipMode","vmap_ad_breaks interstitials","type=ad",".m3u8","xpath(//*[name()=\"Period\"][.//*[name()=\"BaseURL\" and contains(text(),\".mp.lura.live/prod/\")]] | //*[name()=\"MPD\"]/@mediaPresentationDuration | //*[name()=\"Period\"][.//SegmentList[@presentationTimeOffset=\"0\"]])",".mpd","getid","initPu","adJsView","redirectpage","*.media.*.advertisement_id","contadorClics","enlace","document.write","li[onclick^=\"go_to_player\"] > a[target=\"_blank\"][href]","Object.prototype.adSlot","google.ima.OmidVerificationVendor","exopop","protData","cJsEdge","countdown","acdl","window.location.href","notficationAd","open","excludeDomains","global.noobMaxTry","player.preroll","lolaop","pUrlArray","adsdirect","videoliberado","0.02","anunciotag",".style.display","loadXMLDoc","PLAYER","liberaDownload","create_","!/download\\/|link|atomtt\\.com\\//","adk_pdisp","Loading...","adsHandle_noclick","ads breaks cuepoints times","10000","popurl","the_crakien","allclick_Public","checkCookieClick","onclick","?key=","clickd","_impspcabe","xxxStore","/_0x[\\s\\S]*?parentNode[\\s\\S]*?appendChild/","vidorev_jav_plugin_video_ads_object.vid_ads_m_video_ads","redirect","rot_url pop_type","videoTag","passeura","scriptwz_url","host","window.btoa","smrtSB","asgPopScript",".one(\"click\"","smrtSP","_cpp","a_consola","pub","redirdx.in/go/","Pub2","/atualizar|hided/","overlay","_blank","SmartAdsSafeStorage","NEW_LINK","trigger","preventDefault","redirigi","sg_gabarito_ads_config.adFrequency","1000","adUrl","openAdOnce","playerAds ads","puTS","__SMARTLINKS__","random","pumConfig","vast popup adblock","about:blank","JSON.stringify","data:text/javascript","noopener noreferrer","LieDetector","Popunder","a[data-stream][href][target=\"_blank\"]","window.gpp","__PRELOADED_STATE__.view.components.player.playbackContext.ads","adn_placement components.player.playbackContext.ads","PopunderData","showPopunder","clickCount","adpreload","vastPlayer.completed","sourceAd","start_preroll","anuncioConfig","setRandomBanner","Node.prototype.insertBefore","popns","VASTVideoPlayer","go_to_playerVast","/abrirVentanasEmergentes|abrirNuevaVentana|Popunder/","pop[_0x","Storage","/interstitial|redirectCount/","setInterval","doTabUnder","cnt1max","ifrconta","clickmax","#frm > a[href][onclick]","manejar","setTimeout","#fakeplayer > a","JSON.parse","showPopup","redirigido","redirigir","w-content","a.elementor-icon[target=\"_blank\"][rel][href]","window.location;","anuncios","/Popunder|Popup/","area51"];
-
-const $scriptletArglists$ = /* 328 */ "0,0;1,1,2;0,3;2,4,5;3,6,7;4,8,9;0,10;5,11,12;1,13;5,14,15;4,4,16;4,17,18;1,19;3,20,21;1,16;1,22;0,23;1,21;5,24,12;1,25;3,20,26;0,27;1,28;2,29,30;6,27;3,20,31;4,4,5;7,32;4,17,33;3,6,27;4,17,16;1,7;8,34;5,35,12;0,36;0,37;0,38;0,39;0,40;9,41;4,17,42;3,43,44;8,45;4,17,46;3,20,47;10,48,49,50;11,51,49,50;0,52;12,53;0,54;2,29,55;12,55;8,56;5,57,58;13,59,60;1,61,62;0,63;5,64,65;5,66,58;2,67,68;7,69;5,70,71;0,72;0,73;1,74;1,75;14,76;6,77;1,78;0,79;6,80;1,81;10,82,49,50;4,4,83;2,4,61;5,84,12;1,85;0,86;12,87;4,88,89;3,90;5,91,15;3,6,92;9,93;12,94;4,17,83;12,95;12,96;12,97;1,98;0,99;10,100,49,50;1,101;10,102,49,50;0,103;5,104,105;3,6,106;5,107,108;5,109,71;0,110;5,111,71;0,42;5,112,12;1,113;4,114,115;5,116,58;0,117;12,118;4,119,83;5,120,15;1,61;3,121,61;5,122,12;5,123,12;0,124;2,125,126;2,127,126;4,128,129;0,130;1,131;14,132;5,133,65;4,134,135;4,128,136;0,137;12,138;1,139;4,140,141;1,142;6,110;1,143;1,144;7,145;12,146;1,42;12,147;5,148,15;1,149;5,150,71;12,16;5,151,71;5,152,12;5,153,65;4,154,155;0,31;12,156;5,154,157;12,158;6,52;1,159;4,88,61;10,160,49,50;1,161;0,162;6,163;12,164;3,18;12,165;12,166;7,16;3,6,167;5,168,58;5,169,65;5,170,71;4,128,171;7,172;1,173;5,16,71;5,174,71;5,175,15;5,176,71;5,177,178;5,179,178;4,134,180;1,181;5,182,71;5,183,121;10,184,49,50;12,185;5,186,12;4,134,187;15;12,188;4,189,190;10,191,49,50;5,192,12;5,193,108;5,194,108;16,49,195;16,196,197;16,198;17,199,200;18,201,121,202;11,203,49,50;4,17,187;12,204;1,205;7,206;16,49,207;5,208,178;4,128,187;4,209,210;3,20,210;13,59,211;5,212,121;5,213,108;7,214;7,215;3,6,61;12,216;11,217,49,50;5,218,12;1,219;4,128,220;4,221,29;4,134,222;5,223,65;5,224,12;12,225;7,226;1,227;10,228,49,229;5,230,12;11,231,49,229;3,43,232;10,233,49,229;10,234,49,229;5,182,58;4,134,235;15,236;12,237;11,238,121,229;11,239,121,229;16,240,196;10,160,241,229;12,242;12,243;12,244;12,245;4,119,246;15,247;5,43,178;5,248,178;8,249;5,250,58;3,6,251;5,252,121;10,253,49,229;16,254;3,20,255;15,256;12,257;4,258,259;12,260;12,261;4,128,262;12,263;12,264;5,265,12;12,266;15,267;12,268;10,269,49,50;3,20,270;15,271;15,121,178;7,272;7,192;3,20,273;4,17,274;3,121,274;3,43,275;3,43,276;5,277,278;4,134,279;3,43,280;16,281;4,154,282;5,283,58;3,20,283;3,43,284;12,285;16,286;3,43,287;2,288,289;4,17,290;12,291;2,4,292;13,59,293;4,17,294;5,295,58;16,296;12,297;5,298,12;3,43,299;1,300;5,301,71;3,20,302;3,43,292;11,303,49,50;7,304;7,305;3,121,185;4,306,307;5,308,12;5,309,12;3,121,310;4,17,311;4,312,313;4,314,315;5,316,65;5,317,65;5,318,65;13,59,319;3,43,320;4,321,271;13,59,322;2,323,324;4,134,324;3,43,187;5,325,71;5,326,12;10,327,49,50;13,59,328;4,134,329;4,88,330;4,17,331;12,332";
-
-const $scriptletArglistRefs$ = /* 455 */ "158;97,98,99;100;21;181,209;33;181;97,98,99;188,189,190,191,192;239;216;171;11,181;181,208,209;82;68,69;21;115,116,181;216;181;63;232;17,24,185;216;75,151,152,153,154;229;229;97,98,99;54,253,254;139;123;181,209;181,209;163;204;130;218;95;181;202;203;5;21;21;3;42;125;256;296;260;97,98,99;216;21,118,119,120,121,122;21,118,119,120,121,122,211,212,213,214;49,95;186,187;97,98,99;81;200;197;75,151,152,153,154;43;229;51;8;304,305;181;81;258;45,46,47;150;67,172;81;166;282;66;102;42;31;114;181;230;319;160,161;206,207;42;27,28;135;81;216;26,181;68,69,303;286;181,194;284;24;21;97,98,99;23;11,181;163;181,194,195;49;105;154;181;68,69;21,216;255;181,194;143;181,269,270;18;159;181,199,306;42;117;181,241,242;20;73;181,286,287,288;54;54,55,56,57,58;97,98,99;251,252;63;184;138;319;181;16;81;210;49,95;212;168;235;181,248,250;68,69;68,69;68,69;154;233;141;274,275;162;136;265;54;71;181,231;40;21,25,181;11,181;163;68,69,154;84;181,294;60,306;21;21;21;181,293,294;207;29;247;78,79;88;308;34,35,36,37,38,39;216;181;42;6;109,205;181;14;181,200,201;200;316;181;181;100;21;94;198;227,228;88,317,318;9;81;81;319;68,69,303;181,280;97,98,99;81;221;1,2;285;100;80,97,98,99;237;236;18,54;299;49;263;72;170;164;97,98,99;21;49;21;75,107,108,151,152,153;16;276;16;78,79;165;215;64;13,272;76,77,182,183;298;310,311,312,313;210;181,209;54,55,56,57,58;176;181,307;314,315,320;21;41;324;308;325;216;292;81;81;110,111,112;59;103;17;298;173;62;54;277;30;131;21;246;238;297;140;134;4;61;16;100;54;21;181,278,279,280;162;86;81;30;50;7;89,90,314,315,321;181;181,209;181;54;244;289;21,118,119,120,121,122,211;319;147;128;96;81;54;181;81;322,323;257;65;154;40;81,162;264;156;21,22;70;54,181,326;54,181,326;137;97,98,99;21,174,175;144;37,95;68,69;210;181,222;223;220;264;101;49;21,106;146;145;308;81;81;49;327;68,69;97,98,99;48;179;75,151,152,153,154;81;181,209;74,281;16;21,71,148;216;113;134;181;92,93;32;245;262;52;266;21;21;271;216;49,95;142;157,169;54;210;210;264,283;12;226;21,106;49;95;174,175;181;181;262;268;81;81;21;154;10;53;19;148,149;126,127;44;88;21;141;100;262;177;21,71,91;15;273;261;132,133;309;178;181;167,249;216;72;160,161;40;49,95;196;267;100,129;162;0;181;162;97,98,99;128;83;240;40;87;181;124;75;157;162;81,162;10;53;181;234;290,291;181;40;148,149;71;240;243;224;300,301;0;21,106;181;210;81;99;21;302;217;54;21;295;24,219;94;54;259;290,291;290,291;210;148,149;100;21,225;155;73,180;181;85,193;21;85;181;21;85;104";
-
-const $scriptletHostnames$ = /* 455 */ ["1i1.in","atv.pe","mdr.ar","r7.com","gnula.*","leak.pt","rde.lat","tn23.tv","vix.com","movidy.*","safez.es","anitube.*","arlx.site","cuevana.*","depor.com","goyabu.us","los40.com","netcine.*","payad.lat","redisex.*","tivify.tv","topflix.*","3xyaoi.com","acortaz.es","anitube.us","atomixhq.*","atomtt.com","c9n.com.py","cinetux.to","comando.to","csrevo.com","cuevana2.*","cuevana3.*","doceru.com","elmundo.es","escplus.es","fiuxy2.com","fotise.com","futemax.at","g37.com.br","gnula.club","gnulahd.nu","istigo.net","listas.pro","nartag.com","netcinez.*","pcworld.es","pirlotv.es","playdede.*","redirdx.in","rqp.com.bo","solopc.net","suaads.com","suaurl.com","tulink.org","uol.com.br","vtv.com.hn","xataka.com","zpaste.net","animesbr.cc","anitube.vip","askflix.biz","atomohd.com","autotop.net","cinehax.com","embed69.org","eshentai.tv","espinof.com","fakings.com","fgtd.online","file4go.com","file4go.net","genbeta.com","hartico.com","hentaila.tv","kumanga.com","meocloud.pt","netcinetv.*","novizer.com","nptmedia.tv","okpeliz.com","pelispop.me","pornsub.org","satcesc.com","superhq.net","yyyx.online","zonaaps.com","20minutos.es","3djuegos.com","adclicker.io","anime-jl.net","animefire.io","animeflv.net","animeocs.com","anitube.news","aqualapp.com","casperhd.com","chapintv.com","darkmahou.io","deemixer.com","docer.com.ar","embedder.net","enlacito.com","fichajes.com","gashita.info","geeknetic.es","goanimes.vip","gourlpro.com","hentai-id.tv","hentaijl.com","illamadas.es","legendei.net","luggames.com","manga-mx.com","megafire.net","netccine.lat","oliberal.com","otakustv.com","perisxxx.com","playertv.org","plplayer.com","pobreflix.do","redecanais.*","repretel.com","seireshd.com","sussytoons.*","terra.com.br","texto.kom.gt","tioeroge.com","vernaruto.tv","viciados.net","vitonica.com","xupalace.org","acortados.com","acortalink.me","adslayuda.com","allfeeds.live","animeblix.com","animesup.info","animeyabu.net","animeyabu.org","anitube22.vip","app.prende.tv","bandab.com.br","barmonrey.com","bebesymas.com","cadenaser.com","canale-tv.net","cinemitas.org","cozinhabr.top","cuevana-3.wtf","culinaria.top","darkmahou.org","deemixweb.com","docero.com.br","drstonebr.com","elespanol.com","erosanime.com","firepaste.com","firesload.com","ggames.com.br","gourlcero.com","hentai-ia.com","hentaikai.com","latamtoon.com","lectulandia.*","luratoons.com","mangacrab.com","mangacrab.org","manhastro.net","mundopolo.net","muyzorras.com","netcinebs.lat","nexustc18.com","niusdiario.es","pelismart.com","pkproject.net","playpaste.com","playpaste.net","pobreflix.foo","repelisgt.net","servertwo.xyz","skynovels.net","softwarepc.es","southpark.lat","sub100.com.br","tiohentai.xyz","toonscrab.com","unlimplay.com","vidaextra.com","3djuegospc.com","allcalidad.pro","animefire.plus","animepelix.net","antena7.com.do","applesfera.com","arnolds.com.br","azuretoons.com","blizzpaste.com","botinnifit.com","canal12.com.sv","cine-calidad.*","cinecalidad2.*","cinelatino.net","compucalitv.tv","cuitonline.com","devoracine.com","dicasgeeks.net","doramasmp4.com","ecartelera.com","elcomercio.com","expertplay.net","gadgetzona.net","gourlpaste.com","hinatasoul.com","informacion.es","isekaitube.cfd","laprovincia.es","lura-toons.com","meuwindows.com","multipaste.org","mundolucha.com","novelaplay.com","packsmega.info","peliplayhd.org","peliseries.xyz","player.gnula.*","poseidonhd2.co","redecanaistv.*","ricoysuave.com","seriesflix.onl","seriesperu.com","short.7hd.club","starckfilmes.*","todo-anime.net","topmanhuas.org","tubeonline.net","uberxviral.com","veo-hentai.com","xatakafoto.com","xatakahome.com","xerifetech.com","yomucomics.com","zona-leros.com","animenew.com.br","animeonline.lat","animeshouse.net","atresplayer.com","cineplus123.org","comunidades.net","devilnovels.com","documaniatv.com","emperorscan.com","hentaiporno.xxx","hentaistube.com","hentaitokyo.net","infojobs.com.br","it-swarm-es.com","kitsuneyako.com","latinpornhd.com","levante-emv.com","luchaonline.com","megafilmeshd.si","meutimao.com.br","monoschino2.com","motorpasion.com","mundodevalor.me","mundoxiaomi.com","oceans14.com.br","panelacheia.top","paste4free.site","peliculas8k.com","pelismarthd.com","pelispedia.life","pelisxporno.net","pepeliculas.org","pornolandia.xxx","readhunters.xyz","reidoplacar.com","seriesmaxhd.com","seriesretro.com","smartdoing.tech","softwareany.net","trendencias.com","verpelis.gratis","warezstream.net","xatakamovil.com","anime-latino.com","aquariumgays.com","cursomecanet.com","dattebayo-br.com","dicasreceita.com","elblogsalmon.com","embedplayer2.xyz","guideautoweb.com","infomatricula.pt","isekaibrasil.com","latinohentai.com","latinohentai.vip","manchetehoje.xyz","monumental.co.cr","mundodonghua.com","netmovies.com.br","notipostingt.com","otakuanimess.net","player.cuevana.*","playnewserie.xyz","sejasaudavel.net","seriesgratis.biz","superflixapi.fit","teleculinaria.pt","todoandroid.live","todostartups.com","tribunaavila.com","tvplusgratis.com","twobluescans.com","xatakandroid.com","3djuegosguias.com","acortame-esto.com","animeonline.ninja","animesonlinecc.us","canal13mexico.com","cinemastervip.com","clickjogos.com.br","coempregos.com.br","compradiccion.com","cuevana2espanol.*","daemon-hentai.com","diaridegirona.cat","dicasgostosas.com","eldiario24hrs.com","futbolfantasy.com","genshinpro.com.br","googleapis.com.do","guiacripto.online","hostingunlock.com","irmaosdotados.net","jogoscompleto.xyz","lectorhub.j5z.xyz","manhwa-latino.com","modescanlator.com","modescanlator.net","mundoperfecto.net","myfirstdollar.org","neworldtravel.com","ouniversodatv.com","outerspace.com.br","paraveronline.org","player.cuevana2.*","player.cuevana3.*","playerflixapi.com","pornoenspanish.es","portecnologia.com","puromarketing.com","qwanturankpro.com","qwanturankpro.net","seriesdonghua.com","superflixapi.buzz","url.firepaste.com","vejaideias.com.br","verfutbollibre.pe","xatakaciencia.com","xatakawindows.com","alarmadefraude.com","animesonliner4.com","baixedetudo.net.br","elcorreogallego.es","flacdownloader.com","foodiesgallery.com","guianoticiario.net","guiavidaesaude.com","httpmangacrab2.com","link-descarga.site","maringapost.com.br","minhasdelicias.com","modsimuladores.com","mundodeportivo.com","sabornutritivo.com","sushianimes.com.br","todamateria.com.br","tuhentaionline.com","tunovelaligera.com","tvserieslatino.com","brjogostorrents.com","chinesetubex.com.es","comandotorrents.org","constanteonline.com","dicasdereceitas.net","empregoestagios.com","financasdeouro.info","financialtrust.info","forodecostarica.com","hentailegendado.com","minhaconexao.com.br","motorpasionmoto.com","multicanaistt.space","player.pelisgod.com","pymesyautonomos.com","redbolivision.tv.bo","resenhasglobais.com","seriesemcena.com.br","torrentjogos.com.br","tudoesportes.online","aquiyahorajuegos.net","colegialasdeverdad.*","costumbresmexico.com","descargaseriestv.com","diariodegoias.com.br","diariodelviajero.com","directoalpaladar.com","inuyashadowns.com.br","laopiniondezamora.es","megaseriesonline.pro","nutricaohoje.website","play.mercadolibre.cl","player.seriesgod.com","receitascaseiras.xyz","receitasdaora.online","ricasdelicias.online","verdragonball.online","comicspornohentai.com","descargarhentaimf.xyz","dragonball.sullca.com","meuplayeronlinehd.com","negociosecommerce.com","player.malfollado.com","player.poseidonhd2.co","trendenciashombre.com","independentespanol.com","informetecnologico.com","mundohentaioficial.com","player.hentaistube.com","serieslatinoamerica.tv","lawebdelprogramador.com","mrvideospornogratis.xxx","raulprietofernandez.net","southparkstudios.com.br","assistirfilmeshdgratis.*","descargaranimehentai.com","play.mercadolibre.com.ar","play.mercadolivre.com.br","player.cuevana2espanol.*","caroloportunidades.com.br","impactoespananoticias.com","receitasoncaseiras.online","cozinha.minhasdelicias.com","gamesperu2021.blogspot.com","jilliandescribecompany.com","infohojeonline.blogspot.com","jornaldacidadeonline.com.br","gamesteelstudio.blogspot.com","videos.mrvideospornogratis.xxx","descargas2024gratis.blogspot.com","gamesteelstudioplus.blogspot.com","canalnatelinhaonline.blogspot.com"];
-
-const $scriptletFromRegexes$ = /* 0 */ [];
-
+const $hasHostnames$ = true;
 const $hasEntities$ = true;
 const $hasAncestors$ = false;
 const $hasRegexes$ = false;
@@ -2207,8 +2917,10 @@ const entries = (( ) => {
 })();
 if ( entries.length === 0 ) { return; }
 
-const todoIndices = new Set();
-if ( $scriptletHostnames$.length ) {
+const todo = new Set();
+
+if ( $hasHostnames$ ) {
+    const $scriptletHostnames$ = /* 488 */ ["1i1.in","atv.pe","mdr.ar","r7.com","gnula.*","leak.pt","rde.lat","tn23.tv","vix.com","movidy.*","safez.es","anitube.*","arlx.site","cuevana.*","depor.com","goyabu.us","los40.com","netcine.*","payad.lat","redisex.*","tivify.tv","topflix.*","tt18.info","3xyaoi.com","acortaz.es","anitube.us","atomixhq.*","atomtt.com","c9n.com.py","cinetux.to","comando.to","csrevo.com","cuevana2.*","cuevana3.*","doceru.com","elmundo.es","escplus.es","fiuxy2.com","fotise.com","futemax.at","g37.com.br","gnula.club","gnulahd.nu","istigo.net","listas.pro","nartag.com","netcinez.*","pcworld.es","pirlotv.es","playdede.*","redirdx.in","rqp.com.bo","sbt.com.br","solopc.net","suaads.com","suaurl.com","subsbr.net","tulink.org","uol.com.br","vtv.com.hn","xataka.com","zpaste.net","animesbr.cc","anitube.vip","askflix.biz","atomohd.com","autotop.net","brazzpw.xyz","cinehax.com","embed69.org","eshentai.tv","espinof.com","fakings.com","fgtd.online","file4go.com","file4go.net","genbeta.com","hartico.com","hentaila.tv","htforum.net","kumanga.com","meocloud.pt","netcinetv.*","novizer.com","nptmedia.tv","nupload.top","okpeliz.com","pelispop.me","pornsub.org","satcesc.com","superhq.net","yyyx.online","zonaaps.com","20minutos.es","3djuegos.com","adclicker.io","anime-jl.net","anime-jl.top","animefire.io","animeflv.net","animeocs.com","anitube.news","aqualapp.com","casperhd.com","chapintv.com","darkmahou.io","deemixer.com","docer.com.ar","embedder.net","enlacito.com","fichajes.com","gashita.info","geeknetic.es","goanimes.vip","gourlpro.com","hentai-id.tv","hentaijl.com","illamadas.es","legendei.net","lineup11.net","luggames.com","manga-mx.com","megafire.net","miukt.com.br","netccine.lat","oliberal.com","otakustv.com","perisxxx.com","playertv.org","plplayer.com","pobreflix.do","redecanais.*","repretel.com","seireshd.com","sussytoons.*","terra.com.br","texto.kom.gt","tioeroge.com","veohentai.io","vernaruto.tv","viciados.net","videosad.net","vitonica.com","xupalace.org","acortados.com","acortalink.me","adslayuda.com","allfeeds.live","animeblix.com","animesup.info","animeyabu.net","animeyabu.org","anitube22.vip","app.prende.tv","bandab.com.br","barmonrey.com","bebesymas.com","cadenaser.com","canale-tv.net","cinemitas.org","cozinhabr.top","cuevana-3.wtf","culinaria.top","darkmahou.org","deemixweb.com","docero.com.br","drstonebr.com","elespanol.com","erosanime.com","firepaste.com","firesload.com","ggames.com.br","gourlcero.com","hentai-ia.com","hentaikai.com","latamtoon.com","lectulandia.*","luratoons.com","mangacrab.com","mangacrab.org","manhastro.net","minhatela.xyz","mundopolo.net","muyzorras.com","netcinebs.lat","nexustc18.com","niusdiario.es","pelismart.com","pkproject.net","playpaste.com","playpaste.net","pobreflix.foo","pridevana.com","redecanais.pk","repelisgt.net","servertwo.xyz","skynovels.net","softwarepc.es","southpark.lat","sub100.com.br","tiohentai.xyz","toonscrab.com","unlimplay.com","vidaextra.com","3djuegospc.com","allcalidad.pro","animefire.plus","animepelix.net","antena7.com.do","applesfera.com","arnolds.com.br","azuretoons.com","blizzpaste.com","botinnifit.com","canal12.com.sv","cine-calidad.*","cinecalidad2.*","cinelatino.net","compucalitv.tv","cuevanapro.org","cuitonline.com","devoracine.com","dicasgeeks.net","doramasmp4.com","ecartelera.com","elcomercio.com","expertplay.net","gadgetzona.net","gourlpaste.com","hinatasoul.com","informacion.es","isekaitube.cfd","laprovincia.es","lura-toons.com","lycantoons.com","meuwindows.com","multipaste.org","mundolucha.com","novelaplay.com","packsmega.info","peliplayhd.org","peliseries.xyz","player.gnula.*","portalyaoi.com","poseidonhd2.co","redecanaistv.*","ricoysuave.com","seriesflix.onl","seriesflixhd.*","seriesperu.com","short.7hd.club","sololatino.net","starckfilmes.*","streamx-hd.com","todo-anime.net","topmanhuas.org","tubeonline.net","uberxviral.com","veo-hentai.com","vertvcable.com","xatakafoto.com","xatakahome.com","xerifetech.com","yomucomics.com","zona-leros.com","animenew.com.br","animeonline.lat","animeshouse.net","atresplayer.com","cineplus123.org","comunidades.net","devilnovels.com","documaniatv.com","emperorscan.com","hentaiporno.xxx","hentaistube.com","hentaitokyo.net","infojobs.com.br","it-swarm-es.com","kitsuneyako.com","latinpornhd.com","levante-emv.com","luchaonline.com","megafilmeshd.si","meutimao.com.br","monoschino2.com","motorpasion.com","mundodevalor.me","mundoxiaomi.com","oceans14.com.br","otakufilmes.org","panelacheia.top","paste4free.site","peliculas8k.com","pelismarthd.com","pelispedia.life","pelisxporno.net","pepeliculas.org","pornolandia.xxx","readhunters.xyz","redecanaistv.pk","reidoplacar.com","seriesmaxhd.com","seriesretro.com","smartdoing.tech","softwareany.net","trendencias.com","verpelis.gratis","warezstream.net","xatakamovil.com","anime-latino.com","aquariumgays.com","cursomecanet.com","dattebayo-br.com","dicasreceita.com","elblogsalmon.com","embedplayer2.xyz","guideautoweb.com","infomatricula.pt","isekaibrasil.com","latinohentai.com","latinohentai.vip","monumental.co.cr","mundodonghua.com","netmovies.com.br","notipostingt.com","otakuanimess.net","player.cuevana.*","playnewserie.xyz","remedioscase.xyz","sejasaudavel.net","seriesflixhd.win","seriesgratis.biz","superflixapi.fit","superflixapi.pro","teleculinaria.pt","todoandroid.live","todostartups.com","tribunaavila.com","tvplusgratis.com","twobluescans.com","xatakandroid.com","3djuegosguias.com","acortame-esto.com","animeonline.ninja","animesonlinecc.us","canal13mexico.com","cinemastervip.com","clickjogos.com.br","coempregos.com.br","compradiccion.com","cuevana2espanol.*","daemon-hentai.com","diaridegirona.cat","dicasgostosas.com","eldiario24hrs.com","futbolfantasy.com","genshinpro.com.br","googleapis.com.do","guiacripto.online","hostingunlock.com","irmaosdotados.net","jogoscompleto.xyz","lectorhub.j5z.xyz","manhwa-latino.com","modescanlator.com","modescanlator.net","mundoperfecto.net","myfirstdollar.org","neworldtravel.com","ouniversodatv.com","outerspace.com.br","paraveronline.org","player.cuevana2.*","player.cuevana3.*","playerflixapi.com","pornoenspanish.es","portecnologia.com","puromarketing.com","qwanturankpro.com","qwanturankpro.net","redeflixapi.store","seriesdonghua.com","superflixapi.buzz","url.firepaste.com","vejaideias.com.br","verfutbollibre.pe","xatakaciencia.com","xatakawindows.com","alarmadefraude.com","animesonliner4.com","baixedetudo.net.br","elcorreogallego.es","foodiesgallery.com","guianoticiario.net","guiavidaesaude.com","httpmangacrab2.com","link-descarga.site","maringapost.com.br","minhasdelicias.com","modsimuladores.com","mundodeportivo.com","sabornutritivo.com","sushianimes.com.br","todamateria.com.br","tuhentaionline.com","tunovelaligera.com","tvserieslatino.com","venevisionplay.com","brjogostorrents.com","chinesetubex.com.es","comandotorrents.org","constanteonline.com","dicasdereceitas.net","empregoestagios.com","financasdeouro.info","financialtrust.info","forodecostarica.com","hardwarepremium.com","hentailegendado.com","minhaconexao.com.br","motorpasionmoto.com","multicanaistt.space","player.pelisgod.com","pymesyautonomos.com","redbolivision.tv.bo","resenhasglobais.com","seriesemcena.com.br","torrentjogos.com.br","tudoesportes.online","aquiyahorajuegos.net","colegialasdeverdad.*","costumbresmexico.com","descargaseriestv.com","diariodegoias.com.br","diariodelviajero.com","directoalpaladar.com","inuyashadowns.com.br","laopiniondezamora.es","megaseriesonline.pro","nutricaohoje.website","play.mercadolibre.cl","player.seriesgod.com","receitascaseiras.xyz","receitasdaora.online","ricasdelicias.online","verdragonball.online","comicspornohentai.com","descargarhentaimf.xyz","dragonball.sullca.com","meuplayeronlinehd.com","negociosecommerce.com","olimpicastereo.com.co","player.malfollado.com","player.poseidonhd2.co","trendenciashombre.com","independentespanol.com","informetecnologico.com","mundohentaioficial.com","player.hentaistube.com","serieslatinoamerica.tv","verpeliculasonline.org","lawebdelprogramador.com","mrvideospornogratis.xxx","raulprietofernandez.net","southparkstudios.com.br","assistirfilmeshdgratis.*","descargaranimehentai.com","play.mercadolibre.com.ar","play.mercadolivre.com.br","player.cuevana2espanol.*","starckfilmestorrent.site","ver-peliculas-online.com","ver-peliculas-online.org","caroloportunidades.com.br","impactoespananoticias.com","receitasoncaseiras.online","cozinha.minhasdelicias.com","gamesperu2021.blogspot.com","jilliandescribecompany.com","infohojeonline.blogspot.com","jornaldacidadeonline.com.br","gamesteelstudio.blogspot.com","videos.mrvideospornogratis.xxx","xn--kcksk7a2bl5le7b6doc1h3f.com","descargas2024gratis.blogspot.com","gamesteelstudioplus.blogspot.com","canalnatelinhaonline.blogspot.com"];
     const collectArglistRefIndices = (out, hn, r) => {
         let l = 0, i = 0, d = 0;
         let candidate = '';
@@ -2243,6 +2955,7 @@ if ( $scriptletHostnames$.length ) {
             }
         }
     };
+    const todoIndices = new Set();
     indicesFromHostname(todoIndices, entries[0]);
     if ( $hasAncestors$ ) {
         for ( const entry of entries ) {
@@ -2250,20 +2963,20 @@ if ( $scriptletHostnames$.length ) {
             indicesFromHostname(todoIndices, entry, '>>');
         }
     }
-    $scriptletHostnames$.length = 0;
-}
-
-// Collect arglist references
-const todo = new Set();
-if ( todoIndices.size !== 0 ) {
-    const arglistRefs = $scriptletArglistRefs$.split(';');
-    for ( const i of todoIndices ) {
-        for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
-            todo.add(ref);
+    // Collect arglist references
+    if ( todoIndices.size ) {
+        const $scriptletArglistRefs$ = /* 488 */ "173;114,115,116;117;39;196,230;50;196;114,115,116;203,204,205,206,207,208,209,210,211,212,213;260;237;186;30,196;196,229,230;98;84,85;39;131,132,196;237;196;79;253;1;4,200;237;91,166,167,168,169;250;250;114,115,116;71,274,275;154;139;196,230;196,230;178;225;146;239;112;196;223;224;24;39;39;22;59;141;277;329;281;114,115,116;18;237;39,134,135,136,137,138;39,134,135,136,137,138,232,233,234,235;284;66,112;201,202;114,115,116;11,97;221;218;91,166,167,168,169;60;250;68;327;27;337,338;196;97;279;62,63,64;165;83,187;97;181;314;9;82;118;59;48;130;196;196;251;353;175,176;227,228;59;44,45;151;97;237;43,196;292;84,85,196,336;318;196,215;316;102;39;114,115,116;8,41;30,196;178;196,215,216;66;121;169;196;84,85;39,237;276;196,215;158;196,301,302;14,15,16;37;174;196,220,339;10;59;133;196,262,263;38;89;196,318,319,320;71;6,71,72,73,74,291;114,115,116;272,273;79;199;153;353;353;196;35;17;97;231;66,112;233;183;256;196,269,271;84,85;84,85;84,85;169;254;156;306,307;177;152;297;71;87;196,252;57;39,42,196;30,196;178;84,85,169;100;196,327;76,339;39;39;39;196,326,327;228;46;268;94,95;105;341;51,52,53,54,55,56;6;237;196;59;25;125,226;196;33;196,221,222;221;350;286;291;196;196;117;39;18,111;219;248,249;105,351,352;28;97;97;353;84,85,336;196,312;114,115,116;97;242;20,21;317;117;96,114,115,116;258;257;37,71;332;337,338;66;295;88;185;179;114,115,116;39;66;39;91,123,124,166,167,168;35;308;35;94,95;12,13;180;236;80;32,304;92,93,197,198;331;344,345,346,347;231;5,285;196,230;6,71,72,73,74,291;191;196,340;196,290;348,349,354;39;196,294;58;196,294;358;341;359;237;325;287,288;97;97;126,127,128;75;119;36;331;188;78;71;309;47;147;39;267;259;330;155;150;23;77;35;117;71;39;196,310,311,312;177;103;97;47;8;67;26;106,107,348,349,355;196;196,230;196;71;265;321;291;39,134,135,136,137,138,232;353;162;144;113;97;71;196;97;356,357;278;81;169;57;97,177;296;171;39,40;86;71,196,360;71,196,360;114,115,116;39,189,190;159;54,112;84,85;231;196,243;3;244;196,290;241;296;196;3;66;39,122;161;160;341;97;97;66;361;84,85;114,115,116;65;194;91,166,167,168,169;97;196,230;90,313;35;39,87,163;237;129;150;196;109,110;49;266;283;69;298;39;39;303;237;66,112;157;172,184;71;231;231;296,315;31;247;39,122;66;112;196,293;189,190;196;196;283;300;97;97;39;169;29;70;163,164;142,143;61;105;39;156;117;283;192;39,87,108;34;305;282;148,149;343;18;193;196;182,270;237;88;175,176;57;66,112;217;7;299;117,145;177;19;196;177;114,115,116;144;99;261;57;104;196;140;91;172;177;97,177;29;70;196;255;322,323,324;196;57;163,164;87;261;264;245;333,334;19;39,122;289;196;231;97;116;39;335;238;71;342;39;328;102,240;18,111;71;280;322,323,324;322,323,324;231;2;342;342;163,164;117;39,246;170;89,195;196;101,214;39;101;196;196;39;101;120";
+        const arglistRefs = $scriptletArglistRefs$.split(';');
+        for ( const i of todoIndices ) {
+            for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
+                todo.add(ref);
+            }
         }
     }
 }
+
 if ( $hasRegexes$ ) {
+    const $scriptletFromRegexes$ = /* 0 */ [];
     const { hns } = entries[0];
     for ( let i = 0, n = $scriptletFromRegexes$.length; i < n; i += 3 ) {
         const needle = $scriptletFromRegexes$[i+0];
@@ -2280,10 +2993,13 @@ if ( $hasRegexes$ ) {
         }
     }
 }
-if ( todo.size === 0 ) { return; }
 
-// Execute scriplets
-{
+// Execute scriptlets
+if ( todo.size && todo.has(0) === false ) {
+    const $scriptletFunctions$ = /* 20 */
+[preventAddEventListener,abortOnStackTrace,preventFetch,abortCurrentScript,preventSetTimeout,removeAttr,preventSetInterval,zeta_j7s0f4ys,setConstant,abortOnPropertyWrite,noEvalIf,preventRequestAnimationFrame,adjustSetTimeout,adjustSetInterval,abortOnPropertyRead,preventXhr,noWindowOpenIf,jsonPrune,m3uPrune,xmlPrune];
+    const $scriptletArgs$ = /* 362 */ ["DOMContentLoaded","detectAdBlock","console.log","adsbygoogle","RegExp.prototype.test","/detect/i","document.getElementById","triggerBlock","mode:no-cors","adsenseCargo","adblock","onerror","script[src*=\"googlesyndication.com\"]","asap",".offsetHeight === 0","offsetHeight===0","/google-analytics\\.com|pubadx\\.one/","offsetHeight","visibilitychange","bs()","/pagead2\\.googlesyndication\\.com|adsbygoogle/","cloudfront.net","300","doubleclick","document.createElement","detect","load","innerHTML","Image","error","/ads/banner","popunders","noopFunc","/\\.offsetHeight\\s*?===\\s*?0/","adsBlocked","false","EventTarget.prototype.addEventListener","scriptObj","bait","detected","googlesyndication","checkAdBlock","offsetHeight === 0","pagead2.googlesyndication.com","/=window\\.setInterval\\([\\s\\S]*?\\.push\\(/","showAdblockAlert","/adsbygoogle.js","__ANTI_ADBLOCK_CORE__","/detect|\\.onerror|window\\.open/","decodeURIComponent(atob","advanced_ads_check_adblocker","googleads.g.doubleclick.net","googletagmanager.com","connect.facebook.net","static.ads-twitter.com","google-analytics.com","ULTIMATE_BAIT_REMOVED","click","overlay-notification","break;case",".offsetParent===","/window\\.getComputedStyle|adblock-/","unlock","*","0.001","seconds","popads.net","blockAdBlock","method:HEAD","isAdBlocked","String.fromCharCode(_0x","_an.ABMode","undefined","href","a[href]#clickfakeplayer","_0x","500","adClickCount","0","close","atob","wp-content/","checkAdsStatus","DHAntiAdBlocker","true","/pagead2\\.googlesyndication.com/ method:HEAD","www3.doubleclick.net","siteAccessPopup()","Por favor","console[_0x","widgets.outbrain.com","window.getComputedStyle","pagead2.googlesyndication.com/pagead/js/adsbygoogle.js","widgets.outbrain.com/outbrain.js","hasAdblock","contador","adsbygoogle.js","detectedAdblock","ad blocker","/mopinion\\.com|iubenda\\.com|bannersnack\\.com|unblockia\\.com|googlesyndication\\.com/","block_ads","fetch","/alert|bloqueador|\\.catch|\\.type/","adBlockerOn","hasAdblocker","banner-ads",".clientHeight","setNptTechAdblockerCookie","possivelAdblockDetectado","eazyAdUnBlockerHttp","antiAdBlockerStyle","Promise[\\'all\\'](urls","/googlesyndication\\.com|iubenda\\.com|unblockia\\.com|bannersnack\\.com|mopinion\\.com/",".html(","/adBlock|\\.height\\(\\)/","playFunction","imasdk.googleapis.com","AdBlockDetector.prototype.test","falseFunc","detect-modal","googletag","{}","googletag._loaded_","securepubads.g.doubleclick.net/pagead/ppub_config","canRunAds","blockAdBlock._options","checkAdblockUser","addEventListener","displayMessage","adManagerBlocked","call-zone-adxs","adBlockFunction","document.getElementsByTagName","$MICROSITE_INFO.blockAdBlock","","adblock.check","app.AdBlock.init","/pagead2\\.googlesyndication\\.com|ads-api\\.twitter\\.com/","alert","eval","history.go","$","blockWall","/^(?!.*(chrome-extension:)).*$/ method:HEAD","Por favor, desative","/adblock|Por favor, desative|adsbygoogle\\.js/","cdo","document.addEventListener",".innerHTML","!document.getElementById(","ads-twitter.com","Object.prototype.autoRecov","/Adblock|\\.height\\(\\)/","jQuery","/Adblock|dummy|detect/","]]=== 0",".adsbygoogle","adregain_wall","ad_nodes","hb_now","Object.prototype.adblockerEnabled","adsbygoogle.loaded","adBlockCheck","pp_show_popupmessage","easySettings.adblock","onload","AdBlock","adblockDetected","null","gothamBatAdblock","/hasAdblock|window\\.getComputedStyle/","PLAYER LIBERADO","/hasAdblock|detectadb|ad-placement/","/outbrain\\.com|adligature\\.com|quantserve\\.com|srvtrck\\.com/","//cdn.taboola.com/libtrc/unpkg/tfa.js","Bl0ckAdBl0ckCo","ppAdblocks","mMCheckAgainBlock","daadb_get_data","adsbygoogle.length","WSL2.config.enableAdblockEcommerce","ads_unblocked","Adblock","ai_front","cicklow_","better_ads_adblock","adBlockDetected","isAdsDisplayed","ATESTADO","1","Lata","/;return \\{clear:function\\(\\)\\{/","/Tamamo_Blocker|aadb_recheck/","loadingAds","dclm_ajax_var.disclaimer_redirect_url","e(!0)","popunder","ShowRewards","window.open","userout","String.prototype.concat","popup","resumeVideoFromAd","initPopunder","URL_VAST_YOUTUBE","__configuredDFPTags","vast_meta_url","ads","ads.policy.skipMode","vmap_ad_breaks interstitials","vmap_ad_breaks preroll","vmap_ad_breaks midroll-1","vmap_ad_breaks midroll-2","vmap_ad_breaks midroll-3","vmap_ad_breaks midroll-4","vmap_ad_breaks midroll-5","type=ad",".m3u8","xpath(//*[name()=\"Period\"][.//*[name()=\"BaseURL\" and contains(text(),\".mp.lura.live/prod/\")]] | //*[name()=\"MPD\"]/@mediaPresentationDuration | //*[name()=\"Period\"][.//SegmentList[@presentationTimeOffset=\"0\"]])",".mpd","getid","initPu","adJsView","redirectpage","*.media.*.advertisement_id","contadorClics","enlace","document.write","li[onclick^=\"go_to_player\"] > a[target=\"_blank\"][href]","Object.prototype.adSlot","google.ima.OmidVerificationVendor","exopop","protData","cJsEdge","countdown","acdl","window.location.href","notficationAd","open","excludeDomains","global.noobMaxTry","player.preroll","lolaop","pUrlArray","adsdirect","videoliberado","0.02","anunciotag",".style.display","loadXMLDoc","PLAYER","liberaDownload","create_","!/download\\/|link|atomtt\\.com\\//","adk_pdisp","Loading...","adsHandle_noclick","ads breaks cuepoints times","10000","popurl","the_crakien","allclick_Public","checkCookieClick","onclick","?key=","clickd","_impspcabe","xxxStore","/_0x[\\s\\S]*?parentNode[\\s\\S]*?appendChild/","vidorev_jav_plugin_video_ads_object.vid_ads_m_video_ads","redirect","rot_url pop_type","videoTag","passeura","scriptwz_url","host","window.btoa","smrtSB","asgPopScript",".one(\"click\"","smrtSP","_cpp","a_consola","pub","redirdx.in/go/","Pub2","/atualizar|hided/","tick","elements","a.reward_ads[href]","inyectarBanner","javaUpdateAjax","_blank","Object.prototype.prerollShown","__POP_AD_LOCK__","openEnlace","openFullscreenAdOnce","localStorage","overlay","SmartAdsSafeStorage","NEW_LINK","trigger","preventDefault","redirigi","sg_gabarito_ads_config.adFrequency","1000","adUrl","openAdOnce","playerAds ads","puTS","__SMARTLINKS__","random","pumConfig","vast popup adblock","about:blank","JSON.stringify","data:text/javascript","noopener noreferrer","LieDetector","Popunder","a[data-stream][href][target=\"_blank\"]","window.gpp","__PRELOADED_STATE__.view.components.player.playbackContext.ads","adn_placement components.player.playbackContext.ads adnPlacement avails.* dashAvailabilityStartTime hlsAnchorMediaSequenceNumber nextToken nonLinearAvails","xpath(//*[name()=\"Period\"][./*[name()=\"EventStream\"][contains(@schemeIdUri, \":advertising-\")]] | //*[name()=\"Period\"]/@start)","PopunderData","showPopunder","clickCount","adpreload","vastPlayer.completed","sourceAd","start_preroll","anuncioConfig","setRandomBanner","Node.prototype.insertBefore","popns","VASTVideoPlayer","go_to_playerVast","/abrirVentanasEmergentes|abrirNuevaVentana|Popunder/","pop[_0x","Storage","/interstitial|redirectCount/","pframe","setInterval","doTabUnder","cnt1max","ifrconta","clickmax","#frm > a[href][onclick]","manejar","setTimeout","#fakeplayer > a","JSON.parse","showPopup","redirigido","redirigir","w-content","a.elementor-icon[target=\"_blank\"][rel][href]","window.location;","anuncios","/Popunder|Popup/","area51"];
+    const $scriptletArglists$ = /* 362 */ ";0,0,1;1,2,1;2,3;3,4,5;1,6,7;2,8;4,9;0,0,10;5,11,12,13;0,0,14;4,15;2,16;4,17;0,18,19;4,19;6,19;3,6,20;7;2,21;4,17,22;2,23;1,24,25;0,26,27;3,28,29;2,30;8,31,32;4,33;8,34,35;3,24,10;3,36,1;4,37;0,0,38;4,10;4,39;2,40;4,38;8,41,32;0,0,42;2,43;4,44;1,6,45;0,0,46;3,24,25;9,47;3,36,48;0,26,43;3,36,10;4,27;10,49;8,50,32;2,51;2,52;2,53;2,54;2,55;11,56;3,36,3;0,57,58;10,59;3,36,60;0,0,61;12,62,63,64;13,65,63,64;2,66;14,67;2,68;1,6,69;14,69;10,70;8,71,72;5,73,74;4,75,76;8,77,78;8,79,72;1,80,81;9,82;8,83,84;2,85;2,86;4,87;4,88;6,89;15,90;4,91;2,92;15,93;4,94;12,95,63,64;3,24,96;1,24,75;8,97,32;4,98;2,99;14,100;3,101,102;0,103;8,104,35;0,26,105;11,106;14,107;3,36,96;15,43;14,108;14,109;14,110;4,111;2,112;12,113,63,64;4,114;12,115,63,64;2,116;8,117,118;0,26,119;8,120,121;8,122,84;2,123;8,124,84;8,125,32;4,126;3,127,128;8,129,72;2,130;14,131;3,132,96;8,133,35;4,75;0,134,75;8,135,32;8,136,32;2,137;1,138,139;1,140,139;3,141,142;2,143;4,144;6,145;8,146,78;3,147,148;3,141,149;2,150;14,151;4,152;3,153,154;4,155;15,123;4,156;4,14;9,157;14,158;4,3;14,159;8,160,35;8,161,84;14,10;8,162,84;8,163,32;8,164,78;3,165,166;2,46;14,167;8,165,168;14,169;15,66;4,170;3,101,75;12,171,63,64;4,172;2,173;15,174;14,175;0,1;14,176;14,177;9,10;0,26,178;8,179,72;8,180,78;8,181,84;3,141,182;9,183;4,184;8,10,84;8,185,84;8,186,35;8,187,84;8,188,189;8,190,189;3,147,191;4,192;8,193,84;8,194,134;12,195,63,64;14,196;8,197,32;3,147,198;16;14,199;3,200,201;12,202,63,64;8,203,32;8,204,121;8,205,121;17,63,206;17,207,208;17,209;17,210;17,211;17,212;17,213;17,214;17,215;18,216,217;19,218,134,219;13,220,63,64;3,36,198;14,221;4,222;9,223;17,63,224;8,225,189;3,141,198;3,226,227;0,0,227;5,73,228;8,229,134;8,230,121;9,231;9,232;0,26,75;14,233;13,234,63,64;8,235,32;4,236;3,141,237;3,238,6;3,147,239;8,240,78;8,241,32;14,242;9,243;4,244;12,245,63,246;8,247,32;13,248,63,246;0,57,249;12,250,63,246;12,251,63,246;8,193,72;3,147,252;16,253;14,254;13,255,134,246;13,256,134,246;17,257,207;12,171,258,246;14,259;14,260;14,261;14,262;3,132,263;16,264;8,57,189;8,265,189;10,266;8,267,72;0,26,268;8,269,134;12,270,63,246;17,271;0,0,272;16,273;14,274;3,275,276;14,277;14,278;3,141,279;14,280;14,281;8,282,32;14,283;16,284;14,285;12,286,63,64;12,287;0,57,134,288,289;0,0,290;14,291;16,292,189;8,293,84;8,294,84;0,57,75;1,238,295;0,57,296;0,57,297;0,0,298;16,292;16,134,189;9,299;9,203;0,0,300;3,36,301;0,134,301;0,57,302;0,57,303;8,304,305;3,147,306;0,57,307;17,308;3,165,309;8,310,72;0,0,310;0,57,311;14,312;17,313;0,57,314;1,315,316;3,36,317;14,318;1,24,319;5,73,320;3,36,321;8,322,72;17,323;19,324,134,219;14,325;8,326,32;0,57,327;4,328;8,329,84;0,0,330;0,57,319;13,331,63,64;9,332;9,333;0,134,196;3,334,335;8,336,32;8,337,32;0,134,338;3,36,339;3,340,341;12,342,63,64;3,343,344;8,345,78;8,346,78;8,347,78;5,73,348;0,57,349;3,350,292;5,73,351;1,352,353;3,147,353;0,57,198;8,354,84;8,355,32;12,356,63,64;5,73,357;3,147,358;3,101,359;3,36,360;14,361";
     const arglists = $scriptletArglists$.split(';');
     const args = $scriptletArgs$;
     for ( const ref of todo ) {

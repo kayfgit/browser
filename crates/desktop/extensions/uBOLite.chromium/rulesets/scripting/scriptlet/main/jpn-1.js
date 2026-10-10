@@ -78,28 +78,7 @@ function abortCurrentScriptFn(
     const logPrefix = safe.makeLogPrefix('abort-current-script', target, needle, context);
     const reNeedle = safe.patternToRegex(needle);
     const reContext = safe.patternToRegex(context);
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
     const thisScript = document.currentScript;
-    const chain = safe.String_split.call(target, '.');
-    let owner = window;
-    let prop;
-    for (;;) {
-        prop = chain.shift();
-        if ( chain.length === 0 ) { break; }
-        if ( prop in owner === false ) { break; }
-        owner = owner[prop];
-        if ( owner instanceof Object === false ) { return; }
-    }
-    let value;
-    let desc = Object.getOwnPropertyDescriptor(owner, prop);
-    if (
-        desc instanceof Object === false ||
-        desc.get instanceof Function === false
-    ) {
-        value = owner[prop];
-        desc = undefined;
-    }
-    const debug = shouldDebug(extraArgs);
     const exceptionToken = getExceptionTokenFn();
     const scriptTexts = new WeakMap();
     const textContentGetter = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent').get;
@@ -107,8 +86,7 @@ function abortCurrentScriptFn(
         let text = textContentGetter.call(elem);
         if ( text.trim() !== '' ) { return text; }
         if ( scriptTexts.has(elem) ) { return scriptTexts.get(elem); }
-        const [ , mime, content ] =
-            /^data:([^,]*),(.+)$/.exec(elem.src.trim()) ||
+        const [ , mime, content ] = /^data:([^,]*),(.+)$/.exec(elem.src.trim()) ||
             [ '', '', '' ];
         try {
             switch ( true ) {
@@ -128,50 +106,28 @@ function abortCurrentScriptFn(
         const e = document.currentScript;
         if ( e instanceof HTMLScriptElement === false ) { return; }
         if ( e === thisScript ) { return; }
-        if ( context !== '' && reContext.test(e.src) === false ) {
-            // eslint-disable-next-line no-debugger
-            if ( debug === 'nomatch' || debug === 'all' ) { debugger; }
-            return;
-        }
+        if ( context !== '' && reContext.test(e.src) === false ) { return; }
         if ( safe.logLevel > 1 && context !== '' ) {
             safe.uboLog(logPrefix, `Matched src\n${e.src}`);
         }
         const scriptText = getScriptText(e);
-        if ( reNeedle.test(scriptText) === false ) {
-            // eslint-disable-next-line no-debugger
-            if ( debug === 'nomatch' || debug === 'all' ) { debugger; }
-            return;
-        }
+        if ( reNeedle.test(scriptText) === false ) { return; }
         if ( safe.logLevel > 1 ) {
             safe.uboLog(logPrefix, `Matched text\n${scriptText}`);
         }
-        // eslint-disable-next-line no-debugger
-        if ( debug === 'match' || debug === 'all' ) { debugger; }
         safe.uboLog(logPrefix, 'Aborted');
         throw new ReferenceError(exceptionToken);
     };
-    // eslint-disable-next-line no-debugger
-    if ( debug === 'install' ) { debugger; }
-    try {
-        Object.defineProperty(owner, prop, {
-            get: function() {
-                validate();
-                return desc instanceof Object
-                    ? desc.get.call(owner)
-                    : value;
-            },
-            set: function(a) {
-                validate();
-                if ( desc instanceof Object ) {
-                    desc.set.call(owner, a);
-                } else {
-                    value = a;
-                }
-            }
-        });
-    } catch(ex) {
-        safe.uboErr(logPrefix, `Error: ${ex}`);
-    }
+    let currentValue = trapPropertyFn(target, {
+        get: function() {
+            validate();
+            return currentValue;
+        },
+        set: function(a) {
+            validate();
+            currentValue = a;
+        }
+    }, { canThrow: true });
 }
 
 function abortOnPropertyRead(
@@ -223,12 +179,13 @@ function abortOnPropertyRead(
 
 function abortOnStackTrace(
     chain = '',
-    needle = ''
+    needle = '',
+    ...varargs
 ) {
     if ( typeof chain !== 'string' ) { return; }
     const safe = safeSelf();
     const needleDetails = safe.initPattern(needle, { canNegate: true });
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 2);
+    const extraArgs = safe.parseVarargs(varargs);
     if ( needle === '' ) { extraArgs.log = 'all'; }
     const makeProxy = function(owner, chain) {
         const pos = chain.indexOf('.');
@@ -453,12 +410,13 @@ function getRandomTokenFn() {
 function jsonPrune(
     rawPrunePaths = '',
     rawNeedlePaths = '',
-    stackNeedle = ''
+    stackNeedle = '',
+    ...varargs
 ) {
     const safe = safeSelf();
     const logPrefix = safe.makeLogPrefix('json-prune', rawPrunePaths, rawNeedlePaths, stackNeedle);
     const stackNeedleDetails = safe.initPattern(stackNeedle, { canNegate: true });
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
+    const extraArgs = safe.parseVarargs(varargs);
     proxyApplyFn('JSON.parse', function(context) {
         const objBefore = context.reflect();
         if ( rawPrunePaths === '' ) {
@@ -796,10 +754,11 @@ function parsePropertiesToMatchFn(propsToMatch, implicit = '') {
 
 function preventAddEventListener(
     type = '',
-    pattern = ''
+    pattern = '',
+    ...varargs
 ) {
     const safe = safeSelf();
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 2);
+    const extraArgs = safe.parseVarargs(varargs);
     const logPrefix = safe.makeLogPrefix('prevent-addEventListener', type, pattern);
     const reType = safe.patternToRegex(type, undefined, true);
     const rePattern = safe.patternToRegex(pattern);
@@ -831,8 +790,8 @@ function preventAddEventListener(
         return parts.join('');
     };
     const shouldPrevent = (thisArg, type, handler) => {
-        const matchesType = safe.RegExp_test.call(reType, type);
-        const matchesHandler = safe.RegExp_test.call(rePattern, handler);
+        const matchesType = safe.RegExp_test(reType, type);
+        const matchesHandler = safe.RegExp_test(rePattern, handler);
         const matchesEither = matchesType || matchesHandler;
         const matchesBoth = matchesType && matchesHandler;
         if ( safe.logLevel > 1 && matchesEither ) {
@@ -866,22 +825,23 @@ function preventAddEventListener(
         }
         return context.reflect();
     };
+    const protect = owner => {
+        const { addEventListener } = owner;
+        Object.defineProperty(owner, 'addEventListener', {
+            set() { },
+            get() { return addEventListener; }
+        });
+    };
     runAt(( ) => {
         proxyApplyFn('EventTarget.prototype.addEventListener', proxyFn);
-        if ( extraArgs.protect ) {
-            const { addEventListener } = EventTarget.prototype;
-            Object.defineProperty(EventTarget.prototype, 'addEventListener', {
-                set() { },
-                get() { return addEventListener; }
-            });
+        if ( extraArgs.protect ) { protect(EventTarget.prototype); }
+        if ( Object.hasOwn(document, 'addEventListener') ) {
+            proxyApplyFn('document.addEventListener', proxyFn);
+            if ( extraArgs.protect ) { protect(document); }
         }
-        proxyApplyFn('document.addEventListener', proxyFn);
-        if ( extraArgs.protect ) {
-            const { addEventListener } = document;
-            Object.defineProperty(document, 'addEventListener', {
-                set() { },
-                get() { return addEventListener; }
-            });
+        if ( Object.hasOwn(window, 'addEventListener') ) {
+            proxyApplyFn('window.addEventListener', proxyFn);
+            if ( extraArgs.protect ) { protect(window); }
         }
     }, extraArgs.runAt);
 }
@@ -894,7 +854,8 @@ function preventFetchFn(
     trusted = false,
     propsToMatch = '',
     responseBody = '',
-    responseType = ''
+    responseType = '',
+    ...varargs
 ) {
     const safe = safeSelf();
     const setTimeout = self.setTimeout;
@@ -905,7 +866,7 @@ function preventFetchFn(
         responseBody,
         responseType
     );
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 4);
+    const extraArgs = safe.parseVarargs(varargs);
     const propNeedles = parsePropertiesToMatchFn(propsToMatch, 'url');
     const validResponseProps = {
         ok: [ false, true ],
@@ -1026,7 +987,7 @@ function preventSetTimeout(
 }
 
 function preventXhr(...args) {
-    return preventXhrFn(false, ...args);
+    preventXhrFn(false, ...args);
 }
 
 function preventXhrFn(
@@ -1199,7 +1160,8 @@ function preventXhrFn(
 
 function proxyApplyFn(
     target = '',
-    handler = ''
+    handler = '',
+    options = {}
 ) {
     let context = globalThis;
     let prop = target;
@@ -1260,20 +1222,22 @@ function proxyApplyFn(
         };
         proxyApplyFn.isCtor = new Map();
         proxyApplyFn.proxies = new WeakMap();
-        proxyApplyFn.nativeToString = Function.prototype.toString;
-        const proxiedToString = new Proxy(Function.prototype.toString, {
-            apply(target, thisArg) {
-                let proxied = thisArg;
-                for(;;) {
-                    const fn = proxyApplyFn.proxies.get(proxied);
-                    if ( fn === undefined ) { break; }
-                    proxied = fn;
+        if ( (options.skipToString || proxyApplyFn.skipToString) !== true ) {
+            proxyApplyFn.nativeToString = Function.prototype.toString;
+            const proxiedToString = new Proxy(Function.prototype.toString, {
+                apply(target, thisArg) {
+                    let proxied = thisArg;
+                    for(;;) {
+                        const fn = proxyApplyFn.proxies.get(proxied);
+                        if ( fn === undefined ) { break; }
+                        proxied = fn;
+                    }
+                    return proxyApplyFn.nativeToString.call(proxied);
                 }
-                return proxyApplyFn.nativeToString.call(proxied);
-            }
-        });
-        proxyApplyFn.proxies.set(proxiedToString, proxyApplyFn.nativeToString);
-        Function.prototype.toString = proxiedToString;
+            });
+            proxyApplyFn.proxies.set(proxiedToString, proxyApplyFn.nativeToString);
+            Function.prototype.toString = proxiedToString;
+        }
     }
     if ( proxyApplyFn.isCtor.has(target) === false ) {
         proxyApplyFn.isCtor.set(target, fn.prototype?.constructor === fn);
@@ -1296,71 +1260,95 @@ function proxyApplyFn(
 function removeAttr(
     rawToken = '',
     rawSelector = '',
-    behavior = ''
+    behavior = '',
+    ...varargs
 ) {
     if ( typeof rawToken !== 'string' ) { return; }
     if ( rawToken === '' ) { return; }
     const safe = safeSelf();
-    const logPrefix = safe.makeLogPrefix('remove-attr', rawToken, rawSelector, behavior);
+    const logPrefix = safe.makeLogPrefix('remove-attr',
+        rawToken, rawSelector, behavior, ...varargs
+    );
     const tokens = safe.String_split.call(rawToken, /\s*\|\s*/);
-    const selector = tokens
-        .map(a => `${rawSelector}[${CSS.escape(a)}]`)
-        .join(',');
+    const selector = tokens.map(a => {
+        const b = CSS.escape(a);
+        return rawSelector.includes(`[${b}]`) ? rawSelector : `${rawSelector}[${b}]`;
+    }).join(',');
+    const lazily = /\basap\b/.test(behavior) === false;
+    const options = safe.parseVarargs(varargs);
     if ( safe.logLevel > 1 ) {
         safe.uboLog(logPrefix, `Target selector:\n\t${selector}`);
     }
-    const asap = /\basap\b/.test(behavior);
-    let timerId;
-    const rmattrAsync = ( ) => {
-        if ( timerId !== undefined ) { return; }
-        timerId = onIdleFn(( ) => {
-            timerId = undefined;
+    const rmattrFromNode = node => {
+        for ( const attr of tokens ) {
+            if ( node.hasAttribute(attr) === false ) { continue; }
+            node.removeAttribute(attr);
+            safe.uboLog(logPrefix, `Removed attribute '${attr}'`);
+        }
+    };
+    const rmattr = nodes => {
+        for ( const node of nodes ?? document.querySelectorAll(selector) ) {
+            rmattrFromNode(node);
+        }
+    };
+    const rmAttrLazily = ( ) => {
+        if ( rmAttrLazily.timer !== undefined ) { return; }
+        rmAttrLazily.timer = onIdleFn(( ) => {
+            rmAttrLazily.timer = undefined;
             rmattr();
         }, { timeout: 17 });
     };
-    const rmattr = ( ) => {
-        if ( timerId !== undefined ) {
-            offIdleFn(timerId);
-            timerId = undefined;
-        }
-        try {
-            const nodes = document.querySelectorAll(selector);
-            for ( const node of nodes ) {
-                for ( const attr of tokens ) {
-                    if ( node.hasAttribute(attr) === false ) { continue; }
-                    node.removeAttribute(attr);
-                    safe.uboLog(logPrefix, `Removed attribute '${attr}'`);
+    const mutationHandler = mutations => {
+        for ( const { addedNodes, removedNodes } of mutations ) {
+            for ( const node of addedNodes ) {
+                if ( node.nodeType !== 1 ) { continue; }
+                if ( lazily ) { return rmAttrLazily(); }
+                if ( node.matches(selector) ) {
+                    rmattrFromNode(node);
+                }
+                if ( node.childElementCount ) {
+                    rmattr(node.querySelectorAll(selector));
                 }
             }
-        } catch {
+            if ( lazily ) { return; }
+            for ( const node of removedNodes ) {
+                if ( node.nodeType !== 1 ) { continue; }
+                if ( node.matches(selector) ) {
+                    rmattrFromNode(node);
+                }
+            }
         }
     };
-    const mutationHandler = mutations => {
-        if ( timerId !== undefined ) { return; }
-        let skip = true;
-        for ( let i = 0; i < mutations.length && skip; i++ ) {
-            const { type, addedNodes, removedNodes } = mutations[i];
-            if ( type === 'attributes' ) { skip = false; }
-            for ( let j = 0; j < addedNodes.length && skip; j++ ) {
-                if ( addedNodes[j].nodeType === 1 ) { skip = false; break; }
-            }
-            for ( let j = 0; j < removedNodes.length && skip; j++ ) {
-                if ( removedNodes[j].nodeType === 1 ) { skip = false; break; }
-            }
+    const stop = ( ) => {
+        if ( start.observer ) {
+            start.observer.disconnect();
+            start.observer = undefined;
         }
-        if ( skip ) { return; }
-        asap ? rmattr() : rmattrAsync();
+        if ( rmAttrLazily.timer ) {
+            offIdleFn(rmAttrLazily.timer);
+            rmAttrLazily.timer = undefined;
+        }
+        if ( safe.logLevel > 1 ) {
+            safe.uboLog(logPrefix, 'Quitting');
+        }
     };
     const start = ( ) => {
         rmattr();
-        if ( /\bstay\b/.test(behavior) === false ) { return; }
-        const observer = new MutationObserver(mutationHandler);
-        observer.observe(document, {
+        if ( /\bstay\b/.test(behavior) === false ) {
+            if ( options.quitAfter === undefined ) { return; }
+        }
+        start.observer = new MutationObserver(mutationHandler);
+        start.observer.observe(document, {
             attributes: true,
             attributeFilter: tokens,
             childList: true,
             subtree: true,
         });
+        if ( options.quitAfter ) {
+            runAt(( ) => {
+                self.setTimeout(stop, options.quitAfter * 1000);
+            }, 'load');
+        }
     };
     runAt(( ) => { start(); }, safe.String_split.call(behavior, /\s+/));
 }
@@ -1407,15 +1395,14 @@ function runAtHtmlElementFn(fn) {
 }
 
 function safeSelf() {
-    if ( scriptletGlobals.safeSelf ) {
-        return scriptletGlobals.safeSelf;
+    if ( safeSelf.safe ) {
+        return safeSelf.safe;
     }
     const self = globalThis;
     const safe = {
         'Array_from': Array.from,
         'Error': self.Error,
-        'Function_toStringFn': self.Function.prototype.toString,
-        'Function_toString': thisArg => safe.Function_toStringFn.call(thisArg),
+        'Function_toString': Function.prototype.call.bind(self.Function.prototype.toString),
         'Math_floor': Math.floor,
         'Math_max': Math.max,
         'Math_min': Math.min,
@@ -1428,7 +1415,7 @@ function safeSelf() {
         'Object_hasOwn': Object.hasOwn.bind(Object),
         'Object_toString': Object.prototype.toString,
         'RegExp': self.RegExp,
-        'RegExp_test': self.RegExp.prototype.test,
+        'RegExp_test': Function.prototype.call.bind(self.RegExp.prototype.test),
         'RegExp_exec': self.RegExp.prototype.exec,
         'Request_clone': self.Request.prototype.clone,
         'String': self.String,
@@ -1439,10 +1426,8 @@ function safeSelf() {
         'removeEventListener': self.EventTarget.prototype.removeEventListener,
         'fetch': self.fetch,
         'JSON': self.JSON,
-        'JSON_parseFn': self.JSON.parse,
-        'JSON_stringifyFn': self.JSON.stringify,
-        'JSON_parse': (...args) => safe.JSON_parseFn.call(safe.JSON, ...args),
-        'JSON_stringify': (...args) => safe.JSON_stringifyFn.call(safe.JSON, ...args),
+        'JSON_parse': Function.prototype.call.bind(self.JSON.parse, self.JSON),
+        'JSON_stringify': Function.prototype.call.bind(self.JSON.stringify, self.JSON),
         'log': console.log.bind(console),
         // Properties
         logLevel: 0,
@@ -1495,7 +1480,7 @@ function safeSelf() {
         testPattern(details, haystack) {
             if ( details.matchAll ) { return true; }
             if ( details.re ) {
-                return this.RegExp_test.call(details.re, haystack) === details.expect;
+                return this.RegExp_test(details.re, haystack) === details.expect;
             }
             return haystack.includes(details.pattern) === details.expect;
         },
@@ -1513,21 +1498,20 @@ function safeSelf() {
             }
             return /^/;
         },
-        getExtraArgs(args, offset = 0) {
-            const entries = args.slice(offset).reduce((out, v, i, a) => {
-                if ( (i & 1) === 0 ) {
-                    const rawValue = a[i+1];
-                    const value = /^\d+$/.test(rawValue)
-                        ? parseInt(rawValue, 10)
-                        : rawValue;
-                    out.push([ a[i], value ]);
-                }
+        parseVarargs(varargs) {
+            const entries = varargs.reduce((out, v, i, a) => {
+                if ( i & 1 ) { return out; }
+                const rawValue = a[i+1];
+                const value = /^\d+$/.test(rawValue)
+                    ? parseInt(rawValue, 10)
+                    : rawValue;
+                out.push([ a[i], value ]);
                 return out;
             }, []);
             return this.Object_fromEntries(entries);
         },
     };
-    scriptletGlobals.safeSelf = safe;
+    safeSelf.safe = safe;
     if ( scriptletGlobals.bcSecret === undefined ) { return safe; }
     // This is executed only when the logger is opened
     safe.logLevel = scriptletGlobals.logLevel || 1;
@@ -1594,12 +1578,13 @@ function setConstant(
 function setConstantFn(
     trusted = false,
     chain = '',
-    rawValue = ''
+    rawValue = '',
+    ...varargs
 ) {
     if ( chain === '' ) { return; }
     const safe = safeSelf();
     const logPrefix = safe.makeLogPrefix('set-constant', chain, rawValue);
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
+    const extraArgs = safe.parseVarargs(varargs);
     function setConstant(chain, rawValue) {
         const trappedProp = (( ) => {
             const pos = chain.lastIndexOf('.');
@@ -1741,11 +1726,6 @@ function setConstantFn(
     }, extraArgs.runAt);
 }
 
-function shouldDebug(details) {
-    if ( details instanceof Object === false ) { return false; }
-    return scriptletGlobals.canDebug && details.debug;
-}
-
 function spoofCSS(
     selector,
     ...args
@@ -1864,6 +1844,79 @@ function spoofCSS(
     });
 }
 
+function trapPropertyFn(propChain, handler, options = {}) {
+    if ( propChain === '' ) { return; }
+    let owner = self;
+    let prop = propChain;
+    for (;;) {
+        const pos = prop.indexOf('.');
+        if ( pos === -1 ) { break; }
+        owner = owner[prop.slice(0, pos)];
+        if ( owner instanceof Object === false ) { return; }
+        prop = prop.slice(pos + 1);
+    }
+    const safe = safeSelf();
+    if ( trapPropertyFn.db === undefined ) {
+        trapPropertyFn.db = new WeakMap();
+        trapPropertyFn.entryFromContext = (owner, prop) => {
+            const handlers = trapPropertyFn.db.get(owner);
+            return handlers?.get(prop);
+        };
+        trapPropertyFn.getter = (owner, prop) => {
+            const entry = trapPropertyFn.entryFromContext(owner, prop);
+            if ( entry === undefined ) { return; }
+            let r = entry.value;
+            for ( const desc of entry.stack ) {
+                try { r = desc.get(); } catch (e) {
+                    if ( entry.canThrow ) { throw e; }
+                }
+            }
+            return r;
+        };
+        trapPropertyFn.setter = (owner, prop, value) => {
+            const entry = trapPropertyFn.entryFromContext(owner, prop);
+            if ( entry === undefined ) { return; }
+            entry.value = value;
+            for ( const desc of entry.stack ) {
+                try { desc.set(value); } catch (e) {
+                    if ( entry.canThrow ) { throw e; }
+                }
+            }
+        };
+    }
+    const { db } = trapPropertyFn;
+    const handlers = db.get(owner) || new Map();
+    if ( handlers.size === 0 ) {
+        db.set(owner, handlers);
+    }
+    const entry = handlers.get(prop) || {
+        value: owner[prop],
+        stack: [],
+    };
+    entry.stack.push(handler);
+    if ( entry.stack.length > 1 ) { return entry.value; }
+    Object.assign(entry, options);
+    handlers.set(prop, entry);
+    const desc = safe.Object_getOwnPropertyDescriptor(owner, prop);
+    if ( desc instanceof safe.Object ) {
+        if ( desc.get || desc.set ) {
+            entry.stack.push(desc);
+        }
+    }
+    try {
+        safe.Object_defineProperty(owner, prop, {
+            get() {
+                return trapPropertyFn.getter(owner, prop);
+            },
+            set(value) {
+                trapPropertyFn.setter(owner, prop, value);
+            }
+        });
+    } catch {
+    }
+    return entry.value;
+}
+
 function validateConstantFn(trusted, raw, extraArgs = {}) {
     const safe = safeSelf();
     let value;
@@ -1916,23 +1969,640 @@ function validateConstantFn(trusted, raw, extraArgs = {}) {
     return value;
 }
 
+function zeta_j7s0f4ys() { // google-ima.js
+'use strict';
+
+
+
+
+
+if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
+  const VERSION = "3.764.0";
+  const ima = {};
+
+  class AdDisplayContainer {
+    constructor(containerElement) {
+      const divElement = document.createElement("div");
+      divElement.style.setProperty("display", "none", "important");
+      divElement.style.setProperty("visibility", "collapse", "important");
+      containerElement.appendChild(divElement);
+    }
+    destroy() {}
+    initialize() {}
+  }
+
+  class ImaSdkSettings {
+    constructor() {
+      this.c = true;
+      this.f = {};
+      this.i = false;
+      this.l = "";
+      this.p = "";
+      this.r = 0;
+      this.t = "";
+      this.v = "";
+    }
+    getCompanionBackfill() {}
+    getDisableCustomPlaybackForIOS10Plus() {
+      return this.i;
+    }
+    getFeatureFlags() {
+      return this.f;
+    }
+    getLocale() {
+      return this.l;
+    }
+    getNumRedirects() {
+      return this.r;
+    }
+    getPlayerType() {
+      return this.t;
+    }
+    getPlayerVersion() {
+      return this.v;
+    }
+    getPpid() {
+      return this.p;
+    }
+    isCookiesEnabled() {
+      return this.c;
+    }
+    setAutoPlayAdBreaks() {}
+    setCompanionBackfill() {}
+    setCookiesEnabled(c) {
+      this.c = !!c;
+    }
+    setDisableCustomPlaybackForIOS10Plus(i) {
+      this.i = !!i;
+    }
+    setFeatureFlags(f) {
+      this.f = f;
+    }
+    setLocale(l) {
+      this.l = l;
+    }
+    setNumRedirects(r) {
+      this.r = r;
+    }
+    setPlayerType(t) {
+      this.t = t;
+    }
+    setPlayerVersion(v) {
+      this.v = v;
+    }
+    setPpid(p) {
+      this.p = p;
+    }
+    setSessionId() {}
+    setVpaidAllowed() {}
+    setVpaidMode() {}
+
+    // https://github.com/uBlockOrigin/uBlock-issues/issues/2265#issuecomment-1637094149
+    getDisableFlashAds() {
+    }
+    setDisableFlashAds() {
+    }
+  }
+  ImaSdkSettings.CompanionBackfillMode = {
+    ALWAYS: "always",
+    ON_MASTER_AD: "on_master_ad",
+  };
+  ImaSdkSettings.VpaidMode = {
+    DISABLED: 0,
+    ENABLED: 1,
+    INSECURE: 2,
+  };
+
+  class EventHandler {
+    constructor() {
+      this.listeners = new Map();
+    }
+
+    _dispatch(e) {
+      let listeners = this.listeners.get(e.type);
+      listeners = listeners ? Array.from(listeners.values()) : [];
+      for (const listener of listeners) {
+        try {
+          listener(e);
+        } catch (r) {
+          console.error(r);
+        }
+      }
+    }
+
+    addEventListener(types, c, options, context) {
+      if (!Array.isArray(types)) {
+        types = [types];
+      }
+
+      for (const t of types) {
+        if (!this.listeners.has(t)) {
+          this.listeners.set(t, new Map());
+        }
+        this.listeners.get(t).set(c, c.bind(context || this));
+      }
+    }
+
+    removeEventListener(types, c) {
+      if (!Array.isArray(types)) {
+        types = [types];
+      }
+
+      for (const t of types) {
+        const typeSet = this.listeners.get(t);
+        if (typeSet) {
+          typeSet.delete(c);
+        }
+      }
+    }
+  }
+
+  class AdsLoader extends EventHandler {
+    constructor() {
+      super();
+      this.settings = new ImaSdkSettings();
+    }
+    contentComplete() {}
+    destroy() {}
+    getSettings() {
+      return this.settings;
+    }
+    getVersion() {
+      return VERSION;
+    }
+    requestAds(_r, _c) {
+      requestAnimationFrame(() => {
+        const { ADS_MANAGER_LOADED } = AdsManagerLoadedEvent.Type;
+        const event = new ima.AdsManagerLoadedEvent(ADS_MANAGER_LOADED, _r, _c);
+        this._dispatch(event);
+      });
+      const error = new ima.AdError(
+        "adPlayError",
+        1205, 1205,
+        "The browser prevented playback initiated without user interaction.",
+        _r, _c
+      );
+      requestAnimationFrame( () => {
+        this._dispatch(new ima.AdErrorEvent(error));
+      });
+    }
+  }
+
+  class AdsManager extends EventHandler {
+    constructor() {
+      super();
+      this.volume = 1;
+      this._enablePreloading = false;
+    }
+    collapse() {}
+    configureAdsManager() {}
+    destroy() {}
+    discardAdBreak() {}
+    expand() {}
+    focus() {}
+    getAdSkippableState() {
+      return false;
+    }
+    getCuePoints() {
+      return [0];
+    }
+    getCurrentAd() {
+      return currentAd;
+    }
+    getCurrentAdCuePoints() {
+      return [];
+    }
+    getRemainingTime() {
+      return 0;
+    }
+    getVolume() {
+      return this.volume;
+    }
+    init() {
+      if (this._enablePreloading) {
+        this._dispatch(new ima.AdEvent(AdEvent.Type.LOADED));
+      }
+    }
+    isCustomClickTrackingUsed() {
+      return false;
+    }
+    isCustomPlaybackUsed() {
+      return false;
+    }
+    pause() {}
+    requestNextAdBreak() {}
+    resize() {}
+    resume() {}
+    setVolume(v) {
+      this.volume = v;
+    }
+    skip() {}
+    start() {
+      requestAnimationFrame(() => {
+        for (const type of [
+          AdEvent.Type.LOADED,
+          AdEvent.Type.STARTED,
+          AdEvent.Type.CONTENT_PAUSE_REQUESTED,
+          AdEvent.Type.AD_BUFFERING,
+          AdEvent.Type.FIRST_QUARTILE,
+          AdEvent.Type.MIDPOINT,
+          AdEvent.Type.THIRD_QUARTILE,
+          AdEvent.Type.COMPLETE,
+          AdEvent.Type.ALL_ADS_COMPLETED,
+          AdEvent.Type.CONTENT_RESUME_REQUESTED,
+        ]) {
+          try {
+            this._dispatch(new ima.AdEvent(type));
+          } catch (e) {
+            console.error(e);
+          }
+        }
+      });
+    }
+    stop() {}
+    updateAdsRenderingSettings() {}
+  }
+
+  class AdsRenderingSettings {}
+
+  class AdsRequest {
+    setAdWillAutoPlay() {}
+    setAdWillPlayMuted() {}
+    setContinuousPlayback() {}
+  }
+
+  class AdPodInfo {
+    getAdPosition() {
+      return 1;
+    }
+    getIsBumper() {
+      return false;
+    }
+    getMaxDuration() {
+      return -1;
+    }
+    getPodIndex() {
+      return 1;
+    }
+    getTimeOffset() {
+      return 0;
+    }
+    getTotalAds() {
+      return 1;
+    }
+  }
+
+  class Ad {
+    constructor() {
+      this._pi = new AdPodInfo();
+    }
+    getAdId() {
+      return "";
+    }
+    getAdPodInfo() {
+      return this._pi;
+    }
+    getAdSystem() {
+      return "";
+    }
+    getAdvertiserName() {
+      return "";
+    }
+    getApiFramework() {
+      return null;
+    }
+    getCompanionAds() {
+      return [];
+    }
+    getContentType() {
+      return "";
+    }
+    getCreativeAdId() {
+      return "";
+    }
+    getCreativeId() {
+      return "";
+    }
+    getDealId() {
+      return "";
+    }
+    getDescription() {
+      return "";
+    }
+    getDuration() {
+      return 8.5;
+    }
+    getHeight() {
+      return 0;
+    }
+    getMediaUrl() {
+      return null;
+    }
+    getMinSuggestedDuration() {
+      return -2;
+    }
+    getSkipTimeOffset() {
+      return -1;
+    }
+    getSurveyUrl() {
+      return null;
+    }
+    getTitle() {
+      return "";
+    }
+    getTraffickingParameters() {
+      return {};
+    }
+    getTraffickingParametersString() {
+      return "";
+    }
+    getUiElements() {
+      return [""];
+    }
+    getUniversalAdIdRegistry() {
+      return "unknown";
+    }
+    getUniversalAdIds() {
+      return [new UniversalAdIdInfo()];
+    }
+    getUniversalAdIdValue() {
+      return "unknown";
+    }
+    getVastMediaBitrate() {
+      return 0;
+    }
+    getVastMediaHeight() {
+      return 0;
+    }
+    getVastMediaWidth() {
+      return 0;
+    }
+    getWidth() {
+      return 0;
+    }
+    getWrapperAdIds() {
+      return [""];
+    }
+    getWrapperAdSystems() {
+      return [""];
+    }
+    getWrapperCreativeIds() {
+      return [""];
+    }
+    isLinear() {
+      return true;
+    }
+    isSkippable() {
+      return true;
+    }
+  }
+
+  class CompanionAd {
+    getAdSlotId() {
+      return "";
+    }
+    getContent() {
+      return "";
+    }
+    getContentType() {
+      return "";
+    }
+    getHeight() {
+      return 1;
+    }
+    getWidth() {
+      return 1;
+    }
+  }
+
+  class AdError {
+    constructor(type, code, vast, message, request, context) {
+      this.errorCode = code;
+      this.message = message;
+      this.type = type;
+      this.adsRequest = request;
+      this.userRequestContext = context;
+      this.vastErrorCode = vast;
+    }
+    getErrorCode() {
+      return this.errorCode;
+    }
+    getInnerError() {
+        return null;
+    }
+    getMessage() {
+      return this.message;
+    }
+    getType() {
+      return this.type;
+    }
+    getVastErrorCode() {
+      return this.vastErrorCode;
+    }
+    toString() {
+      return `AdError ${this.errorCode}: ${this.message}`;
+    }
+  }
+  AdError.ErrorCode = {};
+  AdError.Type = {};
+
+  const isEngadget = () => {
+    try {
+      for (const ctx of Object.values(window.vidible._getContexts())) {
+        const player = ctx.getPlayer();
+        if (!player) { continue;}
+        const div = player.div;
+        if (!div) { continue; }
+        if (div.innerHTML.includes("www.engadget.com")) {
+          return true;
+        }
+      }
+    } catch {
+    }
+    return false;
+  };
+
+  const currentAd = isEngadget() ? undefined : new Ad();
+
+  class AdEvent {
+    constructor(type) {
+      this.type = type;
+    }
+    getAd() {
+      return currentAd;
+    }
+    getAdData() {
+      return {};
+    }
+  }
+  AdEvent.Type = {
+    AD_BREAK_READY: "adBreakReady",
+    AD_BUFFERING: "adBuffering",
+    AD_CAN_PLAY: "adCanPlay",
+    AD_METADATA: "adMetadata",
+    AD_PROGRESS: "adProgress",
+    ALL_ADS_COMPLETED: "allAdsCompleted",
+    CLICK: "click",
+    COMPLETE: "complete",
+    CONTENT_PAUSE_REQUESTED: "contentPauseRequested",
+    CONTENT_RESUME_REQUESTED: "contentResumeRequested",
+    DURATION_CHANGE: "durationChange",
+    EXPANDED_CHANGED: "expandedChanged",
+    FIRST_QUARTILE: "firstQuartile",
+    IMPRESSION: "impression",
+    INTERACTION: "interaction",
+    LINEAR_CHANGE: "linearChange",
+    LINEAR_CHANGED: "linearChanged",
+    LOADED: "loaded",
+    LOG: "log",
+    MIDPOINT: "midpoint",
+    PAUSED: "pause",
+    RESUMED: "resume",
+    SKIPPABLE_STATE_CHANGED: "skippableStateChanged",
+    SKIPPED: "skip",
+    STARTED: "start",
+    THIRD_QUARTILE: "thirdQuartile",
+    USER_CLOSE: "userClose",
+    VIDEO_CLICKED: "videoClicked",
+    VIDEO_ICON_CLICKED: "videoIconClicked",
+    VIEWABLE_IMPRESSION: "viewable_impression",
+    VOLUME_CHANGED: "volumeChange",
+    VOLUME_MUTED: "mute",
+  };
+
+  class AdErrorEvent {
+    constructor(error) {
+      this.type = "adError";
+      this.error = error;
+    }
+    getError() {
+      return this.error;
+    }
+    getUserRequestContext() {
+      return this.error?.userRequestContext || {};
+    }
+  }
+  AdErrorEvent.Type = {
+    AD_ERROR: "adError",
+  };
+
+  const manager = new AdsManager();
+
+  class AdsManagerLoadedEvent {
+    constructor(type, request, context) {
+      this.type = type;
+      this.adsRequest = request;
+      this.userRequestContext = context;
+    }
+    getAdsManager(c, settings) {
+      if (settings && settings.enablePreloading) {
+        manager._enablePreloading = true;
+      }
+      return manager;
+    }
+    getUserRequestContext() {
+      return this.userRequestContext || {};
+    }
+  }
+  AdsManagerLoadedEvent.Type = {
+    ADS_MANAGER_LOADED: "adsManagerLoaded",
+  };
+
+  class CustomContentLoadedEvent {}
+  CustomContentLoadedEvent.Type = {
+    CUSTOM_CONTENT_LOADED: "deprecated-event",
+  };
+
+  class CompanionAdSelectionSettings {}
+  CompanionAdSelectionSettings.CreativeType = {
+    ALL: "All",
+    FLASH: "Flash",
+    IMAGE: "Image",
+  };
+  CompanionAdSelectionSettings.ResourceType = {
+    ALL: "All",
+    HTML: "Html",
+    IFRAME: "IFrame",
+    STATIC: "Static",
+  };
+  CompanionAdSelectionSettings.SizeCriteria = {
+    IGNORE: "IgnoreSize",
+    SELECT_EXACT_MATCH: "SelectExactMatch",
+    SELECT_NEAR_MATCH: "SelectNearMatch",
+  };
+
+  class AdCuePoints {
+    getCuePoints() {
+      return [];
+    }
+  }
+
+  class AdProgressData {}
+
+  class UniversalAdIdInfo {
+    getAdIdRegistry() {
+      return "";
+    }
+    getAdIdValue() {
+      return "";
+    }
+  }
+
+  Object.assign(ima, {
+    AdCuePoints,
+    AdDisplayContainer,
+    AdError,
+    AdErrorEvent,
+    AdEvent,
+    AdPodInfo,
+    AdProgressData,
+    AdsLoader,
+    AdsManager: manager,
+    AdsManagerLoadedEvent,
+    AdsRenderingSettings,
+    AdsRequest,
+    CompanionAd,
+    CompanionAdSelectionSettings,
+    CustomContentLoadedEvent,
+    gptProxyInstance: {},
+    ImaSdkSettings,
+    OmidAccessMode: {
+      DOMAIN: "domain",
+      FULL: "full",
+      LIMITED: "limited",
+    },
+    OmidVerificationVendor: {
+      1: "OTHER",
+      2: "GOOGLE",
+      GOOGLE: 2,
+      OTHER: 1
+    },
+    settings: new ImaSdkSettings(),
+    UiElements: {
+      AD_ATTRIBUTION: "adAttribution",
+      COUNTDOWN: "countdown",
+    },
+    UniversalAdIdInfo,
+    VERSION,
+    ViewMode: {
+      FULLSCREEN: "fullscreen",
+      NORMAL: "normal",
+    },
+  });
+
+  if (!window.google) {
+    window.google = {};
+  }
+
+  window.google.ima = ima;
+}
+}
+
 /******************************************************************************/
 
 const scriptletGlobals = {}; // eslint-disable-line
 
-const $scriptletFunctions$ = /* 16 */
-[preventFetch,preventSetTimeout,setConstant,preventAddEventListener,noEvalIf,spoofCSS,abortOnStackTrace,abortCurrentScript,removeAttr,abortOnPropertyRead,jsonPrune,preventXhr,adjustSetInterval,preventSetInterval,noWindowOpenIf,adjustSetTimeout];
-
-const $scriptletArgs$ = /* 179 */ ["pagead2.googlesyndication.com","adsbygoogle","aswift_","d.socdm.com","null===document.getElementById","1000","intersa.aspx","/adm\\.shinobi\\.jp\\/st\\/t\\.js/ method:HEAD mode:no-cors","navigator.brave","undefined","adsbygoogle.js","load","adBlockDetected","google_tag_manager","{}","adsbygoogle.pageState","1","広告","/pagead2\\.googlesyndication\\.com|metrics\\.streaks\\.jp|ads-twitter\\.com/","delayCheckA","delayCheckAB","myFunc","noopFunc","ins.adsbygoogle","display","block","Function.prototype.toString","/w/load.php?lang=ja&modules=codex-search-styles%2Cjquery%2Coojs%2C&skin=vector-2022&version=L58hf","()=>k(S(4","#mw-content-text div[style] a:is([href*=\"contents.fc2.com\"],[href*=\"dmm.co.jp\"])","font-size","14px","#mw-content-text div[style] a:is([href*=\"contents.fc2.com\"],[href*=\"dmm.co.jp\"]) img","height","128px","EventTarget.prototype.addEventListener","eval","href","a[style*=\"display:\"][href^=\"https://al.dmm.co.jp\"]","stay","return","style",".js-reward-target[style]","onload","google_esf","adBlockerDetected","false","DOMContentLoaded","interstitialAd","ad_flg ad_url data.adData data.adTagUrl","doubleclick.net","all520dddaaa2022ccc","true","oAdChk","tpc.googlesyndication.com","id","#div-gpt-ad-sidebottom","#div-gpt-ad-footer","#div-gpt-ad-pagebottom","#div-gpt-ad-relatedbottom-1","adsCount","/adsbygoogle|clientHeight/","cors","document.getElementById","_0x","cdn.adschill.com","document.querySelector","error","adscript-error","flgDisplay","adsbygoogle.loaded","gptScriptLoaded","AdBlockLimitation","objDef.resolve","class",".quigo","jQuery","decodeURIComponent","ads","result.ad_info","result.paths.[].ad_info","document.write","sitejack","document.createElement","overview","imageUrls","videoInstArea","$","google_ads_iframe_","","setTrigger","pum_vars","reward_countdown","ads_data","timerId",".cps-post-main a[href^=\"https://www.amazon.co.jp\"]","q2w3_sidebar(q2w3_sidebar_options","movie_cnt","300","document.referrer","gmo_bb","scroll","b.type","click","event","ads.[].imageUrl","document.currentScript","insertAdjacentHTML","fanza_link","floatingAd","playing","VAST_TARGET",".run()}","getAdCookie","tag","Math.random","addEventListener","style.display","simplegameAdCountDown","0.02","window[","jmp","Math","showPopUpBanner","hoihoi","lists","geoAvailable","$.popunder","data-popup-url","aeriaGamesAdCountDown","onclick","span > a[onclick]","visibility","4000","[native code]","2000","0.3","3000","0.25","0.2","FIRST_DELAY","0","NEXT_DELAY","sec","adsHTML","actress","myad","dataLayer.push","document.cookie.includes","#kk","skipcnt","0.001","waqool","/[Aa]dDiv|showVignette/","return r(!0)","IFTG","data.adData","/nrWrapper\\(\\)|n\\.setTimeoutIds_\\.has\\(i\\)/","10000","/adSkip|window\\.ADGMAD/","30000","return n(!0)","univresalP","isGGSurvey","enable_dl_after_countdown","props.initialProps.pageProps.pageData.brandingAds","wpsite_clickable_data","randomad","SU_Api.AdsTimer","-1","map_ad_bottom_height","Fixed","data.response.videoAds data.response.waku.tagRelatedBanner",".topentry_text a","registration_guide_modal","onmousedown","a[onmousedown^=\"this.href=\\\"//widgets.taxel.jp\"]","iframe[id^=\"google_ads_iframe\"]","TagProvider.cleanup"];
-
-const $scriptletArglists$ = /* 135 */ "0,0;0,1;1,2;1,1;0,3;1,4,5;1,6;0,7;2,8,9;0,10;3,11,12;2,13,14;2,15,16;4,17;0,18;3,11,19;3,11,20;2,21,22;5,23,24,25;6,26,27;1,28;5,29,30,31;5,32,33,34;7,35,36;8,37,38,39;1,40;8,41,42,39;7,43,44;9,12;2,45,46;3,47,48;10,49;11,50;2,51,52;1,53;0,54;8,55,56;8,55,57;8,55,58;8,55,59;7,43,60;7,8;1,61;0,0,52,62;7,63,64;3,11,60;1,64;0,65;7,66,64;3,67,68;2,69,46;2,70,52;2,71,52;9,72;1,73;2,12,22;8,74,75,39;7,76,77;10,78;10,79;10,80;7,81,82;7,83,84;7,63,85;3,11,86;7,87,88;3,89,90;2,91,9;12,92;2,93,14;12,94,5;8,37,95,39;13,96;1,97,98;7,99,100;14;2,81,22;3,101,102;3,103,104;10,105;7,106,107;9,108;7,76,109;3,110,111;12,112,5;1,113;7,114,115;1,109;7,116,117;15,118,5,119;3,47,120;7,121,122;3,47,123;4,124;7,63,125;2,126,52;2,127,22;8,128;15,129,89,119;8,130,131;15,132,133;15,134,135,136;15,134,137,138;15,134,133,139;2,140,141;2,142,141;2,143,141;3,47,144;7,145,146;7,147,148;8,37,149,39;12,150,5,151;3,103,152;3,47,153;1,154;7,106,155;10,156;15,157,158;15,159,160,151;1,161;2,162,22;2,163,52;2,164,52;10,165;9,166;7,83,167;2,168,169;2,170,141;3,47,171;10,172;8,37,173,39;3,47,174;8,175,176,39;8,33,177,39;2,178,22";
-
-const $scriptletArglistRefs$ = /* 222 */ "75;74;75,96,97;17;82,87;106;4,5,58,116,117;99;33;15;88;6;8,9;54;106;51;55;52;26;87;30;79;34;28;74;81;79;0;79;82,87;33;11,12;56;87;107;0;17;76;85;87;133;82;79;67;1;30,113;114;79;87;30;15;49,50;75;82,87;29;134;125;10;106;7;30;25;15;46,47,48;53;73;74;0;79;79;0;1;79;87;80;46;84;46;74;46;15;15,115;130;79;87;0;127;79;128;87;46;17;65,121,122;113;46;106;27;74;46;46;113;79;66;63,64;35,36,37,38,39;65,121,122;87;120;74;92;23,24;46;46;46;82;82,87;79;86;75;79;41;67;113;2;89;119;79;87;132;18;79;30;16;113;69;113;118;74;74;79;131;13;74;19,20,21,22;3;74;87;87;87;15;87;71;113;79;87;15;79;90;72;126;61,82,87,91;74;79;94;79;87;35,36,37,38,39;68;75,83;129;61;79;62;79;15;15;82;87;108;110;87;112;121,122;77;78;57;82;79;123;74;95;0;124;3;46;31,32;82;75;40,45;42,43;0,44;93;87;14;82;79;93;98;93;0;58,59,60;42,43;109;79;88;118;118;100,101,102,103,104,105;111;70;79;118";
-
-const $scriptletHostnames$ = /* 222 */ ["asg.to","h1g.jp","wav.tv","xth.jp","blog.jp","cmnw.jp","tver.jp","380cc.cc","520cc.cc","h178.com","javmix.*","r326.com","rkd3.dev","crefan.jp","dotti2.jp","g-pc.info","h-ken.net","intaa.net","jprime.jp","ldblog.jp","memo.wiki","misskey.*","o-dan.net","pointi.jp","riajo.com","shico.xyz","sushi.ski","tojav.net","trpger.us","2chblog.jp","520call.me","aimomo.net","coron.tech","ebitsu.net","fo76db.com","gunauc.net","in-jpn.com","jav380.com","javcup.com","jisaka.com","kojodan.jp","nwknews.jp","p1.a9z.dev","pictab.art","rxlife.net","seesaa.net","twiman.net","uneune.one","vipnews.jp","beasoku.com","best-hit.tv","coolpan.net","dl.520cc.cc","doorblog.jp","egotter.com","famitsu.com","figsoku.net","gigafile.nu","gotouchi.jp","himachat.jp","kakenhi.net","kotobank.jp","localch.net","manga1001.*","modalina.jp","nan-net.com","nkreport.jp","pc.moppy.jp","posskey.com","redfuku.com","shihiro.com","spotvnow.jp","warpday.net","46matome.net","agora-web.jp","ap-siken.com","collepic.net","db-siken.com","engineweb.jp","fe-siken.com","j-rugby.club","jukenbbs.com","kokopyon.net","labo.wovs.tk","livedoor.biz","mangaruu.com","mapion.co.jp","mk.yopo.work","negisoku.com","norisoku.com","nw-siken.com","oninet.ne.jp","photo-ac.com","playing.wiki","pm-siken.com","pochitto2.jp","qa.crefan.jp","realsound.jp","sc-siken.com","sg-siken.com","sokuhou.wiki","takusuki.com","twidouga.net","twivideo.net","youpouch.com","ac-illust.com","animesoku.com","ddd-smart.net","encount.press","ero-video.net","exploader.net","fp1-siken.com","fp2-siken.com","fp3-siken.com","gundamlog.com","livedoor.blog","m.eskey.click","majikichi.com","motimoti3d.jp","msk.ilnk.info","musenboya.com","onagazou.info","seesaawiki.jp","si-coding.net","simplegame.jp","skebetter.com","uttaeruyo.com","vtubernews.jp","www.ohk.co.jp","yourfones.net","zadankai.club","addchannel.net","bm.best-hit.tv","chronicle.wiki","fashionpost.jp","game-info.wiki","kantangame.com","kenshonavi.com","maidonanews.jp","misskirara.net","news.mynavi.jp","pokegonews.net","trafficnews.jp","wiki.yjsnpi.nu","yomury.blog.jp","yougakumap.com","all-nationz.com","fiveslot777.com","giants-news.com","j-baseball.club","kijyomatome.com","lifematome.blog","mindhack2ch.com","misskeytsf.love","momoclonews.com","shukatsubbs.com","stormskey.works","tokyomotion.net","yaraon-blog.com","azby.fmworld.net","blog.livedoor.jp","chibanippo.co.jp","live-theater.net","momoiroadult.com","msk.kitamiss.com","oumaga-times.com","rocketnews24.com","shindanmaker.com","uraaka-joshi.com","www.nicovideo.jp","akibablog.blog.jp","empire.miyaco.moe","erommd-street.com","ikaskey.bktsk.com","j-basketball.club","j-volleyball.club","kijomatomelog.com","konoyubitomare.jp","matome-geinou.net","mekomeko-club.icu","openworldnews.net","shinshi-manga.net","silhouette-ac.com","anacap.doorblog.jp","anianierosuki.work","connect.coron.tech","digital-thread.com","misskey.secinet.jp","search.yahoo.co.jp","searchkoreanews.jp","sonae.sankei.co.jp","success-corp.co.jp","automaton-media.com","girlsvip-matome.com","itpassportsiken.com","lemino.docomo.ne.jp","nandemo-uketori.com","trendynailwraps.com","blog-and-destroy.com","gamemod.blog.fc2.com","kledgeb.blogspot.com","mjoato3uion.ky-3.net","pachinkopachisro.com","video.tv-tokyo.co.jp","yugioh-starlight.com","misskey.resonite.love","ov53i9il.blog.fc2.com","minigame.aeriagames.jp","qaacacthlive.omaww.net","audio-sound-premium.com","sports.tv.rakuten.co.jp","helpsupport.blog.fc2.com","news.denfaminicogamer.jp","signalskey.signal-st.com","xn--gmq92kd2rm1kx34a.com","game.pointmall.rakuten.net","chance.enjoy.point.auone.jp","ponta.abstractpainting.work","portal.game.success-corp.jp","portal.game.sycasualgames.com","nukers-misskey.hpc-densi.f5.si","game.hiroba.dpoint.docomo.ne.jp"];
-
-const $scriptletFromRegexes$ = /* 0 */ [];
-
+const $hasHostnames$ = true;
 const $hasEntities$ = true;
 const $hasAncestors$ = false;
 const $hasRegexes$ = false;
@@ -1980,8 +2650,10 @@ const entries = (( ) => {
 })();
 if ( entries.length === 0 ) { return; }
 
-const todoIndices = new Set();
-if ( $scriptletHostnames$.length ) {
+const todo = new Set();
+
+if ( $hasHostnames$ ) {
+    const $scriptletHostnames$ = /* 239 */ ["asg.to","h1g.jp","wav.tv","xth.jp","blog.jp","cmnw.jp","tver.jp","380cc.cc","520cc.cc","h178.com","javmix.*","r326.com","rkd3.dev","crefan.jp","dotti2.jp","g-pc.info","h-ken.net","intaa.net","jprime.jp","ldblog.jp","memo.wiki","misskey.*","o-dan.net","pointi.jp","riajo.com","shico.xyz","soraraw.*","sushi.ski","tojav.net","trpger.us","2chblog.jp","520call.me","aimomo.net","coron.tech","ebitsu.net","gunauc.net","in-jpn.com","jav380.com","javcup.com","jisaka.com","kojodan.jp","nwknews.jp","p1.a9z.dev","pictab.art","rxlife.net","seesaa.net","twiman.net","uneune.one","vipnews.jp","beasoku.com","best-hit.tv","coolpan.net","dl.520cc.cc","doorblog.jp","egotter.com","famitsu.com","figsoku.net","gigafile.nu","gotouchi.jp","himachat.jp","jacom.or.jp","kakenhi.net","kotobank.jp","localch.net","manga1001.*","modalina.jp","nan-net.com","nkreport.jp","pc.moppy.jp","posskey.com","rawfree.top","redfuku.com","shihiro.com","spotvnow.jp","warpday.net","46matome.net","agora-web.jp","ap-siken.com","collepic.net","db-siken.com","engineweb.jp","fe-siken.com","fuucdayo.com","j-rugby.club","jukenbbs.com","kokopyon.net","labo.wovs.tk","livedoor.biz","mangaruu.com","mapion.co.jp","mk.yopo.work","negisoku.com","norisoku.com","nw-siken.com","oninet.ne.jp","photo-ac.com","playing.wiki","pm-siken.com","pochitto2.jp","qa.crefan.jp","realsound.jp","sc-siken.com","sg-siken.com","sokuhou.wiki","solispia.com","takusuki.com","twidouga.net","twivideo.net","youpouch.com","ac-illust.com","animesoku.com","ddd-smart.net","encount.press","ero-video.net","exploader.net","fp1-siken.com","fp2-siken.com","fp3-siken.com","gundamlog.com","livedoor.blog","m.eskey.click","majikichi.com","motimoti3d.jp","msk.ilnk.info","musenboya.com","onagazou.info","seesaawiki.jp","si-coding.net","simplegame.jp","skebetter.com","socialxup.com","suki-kira.com","uttaeruyo.com","vtubernews.jp","www.ohk.co.jp","yamiisoku.com","yourfones.net","zadankai.club","addchannel.net","bm.best-hit.tv","chronicle.wiki","fashionpost.jp","game-info.wiki","kantangame.com","kenshonavi.com","maidonanews.jp","misskirara.net","news.mynavi.jp","pokegonews.net","trafficnews.jp","wiki.yjsnpi.nu","yomury.blog.jp","yougakumap.com","all-nationz.com","fiveslot777.com","giants-news.com","j-baseball.club","kijyomatome.com","lifematome.blog","mindhack2ch.com","misskeytsf.love","momoclonews.com","monhan-soku.com","pdftoshokan.com","shukatsubbs.com","stormskey.works","tokyomotion.net","yaraon-blog.com","azby.fmworld.net","blog.livedoor.jp","chibanippo.co.jp","genshin-soku.com","live-theater.net","momoiroadult.com","msk.kitamiss.com","oumaga-times.com","rocketnews24.com","shindanmaker.com","uraaka-joshi.com","www.nicovideo.jp","akibablog.blog.jp","blog.livedoor.com","empire.miyaco.moe","erommd-street.com","ikaskey.bktsk.com","j-basketball.club","j-volleyball.club","kijomatomelog.com","konoyubitomare.jp","matome-geinou.net","mekomeko-club.icu","openworldnews.net","shinshi-manga.net","silhouette-ac.com","anacap.doorblog.jp","anianierosuki.work","connect.coron.tech","digital-thread.com","fjkcircle2.cfbx.jp","misskey.secinet.jp","search.yahoo.co.jp","searchkoreanews.jp","sonae.sankei.co.jp","success-corp.co.jp","automaton-media.com","girlsvip-matome.com","itpassportsiken.com","lemino.docomo.ne.jp","nandemo-uketori.com","trendynailwraps.com","blog-and-destroy.com","gamemod.blog.fc2.com","kledgeb.blogspot.com","mjoato3uion.ky-3.net","pachinkopachisro.com","pointmall.aeon.co.jp","video.tv-tokyo.co.jp","yugioh-starlight.com","gakudohoiku.gaccom.jp","misskey.resonite.love","ov53i9il.blog.fc2.com","minigame.aeriagames.jp","qaacacthlive.omaww.net","xn--gckdevd5myivf.site","audio-sound-premium.com","sports.tv.rakuten.co.jp","helpsupport.blog.fc2.com","news.denfaminicogamer.jp","signalskey.signal-st.com","xn--gmq92kd2rm1kx34a.com","game.pointmall.rakuten.net","onepiecelabs.tonuriaz.info","chance.enjoy.point.auone.jp","ponta.abstractpainting.work","portal.game.success-corp.jp","portal.game.sycasualgames.com","nukers-misskey.hpc-densi.f5.si","game.hiroba.dpoint.docomo.ne.jp","skyscrapers-and-urbandevelopment.com"];
     const collectArglistRefIndices = (out, hn, r) => {
         let l = 0, i = 0, d = 0;
         let candidate = '';
@@ -2016,6 +2688,7 @@ if ( $scriptletHostnames$.length ) {
             }
         }
     };
+    const todoIndices = new Set();
     indicesFromHostname(todoIndices, entries[0]);
     if ( $hasAncestors$ ) {
         for ( const entry of entries ) {
@@ -2023,20 +2696,20 @@ if ( $scriptletHostnames$.length ) {
             indicesFromHostname(todoIndices, entry, '>>');
         }
     }
-    $scriptletHostnames$.length = 0;
-}
-
-// Collect arglist references
-const todo = new Set();
-if ( todoIndices.size !== 0 ) {
-    const arglistRefs = $scriptletArglistRefs$.split(';');
-    for ( const i of todoIndices ) {
-        for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
-            todo.add(ref);
+    // Collect arglist references
+    if ( todoIndices.size ) {
+        const $scriptletArglistRefs$ = /* 239 */ "82;81;82,103,104;24;89,94;113;12,13,65,129,130,148;106;40;22;95;14;7,16;61;113;58;62;59;33;94;37;86;41;35;81;88;6,7;86;9;86;89,94;40;18,19;63;94;9;24;83;92;94;147;89;86;74;2;37,126;127;86;94;37;22;56,57;82;89,94;36;116,149;138;17;113;15;117;37;32;22;53,54,55;60;80;81;9;86;6,7;86;9;2;86;94;87;53;91;53;81;53;2;22;22,128;144;86;94;6,7;140;86;141;94;53;24;72,134,135;126;53;113;34;81;53;53;126;120;86;73;70,71;42,43,44,45,46;72,134,135;94;133;81;99;30,31;53;53;53;89;89,94;86;93;82;86;48;74;126;10;96;132;114;119;86;94;146;8;25;86;37;23;126;76;126;131;81;81;86;145;20;81;26,27,28,29;11;81;94;94;94;22;94;78;126;86;94;8;118;22;86;97;79;139;68,89,94,98;81;8;86;101;86;94;42,43,44,45,46;75;82,90;142;68;115;86;69;86;22;22;89;94;121;123;94;125;134,135;84;85;64;89;3;86;136;81;102;9;137;11;53;38,39;89;82;47,52;49,50;9,51;100;94;4;21;89;143;86;100;105;100;8;9;65,66,67;49,50;122;86;95;131;1;131;107,108,109,110,111,112;124;77;86;131;5";
+        const arglistRefs = $scriptletArglistRefs$.split(';');
+        for ( const i of todoIndices ) {
+            for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
+                todo.add(ref);
+            }
         }
     }
 }
+
 if ( $hasRegexes$ ) {
+    const $scriptletFromRegexes$ = /* 0 */ [];
     const { hns } = entries[0];
     for ( let i = 0, n = $scriptletFromRegexes$.length; i < n; i += 3 ) {
         const needle = $scriptletFromRegexes$[i+0];
@@ -2053,10 +2726,13 @@ if ( $hasRegexes$ ) {
         }
     }
 }
-if ( todo.size === 0 ) { return; }
 
-// Execute scriplets
-{
+// Execute scriptlets
+if ( todo.size && todo.has(0) === false ) {
+    const $scriptletFunctions$ = /* 17 */
+[preventSetTimeout,preventFetch,preventAddEventListener,setConstant,noEvalIf,spoofCSS,abortOnStackTrace,abortCurrentScript,removeAttr,abortOnPropertyRead,jsonPrune,preventXhr,adjustSetInterval,preventSetInterval,noWindowOpenIf,adjustSetTimeout,zeta_j7s0f4ys];
+    const $scriptletArgs$ = /* 192 */ ["/resolve|native/","300","adsbygoogle","adm.shinobi.jp","/geniee\\.jp|securepubads\\.g\\.doubleclick\\.net/","DOMContentLoaded","isAllowedBrowser","?abg=","navigator.brave","undefined","YAAB","pagead2.googlesyndication.com","aswift_","d.socdm.com","null===document.getElementById","1000","intersa.aspx","/adm\\.shinobi\\.jp\\/st\\/t\\.js/ method:HEAD mode:no-cors","adsbygoogle.js","load","adBlockDetected","google_tag_manager","{}","adsbygoogle.pageState","1","広告","/pagead2\\.googlesyndication\\.com|metrics\\.streaks\\.jp|ads-twitter\\.com/","delayC","delayCheckAB","myFunc","noopFunc","ins.adsbygoogle","display","block","Function.prototype.toString","/w/load.php?lang=ja&modules=codex-search-styles%2Cjquery%2Coojs%2C&skin=vector-2022&version=L58hf","()=>k(S(4","#mw-content-text div[style] a:is([href*=\"contents.fc2.com\"],[href*=\"dmm.co.jp\"])","font-size","14px","#mw-content-text div[style] a:is([href*=\"contents.fc2.com\"],[href*=\"dmm.co.jp\"]) img","height","128px","EventTarget.prototype.addEventListener","eval","href","a[style*=\"display:\"][href^=\"https://al.dmm.co.jp\"]","stay","return","style",".js-reward-target[style]","onload","google_esf","adBlockerDetected","false","interstitialAd","ad_flg ad_url data.adData data.adTagUrl","doubleclick.net","all520dddaaa2022ccc","true","oAdChk","tpc.googlesyndication.com","id","#div-gpt-ad-sidebottom","#div-gpt-ad-footer","#div-gpt-ad-pagebottom","#div-gpt-ad-relatedbottom-1","adsCount","/adsbygoogle|clientHeight/","cors","document.getElementById","_0x","cdn.adschill.com","document.querySelector","error","adscript-error","flgDisplay","adsbygoogle.loaded","gptScriptLoaded","AdBlockLimitation","objDef.resolve","class",".quigo","jQuery","decodeURIComponent","ads","result.ad_info","result.paths.[].ad_info","document.write","sitejack","document.createElement","overview","imageUrls","videoInstArea","$","google_ads_iframe_","","setTrigger","pum_vars","reward_countdown","ads_data","timerId",".cps-post-main a[href^=\"https://www.amazon.co.jp\"]","q2w3_sidebar(q2w3_sidebar_options","movie_cnt","document.referrer","gmo_bb","scroll","b.type","click","event","ads.[].imageUrl","document.currentScript","insertAdjacentHTML","fanza_link","floatingAd","playing","VAST_TARGET",".run()}","getAdCookie","tag","Math.random","addEventListener","style.display","simplegameAdCountDown","0.02","window[","jmp","Math","showPopUpBanner","hoihoi","lists","geoAvailable","$.popunder","data-popup-url","aeriaGamesAdCountDown","onclick","span > a[onclick]","visibility","4000","[native code]","2000","0.3","3000","0.25","0.2","FIRST_DELAY","0","NEXT_DELAY","sec","vd","rand = Math","props.pageProps.article2ndBannerData","props.allAds","/ok_|pemsrv\\.com/","#close-ad","SolispiaRewardedAdGate.init","actress","myad","dataLayer.push","document.cookie.includes","#kk","skipcnt","0.001","waqool","/[Aa]dDiv|showVignette/","return r(!0)","IFTG","data.adData","/nrWrapper\\(\\)|n\\.setTimeoutIds_\\.has\\(i\\)/","10000","/adSkip|window\\.ADGMAD/","30000","return n(!0)","univresalP","isGGSurvey","enable_dl_after_countdown","props.initialProps.pageProps.pageData.brandingAds","wpsite_clickable_data","randomad","SU_Api.AdsTimer","-1","map_ad_bottom_height","Fixed","data.response.videoAds data.response.waku.tagRelatedBanner","kyujin_box juku",".topentry_text a","registration_guide_modal","onmousedown","a[onmousedown^=\"this.href=\\\"//widgets.taxel.jp\"]","iframe[id^=\"google_ads_iframe\"]","TagProvider.cleanup"];
+    const $scriptletArglists$ = /* 150 */ ";0,0,1;1,2;1,3;1,4;2,5,6;1,7;3,8,9;3,10,9;1,11;0,12;0,2;1,13;0,14,15;0,16;1,17;1,18;2,19,20;3,21,22;3,23,24;4,25;1,26;2,19,27;2,19,28;3,29,30;5,31,32,33;6,34,35;0,36;5,37,38,39;5,40,41,42;7,43,44;8,45,46,47;0,48;8,49,50,47;7,51,52;9,20;3,53,54;2,5,55;10,56;11,57;3,58,59;0,60;1,61;8,62,63;8,62,64;8,62,65;8,62,66;7,51,67;7,8;0,68;1,11,59,69;7,70,71;2,19,67;0,71;1,72;7,73,71;2,74,75;3,76,54;3,77,59;3,78,59;9,79;0,80;3,20,30;8,81,82,47;7,83,84;10,85;10,86;10,87;7,88,89;7,90,91;7,70,92;2,19,93;7,94,95;2,96,97;3,98,9;12,99;3,100,22;12,101,15;8,45,102,47;13,103;0,104,1;7,105,106;14;3,88,30;2,107,108;2,109,110;10,111;7,112,113;9,114;7,83,115;2,116,117;12,118,15;0,119;7,120,121;0,115;7,122,123;15,124,15,125;2,5,126;7,127,128;2,5,129;4,130;7,70,131;3,132,59;3,133,30;8,134;15,135,96,125;8,136,137;15,138,139;15,140,141,142;15,140,143,144;15,140,139,145;3,146,147;3,148,147;3,149,147;10,150;7,88,151;10,152;10,153;14,154;12,155,15;2,5,156;7,157,158;7,159,160;8,45,161,47;12,162,15,163;2,109,164;2,5,165;0,166;7,112,167;10,168;15,169,170;15,171,172,163;0,173;3,174,30;3,175,59;3,176,59;10,177;9,178;7,90,179;3,180,181;3,182,147;2,5,183;10,184;10,185;8,45,186,47;2,5,187;8,188,189,47;8,41,190,47;16;3,191,30";
     const arglists = $scriptletArglists$.split(';');
     const args = $scriptletArgs$;
     for ( const ref of todo ) {

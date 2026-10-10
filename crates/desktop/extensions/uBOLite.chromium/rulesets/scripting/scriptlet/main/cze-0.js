@@ -78,28 +78,7 @@ function abortCurrentScriptFn(
     const logPrefix = safe.makeLogPrefix('abort-current-script', target, needle, context);
     const reNeedle = safe.patternToRegex(needle);
     const reContext = safe.patternToRegex(context);
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
     const thisScript = document.currentScript;
-    const chain = safe.String_split.call(target, '.');
-    let owner = window;
-    let prop;
-    for (;;) {
-        prop = chain.shift();
-        if ( chain.length === 0 ) { break; }
-        if ( prop in owner === false ) { break; }
-        owner = owner[prop];
-        if ( owner instanceof Object === false ) { return; }
-    }
-    let value;
-    let desc = Object.getOwnPropertyDescriptor(owner, prop);
-    if (
-        desc instanceof Object === false ||
-        desc.get instanceof Function === false
-    ) {
-        value = owner[prop];
-        desc = undefined;
-    }
-    const debug = shouldDebug(extraArgs);
     const exceptionToken = getExceptionTokenFn();
     const scriptTexts = new WeakMap();
     const textContentGetter = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent').get;
@@ -107,8 +86,7 @@ function abortCurrentScriptFn(
         let text = textContentGetter.call(elem);
         if ( text.trim() !== '' ) { return text; }
         if ( scriptTexts.has(elem) ) { return scriptTexts.get(elem); }
-        const [ , mime, content ] =
-            /^data:([^,]*),(.+)$/.exec(elem.src.trim()) ||
+        const [ , mime, content ] = /^data:([^,]*),(.+)$/.exec(elem.src.trim()) ||
             [ '', '', '' ];
         try {
             switch ( true ) {
@@ -128,50 +106,28 @@ function abortCurrentScriptFn(
         const e = document.currentScript;
         if ( e instanceof HTMLScriptElement === false ) { return; }
         if ( e === thisScript ) { return; }
-        if ( context !== '' && reContext.test(e.src) === false ) {
-            // eslint-disable-next-line no-debugger
-            if ( debug === 'nomatch' || debug === 'all' ) { debugger; }
-            return;
-        }
+        if ( context !== '' && reContext.test(e.src) === false ) { return; }
         if ( safe.logLevel > 1 && context !== '' ) {
             safe.uboLog(logPrefix, `Matched src\n${e.src}`);
         }
         const scriptText = getScriptText(e);
-        if ( reNeedle.test(scriptText) === false ) {
-            // eslint-disable-next-line no-debugger
-            if ( debug === 'nomatch' || debug === 'all' ) { debugger; }
-            return;
-        }
+        if ( reNeedle.test(scriptText) === false ) { return; }
         if ( safe.logLevel > 1 ) {
             safe.uboLog(logPrefix, `Matched text\n${scriptText}`);
         }
-        // eslint-disable-next-line no-debugger
-        if ( debug === 'match' || debug === 'all' ) { debugger; }
         safe.uboLog(logPrefix, 'Aborted');
         throw new ReferenceError(exceptionToken);
     };
-    // eslint-disable-next-line no-debugger
-    if ( debug === 'install' ) { debugger; }
-    try {
-        Object.defineProperty(owner, prop, {
-            get: function() {
-                validate();
-                return desc instanceof Object
-                    ? desc.get.call(owner)
-                    : value;
-            },
-            set: function(a) {
-                validate();
-                if ( desc instanceof Object ) {
-                    desc.set.call(owner, a);
-                } else {
-                    value = a;
-                }
-            }
-        });
-    } catch(ex) {
-        safe.uboErr(logPrefix, `Error: ${ex}`);
-    }
+    let currentValue = trapPropertyFn(target, {
+        get: function() {
+            validate();
+            return currentValue;
+        },
+        set: function(a) {
+            validate();
+            currentValue = a;
+        }
+    }, { canThrow: true });
 }
 
 function abortOnPropertyRead(
@@ -322,12 +278,13 @@ function getRandomTokenFn() {
 
 function jsonPruneXhrResponse(
     rawPrunePaths = '',
-    rawNeedlePaths = ''
+    rawNeedlePaths = '',
+    ...varargs
 ) {
     const safe = safeSelf();
     const logPrefix = safe.makeLogPrefix('json-prune-xhr-response', rawPrunePaths, rawNeedlePaths);
     const xhrInstances = new WeakMap();
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 2);
+    const extraArgs = safe.parseVarargs(varargs);
     const propNeedles = parsePropertiesToMatchFn(extraArgs.propsToMatch, 'url');
     const stackNeedle = safe.initPattern(extraArgs.stackToMatch || '', { canNegate: true });
     self.XMLHttpRequest = class extends self.XMLHttpRequest {
@@ -611,10 +568,11 @@ function parsePropertiesToMatchFn(propsToMatch, implicit = '') {
 
 function preventAddEventListener(
     type = '',
-    pattern = ''
+    pattern = '',
+    ...varargs
 ) {
     const safe = safeSelf();
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 2);
+    const extraArgs = safe.parseVarargs(varargs);
     const logPrefix = safe.makeLogPrefix('prevent-addEventListener', type, pattern);
     const reType = safe.patternToRegex(type, undefined, true);
     const rePattern = safe.patternToRegex(pattern);
@@ -646,8 +604,8 @@ function preventAddEventListener(
         return parts.join('');
     };
     const shouldPrevent = (thisArg, type, handler) => {
-        const matchesType = safe.RegExp_test.call(reType, type);
-        const matchesHandler = safe.RegExp_test.call(rePattern, handler);
+        const matchesType = safe.RegExp_test(reType, type);
+        const matchesHandler = safe.RegExp_test(rePattern, handler);
         const matchesEither = matchesType || matchesHandler;
         const matchesBoth = matchesType && matchesHandler;
         if ( safe.logLevel > 1 && matchesEither ) {
@@ -681,24 +639,89 @@ function preventAddEventListener(
         }
         return context.reflect();
     };
+    const protect = owner => {
+        const { addEventListener } = owner;
+        Object.defineProperty(owner, 'addEventListener', {
+            set() { },
+            get() { return addEventListener; }
+        });
+    };
     runAt(( ) => {
         proxyApplyFn('EventTarget.prototype.addEventListener', proxyFn);
-        if ( extraArgs.protect ) {
-            const { addEventListener } = EventTarget.prototype;
-            Object.defineProperty(EventTarget.prototype, 'addEventListener', {
-                set() { },
-                get() { return addEventListener; }
-            });
+        if ( extraArgs.protect ) { protect(EventTarget.prototype); }
+        if ( Object.hasOwn(document, 'addEventListener') ) {
+            proxyApplyFn('document.addEventListener', proxyFn);
+            if ( extraArgs.protect ) { protect(document); }
         }
-        proxyApplyFn('document.addEventListener', proxyFn);
-        if ( extraArgs.protect ) {
-            const { addEventListener } = document;
-            Object.defineProperty(document, 'addEventListener', {
-                set() { },
-                get() { return addEventListener; }
-            });
+        if ( Object.hasOwn(window, 'addEventListener') ) {
+            proxyApplyFn('window.addEventListener', proxyFn);
+            if ( extraArgs.protect ) { protect(window); }
         }
     }, extraArgs.runAt);
+}
+
+function preventBab() {
+    const safe = safeSelf();
+    const logPrefix = safe.makeLogPrefix('prevent-bab');
+    const signatures = [
+        [ 'blockadblock' ],
+        [ 'babasbm' ],
+        [ /getItem\('babn'\)/ ],
+        [
+            'getElementById',
+            'String.fromCharCode',
+            'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
+            'charAt',
+            'DOMContentLoaded',
+            'AdBlock',
+            'addEventListener',
+            'doScroll',
+            'fromCharCode',
+            '<<2|r>>4',
+            'sessionStorage',
+            'clientWidth',
+            'localStorage',
+            'Math',
+            'random',
+        ],
+    ];
+    const check = function(s) {
+        if ( typeof s !== 'string' ) { return false; }
+        for ( const tokens of signatures ) {
+            let match = 0;
+            for ( const token of tokens ) {
+                const hit = token instanceof RegExp
+                    ? token.test(s)
+                    : s.includes(token);
+                if ( hit ) { match += 1; }
+            }
+            if ( (match / tokens.length) >= 0.8 ) { return true; }
+        }
+        return false;
+    };
+    proxyApplyFn('eval', function(context) {
+        const a = context.callArgs[0];
+        if ( !check(a) ) {
+            return context.reflect();
+        }
+        safe.uboLog(logPrefix, 'Prevented');
+        if ( document.body ) {
+            document.body.style.removeProperty('visibility');
+        }
+        const el = document.getElementById('babasbmsgx');
+        if ( el ) {
+            el.parentNode.removeChild(el);
+        }
+    });
+    proxyApplyFn('setTimeout', function(context) {
+        const { callArgs } = context;
+        const a = callArgs[0];
+        if ( typeof a === 'string'  && /\.bab_elementid.$/.test(a) ) {
+            callArgs[0] = ( ) => { };
+            safe.uboLog(logPrefix, 'Prevented');
+        }
+        return context.reflect();
+    });
 }
 
 function preventSetInterval(
@@ -757,7 +780,8 @@ function preventSetTimeout(
 
 function proxyApplyFn(
     target = '',
-    handler = ''
+    handler = '',
+    options = {}
 ) {
     let context = globalThis;
     let prop = target;
@@ -818,20 +842,22 @@ function proxyApplyFn(
         };
         proxyApplyFn.isCtor = new Map();
         proxyApplyFn.proxies = new WeakMap();
-        proxyApplyFn.nativeToString = Function.prototype.toString;
-        const proxiedToString = new Proxy(Function.prototype.toString, {
-            apply(target, thisArg) {
-                let proxied = thisArg;
-                for(;;) {
-                    const fn = proxyApplyFn.proxies.get(proxied);
-                    if ( fn === undefined ) { break; }
-                    proxied = fn;
+        if ( (options.skipToString || proxyApplyFn.skipToString) !== true ) {
+            proxyApplyFn.nativeToString = Function.prototype.toString;
+            const proxiedToString = new Proxy(Function.prototype.toString, {
+                apply(target, thisArg) {
+                    let proxied = thisArg;
+                    for(;;) {
+                        const fn = proxyApplyFn.proxies.get(proxied);
+                        if ( fn === undefined ) { break; }
+                        proxied = fn;
+                    }
+                    return proxyApplyFn.nativeToString.call(proxied);
                 }
-                return proxyApplyFn.nativeToString.call(proxied);
-            }
-        });
-        proxyApplyFn.proxies.set(proxiedToString, proxyApplyFn.nativeToString);
-        Function.prototype.toString = proxiedToString;
+            });
+            proxyApplyFn.proxies.set(proxiedToString, proxyApplyFn.nativeToString);
+            Function.prototype.toString = proxiedToString;
+        }
     }
     if ( proxyApplyFn.isCtor.has(target) === false ) {
         proxyApplyFn.isCtor.set(target, fn.prototype?.constructor === fn);
@@ -854,71 +880,95 @@ function proxyApplyFn(
 function removeAttr(
     rawToken = '',
     rawSelector = '',
-    behavior = ''
+    behavior = '',
+    ...varargs
 ) {
     if ( typeof rawToken !== 'string' ) { return; }
     if ( rawToken === '' ) { return; }
     const safe = safeSelf();
-    const logPrefix = safe.makeLogPrefix('remove-attr', rawToken, rawSelector, behavior);
+    const logPrefix = safe.makeLogPrefix('remove-attr',
+        rawToken, rawSelector, behavior, ...varargs
+    );
     const tokens = safe.String_split.call(rawToken, /\s*\|\s*/);
-    const selector = tokens
-        .map(a => `${rawSelector}[${CSS.escape(a)}]`)
-        .join(',');
+    const selector = tokens.map(a => {
+        const b = CSS.escape(a);
+        return rawSelector.includes(`[${b}]`) ? rawSelector : `${rawSelector}[${b}]`;
+    }).join(',');
+    const lazily = /\basap\b/.test(behavior) === false;
+    const options = safe.parseVarargs(varargs);
     if ( safe.logLevel > 1 ) {
         safe.uboLog(logPrefix, `Target selector:\n\t${selector}`);
     }
-    const asap = /\basap\b/.test(behavior);
-    let timerId;
-    const rmattrAsync = ( ) => {
-        if ( timerId !== undefined ) { return; }
-        timerId = onIdleFn(( ) => {
-            timerId = undefined;
+    const rmattrFromNode = node => {
+        for ( const attr of tokens ) {
+            if ( node.hasAttribute(attr) === false ) { continue; }
+            node.removeAttribute(attr);
+            safe.uboLog(logPrefix, `Removed attribute '${attr}'`);
+        }
+    };
+    const rmattr = nodes => {
+        for ( const node of nodes ?? document.querySelectorAll(selector) ) {
+            rmattrFromNode(node);
+        }
+    };
+    const rmAttrLazily = ( ) => {
+        if ( rmAttrLazily.timer !== undefined ) { return; }
+        rmAttrLazily.timer = onIdleFn(( ) => {
+            rmAttrLazily.timer = undefined;
             rmattr();
         }, { timeout: 17 });
     };
-    const rmattr = ( ) => {
-        if ( timerId !== undefined ) {
-            offIdleFn(timerId);
-            timerId = undefined;
-        }
-        try {
-            const nodes = document.querySelectorAll(selector);
-            for ( const node of nodes ) {
-                for ( const attr of tokens ) {
-                    if ( node.hasAttribute(attr) === false ) { continue; }
-                    node.removeAttribute(attr);
-                    safe.uboLog(logPrefix, `Removed attribute '${attr}'`);
+    const mutationHandler = mutations => {
+        for ( const { addedNodes, removedNodes } of mutations ) {
+            for ( const node of addedNodes ) {
+                if ( node.nodeType !== 1 ) { continue; }
+                if ( lazily ) { return rmAttrLazily(); }
+                if ( node.matches(selector) ) {
+                    rmattrFromNode(node);
+                }
+                if ( node.childElementCount ) {
+                    rmattr(node.querySelectorAll(selector));
                 }
             }
-        } catch {
+            if ( lazily ) { return; }
+            for ( const node of removedNodes ) {
+                if ( node.nodeType !== 1 ) { continue; }
+                if ( node.matches(selector) ) {
+                    rmattrFromNode(node);
+                }
+            }
         }
     };
-    const mutationHandler = mutations => {
-        if ( timerId !== undefined ) { return; }
-        let skip = true;
-        for ( let i = 0; i < mutations.length && skip; i++ ) {
-            const { type, addedNodes, removedNodes } = mutations[i];
-            if ( type === 'attributes' ) { skip = false; }
-            for ( let j = 0; j < addedNodes.length && skip; j++ ) {
-                if ( addedNodes[j].nodeType === 1 ) { skip = false; break; }
-            }
-            for ( let j = 0; j < removedNodes.length && skip; j++ ) {
-                if ( removedNodes[j].nodeType === 1 ) { skip = false; break; }
-            }
+    const stop = ( ) => {
+        if ( start.observer ) {
+            start.observer.disconnect();
+            start.observer = undefined;
         }
-        if ( skip ) { return; }
-        asap ? rmattr() : rmattrAsync();
+        if ( rmAttrLazily.timer ) {
+            offIdleFn(rmAttrLazily.timer);
+            rmAttrLazily.timer = undefined;
+        }
+        if ( safe.logLevel > 1 ) {
+            safe.uboLog(logPrefix, 'Quitting');
+        }
     };
     const start = ( ) => {
         rmattr();
-        if ( /\bstay\b/.test(behavior) === false ) { return; }
-        const observer = new MutationObserver(mutationHandler);
-        observer.observe(document, {
+        if ( /\bstay\b/.test(behavior) === false ) {
+            if ( options.quitAfter === undefined ) { return; }
+        }
+        start.observer = new MutationObserver(mutationHandler);
+        start.observer.observe(document, {
             attributes: true,
             attributeFilter: tokens,
             childList: true,
             subtree: true,
         });
+        if ( options.quitAfter ) {
+            runAt(( ) => {
+                self.setTimeout(stop, options.quitAfter * 1000);
+            }, 'load');
+        }
     };
     runAt(( ) => { start(); }, safe.String_split.call(behavior, /\s+/));
 }
@@ -965,15 +1015,14 @@ function runAtHtmlElementFn(fn) {
 }
 
 function safeSelf() {
-    if ( scriptletGlobals.safeSelf ) {
-        return scriptletGlobals.safeSelf;
+    if ( safeSelf.safe ) {
+        return safeSelf.safe;
     }
     const self = globalThis;
     const safe = {
         'Array_from': Array.from,
         'Error': self.Error,
-        'Function_toStringFn': self.Function.prototype.toString,
-        'Function_toString': thisArg => safe.Function_toStringFn.call(thisArg),
+        'Function_toString': Function.prototype.call.bind(self.Function.prototype.toString),
         'Math_floor': Math.floor,
         'Math_max': Math.max,
         'Math_min': Math.min,
@@ -986,7 +1035,7 @@ function safeSelf() {
         'Object_hasOwn': Object.hasOwn.bind(Object),
         'Object_toString': Object.prototype.toString,
         'RegExp': self.RegExp,
-        'RegExp_test': self.RegExp.prototype.test,
+        'RegExp_test': Function.prototype.call.bind(self.RegExp.prototype.test),
         'RegExp_exec': self.RegExp.prototype.exec,
         'Request_clone': self.Request.prototype.clone,
         'String': self.String,
@@ -997,10 +1046,8 @@ function safeSelf() {
         'removeEventListener': self.EventTarget.prototype.removeEventListener,
         'fetch': self.fetch,
         'JSON': self.JSON,
-        'JSON_parseFn': self.JSON.parse,
-        'JSON_stringifyFn': self.JSON.stringify,
-        'JSON_parse': (...args) => safe.JSON_parseFn.call(safe.JSON, ...args),
-        'JSON_stringify': (...args) => safe.JSON_stringifyFn.call(safe.JSON, ...args),
+        'JSON_parse': Function.prototype.call.bind(self.JSON.parse, self.JSON),
+        'JSON_stringify': Function.prototype.call.bind(self.JSON.stringify, self.JSON),
         'log': console.log.bind(console),
         // Properties
         logLevel: 0,
@@ -1053,7 +1100,7 @@ function safeSelf() {
         testPattern(details, haystack) {
             if ( details.matchAll ) { return true; }
             if ( details.re ) {
-                return this.RegExp_test.call(details.re, haystack) === details.expect;
+                return this.RegExp_test(details.re, haystack) === details.expect;
             }
             return haystack.includes(details.pattern) === details.expect;
         },
@@ -1071,21 +1118,20 @@ function safeSelf() {
             }
             return /^/;
         },
-        getExtraArgs(args, offset = 0) {
-            const entries = args.slice(offset).reduce((out, v, i, a) => {
-                if ( (i & 1) === 0 ) {
-                    const rawValue = a[i+1];
-                    const value = /^\d+$/.test(rawValue)
-                        ? parseInt(rawValue, 10)
-                        : rawValue;
-                    out.push([ a[i], value ]);
-                }
+        parseVarargs(varargs) {
+            const entries = varargs.reduce((out, v, i, a) => {
+                if ( i & 1 ) { return out; }
+                const rawValue = a[i+1];
+                const value = /^\d+$/.test(rawValue)
+                    ? parseInt(rawValue, 10)
+                    : rawValue;
+                out.push([ a[i], value ]);
                 return out;
             }, []);
             return this.Object_fromEntries(entries);
         },
     };
-    scriptletGlobals.safeSelf = safe;
+    safeSelf.safe = safe;
     if ( scriptletGlobals.bcSecret === undefined ) { return safe; }
     // This is executed only when the logger is opened
     safe.logLevel = scriptletGlobals.logLevel || 1;
@@ -1152,12 +1198,13 @@ function setConstant(
 function setConstantFn(
     trusted = false,
     chain = '',
-    rawValue = ''
+    rawValue = '',
+    ...varargs
 ) {
     if ( chain === '' ) { return; }
     const safe = safeSelf();
     const logPrefix = safe.makeLogPrefix('set-constant', chain, rawValue);
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
+    const extraArgs = safe.parseVarargs(varargs);
     function setConstant(chain, rawValue) {
         const trappedProp = (( ) => {
             const pos = chain.lastIndexOf('.');
@@ -1299,9 +1346,77 @@ function setConstantFn(
     }, extraArgs.runAt);
 }
 
-function shouldDebug(details) {
-    if ( details instanceof Object === false ) { return false; }
-    return scriptletGlobals.canDebug && details.debug;
+function trapPropertyFn(propChain, handler, options = {}) {
+    if ( propChain === '' ) { return; }
+    let owner = self;
+    let prop = propChain;
+    for (;;) {
+        const pos = prop.indexOf('.');
+        if ( pos === -1 ) { break; }
+        owner = owner[prop.slice(0, pos)];
+        if ( owner instanceof Object === false ) { return; }
+        prop = prop.slice(pos + 1);
+    }
+    const safe = safeSelf();
+    if ( trapPropertyFn.db === undefined ) {
+        trapPropertyFn.db = new WeakMap();
+        trapPropertyFn.entryFromContext = (owner, prop) => {
+            const handlers = trapPropertyFn.db.get(owner);
+            return handlers?.get(prop);
+        };
+        trapPropertyFn.getter = (owner, prop) => {
+            const entry = trapPropertyFn.entryFromContext(owner, prop);
+            if ( entry === undefined ) { return; }
+            let r = entry.value;
+            for ( const desc of entry.stack ) {
+                try { r = desc.get(); } catch (e) {
+                    if ( entry.canThrow ) { throw e; }
+                }
+            }
+            return r;
+        };
+        trapPropertyFn.setter = (owner, prop, value) => {
+            const entry = trapPropertyFn.entryFromContext(owner, prop);
+            if ( entry === undefined ) { return; }
+            entry.value = value;
+            for ( const desc of entry.stack ) {
+                try { desc.set(value); } catch (e) {
+                    if ( entry.canThrow ) { throw e; }
+                }
+            }
+        };
+    }
+    const { db } = trapPropertyFn;
+    const handlers = db.get(owner) || new Map();
+    if ( handlers.size === 0 ) {
+        db.set(owner, handlers);
+    }
+    const entry = handlers.get(prop) || {
+        value: owner[prop],
+        stack: [],
+    };
+    entry.stack.push(handler);
+    if ( entry.stack.length > 1 ) { return entry.value; }
+    Object.assign(entry, options);
+    handlers.set(prop, entry);
+    const desc = safe.Object_getOwnPropertyDescriptor(owner, prop);
+    if ( desc instanceof safe.Object ) {
+        if ( desc.get || desc.set ) {
+            entry.stack.push(desc);
+        }
+    }
+    try {
+        safe.Object_defineProperty(owner, prop, {
+            get() {
+                return trapPropertyFn.getter(owner, prop);
+            },
+            set(value) {
+                trapPropertyFn.setter(owner, prop, value);
+            }
+        });
+    } catch {
+    }
+    return entry.value;
 }
 
 function validateConstantFn(trusted, raw, extraArgs = {}) {
@@ -1356,23 +1471,60 @@ function validateConstantFn(trusted, raw, extraArgs = {}) {
     return value;
 }
 
+function zeta_8echnktd() { // nofab.js
+(function() {
+    'use strict';
+    const noopfn = function() {
+    };
+    const Fab = function() {};
+    Fab.prototype.check = noopfn;
+    Fab.prototype.clearEvent = noopfn;
+    Fab.prototype.emitEvent = noopfn;
+    Fab.prototype.on = function(a, b) {
+        if ( !a ) { b(); }
+        return this;
+    };
+    Fab.prototype.onDetected = function() {
+        return this;
+    };
+    Fab.prototype.onNotDetected = function(a) {
+        a();
+        return this;
+    };
+    Fab.prototype.setOption = noopfn;
+    Fab.prototype.options = {
+        set: noopfn,
+        get: noopfn,
+    };
+    const fab = new Fab();
+    const getSetFab = {
+        get: function() { return Fab; },
+        set: function() {}
+    };
+    const getsetfab = {
+        get: function() { return fab; },
+        set: function() {}
+    };
+    if ( window.hasOwnProperty('FuckAdBlock') ) { window.FuckAdBlock = Fab; }
+    else { Object.defineProperty(window, 'FuckAdBlock', getSetFab); }
+    if ( window.hasOwnProperty('BlockAdBlock') ) { window.BlockAdBlock = Fab; }
+    else { Object.defineProperty(window, 'BlockAdBlock', getSetFab); }
+    if ( window.hasOwnProperty('SniffAdBlock') ) { window.SniffAdBlock = Fab; }
+    else { Object.defineProperty(window, 'SniffAdBlock', getSetFab); }
+    if ( window.hasOwnProperty('fuckAdBlock') ) { window.fuckAdBlock = fab; }
+    else { Object.defineProperty(window, 'fuckAdBlock', getsetfab); }
+    if ( window.hasOwnProperty('blockAdBlock') ) { window.blockAdBlock = fab; }
+    else { Object.defineProperty(window, 'blockAdBlock', getsetfab); }
+    if ( window.hasOwnProperty('sniffAdBlock') ) { window.sniffAdBlock = fab; }
+    else { Object.defineProperty(window, 'sniffAdBlock', getsetfab); }
+})();
+}
+
 /******************************************************************************/
 
 const scriptletGlobals = {}; // eslint-disable-line
 
-const $scriptletFunctions$ = /* 11 */
-[abortOnPropertyRead,jsonPruneXhrResponse,abortCurrentScript,setConstant,preventAddEventListener,preventSetTimeout,adjustSetTimeout,adjustSetInterval,abortOnPropertyWrite,preventSetInterval,removeAttr];
-
-const $scriptletArgs$ = /* 60 */ ["App.branding","ad_blocks.[-].id_program","","propsToMatch","/api/advertisement/getAllStreamAdBlocks/","$","Ads","adsAllowed","fancyBanner","checkAdsBlocked","noopFunc","HTMLIFrameElement.prototype.contentWindow","canRunAds","true","first","false","click","location","img_ab_s","3000","adBlocks.[-].id","/schedules/ads","t()","*","settings.ads","Rmp.params.genderSelectionUrl","undefined","App.pos.init","App.ft.detected","ended","PartnerRedirectAction","sssp.config","sssp","{}","Gallery.prototype.setAdsForGallery","ntmt_retest_btn_countdown_do","1000","vendor-load","Fisher","checkRods","style","body","detectAdBlocker","load","document.cookie","xmxalr","foolish_script","useSeznamAds","codeAddress","window.addEventListener",":visible","atob","hasUserActiveSubscription","message","fishing","_0x","beforeunload","()","document.createElement","adbDetect"];
-
-const $scriptletArglists$ = /* 42 */ "0,0;1,1,2,3,4;2,5,6;0,7;2,5,8;3,9,10;0,11;3,12,13;3,14,15;4,16,17;5,18,19;1,20,2,3,21;6,22,23;3,24,15;3,25,26;3,27,10;3,28,15;4,29;2,5,30;0,6;3,31,10;3,32,33;3,34,10;7,35,36;6,37,19;8,38;9,39;10,40,41;0,42;4,43,44;3,45,2;2,46;3,47,15;2,48;2,49,50;0,51;3,52,13;4,53,54;4,53,55;4,56,57;2,58,59;2,11";
-
-const $scriptletArglistRefs$ = /* 117 */ "39,40;0;39,40;39,40;2;2;39,40;5;39,40;22;39,40;34,39,40;39,40;39,40;39,40;4;39,40;15,16;7;39,40,41;10;1;11;39,40;24;27,37,38,39,40;39,40;39,40;15,16;39,40;8;39,40;39,40;25,37;37;1;1;3;39,40;39,40;39,40;39,40;12;9;37,39,40;39,40;32;39,40;1;1;39,40;18;23;23;1;26;29,30,31;1;1;12;39,40;35,36;39,40;39,40;1;9;1;1;13,14;15,16;39,40;1;1;33;39,40;39,40;39,40;1;1;1;1;1;1;1;1;1;39,40;1;39,40;1;1;1;1;1;37;28;1;1;6;1;1;39,40;1;1;1;1;1;1;17;20,21;1;1;19;13;1;1;1";
-
-const $scriptletHostnames$ = /* 117 */ ["g.cz","cc.cz","e15.cz","auto.cz","csfd.cz","csfd.sk","dama.cz","ewrc.cz","kupi.cz","root.cz","zeny.cz","zive.cz","arome.cz","blesk.cz","cnews.cz","drbna.cz","extra.cz","fzone.cz","hokej.cz","idnes.cz","kurzy.cz","libli.tv","magio.tv","onetv.cz","sauto.cz","super.cz","abicko.cz","expres.cz","fdrive.cz","fights.cz","impuls.cz","iprima.cz","reflex.cz","seznam.cz","stream.cz","tv.htn.cz","tv.nuo.sk","ctrlv.link","emimino.cz","kinobox.cz","lidovky.cz","maminka.cz","markiza.sk","nerdfix.cz","novinky.cz","tiscali.cz","tn.nova.cz","aktualne.cz","itv.satt.cz","jon.4net.tv","labuznik.cz","onlajny.com","rychlost.cz","rychlost.sk","sprintel.tv","sreality.cz","titulky.com","tv.e-max.sk","tv.tv2go.eu","tvnoviny.sk","vitalion.cz","zdopravy.cz","ahaonline.cz","autorevue.cz","chip.4net.tv","indian-tv.cz","live.4net.tv","live.rete.cz","media.joj.sk","mobilenet.cz","osobnosti.cz","tv.itcity.sk","tv.sauron.cz","warforum.xyz","modnipeklo.cz","mojezdravi.cz","nasepenize.cz","pegas.4net.tv","prime.4net.tv","tv.giganet.sk","tv.maxicom.cz","tv.selfnet.cz","winet.4net.tv","zona.telly.cz","live.chiptv.cz","pamico.4net.tv","spisovatele.cz","tv.rainside.sk","karaoketexty.cz","live.kabelko.sk","live.martico.sk","live.metrotv.sk","martico.4net.tv","online.pecka.tv","seznamzpravy.cz","svetandroida.cz","tv.tes-media.sk","doubrava.4net.tv","games.tiscali.cz","live-new.4net.tv","live.rapidnet.tv","mojecelebrity.cz","profinet.4net.tv","rapidnet.4net.tv","live-rete.4net.tv","live.swan.4net.tv","prestonet.4net.tv","live.artos.4net.tv","navratdoreality.cz","podcasty.seznam.cz","tv.nejpripojeni.cz","muj.internethned.cz","parlamentnilisty.cz","media.cms.markiza.sk","sleduj.interaktivni.tv","tvadmin.pamico-czech.cz","gemnet.4net.tvhtn.4net.tv"];
-
-const $scriptletFromRegexes$ = /* 0 */ [];
-
+const $hasHostnames$ = true;
 const $hasEntities$ = false;
 const $hasAncestors$ = false;
 const $hasRegexes$ = false;
@@ -1420,8 +1572,10 @@ const entries = (( ) => {
 })();
 if ( entries.length === 0 ) { return; }
 
-const todoIndices = new Set();
-if ( $scriptletHostnames$.length ) {
+const todo = new Set();
+
+if ( $hasHostnames$ ) {
+    const $scriptletHostnames$ = /* 119 */ ["g.cz","cc.cz","e15.cz","auto.cz","csfd.cz","csfd.sk","dama.cz","ewrc.cz","kupi.cz","lupa.cz","root.cz","zeny.cz","zive.cz","arome.cz","blesk.cz","cnews.cz","drbna.cz","extra.cz","fzone.cz","hokej.cz","idnes.cz","kurzy.cz","libli.tv","magio.tv","onetv.cz","sauto.cz","super.cz","abicko.cz","expres.cz","fdrive.cz","fights.cz","impuls.cz","iprima.cz","reflex.cz","seznam.cz","stream.cz","tv.htn.cz","tv.nuo.sk","ctrlv.link","emimino.cz","kinobox.cz","lidovky.cz","maminka.cz","markiza.sk","nerdfix.cz","novinky.cz","tiscali.cz","tn.nova.cz","aktualne.cz","itv.satt.cz","jon.4net.tv","labuznik.cz","onlajny.com","rychlost.cz","rychlost.sk","sprintel.tv","sreality.cz","titulky.com","tv.e-max.sk","tv.tv2go.eu","tvnoviny.sk","vitalion.cz","youradio.cz","zdopravy.cz","ahaonline.cz","autorevue.cz","chip.4net.tv","indian-tv.cz","live.4net.tv","live.rete.cz","media.joj.sk","mobilenet.cz","osobnosti.cz","tv.itcity.sk","tv.sauron.cz","warforum.xyz","modnipeklo.cz","mojezdravi.cz","nasepenize.cz","pegas.4net.tv","prime.4net.tv","tv.giganet.sk","tv.maxicom.cz","tv.selfnet.cz","winet.4net.tv","zona.telly.cz","live.chiptv.cz","pamico.4net.tv","spisovatele.cz","tv.rainside.sk","karaoketexty.cz","live.kabelko.sk","live.martico.sk","live.metrotv.sk","martico.4net.tv","online.pecka.tv","seznamzpravy.cz","svetandroida.cz","tv.tes-media.sk","doubrava.4net.tv","games.tiscali.cz","live-new.4net.tv","live.rapidnet.tv","mojecelebrity.cz","profinet.4net.tv","rapidnet.4net.tv","live-rete.4net.tv","live.swan.4net.tv","prestonet.4net.tv","live.artos.4net.tv","navratdoreality.cz","podcasty.seznam.cz","tv.nejpripojeni.cz","muj.internethned.cz","parlamentnilisty.cz","media.cms.markiza.sk","sleduj.interaktivni.tv","tvadmin.pamico-czech.cz","gemnet.4net.tvhtn.4net.tv"];
     const collectArglistRefIndices = (out, hn, r) => {
         let l = 0, i = 0, d = 0;
         let candidate = '';
@@ -1456,6 +1610,7 @@ if ( $scriptletHostnames$.length ) {
             }
         }
     };
+    const todoIndices = new Set();
     indicesFromHostname(todoIndices, entries[0]);
     if ( $hasAncestors$ ) {
         for ( const entry of entries ) {
@@ -1463,20 +1618,20 @@ if ( $scriptletHostnames$.length ) {
             indicesFromHostname(todoIndices, entry, '>>');
         }
     }
-    $scriptletHostnames$.length = 0;
-}
-
-// Collect arglist references
-const todo = new Set();
-if ( todoIndices.size !== 0 ) {
-    const arglistRefs = $scriptletArglistRefs$.split(';');
-    for ( const i of todoIndices ) {
-        for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
-            todo.add(ref);
+    // Collect arglist references
+    if ( todoIndices.size ) {
+        const $scriptletArglistRefs$ = /* 119 */ "42,43;1;42,43;42,43;3;3;42,43;6;42,43;12;25;42,43;37,42,43;42,43;42,43;42,43;5;42,43;17,18;8;42,43,44;11;2;13;42,43;27;30,40,41,42,43;42,43;42,43;17,18;42,43;9;42,43;42,43;28,40;40;2;2;4;42,43;42,43;42,43;42,43;14;10;40,42,43;42,43;35;42,43;2;2;42,43;21;26;26;2;29;32,33,34;2;2;14;42,43;12;38,39;42,43;42,43;2;10;2;2;15,16;17,18;42,43;2;2;36;42,43;42,43;42,43;2;2;2;2;2;2;2;2;2;42,43;2;42,43;2;2;2;2;2;40;31;2;2;7;2;2;42,43;2;2;2;2;2;2;19,20;23,24;2;2;22;15;2;2;2";
+        const arglistRefs = $scriptletArglistRefs$.split(';');
+        for ( const i of todoIndices ) {
+            for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
+                todo.add(ref);
+            }
         }
     }
 }
+
 if ( $hasRegexes$ ) {
+    const $scriptletFromRegexes$ = /* 0 */ [];
     const { hns } = entries[0];
     for ( let i = 0, n = $scriptletFromRegexes$.length; i < n; i += 3 ) {
         const needle = $scriptletFromRegexes$[i+0];
@@ -1493,10 +1648,13 @@ if ( $hasRegexes$ ) {
         }
     }
 }
-if ( todo.size === 0 ) { return; }
 
-// Execute scriplets
-{
+// Execute scriptlets
+if ( todo.size && todo.has(0) === false ) {
+    const $scriptletFunctions$ = /* 13 */
+[abortOnPropertyRead,jsonPruneXhrResponse,abortCurrentScript,setConstant,preventAddEventListener,preventSetTimeout,zeta_8echnktd,adjustSetTimeout,preventBab,adjustSetInterval,abortOnPropertyWrite,preventSetInterval,removeAttr];
+    const $scriptletArgs$ = /* 60 */ ["App.branding","ad_blocks.[-].id_program","","propsToMatch","/api/advertisement/getAllStreamAdBlocks/","$","Ads","adsAllowed","fancyBanner","checkAdsBlocked","noopFunc","HTMLIFrameElement.prototype.contentWindow","canRunAds","true","first","false","click","location","img_ab_s","3000","adBlocks.[-].id","/schedules/ads","t()","*","settings.ads","Rmp.params.genderSelectionUrl","undefined","App.pos.init","App.ft.detected","ended","PartnerRedirectAction","sssp.config","sssp","{}","Gallery.prototype.setAdsForGallery","ntmt_retest_btn_countdown_do","1000","vendor-load","Fisher","checkRods","style","body","detectAdBlocker","load","document.cookie","xmxalr","foolish_script","useSeznamAds","codeAddress","window.addEventListener",":visible","atob","hasUserActiveSubscription","message","fishing","_0x","beforeunload","()","document.createElement","adbDetect"];
+    const $scriptletArglists$ = /* 45 */ ";0,0;1,1,2,3,4;2,5,6;0,7;2,5,8;3,9,10;0,11;3,12,13;3,14,15;4,16,17;5,18,19;6;1,20,2,3,21;7,22,23;3,24,15;3,25,26;3,27,10;3,28,15;4,29;8;2,5,30;0,6;3,31,10;3,32,33;3,34,10;9,35,36;7,37,19;10,38;11,39;12,40,41;0,42;4,43,44;3,45,2;2,46;3,47,15;2,48;2,49,50;0,51;3,52,13;4,53,54;4,53,55;4,56,57;2,58,59;2,11";
     const arglists = $scriptletArglists$.split(';');
     const args = $scriptletArgs$;
     for ( const ref of todo ) {

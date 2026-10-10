@@ -23,7 +23,9 @@ import * as makeScriptlets from './make-scriptlets.js';
 import * as s14e from '../../lib/s14e-serializer.js';
 import * as sfp from '../static-filtering-parser.js';
 import { minimizeRules, minimizeRuleset, validateRules } from '../ubo-parser.js';
+import { builtinScriptlets } from '../resources/scriptlets.js';
 import { fetchList } from './fetch-list.js';
+import { getTrustedTokens } from '../trusted-tokens.js';
 import { makeCosmeticScripts } from './make-cosmetic-filters.js';
 import { parseNetworkFilter } from '../ubo-parser.js';
 import { safeReplace } from './safe-replace.js';
@@ -197,11 +199,8 @@ export function compileFilters(listid, text, context = {}) {
         }
         if ( parser.isNetworkFilter() ) {
             filterStats.total += 1;
-            const rule = parseNetworkFilter(parser, {
-                resourceTypes,
-            });
-            if ( rule ) {
-                unminimizedRules.push(rule);
+            const result = parseNetworkFilter(parser, { resourceTypes }, unminimizedRules);
+            if ( result ) {
                 filterStats.accepted += 1;
             } else {
                 filterStats.rejected += 1;
@@ -330,7 +329,6 @@ async function updateList(list) {
             'mv3',
             'ublock',
             'ubol',
-            'user_stylesheet',
         ],
     };
     const asset = { urls: [ list.id ] };
@@ -350,6 +348,7 @@ async function updateList(list) {
 
     const compiled = compileFilters(list.id, text, {
         nativeCssHas: true,
+        trustedTokens: getTrustedTokens(),
     });
     if ( Boolean(compiled) === false ) { return; }
 
@@ -452,7 +451,7 @@ async function compileImportedList() {
         promises.push(getCompiledListData(list));
     }
     const compiledData = await Promise.all(promises);
-    const toMerge = compiledData.filter(a => Boolean(a));
+    const toMerge = compiledData.filter(a => a);
     if ( toMerge.length === 0 ) { return; }
     const merged = toMerge[0];
     while ( toMerge.length > 1 ) {
@@ -478,6 +477,8 @@ async function compileSandboxFilters() {
 /******************************************************************************/
 
 (async ( ) => {
+    makeScriptlets.init(builtinScriptlets);
+
     const [
         sandboxResult,
         importedResult,

@@ -78,28 +78,7 @@ function abortCurrentScriptFn(
     const logPrefix = safe.makeLogPrefix('abort-current-script', target, needle, context);
     const reNeedle = safe.patternToRegex(needle);
     const reContext = safe.patternToRegex(context);
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
     const thisScript = document.currentScript;
-    const chain = safe.String_split.call(target, '.');
-    let owner = window;
-    let prop;
-    for (;;) {
-        prop = chain.shift();
-        if ( chain.length === 0 ) { break; }
-        if ( prop in owner === false ) { break; }
-        owner = owner[prop];
-        if ( owner instanceof Object === false ) { return; }
-    }
-    let value;
-    let desc = Object.getOwnPropertyDescriptor(owner, prop);
-    if (
-        desc instanceof Object === false ||
-        desc.get instanceof Function === false
-    ) {
-        value = owner[prop];
-        desc = undefined;
-    }
-    const debug = shouldDebug(extraArgs);
     const exceptionToken = getExceptionTokenFn();
     const scriptTexts = new WeakMap();
     const textContentGetter = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent').get;
@@ -107,8 +86,7 @@ function abortCurrentScriptFn(
         let text = textContentGetter.call(elem);
         if ( text.trim() !== '' ) { return text; }
         if ( scriptTexts.has(elem) ) { return scriptTexts.get(elem); }
-        const [ , mime, content ] =
-            /^data:([^,]*),(.+)$/.exec(elem.src.trim()) ||
+        const [ , mime, content ] = /^data:([^,]*),(.+)$/.exec(elem.src.trim()) ||
             [ '', '', '' ];
         try {
             switch ( true ) {
@@ -128,50 +106,28 @@ function abortCurrentScriptFn(
         const e = document.currentScript;
         if ( e instanceof HTMLScriptElement === false ) { return; }
         if ( e === thisScript ) { return; }
-        if ( context !== '' && reContext.test(e.src) === false ) {
-            // eslint-disable-next-line no-debugger
-            if ( debug === 'nomatch' || debug === 'all' ) { debugger; }
-            return;
-        }
+        if ( context !== '' && reContext.test(e.src) === false ) { return; }
         if ( safe.logLevel > 1 && context !== '' ) {
             safe.uboLog(logPrefix, `Matched src\n${e.src}`);
         }
         const scriptText = getScriptText(e);
-        if ( reNeedle.test(scriptText) === false ) {
-            // eslint-disable-next-line no-debugger
-            if ( debug === 'nomatch' || debug === 'all' ) { debugger; }
-            return;
-        }
+        if ( reNeedle.test(scriptText) === false ) { return; }
         if ( safe.logLevel > 1 ) {
             safe.uboLog(logPrefix, `Matched text\n${scriptText}`);
         }
-        // eslint-disable-next-line no-debugger
-        if ( debug === 'match' || debug === 'all' ) { debugger; }
         safe.uboLog(logPrefix, 'Aborted');
         throw new ReferenceError(exceptionToken);
     };
-    // eslint-disable-next-line no-debugger
-    if ( debug === 'install' ) { debugger; }
-    try {
-        Object.defineProperty(owner, prop, {
-            get: function() {
-                validate();
-                return desc instanceof Object
-                    ? desc.get.call(owner)
-                    : value;
-            },
-            set: function(a) {
-                validate();
-                if ( desc instanceof Object ) {
-                    desc.set.call(owner, a);
-                } else {
-                    value = a;
-                }
-            }
-        });
-    } catch(ex) {
-        safe.uboErr(logPrefix, `Error: ${ex}`);
-    }
+    let currentValue = trapPropertyFn(target, {
+        get: function() {
+            validate();
+            return currentValue;
+        },
+        set: function(a) {
+            validate();
+            currentValue = a;
+        }
+    }, { canThrow: true });
 }
 
 function abortOnPropertyRead(
@@ -242,6 +198,34 @@ function abortOnPropertyWrite(
         set: function() {
             safe.uboLog(logPrefix, 'Aborted');
             throw new ReferenceError(exceptionToken);
+        }
+    });
+}
+
+function adjustSetTimeout(
+    needleArg = '',
+    delayArg = '',
+    boostArg = ''
+) {
+    if ( typeof needleArg !== 'string' ) { return; }
+    const safe = safeSelf();
+    const reNeedle = safe.patternToRegex(needleArg);
+    let delay = delayArg !== '*' ? parseInt(delayArg, 10) : -1;
+    if ( isNaN(delay) || isFinite(delay) === false ) { delay = 1000; }
+    let boost = parseFloat(boostArg);
+    boost = isNaN(boost) === false && isFinite(boost)
+        ? Math.min(Math.max(boost, 0.001), 50)
+        : 0.05;
+    self.setTimeout = new Proxy(self.setTimeout, {
+        apply: function(target, thisArg, args) {
+            const [ a, b ] = args;
+            if (
+                (delay === -1 || b === delay) &&
+                reNeedle.test(a.toString())
+            ) {
+                args[1] = b * boost;
+            }
+            return target.apply(thisArg, args);
         }
     });
 }
@@ -526,10 +510,11 @@ function parsePropertiesToMatchFn(propsToMatch, implicit = '') {
 
 function preventAddEventListener(
     type = '',
-    pattern = ''
+    pattern = '',
+    ...varargs
 ) {
     const safe = safeSelf();
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 2);
+    const extraArgs = safe.parseVarargs(varargs);
     const logPrefix = safe.makeLogPrefix('prevent-addEventListener', type, pattern);
     const reType = safe.patternToRegex(type, undefined, true);
     const rePattern = safe.patternToRegex(pattern);
@@ -561,8 +546,8 @@ function preventAddEventListener(
         return parts.join('');
     };
     const shouldPrevent = (thisArg, type, handler) => {
-        const matchesType = safe.RegExp_test.call(reType, type);
-        const matchesHandler = safe.RegExp_test.call(rePattern, handler);
+        const matchesType = safe.RegExp_test(reType, type);
+        const matchesHandler = safe.RegExp_test(rePattern, handler);
         const matchesEither = matchesType || matchesHandler;
         const matchesBoth = matchesType && matchesHandler;
         if ( safe.logLevel > 1 && matchesEither ) {
@@ -596,22 +581,23 @@ function preventAddEventListener(
         }
         return context.reflect();
     };
+    const protect = owner => {
+        const { addEventListener } = owner;
+        Object.defineProperty(owner, 'addEventListener', {
+            set() { },
+            get() { return addEventListener; }
+        });
+    };
     runAt(( ) => {
         proxyApplyFn('EventTarget.prototype.addEventListener', proxyFn);
-        if ( extraArgs.protect ) {
-            const { addEventListener } = EventTarget.prototype;
-            Object.defineProperty(EventTarget.prototype, 'addEventListener', {
-                set() { },
-                get() { return addEventListener; }
-            });
+        if ( extraArgs.protect ) { protect(EventTarget.prototype); }
+        if ( Object.hasOwn(document, 'addEventListener') ) {
+            proxyApplyFn('document.addEventListener', proxyFn);
+            if ( extraArgs.protect ) { protect(document); }
         }
-        proxyApplyFn('document.addEventListener', proxyFn);
-        if ( extraArgs.protect ) {
-            const { addEventListener } = document;
-            Object.defineProperty(document, 'addEventListener', {
-                set() { },
-                get() { return addEventListener; }
-            });
+        if ( Object.hasOwn(window, 'addEventListener') ) {
+            proxyApplyFn('window.addEventListener', proxyFn);
+            if ( extraArgs.protect ) { protect(window); }
         }
     }, extraArgs.runAt);
 }
@@ -624,7 +610,8 @@ function preventFetchFn(
     trusted = false,
     propsToMatch = '',
     responseBody = '',
-    responseType = ''
+    responseType = '',
+    ...varargs
 ) {
     const safe = safeSelf();
     const setTimeout = self.setTimeout;
@@ -635,7 +622,7 @@ function preventFetchFn(
         responseBody,
         responseType
     );
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 4);
+    const extraArgs = safe.parseVarargs(varargs);
     const propNeedles = parsePropertiesToMatchFn(propsToMatch, 'url');
     const validResponseProps = {
         ok: [ false, true ],
@@ -730,7 +717,8 @@ function preventSetTimeout(
 
 function proxyApplyFn(
     target = '',
-    handler = ''
+    handler = '',
+    options = {}
 ) {
     let context = globalThis;
     let prop = target;
@@ -791,20 +779,22 @@ function proxyApplyFn(
         };
         proxyApplyFn.isCtor = new Map();
         proxyApplyFn.proxies = new WeakMap();
-        proxyApplyFn.nativeToString = Function.prototype.toString;
-        const proxiedToString = new Proxy(Function.prototype.toString, {
-            apply(target, thisArg) {
-                let proxied = thisArg;
-                for(;;) {
-                    const fn = proxyApplyFn.proxies.get(proxied);
-                    if ( fn === undefined ) { break; }
-                    proxied = fn;
+        if ( (options.skipToString || proxyApplyFn.skipToString) !== true ) {
+            proxyApplyFn.nativeToString = Function.prototype.toString;
+            const proxiedToString = new Proxy(Function.prototype.toString, {
+                apply(target, thisArg) {
+                    let proxied = thisArg;
+                    for(;;) {
+                        const fn = proxyApplyFn.proxies.get(proxied);
+                        if ( fn === undefined ) { break; }
+                        proxied = fn;
+                    }
+                    return proxyApplyFn.nativeToString.call(proxied);
                 }
-                return proxyApplyFn.nativeToString.call(proxied);
-            }
-        });
-        proxyApplyFn.proxies.set(proxiedToString, proxyApplyFn.nativeToString);
-        Function.prototype.toString = proxiedToString;
+            });
+            proxyApplyFn.proxies.set(proxiedToString, proxyApplyFn.nativeToString);
+            Function.prototype.toString = proxiedToString;
+        }
     }
     if ( proxyApplyFn.isCtor.has(target) === false ) {
         proxyApplyFn.isCtor.set(target, fn.prototype?.constructor === fn);
@@ -866,15 +856,14 @@ function runAtHtmlElementFn(fn) {
 }
 
 function safeSelf() {
-    if ( scriptletGlobals.safeSelf ) {
-        return scriptletGlobals.safeSelf;
+    if ( safeSelf.safe ) {
+        return safeSelf.safe;
     }
     const self = globalThis;
     const safe = {
         'Array_from': Array.from,
         'Error': self.Error,
-        'Function_toStringFn': self.Function.prototype.toString,
-        'Function_toString': thisArg => safe.Function_toStringFn.call(thisArg),
+        'Function_toString': Function.prototype.call.bind(self.Function.prototype.toString),
         'Math_floor': Math.floor,
         'Math_max': Math.max,
         'Math_min': Math.min,
@@ -887,7 +876,7 @@ function safeSelf() {
         'Object_hasOwn': Object.hasOwn.bind(Object),
         'Object_toString': Object.prototype.toString,
         'RegExp': self.RegExp,
-        'RegExp_test': self.RegExp.prototype.test,
+        'RegExp_test': Function.prototype.call.bind(self.RegExp.prototype.test),
         'RegExp_exec': self.RegExp.prototype.exec,
         'Request_clone': self.Request.prototype.clone,
         'String': self.String,
@@ -898,10 +887,8 @@ function safeSelf() {
         'removeEventListener': self.EventTarget.prototype.removeEventListener,
         'fetch': self.fetch,
         'JSON': self.JSON,
-        'JSON_parseFn': self.JSON.parse,
-        'JSON_stringifyFn': self.JSON.stringify,
-        'JSON_parse': (...args) => safe.JSON_parseFn.call(safe.JSON, ...args),
-        'JSON_stringify': (...args) => safe.JSON_stringifyFn.call(safe.JSON, ...args),
+        'JSON_parse': Function.prototype.call.bind(self.JSON.parse, self.JSON),
+        'JSON_stringify': Function.prototype.call.bind(self.JSON.stringify, self.JSON),
         'log': console.log.bind(console),
         // Properties
         logLevel: 0,
@@ -954,7 +941,7 @@ function safeSelf() {
         testPattern(details, haystack) {
             if ( details.matchAll ) { return true; }
             if ( details.re ) {
-                return this.RegExp_test.call(details.re, haystack) === details.expect;
+                return this.RegExp_test(details.re, haystack) === details.expect;
             }
             return haystack.includes(details.pattern) === details.expect;
         },
@@ -972,21 +959,20 @@ function safeSelf() {
             }
             return /^/;
         },
-        getExtraArgs(args, offset = 0) {
-            const entries = args.slice(offset).reduce((out, v, i, a) => {
-                if ( (i & 1) === 0 ) {
-                    const rawValue = a[i+1];
-                    const value = /^\d+$/.test(rawValue)
-                        ? parseInt(rawValue, 10)
-                        : rawValue;
-                    out.push([ a[i], value ]);
-                }
+        parseVarargs(varargs) {
+            const entries = varargs.reduce((out, v, i, a) => {
+                if ( i & 1 ) { return out; }
+                const rawValue = a[i+1];
+                const value = /^\d+$/.test(rawValue)
+                    ? parseInt(rawValue, 10)
+                    : rawValue;
+                out.push([ a[i], value ]);
                 return out;
             }, []);
             return this.Object_fromEntries(entries);
         },
     };
-    scriptletGlobals.safeSelf = safe;
+    safeSelf.safe = safe;
     if ( scriptletGlobals.bcSecret === undefined ) { return safe; }
     // This is executed only when the logger is opened
     safe.logLevel = scriptletGlobals.logLevel || 1;
@@ -1053,12 +1039,13 @@ function setConstant(
 function setConstantFn(
     trusted = false,
     chain = '',
-    rawValue = ''
+    rawValue = '',
+    ...varargs
 ) {
     if ( chain === '' ) { return; }
     const safe = safeSelf();
     const logPrefix = safe.makeLogPrefix('set-constant', chain, rawValue);
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
+    const extraArgs = safe.parseVarargs(varargs);
     function setConstant(chain, rawValue) {
         const trappedProp = (( ) => {
             const pos = chain.lastIndexOf('.');
@@ -1200,9 +1187,77 @@ function setConstantFn(
     }, extraArgs.runAt);
 }
 
-function shouldDebug(details) {
-    if ( details instanceof Object === false ) { return false; }
-    return scriptletGlobals.canDebug && details.debug;
+function trapPropertyFn(propChain, handler, options = {}) {
+    if ( propChain === '' ) { return; }
+    let owner = self;
+    let prop = propChain;
+    for (;;) {
+        const pos = prop.indexOf('.');
+        if ( pos === -1 ) { break; }
+        owner = owner[prop.slice(0, pos)];
+        if ( owner instanceof Object === false ) { return; }
+        prop = prop.slice(pos + 1);
+    }
+    const safe = safeSelf();
+    if ( trapPropertyFn.db === undefined ) {
+        trapPropertyFn.db = new WeakMap();
+        trapPropertyFn.entryFromContext = (owner, prop) => {
+            const handlers = trapPropertyFn.db.get(owner);
+            return handlers?.get(prop);
+        };
+        trapPropertyFn.getter = (owner, prop) => {
+            const entry = trapPropertyFn.entryFromContext(owner, prop);
+            if ( entry === undefined ) { return; }
+            let r = entry.value;
+            for ( const desc of entry.stack ) {
+                try { r = desc.get(); } catch (e) {
+                    if ( entry.canThrow ) { throw e; }
+                }
+            }
+            return r;
+        };
+        trapPropertyFn.setter = (owner, prop, value) => {
+            const entry = trapPropertyFn.entryFromContext(owner, prop);
+            if ( entry === undefined ) { return; }
+            entry.value = value;
+            for ( const desc of entry.stack ) {
+                try { desc.set(value); } catch (e) {
+                    if ( entry.canThrow ) { throw e; }
+                }
+            }
+        };
+    }
+    const { db } = trapPropertyFn;
+    const handlers = db.get(owner) || new Map();
+    if ( handlers.size === 0 ) {
+        db.set(owner, handlers);
+    }
+    const entry = handlers.get(prop) || {
+        value: owner[prop],
+        stack: [],
+    };
+    entry.stack.push(handler);
+    if ( entry.stack.length > 1 ) { return entry.value; }
+    Object.assign(entry, options);
+    handlers.set(prop, entry);
+    const desc = safe.Object_getOwnPropertyDescriptor(owner, prop);
+    if ( desc instanceof safe.Object ) {
+        if ( desc.get || desc.set ) {
+            entry.stack.push(desc);
+        }
+    }
+    try {
+        safe.Object_defineProperty(owner, prop, {
+            get() {
+                return trapPropertyFn.getter(owner, prop);
+            },
+            set(value) {
+                trapPropertyFn.setter(owner, prop, value);
+            }
+        });
+    } catch {
+    }
+    return entry.value;
 }
 
 function validateConstantFn(trusted, raw, extraArgs = {}) {
@@ -1261,19 +1316,7 @@ function validateConstantFn(trusted, raw, extraArgs = {}) {
 
 const scriptletGlobals = {}; // eslint-disable-line
 
-const $scriptletFunctions$ = /* 9 */
-[abortOnPropertyRead,noWebrtc,preventSetTimeout,preventFetch,abortOnPropertyWrite,noWindowOpenIf,preventAddEventListener,setConstant,abortCurrentScript];
-
-const $scriptletArgs$ = /* 26 */ ["btoa","isMobileasokita","()","1500","adsbygoogle","googletag.cmd","upManager","offsetHeight","doubleclick","googlesyndication","popup","","hblocked","showAds","true","document.createElement","admiral","mdp_deblocker","mdpDeBlocker","document.blocked_var","1","____ads_js_blocked","false","load","$","AdBlockUtil"];
-
-const $scriptletArglists$ = /* 21 */ "0,0;0,1;1;2,2,3;3,4;0,5;4,6;2,7;3,8;3,9;2,10;5;6,11,12;7,13,14;8,15,16;0,17;2,18;7,19,20;7,21,22;6,23,12;8,24,25";
-
-const $scriptletArglistRefs$ = /* 60 */ "4,6,10,11;15,16;4;4;4,8,9;4,6;4,6;4,6,7;4,5;4;1,2,3,4,5;4,8,9;6;4;14;4;4;0;0;4,12,13;4;4,12,13;4,6;0;0;0;0;0;0;0;0;-6;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;4;0;17,18;4,12,13,19,20;4,12,13";
-
-const $scriptletHostnames$ = /* 60 */ ["inn.co.il","jmusic.me","n12.co.il","one.co.il","13tv.co.il","mako.co.il","yad2.co.il","ynet.co.il","sheee.co.il","tvbee.co.il","walla.co.il","13news.co.il","globes.co.il","hwzone.co.il","morfix.co.il","sport5.co.il","tech12.co.il","b.walla.co.il","e.walla.co.il","haaretz.co.il","isramedia.net","themarker.com","calcalist.co.il","mag.walla.co.il","vod.walla.co.il","www.walla.co.il","cars.walla.co.il","euro.walla.co.il","food.walla.co.il","home.walla.co.il","kids.walla.co.il","mail.walla.co.il","news.walla.co.il","nick.walla.co.il","tags.walla.co.il","tech.walla.co.il","viva.walla.co.il","6days.walla.co.il","buzzit.walla.co.il","celebs.walla.co.il","movies.walla.co.il","nadlan.walla.co.il","sports.walla.co.il","travel.walla.co.il","animals.walla.co.il","fashion.walla.co.il","finance.walla.co.il","healthy.walla.co.il","judaism.walla.co.il","mundial.walla.co.il","weather.walla.co.il","olympics.walla.co.il","tv-guide.walla.co.il","astrology.walla.co.il","elections.walla.co.il","foodsdictionary.co.il","usaelections.walla.co.il","www-globes-co-il.eu1.proxy.openathens.net","www-haaretz-co-il.eu1.proxy.openathens.net","www-themarker-com.eu1.proxy.openathens.net"];
-
-const $scriptletFromRegexes$ = /* 0 */ [];
-
+const $hasHostnames$ = true;
 const $hasEntities$ = false;
 const $hasAncestors$ = false;
 const $hasRegexes$ = false;
@@ -1321,8 +1364,10 @@ const entries = (( ) => {
 })();
 if ( entries.length === 0 ) { return; }
 
-const todoIndices = new Set();
-if ( $scriptletHostnames$.length ) {
+const todo = new Set();
+
+if ( $hasHostnames$ ) {
+    const $scriptletHostnames$ = /* 59 */ ["inn.co.il","jmusic.me","n12.co.il","one.co.il","13tv.co.il","mako.co.il","yad2.co.il","ynet.co.il","sheee.co.il","tvbee.co.il","walla.co.il","13news.co.il","globes.co.il","hwzone.co.il","morfix.co.il","sport5.co.il","tech12.co.il","b.walla.co.il","e.walla.co.il","haaretz.co.il","isramedia.net","themarker.com","calcalist.co.il","mag.walla.co.il","vod.walla.co.il","www.walla.co.il","cars.walla.co.il","euro.walla.co.il","food.walla.co.il","home.walla.co.il","kids.walla.co.il","news.walla.co.il","nick.walla.co.il","tags.walla.co.il","tech.walla.co.il","viva.walla.co.il","6days.walla.co.il","buzzit.walla.co.il","celebs.walla.co.il","movies.walla.co.il","nadlan.walla.co.il","sports.walla.co.il","travel.walla.co.il","animals.walla.co.il","fashion.walla.co.il","finance.walla.co.il","healthy.walla.co.il","judaism.walla.co.il","mundial.walla.co.il","weather.walla.co.il","olympics.walla.co.il","tv-guide.walla.co.il","astrology.walla.co.il","elections.walla.co.il","foodsdictionary.co.il","usaelections.walla.co.il","www-globes-co-il.eu1.proxy.openathens.net","www-haaretz-co-il.eu1.proxy.openathens.net","www-themarker-com.eu1.proxy.openathens.net"];
     const collectArglistRefIndices = (out, hn, r) => {
         let l = 0, i = 0, d = 0;
         let candidate = '';
@@ -1357,6 +1402,7 @@ if ( $scriptletHostnames$.length ) {
             }
         }
     };
+    const todoIndices = new Set();
     indicesFromHostname(todoIndices, entries[0]);
     if ( $hasAncestors$ ) {
         for ( const entry of entries ) {
@@ -1364,20 +1410,20 @@ if ( $scriptletHostnames$.length ) {
             indicesFromHostname(todoIndices, entry, '>>');
         }
     }
-    $scriptletHostnames$.length = 0;
-}
-
-// Collect arglist references
-const todo = new Set();
-if ( todoIndices.size !== 0 ) {
-    const arglistRefs = $scriptletArglistRefs$.split(';');
-    for ( const i of todoIndices ) {
-        for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
-            todo.add(ref);
+    // Collect arglist references
+    if ( todoIndices.size ) {
+        const $scriptletArglistRefs$ = /* 59 */ "5,6,12,13;17,18;5;5;5,8,9,10,11;5,6;5,6;5,6,7;5;5;2,3,4,5;5,8,9,10,11;6;5;16;5;5;1;1;5,14,15;5;5,14,15;5,6;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;5;1;19,20;5,14,15,21,22;5,14,15";
+        const arglistRefs = $scriptletArglistRefs$.split(';');
+        for ( const i of todoIndices ) {
+            for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
+                todo.add(ref);
+            }
         }
     }
 }
+
 if ( $hasRegexes$ ) {
+    const $scriptletFromRegexes$ = /* 0 */ [];
     const { hns } = entries[0];
     for ( let i = 0, n = $scriptletFromRegexes$.length; i < n; i += 3 ) {
         const needle = $scriptletFromRegexes$[i+0];
@@ -1394,10 +1440,13 @@ if ( $hasRegexes$ ) {
         }
     }
 }
-if ( todo.size === 0 ) { return; }
 
-// Execute scriplets
-{
+// Execute scriptlets
+if ( todo.size && todo.has(0) === false ) {
+    const $scriptletFunctions$ = /* 10 */
+[abortOnPropertyRead,noWebrtc,preventSetTimeout,preventFetch,abortOnPropertyWrite,adjustSetTimeout,noWindowOpenIf,preventAddEventListener,setConstant,abortCurrentScript];
+    const $scriptletArgs$ = /* 30 */ ["btoa","isMobileasokita","()","1500","adsbygoogle","upManager","offsetHeight","doubleclick","googlesyndication","taboola timeout","*","0.001","clearInterval(run)","5000","popup","","hblocked","showAds","true","document.createElement","admiral","mdp_deblocker","mdpDeBlocker","document.blocked_var","1","____ads_js_blocked","false","load","$","AdBlockUtil"];
+    const $scriptletArglists$ = /* 23 */ ";0,0;0,1;1;2,2,3;3,4;4,5;2,6;3,7;3,8;5,9,10,11;5,12,13,11;2,14;6;7,15,16;8,17,18;9,19,20;0,21;2,22;8,23,24;8,25,26;7,27,16;9,28,29";
     const arglists = $scriptletArglists$.split(';');
     const args = $scriptletArgs$;
     for ( const ref of todo ) {

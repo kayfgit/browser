@@ -60,6 +60,8 @@ function getSafeCookieValuesFn() {
         'decline', 'declined',
         'closed', 'next', 'mandatory',
         'disagree', 'agree',
+        'set', 'unset',
+        'given',
     ];
 }
 
@@ -144,28 +146,20 @@ function removeNodeText(
 function replaceNodeTextFn(
     nodeName = '',
     pattern = '',
-    replacement = ''
+    replacement = '',
+    ...varargs
 ) {
     const safe = safeSelf();
     const logPrefix = safe.makeLogPrefix('replace-node-text.fn', ...Array.from(arguments));
     const reNodeName = safe.patternToRegex(nodeName, 'i', true);
     const rePattern = safe.patternToRegex(pattern, 'gms');
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
+    const extraArgs = safe.parseVarargs(varargs);
     const reIncludes = extraArgs.includes || extraArgs.condition
         ? safe.patternToRegex(extraArgs.includes || extraArgs.condition, 'ms')
         : null;
     const reExcludes = extraArgs.excludes
         ? safe.patternToRegex(extraArgs.excludes, 'ms')
         : null;
-    const stop = (takeRecord = true) => {
-        if ( takeRecord ) {
-            handleMutations(observer.takeRecords());
-        }
-        observer.disconnect();
-        if ( safe.logLevel > 1 ) {
-            safe.uboLog(logPrefix, 'Quitting');
-        }
-    };
     const textContentFactory = (( ) => {
         const out = { createScript: s => s };
         const { trustedTypes: tt } = self;
@@ -178,19 +172,19 @@ function replaceNodeTextFn(
         }
         return out;
     })();
-    let sedCount = extraArgs.sedCount || 0;
+    let sedCount = extraArgs.sedCount ?? Number.MAX_SAFE_INTEGER;
     const handleNode = node => {
         const before = node.textContent;
         if ( reIncludes ) {
             reIncludes.lastIndex = 0;
-            if ( safe.RegExp_test.call(reIncludes, before) === false ) { return true; }
+            if ( safe.RegExp_test(reIncludes, before) === false ) { return; }
         }
         if ( reExcludes ) {
             reExcludes.lastIndex = 0;
-            if ( safe.RegExp_test.call(reExcludes, before) ) { return true; }
+            if ( safe.RegExp_test(reExcludes, before) ) { return; }
         }
         rePattern.lastIndex = 0;
-        if ( safe.RegExp_test.call(rePattern, before) === false ) { return true; }
+        if ( safe.RegExp_test(rePattern, before) === false ) { return; }
         rePattern.lastIndex = 0;
         const after = pattern !== ''
             ? before.replace(rePattern, replacement)
@@ -202,44 +196,65 @@ function replaceNodeTextFn(
             safe.uboLog(logPrefix, `Text before:\n${before.trim()}`);
         }
         safe.uboLog(logPrefix, `Text after:\n${after.trim()}`);
-        return sedCount === 0 || (sedCount -= 1) !== 0;
+        sedCount -= 1;
+    };
+    const handleTree = root => {
+        const treeWalker = document.createTreeWalker(root,
+            NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
+        );
+        const { currentScript } = document;
+        let count = 0;
+        for (;;) {
+            const node = treeWalker.nextNode();
+            if ( node === null ) { break; }
+            count += 1;
+            if ( node === currentScript ) { continue; }
+            if ( reNodeName.test(node.nodeName) ) {
+                handleNode(node);
+            } else if ( node.nodeName === 'TEMPLATE' ) {
+                count += handleTree(node.content);
+            } else {
+                continue;
+            }
+            if ( sedCount === 0 ) { break; }
+        }
+        return count;
+    };
+    if ( document.documentElement ) {
+        const count = handleTree(document.documentElement);
+        safe.uboLog(logPrefix, `${count} nodes present before installing mutation observer`);
+    }
+    const stay = Boolean(extraArgs.stay);
+    if ( sedCount === 0 && stay === false ) { return; }
+    const stop = (takeRecord = true) => {
+        const mutations = takeRecord ? observer.takeRecords() : [];
+        observer.disconnect();
+        handleMutations(mutations);
+        if ( safe.logLevel > 1 ) {
+            safe.uboLog(logPrefix, 'Quitting');
+        }
     };
     const handleMutations = mutations => {
         for ( const mutation of mutations ) {
             for ( const node of mutation.addedNodes ) {
-                if ( reNodeName.test(node.nodeName) === false ) { continue; }
-                if ( handleNode(node) ) { continue; }
-                stop(false); return;
+                if ( reNodeName.test(node.nodeName) ) {
+                    handleNode(node);
+                } else if ( node.nodeName === 'TEMPLATE' ) {
+                    handleTree(node.content);
+                } else {
+                    continue;
+                }
+                if ( sedCount === 0 ) { return stop(false); }
             }
         }
     };
     const observer = new MutationObserver(handleMutations);
     observer.observe(document, { childList: true, subtree: true });
-    if ( document.documentElement ) {
-        const treeWalker = document.createTreeWalker(
-            document.documentElement,
-            NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT
-        );
-        let count = 0;
-        for (;;) {
-            const node = treeWalker.nextNode();
-            count += 1;
-            if ( node === null ) { break; }
-            if ( reNodeName.test(node.nodeName) === false ) { continue; }
-            if ( node === document.currentScript ) { continue; }
-            if ( handleNode(node) ) { continue; }
-            stop(); break;
-        }
-        safe.uboLog(logPrefix, `${count} nodes present before installing mutation observer`);
-    }
-    if ( extraArgs.stay ) { return; }
+    if ( stay ) { return; }
     runAt(( ) => {
-        const quitAfter = extraArgs.quitAfter || 0;
-        if ( quitAfter !== 0 ) {
-            setTimeout(( ) => { stop(); }, quitAfter);
-        } else {
-            stop();
-        }
+        const quitAfter = extraArgs.quitAfter ?? 0;
+        if ( quitAfter === 0 ) { return stop(); }
+        setTimeout(( ) => { stop(); }, quitAfter);
     }, 'interactive');
 }
 
@@ -273,15 +288,14 @@ function runAt(fn, when) {
 }
 
 function safeSelf() {
-    if ( scriptletGlobals.safeSelf ) {
-        return scriptletGlobals.safeSelf;
+    if ( safeSelf.safe ) {
+        return safeSelf.safe;
     }
     const self = globalThis;
     const safe = {
         'Array_from': Array.from,
         'Error': self.Error,
-        'Function_toStringFn': self.Function.prototype.toString,
-        'Function_toString': thisArg => safe.Function_toStringFn.call(thisArg),
+        'Function_toString': Function.prototype.call.bind(self.Function.prototype.toString),
         'Math_floor': Math.floor,
         'Math_max': Math.max,
         'Math_min': Math.min,
@@ -294,7 +308,7 @@ function safeSelf() {
         'Object_hasOwn': Object.hasOwn.bind(Object),
         'Object_toString': Object.prototype.toString,
         'RegExp': self.RegExp,
-        'RegExp_test': self.RegExp.prototype.test,
+        'RegExp_test': Function.prototype.call.bind(self.RegExp.prototype.test),
         'RegExp_exec': self.RegExp.prototype.exec,
         'Request_clone': self.Request.prototype.clone,
         'String': self.String,
@@ -305,10 +319,8 @@ function safeSelf() {
         'removeEventListener': self.EventTarget.prototype.removeEventListener,
         'fetch': self.fetch,
         'JSON': self.JSON,
-        'JSON_parseFn': self.JSON.parse,
-        'JSON_stringifyFn': self.JSON.stringify,
-        'JSON_parse': (...args) => safe.JSON_parseFn.call(safe.JSON, ...args),
-        'JSON_stringify': (...args) => safe.JSON_stringifyFn.call(safe.JSON, ...args),
+        'JSON_parse': Function.prototype.call.bind(self.JSON.parse, self.JSON),
+        'JSON_stringify': Function.prototype.call.bind(self.JSON.stringify, self.JSON),
         'log': console.log.bind(console),
         // Properties
         logLevel: 0,
@@ -361,7 +373,7 @@ function safeSelf() {
         testPattern(details, haystack) {
             if ( details.matchAll ) { return true; }
             if ( details.re ) {
-                return this.RegExp_test.call(details.re, haystack) === details.expect;
+                return this.RegExp_test(details.re, haystack) === details.expect;
             }
             return haystack.includes(details.pattern) === details.expect;
         },
@@ -379,21 +391,20 @@ function safeSelf() {
             }
             return /^/;
         },
-        getExtraArgs(args, offset = 0) {
-            const entries = args.slice(offset).reduce((out, v, i, a) => {
-                if ( (i & 1) === 0 ) {
-                    const rawValue = a[i+1];
-                    const value = /^\d+$/.test(rawValue)
-                        ? parseInt(rawValue, 10)
-                        : rawValue;
-                    out.push([ a[i], value ]);
-                }
+        parseVarargs(varargs) {
+            const entries = varargs.reduce((out, v, i, a) => {
+                if ( i & 1 ) { return out; }
+                const rawValue = a[i+1];
+                const value = /^\d+$/.test(rawValue)
+                    ? parseInt(rawValue, 10)
+                    : rawValue;
+                out.push([ a[i], value ]);
                 return out;
             }, []);
             return this.Object_fromEntries(entries);
         },
     };
-    scriptletGlobals.safeSelf = safe;
+    safeSelf.safe = safe;
     if ( scriptletGlobals.bcSecret === undefined ) { return safe; }
     // This is executed only when the logger is opened
     safe.logLevel = scriptletGlobals.logLevel || 1;
@@ -451,9 +462,9 @@ function safeSelf() {
     return safe;
 }
 
-function setLocalStorageItem(key = '', value = '') {
+function setLocalStorageItem(key = '', value = '', ...varargs) {
     const safe = safeSelf();
-    const options = safe.getExtraArgs(Array.from(arguments), 2)
+    const options = safe.parseVarargs(varargs)
     setLocalStorageItemFn('local', false, key, value, options);
 }
 
@@ -539,19 +550,7 @@ function setLocalStorageItemFn(
 
 const scriptletGlobals = {}; // eslint-disable-line
 
-const $scriptletFunctions$ = /* 3 */
-[removeNodeText,removeClass,setLocalStorageItem];
-
-const $scriptletArgs$ = /* 12 */ ["script","!function(r,n,t,e)",",mr=function(r,","createAdManager","attachShadow","MatchCarousel-module-scss-module__WcuM7G__hasBranding","active-brand","body","banner_closed","true","header_rg_2026","header"];
-
-const $scriptletArglists$ = /* 8 */ "0,0,1;0,0,2;0,0,3;0,0,4;1,5;1,6,7;2,8,9;1,10,11";
-
-const $scriptletArglistRefs$ = /* 62 */ "5;5;5;5;5;5;5;5;5;5;5;5;5;5;5;3;5;5;5;2;5;5;5;5;5;5;0;5;5;5;5;5;5;5;5;5;5;1;5;5;5;3;4;4;6;7;5;5;4;5;5;5;5;5;5;5;5;5;5;5;5;5";
-
-const $scriptletHostnames$ = /* 62 */ ["kvk.pub","3ivi.com","rezka.ag","rezka.fi","rezka.si","drezka.pl","hdrezka.ag","hdrezka.cm","hdrezka.co","hdrezka.in","hdrezka.me","hdrezka.pl","hdrezka.sh","hdrezka.tv","kinopub.me","tochka.net","hdrezka.inc","hdrezka.kim","hdrezka.vip","liveball.sx","rezka-ua.co","rezka-ua.in","rezka-ua.tv","rezka.space","rezkery.com","rezkify.com","www.ukr.net","hdrezka.club","hdrezka.fans","hdrezka.name","hdrezka.rest","hdrezka.site","omnirezka.tv","rezka-ag.net","rezka-ua.org","rezka-ua.pub","hdrezka.today","pravda.com.ua","flymaterez.net","hdrezkayou.com","hello-rezka.tv","inforesist.org","metaratings.by","metaratings.ru","noworries.news","champion.com.ua","hdrezka-home.tv","hdrezka.website","meta-ratings.kz","hdrezka19139.org","standby-rezka.tv","hdrezka1twwpb.org","hdrezka2tepnm.org","hdrezka2vmmty.org","hdrezka720dhh.org","hdrezka8bdhtq.org","hdrezka9bsbhq.org","hdrezka9fmskj.org","hdrezkaonline.com","bestofkinopoisk.com","hdrezka-sex-city.net","punisher-hdrezka.net"];
-
-const $scriptletFromRegexes$ = /* 1 */ ["rezka","rezka","5"];
-
+const $hasHostnames$ = true;
 const $hasEntities$ = false;
 const $hasAncestors$ = false;
 const $hasRegexes$ = true;
@@ -599,8 +598,10 @@ const entries = (( ) => {
 })();
 if ( entries.length === 0 ) { return; }
 
-const todoIndices = new Set();
-if ( $scriptletHostnames$.length ) {
+const todo = new Set();
+
+if ( $hasHostnames$ ) {
+    const $scriptletHostnames$ = /* 63 */ ["kvk.pub","3ivi.com","rezka.ag","rezka.fi","rezka.si","drezka.pl","hdrezka.ag","hdrezka.cm","hdrezka.co","hdrezka.in","hdrezka.la","hdrezka.me","hdrezka.pl","hdrezka.sh","hdrezka.tv","kinopub.me","tochka.net","hdrezka.inc","hdrezka.kim","hdrezka.vip","rezka-ua.co","rezka-ua.in","rezka-ua.tv","rezka.space","rezkery.com","rezkify.com","www.ukr.net","hdrezka.club","hdrezka.fans","hdrezka.name","hdrezka.rest","hdrezka.site","omnirezka.tv","rezka-ag.net","rezka-tv.org","rezka-ua.org","rezka-ua.pub","hdrezka.today","pravda.com.ua","flymaterez.net","hdrezkayou.com","hello-rezka.tv","inforesist.org","metaratings.by","metaratings.ru","noworries.news","champion.com.ua","hdrezka-home.tv","hdrezka.website","meta-ratings.kz","hdrezka19139.org","standby-rezka.tv","hdrezka1twwpb.org","hdrezka2tepnm.org","hdrezka2vmmty.org","hdrezka720dhh.org","hdrezka8bdhtq.org","hdrezka9bsbhq.org","hdrezka9fmskj.org","hdrezkaonline.com","bestofkinopoisk.com","hdrezka-sex-city.net","punisher-hdrezka.net"];
     const collectArglistRefIndices = (out, hn, r) => {
         let l = 0, i = 0, d = 0;
         let candidate = '';
@@ -635,6 +636,7 @@ if ( $scriptletHostnames$.length ) {
             }
         }
     };
+    const todoIndices = new Set();
     indicesFromHostname(todoIndices, entries[0]);
     if ( $hasAncestors$ ) {
         for ( const entry of entries ) {
@@ -642,20 +644,20 @@ if ( $scriptletHostnames$.length ) {
             indicesFromHostname(todoIndices, entry, '>>');
         }
     }
-    $scriptletHostnames$.length = 0;
-}
-
-// Collect arglist references
-const todo = new Set();
-if ( todoIndices.size !== 0 ) {
-    const arglistRefs = $scriptletArglistRefs$.split(';');
-    for ( const i of todoIndices ) {
-        for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
-            todo.add(ref);
+    // Collect arglist references
+    if ( todoIndices.size ) {
+        const $scriptletArglistRefs$ = /* 63 */ "5;5;5;5;5;5;5;5;5;5;5;5;5;5;5;5;3;5;5;5;5;5;5;5;5;5;1;5;5;5;5;5;5;5;5;5;5;5;2;5;5;5;3;4;4;6;7;5;5;4;5;5;5;5;5;5;5;5;5;5;5;5;5";
+        const arglistRefs = $scriptletArglistRefs$.split(';');
+        for ( const i of todoIndices ) {
+            for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
+                todo.add(ref);
+            }
         }
     }
 }
+
 if ( $hasRegexes$ ) {
+    const $scriptletFromRegexes$ = /* 1 */ ["rezka","rezka","5"];
     const { hns } = entries[0];
     for ( let i = 0, n = $scriptletFromRegexes$.length; i < n; i += 3 ) {
         const needle = $scriptletFromRegexes$[i+0];
@@ -672,10 +674,13 @@ if ( $hasRegexes$ ) {
         }
     }
 }
-if ( todo.size === 0 ) { return; }
 
-// Execute scriplets
-{
+// Execute scriptlets
+if ( todo.size && todo.has(0) === false ) {
+    const $scriptletFunctions$ = /* 3 */
+[removeNodeText,removeClass,setLocalStorageItem];
+    const $scriptletArgs$ = /* 11 */ ["script","!function(r,n,t,e)",",mr=function(r,","attachShadow","MatchCarousel-module-scss-module__WcuM7G__hasBranding","active-brand","body","banner_closed","true","header_rg_2026","header"];
+    const $scriptletArglists$ = /* 8 */ ";0,0,1;0,0,2;0,0,3;1,4;1,5,6;2,7,8;1,9,10";
     const arglists = $scriptletArglists$.split(';');
     const args = $scriptletArgs$;
     for ( const ref of todo ) {

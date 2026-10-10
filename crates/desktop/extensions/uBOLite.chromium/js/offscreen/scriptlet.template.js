@@ -36,18 +36,7 @@ self.$scriptletCode$
 
 const scriptletGlobals = {}; // eslint-disable-line
 
-const $scriptletFunctions$ = self.$scriptletFunctions$;
-
-const $scriptletArgs$ = self.$scriptletArgs$;
-
-const $scriptletArglists$ = self.$scriptletArglists$;
-
-const $scriptletArglistRefs$ = self.$scriptletArglistRefs$;
-
-const $scriptletHostnames$ = self.$scriptletHostnames$;
-
-const $scriptletFromRegexes$ = self.$scriptletFromRegexes$;
-
+const $hasHostnames$ = self.$hasHostnames$;
 const $hasEntities$ = self.$hasEntities$;
 const $hasAncestors$ = self.$hasAncestors$;
 const $hasRegexes$ = self.$hasRegexes$;
@@ -95,8 +84,10 @@ const entries = (( ) => {
 })();
 if ( entries.length === 0 ) { return; }
 
-const todoIndices = new Set();
-if ( $scriptletHostnames$.length ) {
+const todo = new Set();
+
+if ( $hasHostnames$ ) {
+    const $scriptletHostnames$ = self.$scriptletHostnames$;
     const collectArglistRefIndices = (out, hn, r) => {
         let l = 0, i = 0, d = 0;
         let candidate = '';
@@ -131,6 +122,7 @@ if ( $scriptletHostnames$.length ) {
             }
         }
     };
+    const todoIndices = new Set();
     indicesFromHostname(todoIndices, entries[0]);
     if ( $hasAncestors$ ) {
         for ( const entry of entries ) {
@@ -138,20 +130,20 @@ if ( $scriptletHostnames$.length ) {
             indicesFromHostname(todoIndices, entry, '>>');
         }
     }
-    $scriptletHostnames$.length = 0;
-}
-
-// Collect arglist references
-const todo = new Set();
-if ( todoIndices.size !== 0 ) {
-    const arglistRefs = $scriptletArglistRefs$.split(';');
-    for ( const i of todoIndices ) {
-        for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
-            todo.add(ref);
+    // Collect arglist references
+    if ( todoIndices.size ) {
+        const $scriptletArglistRefs$ = self.$scriptletArglistRefs$;
+        const arglistRefs = $scriptletArglistRefs$.split(';');
+        for ( const i of todoIndices ) {
+            for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
+                todo.add(ref);
+            }
         }
     }
 }
+
 if ( $hasRegexes$ ) {
+    const $scriptletFromRegexes$ = self.$scriptletFromRegexes$;
     const { hns } = entries[0];
     for ( let i = 0, n = $scriptletFromRegexes$.length; i < n; i += 3 ) {
         const needle = $scriptletFromRegexes$[i+0];
@@ -168,10 +160,12 @@ if ( $hasRegexes$ ) {
         }
     }
 }
-if ( todo.size === 0 ) { return; }
 
-// Execute scriplets
-{
+// Execute scriptlets
+if ( todo.size && todo.has(0) === false ) {
+    const $scriptletFunctions$ = self.$scriptletFunctions$;
+    const $scriptletArgs$ = self.$scriptletArgs$;
+    const $scriptletArglists$ = self.$scriptletArglists$;
     const arglists = $scriptletArglists$.split(';');
     const args = $scriptletArgs$;
     for ( const ref of todo ) {

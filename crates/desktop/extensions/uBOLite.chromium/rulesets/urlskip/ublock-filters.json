@@ -6,6 +6,13 @@
   ]
  },
  {
+  "re": "^[^:]+://(?:[^/]+\\.)?bstsrs\\.in/globin\\?link=",
+  "steps": [
+   "?link",
+   "-base64"
+  ]
+ },
+ {
   "re": "^[^:]+://(?:[^/]+\\.)?click\\.redditmail\\.com/cl0/",
   "steps": [
    "/\\/CL0\\/(http.*?)\\/\\d\\/[a-f0-9-]+\\//",
@@ -23,6 +30,34 @@
   "re": "^[^:]+://(?:[^/]+\\.)?events\\.laylo\\.com/r/redirect.*?(?:[^%.0-9a-z_-]|$)link=http",
   "steps": [
    "?link"
+  ]
+ },
+ {
+  "re": "^",
+  "steps": [
+   "?url"
+  ],
+  "hostnames": [
+   "c.pc.qq.com",
+   "link.onlinekosh.com"
+  ]
+ },
+ {
+  "re": "^",
+  "steps": [
+   "?pfurl"
+  ],
+  "hostnames": [
+   "c.pc.qq.com"
+  ]
+ },
+ {
+  "re": "^",
+  "steps": [
+   "?target"
+  ],
+  "hostnames": [
+   "link.csdn.net"
   ]
  },
  {
@@ -80,10 +115,13 @@
   ]
  },
  {
-  "re": "^[^:]+:\\/\\/([^:/]+\\.)?pdrl\\.fm[^%.0-9a-z_-]?",
+  "re": "^",
   "steps": [
    "/pdrl\\.fm\\/\\w+\\/([^?]+)/",
    "+https"
+  ],
+  "hostnames": [
+   "pdrl.fm"
   ]
  },
  {
@@ -152,6 +190,12 @@
  },
  {
   "re": "^[^:]+://(?:[^/]+\\.)?www\\.google\\.com/url\\?q=",
+  "steps": [
+   "?q"
+  ]
+ },
+ {
+  "re": "^[^:]+://(?:[^/]+\\.)?www\\.google\\.com/url\\?.*?q=",
   "steps": [
    "?q"
   ]
@@ -237,6 +281,35 @@
   ]
  },
  {
+  "re": "^[^:]+://(?:[^/]+\\.)?h\\.f1\\.impact-ad\\.jp/pub_click/",
+  "steps": [
+   "/\\/\\d{6}\\/\\d{6}\\/(https.+)/",
+   "-uricomponent"
+  ]
+ },
+ {
+  "re": "^[^:]+://(?:[^/]+\\.)?igorslab\\.de/\\?ilgha_jump=",
+  "steps": [
+   "/\\?ilgha_jump=(ey[^.]+)\\..+/",
+   "-base64",
+   "/\"u\":\"(https?:[^\"]+)\"/"
+  ]
+ },
+ {
+  "re": "^[^:]+://(?:[^/]+\\.)?cinefreak\\.net/generate\\.php\\?id=",
+  "steps": [
+   "?id",
+   "-base64"
+  ]
+ },
+ {
+  "re": "^[^:]+://(?:[^/]+\\.)?securepaste\\.top/\\?url=",
+  "steps": [
+   "?url",
+   "-base64"
+  ]
+ },
+ {
   "re": "^[^:]+://(?:[^/]+\\.)?anylinks\\.in/full.*?(?:[^%.0-9a-z_-]|$)url=ahr0c",
   "steps": [
    "?url",
@@ -271,6 +344,12 @@
   ]
  },
  {
+  "re": "^[^:]+://(?:[^/]+\\.)?urlshortlink\\.top/.*?(?:[^%.0-9a-z_-]|$)url=http",
+  "steps": [
+   "?url"
+  ]
+ },
+ {
   "re": "^[^:]+://(?:[^/]+\\.)?meong\\.club/go/\\?ahr0c",
   "steps": [
    "/\\/go\\/\\?(aHR0c.+)/",
@@ -288,6 +367,13 @@
   "re": "^[^:]+://(?:[^/]+\\.)?freex2line\\.online/.*?/\\?redirect",
   "steps": [
    "?redirect",
+   "-base64"
+  ]
+ },
+ {
+  "re": "^[^:]+://(?:[^/]+\\.)?sonixgvn\\.net/dark/\\?ahr0c",
+  "steps": [
+   "&1",
    "-base64"
   ]
  },
@@ -336,12 +422,6 @@
   "steps": [
    "?link",
    "-base64"
-  ]
- },
- {
-  "re": "^[^:]+:\\/\\/([^:/]+\\.)?link\\.onlinekosh\\.com[^%.0-9a-z_-]?",
-  "steps": [
-   "?url"
   ]
  },
  {
@@ -590,13 +670,13 @@
   ]
  },
  {
-  "re": "^[^:]+://(?:[^/]+\\.)?track\\.flexlinks\\.com/a\\.ashx.*?(?:[^%.0-9a-z_-]|$)url=http",
+  "re": "^[^:]+://(?:[^/]+\\.)?track\\.flexlinks\\.com/.*?(?:[^%.0-9a-z_-]|$)url=http",
   "steps": [
    "?url"
   ]
  },
  {
-  "re": "^[^:]+://(?:[^/]+\\.)?track\\.flexlinkspro\\.com/a\\.ashx.*?(?:[^%.0-9a-z_-]|$)url=http",
+  "re": "^[^:]+://(?:[^/]+\\.)?track\\.flexlinkspro\\.com/.*?(?:[^%.0-9a-z_-]|$)url=http",
   "steps": [
    "?url"
   ]
@@ -942,13 +1022,6 @@
   ]
  },
  {
-  "re": "^[^:]+://(?:[^/]+\\.)?bing\\.com/ck/a.*?(?:[^%.0-9a-z_-]|$)u=a1ahr0c",
-  "steps": [
-   "/[?&]u=a1(aHR0c[^&#]+)/",
-   "-safebase64"
-  ]
- },
- {
   "re": "^[^:]+://(?:[^/]+\\.)?bing\\.com/rebates/welcome\\?url=http",
   "steps": [
    "?url"
@@ -958,6 +1031,14 @@
   "re": "^[^:]+://(?:[^/]+\\.)?bing\\.com/alink/link\\?url=http",
   "steps": [
    "?url"
+  ]
+ },
+ {
+  "re": "^[^:]+://(?:[^/]+\\.)?bing\\.com/ck/a.*?u=a1",
+  "steps": [
+   "?u",
+   "/^a1(.*)$/",
+   "-safebase64"
   ]
  },
  {
@@ -1331,6 +1412,19 @@
   ]
  },
  {
+  "re": "^https:\\/\\/link\\.theverge\\.com\\/click\\/[0-9]+\\.[0-9]+\\/aHR0c",
+  "steps": [
+   "/(aHR0c[a-zA-Z0-9%_-]+)/",
+   "-safebase64"
+  ]
+ },
+ {
+  "re": "^[^:]+://(?:[^/]+\\.)?s\\.click\\.aliexpress\\.com/deep_link\\..*?(?:[^%.0-9a-z_-]|$)dl_target_url=http",
+  "steps": [
+   "?dl_target_url"
+  ]
+ },
+ {
   "re": "/vp/player/to/\\?u=http",
   "steps": [
    "?u"
@@ -1352,6 +1446,48 @@
   "re": "^[^:]+://(?:[^/]+\\.)?donanimhaber\\.com/externallinkredirect\\?.*?(?:[^%.0-9a-z_-]|$)url=http",
   "steps": [
    "?url"
+  ]
+ },
+ {
+  "re": "^[^:]+://(?:[^/]+\\.)?f6s\\.com/redirect\\?url=http",
+  "steps": [
+   "?url"
+  ]
+ },
+ {
+  "re": "^[^:]+://(?:[^/]+\\.)?douban\\.com/link2/\\?url=http",
+  "steps": [
+   "?url"
+  ]
+ },
+ {
+  "re": "^[^:]+://(?:[^/]+\\.)?ref\\.gamer\\.com\\.tw/redir\\.php\\?url=http",
+  "steps": [
+   "?url"
+  ]
+ },
+ {
+  "re": "^[^:]+://(?:[^/]+\\.)?landian\\.news/go\\?url=http",
+  "steps": [
+   "?url"
+  ]
+ },
+ {
+  "re": "^[^:]+://(?:[^/]+\\.)?link\\.zhihu\\.com/\\?target=http",
+  "steps": [
+   "?target"
+  ]
+ },
+ {
+  "re": "^[^:]+://(?:[^/]+\\.)?touchgal\\.ink/redirect\\?url=http",
+  "steps": [
+   "?url"
+  ]
+ },
+ {
+  "re": "^[^:]+://(?:[^/]+\\.)?sspai\\.com/link\\?target=http",
+  "steps": [
+   "?target"
   ]
  },
  {
@@ -1471,6 +1607,13 @@
   "re": "^[^:]+://(?:[^/]+\\.)?click\\.convertkit-mail4\\.com/",
   "steps": [
    "/([^/]+$)/",
+   "-base64"
+  ]
+ },
+ {
+  "re": "^[^:]+://(?:[^/]+\\.)?1shortlink\\.com/api/v1/full-pages\\?api_key=.*?&url=",
+  "steps": [
+   "?url",
    "-base64"
   ]
  },

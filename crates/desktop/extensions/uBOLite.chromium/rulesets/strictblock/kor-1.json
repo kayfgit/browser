@@ -23,7 +23,6 @@
    "ad-img.ebaykorea.com",
    "ad-insight.sellermill.com",
    "ad-mapps.com",
-   "ad-pulse.kakaobank.cloud",
    "ad-script.viewus.co.kr",
    "ad.3dpop.kr",
    "ad.a-ads.com",
@@ -102,6 +101,7 @@
    "addb.interpark.com",
    "addc.dcinside.com",
    "adex.ednplus.com",
+   "adflow.kr",
    "adfork.co.kr",
    "adg.dawin.tv",
    "adgirl.yes24.com",
@@ -179,6 +179,7 @@
    "andbeyond.media",
    "aniview.com",
    "api-ao-list.adison.co",
+   "api-external.adsvani.com",
    "api.adapi.co.kr",
    "api.botad.kr",
    "api.ezadsystem.com",
@@ -191,6 +192,7 @@
    "aproxylog-next.tving.com",
    "arm.c.appier.net",
    "awd.spochak.com",
+   "awesomeclick.co.kr",
    "banners.cams.com",
    "barohere.xyz",
    "bestcontentitem.top",
@@ -201,6 +203,7 @@
    "cafe-ads-api.daum.net",
    "catad5959.com",
    "categorysort.com",
+   "cdn.adsvani.com",
    "cdn.nhnace.com",
    "cdndn.3dpop.kr",
    "centaurs-rest.coupang.com",
@@ -213,6 +216,7 @@
    "contextweb.com",
    "cp.edl.co.kr",
    "cpa.greenp.kr",
+   "creative.mayzaent.com",
    "criteo.net",
    "cyad.nate.com",
    "cyad1.nate.com",
@@ -242,6 +246,7 @@
    "fastview.co.kr",
    "finead.o00.kr",
    "g.doubleclick.net",
+   "go.trvdp.com",
    "googleadservices.com",
    "googletagservices.com",
    "gwx.adnext.co",
@@ -270,6 +275,7 @@
    "megadata.co.kr",
    "mini.m-able.app",
    "minishop.linkprice.com",
+   "mixtower.net",
    "mman.kr",
    "mmnneo.com",
    "mobon.net",
@@ -291,6 +297,7 @@
    "ntkimg.cloud",
    "nvapi.feeldmc.com",
    "optad360.io",
+   "optbeacon.net",
    "pagead2.googlesyndication.com",
    "partner.googleadservices.com",
    "piclick.kr",
@@ -303,6 +310,7 @@
    "realclick.co.kr",
    "realssp.co.kr",
    "recoshopping.naver.com",
+   "reebr.com",
    "reqde.sooplive.com",
    "safeframe.googlesyndication.com",
    "screen.buzzvil.com",
@@ -371,7 +379,7 @@
   "type": "redirect"
  },
  "condition": {
-  "regexFilter": "^[^:]+:\\/\\/([^:/]+\\.)?go\\.bandisoft\\.com\\/coupang\\.bandizip$",
+  "regexFilter": "^[^:]+:\\/\\/([^:/]+\\.)?prod\\.danawa\\.com\\/bridge\\/loadingbridgepowerclick\\.php.*",
   "resourceTypes": [
    "main_frame"
   ]
@@ -387,7 +395,7 @@
   "type": "redirect"
  },
  "condition": {
-  "regexFilter": "^[^:]+:\\/\\/([^:/]+\\.)?mjmedi\\.com\\/bannerpop\\/popup\\.html.*",
+  "regexFilter": "^[^:]+:\\/\\/([^:/]+\\.)?go\\.bandisoft\\.com\\/coupang\\.bandizip$",
   "resourceTypes": [
    "main_frame"
   ]
@@ -403,7 +411,7 @@
   "type": "redirect"
  },
  "condition": {
-  "regexFilter": "^[^:]+:\\/\\/([^:/]+\\.)?playwares\\.com\\/api\\/redirectad\\.php.*",
+  "regexFilter": "^[^:]+:\\/\\/([^:/]+\\.)?mjmedi\\.com\\/bannerpop\\/popup\\.html.*",
   "resourceTypes": [
    "main_frame"
   ]
@@ -419,7 +427,7 @@
   "type": "redirect"
  },
  "condition": {
-  "regexFilter": "^[^:]+:\\/\\/([^:/]+\\.)?cultureland\\.co\\.kr\\/etc\\/main_ad_.*",
+  "regexFilter": "^[^:]+:\\/\\/([^:/]+\\.)?playwares\\.com\\/api\\/redirectad\\.php.*",
   "resourceTypes": [
    "main_frame"
   ]
@@ -435,7 +443,7 @@
   "type": "redirect"
  },
  "condition": {
-  "regexFilter": "^[^:]+:\\/\\/([^:/]+\\.)?ppomppu\\.co\\.kr\\/inform_ad_click\\.php.*",
+  "regexFilter": "^[^:]+:\\/\\/([^:/]+\\.)?cultureland\\.co\\.kr\\/etc\\/main_ad_.*",
   "resourceTypes": [
    "main_frame"
   ]
@@ -451,7 +459,7 @@
   "type": "redirect"
  },
  "condition": {
-  "regexFilter": "^[^:]+:\\/\\/([^:/]+\\.)?prod\\.danawa\\.com\\/bridge\\/loadingbridgepowerclick\\.php.*",
+  "regexFilter": "^[^:]+:\\/\\/([^:/]+\\.)?ppomppu\\.co\\.kr\\/inform_ad_click\\.php.*",
   "resourceTypes": [
    "main_frame"
   ]

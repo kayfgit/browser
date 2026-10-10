@@ -5,6 +5,12 @@
 //! unpacked to `%LOCALAPPDATA%\browser\data\extensions`, and re-unpacked whenever the
 //! bundle changes (a hash stamp sits next to that folder).
 //!
+//! Debug builds unpack beside the executable instead (`target/debug/bundled/extensions`).
+//! They used to load the source tree directly, but Chromium writes its own indexes into
+//! an unpacked extension's `_metadata` folder, which dirtied the checkout on every run. A
+//! separate folder also keeps a debug run from swapping out the copy an installed
+//! browser has open.
+//!
 //! The folder path must never change. The bundled extensions have no `key` in their
 //! manifests, so WebView2 derives each one's ID from its folder path; a new path would
 //! register a second copy in the profile instead of updating the first.
@@ -25,7 +31,7 @@ static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 /// for that first result.
 pub(crate) fn dir() -> Option<PathBuf> {
     DIR.get_or_init(|| {
-        let root = crate::session::local_data_dir()?.join("extensions");
+        let root = root()?;
         match unpack(&root) {
             Ok(()) => Some(root),
             Err(e) => {
@@ -36,6 +42,15 @@ pub(crate) fn dir() -> Option<PathBuf> {
         }
     })
     .clone()
+}
+
+/// Where the bundle is unpacked: the local data folder, or beside a debug executable.
+fn root() -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        let exe = std::env::current_exe().ok()?;
+        return Some(exe.parent()?.join("bundled").join("extensions"));
+    }
+    Some(crate::session::local_data_dir()?.join("extensions"))
 }
 
 /// Start unpacking on a background thread, so the first web tab doesn't wait for it.
