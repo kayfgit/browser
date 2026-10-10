@@ -18,12 +18,20 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 const ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/extensions.tar.gz"));
 const HASH: &str = env!("BUNDLED_EXTENSIONS_HASH");
 
 static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+static CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// Whether this run unpacked new files over an older copy (or a first copy), so the
+/// browser profile has to reload them.
+pub(crate) fn changed_this_run() -> bool {
+    CHANGED.load(Ordering::Relaxed)
+}
 
 /// The folder holding the unpacked bundled extensions, unpacking them first if needed.
 /// `None` if there is no data folder or nothing could be unpacked. The work happens
@@ -92,6 +100,7 @@ fn unpack(root: &Path) -> io::Result<()> {
         let _ = fs::remove_dir_all(&old);
     }
     fs::rename(&staging, root)?;
+    CHANGED.store(true, Ordering::Relaxed);
     fs::write(&stamp, HASH)
 }
 

@@ -572,7 +572,10 @@ fn sync_bundled_blocker(webview: &WebView, on: bool, proxy: &EventLoopProxy<User
             let _ = report.send_event(UserEvent::AdblockFailed(e));
         }
     });
-    if let Err(e) = extensions::sync_bundled(webview, &dir, on, done) {
+    // Reinstall only when this run unpacked new files: reloading the extension aborts
+    // page loads in flight (see `extensions::sync_bundled`).
+    let refresh = crate::bundled_extensions::changed_this_run();
+    if let Err(e) = extensions::sync_bundled(webview, &dir, on, refresh, done) {
         let _ = proxy.send_event(UserEvent::AdblockFailed(e));
     }
 }
@@ -697,8 +700,14 @@ impl Extensions for WebView2View {
     fn set_enabled(&self, id: String, enabled: bool) -> EngineResult {
         extensions::set_enabled(&self.inner, id, enabled)
     }
-    fn sync_bundled(&self, dir: &std::path::Path, enabled: bool, done: Completion) -> EngineResult {
-        extensions::sync_bundled(&self.inner, dir, enabled, done)
+    fn sync_bundled(
+        &self,
+        dir: &std::path::Path,
+        enabled: bool,
+        refresh: bool,
+        done: Completion,
+    ) -> EngineResult {
+        extensions::sync_bundled(&self.inner, dir, enabled, refresh, done)
     }
 }
 impl BrowsingData for WebView2View {
