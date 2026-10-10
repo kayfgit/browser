@@ -141,7 +141,7 @@ consistent, with tests):
 - [layout.rs](crates/desktop/src/layout.rs): undo/redo of layout changes (`U` / `R`), recorded by stable `TabId`s.
 - [status.rs](crates/desktop/src/status.rs): the status message and when it clears.
 - [visited.rs](crates/desktop/src/visited.rs): visited-URL history with visit times.
-- [adblock.rs](crates/desktop/src/adblock.rs): the ad-block mode and the flag shared with every tab.
+- [adblock.rs](crates/desktop/src/adblock.rs): the ad-blocking switch and the flag shared with every tab, and which blocker each engine uses.
 - [config.rs](crates/desktop/src/config.rs): the persisted customization (`config.toml`).
 - [session.rs](crates/desktop/src/session.rs): what's saved on `:w` and restored at launch.
 - [profiles.rs](crates/desktop/src/profiles.rs): named sessions (`:profile`, `:scratch`).

@@ -1,3 +1,6 @@
+// Servo only: page-side cosmetic hiding and YouTube ad handling, for an engine with no
+// extension support. WebView2 tabs get all of this from uBlock Origin Lite instead. To be
+// replaced by an engine-level blocker for Servo; the redirect/popup guard is NAVGUARD_JS.
 (function () {
   if (window.__adblockInit) return;
   window.__adblockInit = true;
@@ -33,9 +36,8 @@
   }
 
   // --- DOM cosmetic observer: hide ad containers as the page builds itself ------
-  // Blocking the ad SCRIPTS/iframes/XHRs at the network level (so nothing loads in the
-  // first place) is uBlock Origin Lite's job, via declarativeNetRequest.
-  // The page-side job here is to HIDE leftover ad containers cosmetically, and — on
+  // Servo blocks nothing at the network level yet, so ad scripts still load.
+  // The page-side job here is to HIDE ad containers cosmetically, and — on
   // YouTube — to remove the anti-adblock enforcement modal the INSTANT it's inserted,
   // before it can paint (the observer fires before the next render, so no 0.3s flash).
   function observe() {
@@ -295,68 +297,6 @@
     return false;
   }
 
-  // --- forced / auto redirect guard -------------------------------------------
-  // Forced cross-site redirects (the "click the video → bounced to a scam" hijack) are
-  // cancelled natively by the shell's intent-gate guard, which denies any cross-site TOP
-  // navigation that no trusted gesture asked for — see `navguard`. The page side's only
-  // job now is to REPORT that trusted intent (below) so genuine link clicks are allowed,
-  // and to neuter popunder `window.open`s. `crossOrigin` backs both.
-  function crossOrigin(url) {
-    try { return new URL(url, document.baseURI).origin !== location.origin; }
-    catch (e) { return false; } // unparseable / relative → treat as same-origin (allow)
-  }
-  // Popup reports go ONLY from the top frame: wry builds an `http::Uri` from the sender
-  // frame's URL and unwraps it, so a report from an `about:blank`/`data:` ad iframe would
-  // feed it an invalid URI and abort the process. Sub-frames still neuter — they stay quiet.
-  var isTop = false;
-  try { isTop = (window.top === window); } catch (e) {}
-  function reportPopup(url) { if (isTop) window.__post('popup-blocked:' + url); }
-  // Cross-site navigation intent. The native guard cancels every cross-site TOP
-  // navigation unless the shell just saw legitimate intent — because at the engine
-  // level a forced redirect is indistinguishable from a real link click (these scripts
-  // hijack your click via a synthetic <a> or a transparent overlay, so WebView2 reports
-  // the jump as foreground AND user-initiated). The ONE trustworthy tell is here in the
-  // DOM: a navigation is wanted only when a TRUSTED (real, isTrusted) gesture lands on
-  // an actual cross-site link or form-submit control. Report exactly that; a synthetic
-  // click (isTrusted=false) or a non-link overlay <div> never matches, so its redirect
-  // gets no report and is cancelled. Top frame only — the frame the guard governs.
-  function navTargetCrossSite(t) {
-    try {
-      var a = (t && t.closest) ? t.closest('a[href]') : null;
-      if (a && a.href && !/^javascript:/i.test(a.href) && crossOrigin(a.href)) return true;
-      var sb = (t && t.closest) ? t.closest('button,input[type=submit],input[type=image]') : null;
-      if (sb) {
-        var f = sb.form || ((sb.closest) ? sb.closest('form') : null);
-        if (f && f.action && crossOrigin(f.action)) return true;
-      }
-    } catch (e) {}
-    return false;
-  }
-  function reportIntent(t) { if (on && isTop && navTargetCrossSite(t)) window.__post('nav-intent'); }
-  if (isTop) {
-    // pointerdown (not click) so the report is posted BEFORE the navigation fires.
-    document.addEventListener('pointerdown', function (e) {
-      if (e.isTrusted) reportIntent(e.target);
-    }, true);
-    document.addEventListener('keydown', function (e) {
-      if (e.isTrusted && (e.key === 'Enter' || e.key === ' ')) {
-        reportIntent(e.target);
-        reportIntent(document.activeElement);
-      }
-    }, true);
-  }
-  // window.open popunders are THE dominant "click anywhere → scam tab" vector on
-  // scummy streaming sites. Neuter scripted cross-origin opens while blocking is on.
-  // The shell's native new-window handler is the primary guard (it also catches frames
-  // and about:blank shells); this is the in-page backstop. Runs in every frame, so the
-  // ad iframe's own window.open is stopped at the source.
-  var _winOpen = window.open ? window.open.bind(window) : null;
-  if (_winOpen) {
-    window.open = function (u) {
-      if (on && (!u || crossOrigin(u))) { reportPopup(u || 'about:blank'); return null; }
-      return _winOpen.apply(null, arguments);
-    };
-  }
   // Periodic backstop. YouTube needs a FAST poll — youtube() skips in-player ads, seeks
   // past unskippables and strips the enforcement modal, all hinging on player state the
   // MutationObserver (childList only) can't see. Everywhere else the observer already
@@ -368,7 +308,8 @@
   setInterval(tick, isYT ? 500 : 2000);
 
   // --- live toggle from the shell (`:ads`), no reload needed -------------------
-  window.__setAdblock = function (v) {
+  // Called by `NAVGUARD_JS`'s `__setAdblock`, which owns the toggle.
+  window.__adblockCosmetic = function (v) {
     on = !!v;
     if (on) { hideCosmetic(document); youtube(); }
     else { unhideCosmetic(); }

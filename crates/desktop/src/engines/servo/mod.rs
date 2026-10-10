@@ -319,7 +319,7 @@ pub(super) fn build(
         opts.no_scrollbar,
         opts.adblock,
     );
-    let init = format!("if(window === window.top) {{\n{}\nwindow.__mode='normal';\n{}\n{}\n{}\nwindow.__adblockDefault={ab};\n{}\nwindow.__featureDefaults={{mute:{m},css:{c},video:{v},scrollbar:{sb}}};\n{}\n{}\n}}", include_str!("bridge.js"), crate::BRIDGE_JS, crate::FIND_JS, crate::CARET_JS, crate::ADBLOCK_JS, crate::FEATURES_JS, opts.extra_init);
+    let init = format!("if(window === window.top) {{\n{}\nwindow.__mode='normal';\n{}\n{}\n{}\nwindow.__adblockDefault={ab};\n{}\n{}\nwindow.__featureDefaults={{mute:{m},css:{c},video:{v},scrollbar:{sb}}};\n{}\n{}\n}}", include_str!("bridge.js"), crate::BRIDGE_JS, crate::FIND_JS, crate::CARET_JS, crate::ADBLOCK_JS, crate::NAVGUARD_JS, crate::FEATURES_JS, opts.extra_init);
     // Standard APIs Servo lacks, filled in for every document and frame.
     if std::env::var_os("BROWSER_SERVO_NO_COMPAT").is_none() {
         scripts.add_script(Rc::new(include_str!("compat.js").to_string().into()));

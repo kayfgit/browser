@@ -593,7 +593,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("extensions", ":extensions", "browser-extension picker in a vim tab (Enter toggles one on/off)"),
     ("js", ":js", "toggle JavaScript (reloads this tab; applies to new tabs)"),
     ("nojs", ":nojs <url>", "open a single page with JavaScript disabled"),
-    ("adblock", ":ads · :adblock [on|native|off]", "no args: toggle off/on · on (default): both halves — uBlock Origin Lite blocks at the network level, and the built-in layer does cosmetic hiding, YouTube ads, forced redirects and popunders (instantly, no reload) · native: drop the extension only, an escape hatch for a site that misbehaves · off: none"),
+    ("adblock", ":ads · :adblock [on|off]", "no args: toggle · on (default): uBlock Origin Lite blocks ads, trackers and YouTube ads, and the built-in guard stops forced redirects and popunders · off: none · the pages on screen reload so the change takes hold"),
     ("downloads", ":downloads · :dl", "allow executable/installer downloads (.exe/.msi…; blocked by default)"),
     ("mute", ":mute · :audio", "toggle muting all page audio/video (live, all tabs)"),
     ("css", ":css", "toggle page styling off/on (live, all tabs)"),

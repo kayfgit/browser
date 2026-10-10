@@ -40,15 +40,11 @@ pub struct Session {
     /// [`adblock_mode`](Self::adblock_mode); still written/read for older builds.
     #[serde(default = "default_adblock")]
     pub adblock: bool,
-    /// Which ad blocker is active: `"ubo"` (default), `"native"`, or `"off"`. Defaults to
-    /// `"ubo"` so sessions written before this field existed adopt the new default engine.
+    /// Whether ad blocking is on: `"ubo"` (on, the default) or `"off"`. Older sessions may
+    /// hold the retired `"native"` mode, which reads as on. (They may also carry an
+    /// `adblock_prev` key; it's ignored.)
     #[serde(default = "default_adblock_mode")]
     pub adblock_mode: String,
-    /// The engine a bare `:ads` switches back ON — the last one that was running before
-    /// blocking was turned off, so `native` → off → `native`. Same spellings as
-    /// [`adblock_mode`](Self::adblock_mode) minus `"off"`; defaults to `"ubo"`.
-    #[serde(default = "default_adblock_mode")]
-    pub adblock_prev: String,
     pub search_template: String,
     pub term_command: Vec<String>,
     /// Index of the focused tab within `tabs`.
@@ -258,8 +254,7 @@ mod tests {
             nojs: true,
             no_scrollbar: true,
             adblock: true,
-            adblock_mode: "ubo".into(),
-            adblock_prev: "native".into(),
+            adblock_mode: "off".into(),
             search_template: "https://example.com/?q=%s".into(),
             term_command: vec!["nu".into()],
             active: 1,
@@ -291,7 +286,7 @@ mod tests {
         let back: Session = toml::from_str(&text).expect("deserialize");
         assert_eq!(back.name, "Work");
         assert!(back.no_scrollbar);
-        assert_eq!(back.adblock_prev, "native");
+        assert_eq!(back.adblock_mode, "off");
         assert_eq!(back.tabs.len(), 2);
         assert_eq!(back.active, 1);
         let g = back.window.expect("window geom");

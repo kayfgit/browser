@@ -32,13 +32,34 @@ pub(crate) fn set_enabled(view: &dyn EngineView, id: String, enabled: bool) -> R
         .ok_or("this engine does not support extensions")?
         .set_enabled(id, enabled)
 }
-pub(crate) fn set_all_enabled(view: &dyn EngineView, enabled: bool) {
-    if let Some(service) = view.extensions() {
-        let _ = service.set_all_enabled(enabled);
-    }
-}
-pub(crate) fn install_dir(view: &dyn EngineView, dir: &std::path::Path) {
-    if let Some(service) = view.extensions() {
-        let _ = service.install_dir(dir);
+/// Bring the bundled extensions under `dir` to `enabled` in `view`'s storage context (see
+/// [`Extensions::sync_bundled`](browser_engine::Extensions::sync_bundled)). `done` runs on
+/// the UI thread with the outcome — also when the engine has no extension support or
+/// the request couldn't be dispatched, so a caller waiting on it is never left hanging.
+pub(crate) fn sync_bundled(
+    view: &dyn EngineView,
+    dir: &std::path::Path,
+    enabled: bool,
+    done: browser_engine::Completion,
+) {
+    let Some(service) = view.extensions() else {
+        return done(Ok(()));
+    };
+    // A dispatch error means the engine will never call `done`; hand it one ourselves.
+    let done = std::rc::Rc::new(std::cell::RefCell::new(Some(done)));
+    let engine_done = done.clone();
+    let result = service.sync_bundled(
+        dir,
+        enabled,
+        Box::new(move |result| {
+            if let Some(done) = engine_done.borrow_mut().take() {
+                done(result);
+            }
+        }),
+    );
+    if let Err(error) = result {
+        if let Some(done) = done.borrow_mut().take() {
+            done(Err(error));
+        }
     }
 }

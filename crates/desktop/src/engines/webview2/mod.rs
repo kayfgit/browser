@@ -14,9 +14,7 @@ use crate::tabs::{
     deproxy_translate, download_name, is_risky_download, is_translate_proxy, origin_of,
     ublock_extensions_dir, url_is_ad_host, PageState,
 };
-use crate::{
-    AdblockMode, UserEvent, ADBLOCK_JS, BRIDGE_JS, CARET_JS, FEATURES_JS, FIND_JS, IPC_PRELUDE,
-};
+use crate::{UserEvent, BRIDGE_JS, CARET_JS, FEATURES_JS, FIND_JS, IPC_PRELUDE, NAVGUARD_JS};
 use anyhow::Result;
 use browser_engine::{
     BrowsingData, Completion, DataKind, EngineResult, EngineView, ExtensionInfo, Extensions,
@@ -51,7 +49,6 @@ pub(crate) struct BuildOptions<'a> {
     pub storage: browser_engine::StorageMode,
     pub bounds: RectPx,
     pub adblock: bool,
-    pub adblock_mode: AdblockMode,
     pub mute: bool,
     pub no_css: bool,
     pub no_video: bool,
@@ -181,28 +178,12 @@ pub(crate) fn build(
     } else {
         WebViewBuilder::new()
     };
-    // Load uBlock Origin (any unpacked extension in the dir) into WebView2's own
-    // Chromium engine. The extension does network + cosmetic + scriptlet ad-blocking
-    // natively — far more capable than a hand-rolled blocker, and it doesn't depend on
-    // the WebResourceRequested path. Two distinct knobs here:
-    //   * `with_browser_extensions_enabled` is an ENVIRONMENT option, and WebView2
-    //     requires every webview sharing the user-data folder to be created with the
-    //     same options (like BROWSER_ARGS) — so it's set the same way in every mode.
-    //   * `with_extensions_path` makes wry call `AddBrowserExtension` on the shared
-    //     profile, and (re-)adding RESETS the extension to ENABLED. Doing that on
-    //     every build is what kept uBlock alive in `native`/`off` mode: the
-    //     post-build `set_all_enabled(false)` below is async, so the tab's first
-    //     page had already loaded with uBlock's content scripts injected — and those
-    //     hooks survive the late disable for the page's whole lifetime (the
-    //     "YouTube shorts hang with adblock off" bug). Only (re-)add while blocking is
-    //     ON, where enabled is the desired state; with it off, leave the profile's
-    //     persisted copy alone (swept disabled below). Absent dir → no extensions.
-    if let Some(ext_dir) = ublock_extensions_dir() {
-        builder = builder.with_browser_extensions_enabled(true);
-        if opts.adblock_mode.extension() && !private {
-            builder = builder.with_extensions_path(ext_dir);
-        }
-    }
+    // Extension support is an ENVIRONMENT option, and WebView2 requires every webview
+    // sharing the user-data folder to be created with the same options (like
+    // BROWSER_ARGS) — so it's on for every webview, whatever the ad-blocking state. The
+    // bundled ad blocker itself is installed and switched on/off after the build (see
+    // `sync_bundled_blocker`), never through wry's builder-time loading.
+    builder = builder.with_browser_extensions_enabled(true);
     builder = builder
         .with_bounds(native_rect(opts.bounds))
         .with_focused(false)
@@ -220,11 +201,11 @@ pub(crate) fn build(
         // Browser process flags — see BROWSER_ARGS. MUST match every other
         // webview (terminal included) or WebView2 creation fails with 0x8007139F.
         .with_additional_browser_args(BROWSER_ARGS)
-        // The page-side blocker (cosmetic hiding + popunder/redirect-intent) is
-        // injected into EVERY frame (for_main_only = false), not just the top
-        // document: scummy sites drive popunders from cross-origin player/ad iframes,
-        // which a main-frame-only injection would leave unguarded. (Network blocking
-        // of the ad scripts themselves is uBO Lite's.) It starts in the shell's current
+        // The redirect/popup guard (popunder neutering + redirect intent) is injected
+        // into EVERY frame (for_main_only = false), not just the top document: scummy
+        // sites drive popunders from cross-origin player/ad iframes, which a
+        // main-frame-only injection would leave unguarded. (Blocking the ads
+        // themselves is uBO Lite's.) It starts in the shell's current
         // state (baked as `__adblockDefault`), which every document load then corrects
         // to the LIVE state (see `UserEvent::SyncAdblock`); `:ads` flips it in the top
         // frame via `__setAdblock` (sub-frames adopt it on reload).
@@ -233,7 +214,7 @@ pub(crate) fn build(
         .with_initialization_script_for_main_only(
             {
                 let ab = opts.adblock;
-                format!("{IPC_PRELUDE}\nwindow.__adblockDefault={ab};\n{ADBLOCK_JS}")
+                format!("{IPC_PRELUDE}\nwindow.__adblockDefault={ab};\n{NAVGUARD_JS}")
             },
             false,
         )
@@ -391,18 +372,12 @@ pub(crate) fn build(
         .build_as_child(parent)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     verify_storage(&webview, identity.storage)?;
-    if private && opts.adblock_mode.extension() {
-        if let Some(dir) = ublock_extensions_dir() {
-            let _ = extensions::install_dir(&webview, &dir);
-        }
-    }
-    // Once per run, drop stale copies of the bundled extensions left in the profile
-    // by an older install location (see `install_dir_replacing`).
-    static DEDUPED: AtomicBool = AtomicBool::new(false);
-    if !private && opts.adblock_mode.extension() && !DEDUPED.swap(true, Ordering::Relaxed) {
-        if let Some(dir) = ublock_extensions_dir() {
-            let _ = extensions::install_dir_replacing(&webview, &dir);
-        }
+    // Bring the bundled ad blocker to the shell's state in this webview's profile. The
+    // regular profile is shared by every tab, so once per run is enough (`:ads` re-syncs
+    // all of them); each InPrivate webview has a fresh profile of its own.
+    static SYNCED: AtomicBool = AtomicBool::new(false);
+    if private || !SYNCED.swap(true, Ordering::Relaxed) {
+        sync_bundled_blocker(&webview, opts.adblock, &opts.proxy);
     }
     // The native redirect guard: cancels forced (non-user-initiated) cross-site top
     // navigations via WebView2's own `IsUserInitiated` — the structural fix the
@@ -424,16 +399,6 @@ pub(crate) fn build(
     // it by serving the doc from cache). It also duplicated uBlock Origin Lite, which
     // does the same job declaratively inside Chromium's network stack at no cost to us.
     // Network blocking is uBO Lite's; keep it that way.
-    //
-    // Outside `Ubo` the profile's PERSISTED extension copy can still be enabled — left
-    // by an old session, or a crash before a disable landed. Sweep it off so the
-    // persisted state converges. This is ASYNC, so a stale-enabled uBO Lite still
-    // filters this webview's very FIRST load — which is enough to hang a YouTube watch
-    // page (measured; see `AdblockMode`). It settles from the second load on.
-    #[cfg(windows)]
-    if !opts.adblock_mode.extension() {
-        let _ = extensions::set_all_enabled(&webview, false);
-    }
     // Watch WebView2's own favicon for this tab, so the strip can show it.
     #[cfg(windows)]
     favicon::install(&webview, page.icon.clone(), proxy.clone());
@@ -480,6 +445,8 @@ fn verify_storage(view: &WebView, expected: browser_engine::StorageMode) -> Resu
 
 /// TEMPORARY diagnostic probe for the YouTube half-load bug — injected only when
 /// `BROWSER_YT_DEBUG=1` (see the init-script assembly below). Remove when solved.
+/// (`ADBLOCK_JS` no longer runs in WebView2 tabs, so its `adblockInit`/`iprProp`
+/// fields now always read false/`none` here; uBO Lite handles YouTube ads.)
 const YT_PROBE_JS: &str = r#"
 (function () {
   if (location.hostname.indexOf('youtube.com') === -1) return;
@@ -590,6 +557,26 @@ struct WebView2View {
     nav_intent: crate::navguard::NavIntent,
 }
 
+/// Install the bundled ad blocker (uBO Lite) into `webview`'s profile and switch it to
+/// `on`, sending any failure to the shell's error log.
+fn sync_bundled_blocker(webview: &WebView, on: bool, proxy: &EventLoopProxy<UserEvent>) {
+    let Some(dir) = ublock_extensions_dir() else {
+        let _ = proxy.send_event(UserEvent::AdblockFailed(
+            "the bundled extensions couldn't be unpacked".into(),
+        ));
+        return;
+    };
+    let report = proxy.clone();
+    let done: Completion = Box::new(move |result| {
+        if let Err(e) = result {
+            let _ = report.send_event(UserEvent::AdblockFailed(e));
+        }
+    });
+    if let Err(e) = extensions::sync_bundled(webview, &dir, on, done) {
+        let _ = proxy.send_event(UserEvent::AdblockFailed(e));
+    }
+}
+
 fn native_rect(rect: RectPx) -> Rect {
     Rect {
         position: PhysicalPosition::new(rect.x, rect.y).into(),
@@ -605,10 +592,8 @@ pub(crate) fn keep_alive(parent: &Window) -> Result<Box<dyn EngineView>> {
         WebViewBuilder::new()
     }
     .with_html("");
-    // Match the content views' environment options, without reinstalling extensions.
-    if ublock_extensions_dir().is_some() {
-        builder = builder.with_browser_extensions_enabled(true);
-    }
+    // Match the content views' environment options, without touching extensions.
+    builder = builder.with_browser_extensions_enabled(true);
     let inner = builder
         .with_additional_browser_args(BROWSER_ARGS)
         .with_visible(false)
@@ -712,11 +697,8 @@ impl Extensions for WebView2View {
     fn set_enabled(&self, id: String, enabled: bool) -> EngineResult {
         extensions::set_enabled(&self.inner, id, enabled)
     }
-    fn set_all_enabled(&self, enabled: bool) -> EngineResult {
-        extensions::set_all_enabled(&self.inner, enabled)
-    }
-    fn install_dir(&self, dir: &std::path::Path) -> EngineResult {
-        extensions::install_dir(&self.inner, dir)
+    fn sync_bundled(&self, dir: &std::path::Path, enabled: bool, done: Completion) -> EngineResult {
+        extensions::sync_bundled(&self.inner, dir, enabled, done)
     }
 }
 impl BrowsingData for WebView2View {

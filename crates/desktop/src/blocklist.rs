@@ -106,7 +106,8 @@ pub(crate) const AD_HOSTS: &[&str] = &[
     // NOTE: YouTube's own first-party ad telemetry (`/api/stats/ads`, `/ptracking`,
     // `/get_midroll_`) is DELIBERATELY absent — blocking it trips YouTube's anti-adblock
     // detector, which then serves the "Ad blockers violate ToS" enforcement wall. The ads
-    // are killed by pruning the player-response JSON instead (see ADBLOCK_JS).
+    // are killed by pruning the player-response JSON instead (uBO Lite's scriptlets;
+    // `ADBLOCK_JS` on Servo).
 ];
 
 const SUPPLEMENT: &str = include_str!("../assets/blocklist-extra.txt");
@@ -351,7 +352,7 @@ mod tests {
 
     /// No bundled rule stands between a signed-in YouTube page and its account menu.
     ///
-    /// When the avatar button stopped opening its menu under `:adblock native`, the first
+    /// When the avatar button stopped opening its menu under the old native mode, the first
     /// suspect was a filter rule killing the request that populates it. It isn't: with all
     /// five lists compiled, every request that menu depends on passes — the lazy
     /// `/youtubei/v1/*` fetches, the avatar images, and the `accounts.google.com` /

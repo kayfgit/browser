@@ -380,20 +380,14 @@ impl App {
             "reopen" => self.reopen_closed(),
             "undo" => self.undo_layout(),
             "redo" => self.redo_layout(),
-            // Ad blocker control. `on`/`ubo` (the default) runs both halves — uBO Lite for
-            // network filtering plus the native cosmetic/YouTube/redirect layers, which cover
-            // what the extension structurally can't. `native` drops the extension only, as an
-            // escape hatch for a misbehaving site (see `AdblockMode`). Bare `:ads`/`:adblock`
-            // toggles off/on. Applies live; persisted.
+            // Ad blocking on/off (see `adblock`). Bare `:ads`/`:adblock` toggles. The
+            // visible pages reload so the extension's change takes hold; persisted.
             "ads" | "adblock" => match rest.trim().to_ascii_lowercase().as_str() {
                 "" => self.toggle_adblock(),
-                "on" | "ubo" | "ublock" | "ublockorigin" | "ublock-origin" | "ublock origin" => {
-                    self.set_adblock_mode(crate::AdblockMode::Ubo)
-                }
-                "native" | "own" => self.set_adblock_mode(crate::AdblockMode::Native),
-                "off" | "none" | "disable" => self.set_adblock_mode(crate::AdblockMode::Off),
+                "on" | "enable" | "ubo" | "ublock" => self.set_adblock(true),
+                "off" | "none" | "disable" => self.set_adblock(false),
                 other => self.set_error(format!(
-                    "unknown adblock argument '{other}' — use: on, native, or off"
+                    "unknown adblock argument '{other}' — use: on or off"
                 )),
             },
             // `:extensions` — the installed-extension picker (a vim tab); Enter toggles the
@@ -712,7 +706,7 @@ pub(crate) fn arg_candidates(app: &App, verb: &str, prior: &[&str]) -> Option<Ve
     const PERIODS: &[&str] = &["15m", "1h", "24h", "7d", "all"];
     let cands = match (verb, prior) {
         ("model", []) => own(crate::ai::MODELS),
-        ("ads" | "adblock", []) => own(&["on", "native", "off"]),
+        ("ads" | "adblock", []) => own(&["on", "off"]),
         ("clear", []) => own(&["history", "cookies", "cache", "all"]),
         ("update" | "upgrade", []) => own(&["check", "install", "auto", "notify", "off"]),
         ("clear", [_]) => own(PERIODS),
