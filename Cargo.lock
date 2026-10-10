@@ -726,6 +726,7 @@ dependencies = [
  "euclid",
  "flate2",
  "fontdue",
+ "http",
  "memmap2",
  "png",
  "portable-pty",

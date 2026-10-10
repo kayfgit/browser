@@ -7,8 +7,10 @@
 //!     "optimal" mode here: the profile grants it `<all_urls>` and it registers its
 //!     cosmetic/scriptlet content scripts. It can only change state on a page's next
 //!     load, so `:ads` reloads the visible pages.
-//!   * Servo: no extension support, so the page-side `ADBLOCK_JS` hides ad containers
-//!     and handles YouTube until a native engine-level blocker replaces it.
+//!   * Servo: no extension support, so the browser blocks requests itself — every
+//!     sub-resource load is checked against the [`blocklist`](crate::blocklist) engine
+//!     (`engines::servo::netblock`) — and the page-side `ADBLOCK_JS` hides ad containers
+//!     and handles YouTube.
 //!   * Both: the redirect/popup guard (`NAVGUARD_JS` plus the native navigation and
 //!     new-window handlers backed by the [`blocklist`](crate::blocklist) engine). That is
 //!     browser-level work an extension can't do: it cancels forced cross-site top

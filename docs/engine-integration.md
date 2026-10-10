@@ -229,9 +229,9 @@ the shell's focus reclaim provides mode recovery there. Servo storage lives
 under the browser data directory in `engines/servo`, separate from WebView2 cookies
 and sign-ins. Private/no-JavaScript creation is rejected before building a view.
 
-Known limits for this experimental build: no extensions/uBlock or native network
-filter, downloads, full IME preedit, interactive page-text selection, subframe bridge,
-or complete dialogs/permission controls. Page-side blocking is only the existing
+Known limits for this experimental build: no extensions/uBlock (sub-resource loads go
+through the native list engine instead, `engines/servo/netblock.rs`), downloads, full IME preedit, interactive page-text selection, subframe bridge,
+or complete dialogs/permission controls. Cosmetic blocking is only the existing
 JavaScript layer. Engine switches reopen the URL without transferring forms or live
 page state; full unload/POST policy remains unfinished. Servo runs in-process, so
 a runtime crash can terminate the application. Use `:engine webview2` for sites that

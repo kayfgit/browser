@@ -1,6 +1,7 @@
 // Servo only: page-side cosmetic hiding and YouTube ad handling, for an engine with no
-// extension support. WebView2 tabs get all of this from uBlock Origin Lite instead. To be
-// replaced by an engine-level blocker for Servo; the redirect/popup guard is NAVGUARD_JS.
+// extension support. WebView2 tabs get all of this from uBlock Origin Lite instead. Servo
+// blocks ad requests natively (engines/servo/netblock.rs); the redirect/popup guard is
+// NAVGUARD_JS.
 (function () {
   if (window.__adblockInit) return;
   window.__adblockInit = true;
@@ -36,7 +37,8 @@
   }
 
   // --- DOM cosmetic observer: hide ad containers as the page builds itself ------
-  // Servo blocks nothing at the network level yet, so ad scripts still load.
+  // Ad scripts are blocked at the network level (engines/servo/netblock.rs); this hides
+  // what's left.
   // The page-side job here is to HIDE ad containers cosmetically, and — on
   // YouTube — to remove the anti-adblock enforcement modal the INSTANT it's inserted,
   // before it can paint (the observer fires before the next render, so no 0.3s flash).
