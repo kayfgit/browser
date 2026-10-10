@@ -55,8 +55,9 @@ The browser is modal, like vim or qutebrowser. The mode decides where your keys 
 - **Command**: `:` opens the command bar. `o`/`O` prefill `open` (this tab) or
   `open -t` (new tab).
 - **Insert**: `i`, or clicking/hinting a text field, lets you type into a page field.
-  `Esc` leaves, and so does clicking away or navigating. It's meant for filling in a
-  search box or a form.
+  `Esc` leaves, and so does clicking away or navigating. The page sees that `Esc` too,
+  so a search popup or dropdown attached to the field closes with it. It's meant for
+  filling in a search box or a form.
 - **Passthrough**: `Ctrl+V` sends *every* key to the page and stays on through clicks,
   navigation and fullscreen. It's for web apps that need the whole keyboard (web
   terminals, games, video players). `Ctrl+S` or `Shift+Esc` leaves.

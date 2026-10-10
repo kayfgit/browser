@@ -31,7 +31,21 @@
     if (m === 'insert') {
       // Light field typing: Esc leaves. Ctrl+V is left alone so it pastes into the field
       // (to enter passthrough, leave Insert first, then Ctrl+V).
-      if (e.key === 'Escape' && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); post('insert-escape'); }
+      //
+      // The Esc is NOT swallowed: the page sees it too, so a search popup or dropdown
+      // tied to the field closes the way it would in any browser (GitHub's search box).
+      // Once the page has handled it, the field is left as well — blurred, so its caret
+      // and any focus-bound UI go away — and the shell takes the keyboard back.
+      if (e.key === 'Escape' && !e.shiftKey) {
+        setTimeout(function () {
+          if (window.__mode !== 'insert') return;
+          // Normal before the blur, so the focusout below doesn't report a second exit.
+          window.__mode = 'normal';
+          var a = document.activeElement;
+          if (a && editable(a) && a.blur) a.blur();
+          post('insert-escape');
+        }, 0);
+      }
     } else if (m === 'passthrough') {
       // Sticky: only Ctrl+S or Shift+Esc leaves. Plain Esc is left for the page (a web
       // SSH/vim needs it), so passthrough survives clicks, focus changes and bare Esc.
