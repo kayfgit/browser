@@ -39,7 +39,17 @@ With no pages open, the browser sits at about 30 MB with zero engine processes.
 - **Optional `:ai` assistant** (needs your own [Groq](https://groq.com/) API key) that can
   change settings, open pages and manage data for you.
 
+## Videos
+
+I make YouTube videos about the browser: what it can do, and me implementing new
+features. Find them on [@kayfofalltrades](https://www.youtube.com/@kayfofalltrades).
+
 ## Install
+
+> [!WARNING]
+> **Releases might be broken.** My PC is very bad, so I usually don't test a release on
+> it before publishing. I release it and install the update like everybody else. If
+> something is broken, [open an issue](../../issues) and I'll fix it asap.
 
 Download `browser-x86_64-pc-windows-msvc.msi` from the
 [latest release](../../releases/latest) and run it. It installs just for you, without
