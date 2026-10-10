@@ -35,6 +35,7 @@ issues:
 [] - after running ":ai open github and wikipedia side by side please" it opened github.com on the left, splitted vertically but didnt open wikipedia, and then gave me: "! groq 429: Rate limit reached for model `openai/gpt-oss-120b` in organization `org_01kva1e35pet7tkmy9tte02502` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Used 5616, Requested 5181. Please try again in 20.9775s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing"
 [] - random not responding 08/10/2026 i forgot the time
 [] - pressing the right mouse button on a youtube video opens both the shells menu and the youtube's menu, should only open youtube's own menu
+[] - normal mode on terminal has that annoying "[COPY] hjkl/w/b move..." text, need that removed.
 
 feats:
 [] - make ";" toggle browser hud visibility
