@@ -36,6 +36,9 @@ jobs:
 
       - name: Open a PR if it changed
         run: |
+          # The zip marks some files executable, which Linux keeps and Windows ignores:
+          # compare contents only, or every run would look like a change.
+          git config core.fileMode false
           git add -A crates/desktop/extensions/uBOLite.chromium
           if git diff --cached --quiet; then
             echo "uBlock Origin Lite is already up to date."
