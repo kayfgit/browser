@@ -215,10 +215,18 @@ pub trait Extensions {
     fn list(&self, done: Completion<Vec<ExtensionInfo>>) -> EngineResult;
     /// Mutations dispatch asynchronously; acceptance is not a completion report.
     fn set_enabled(&self, id: String, enabled: bool) -> EngineResult;
-    /// Install every unpacked extension under `dir` into this view's storage context
-    /// (idempotent), drop stale copies of them left at older paths, and enable or disable
-    /// them — and only them. `done` reports whether every one reached that state.
-    fn sync_bundled(&self, dir: &Path, enabled: bool, done: Completion) -> EngineResult;
+    /// Bring every unpacked extension under `dir` to `enabled` in this view's storage
+    /// context — installing it if it's wanted and missing, dropping stale copies left at
+    /// older paths — and touch nothing else. An installed copy is left alone when it's
+    /// already in that state; `refresh` reinstalls it anyway (its files changed on disk).
+    /// `done` reports whether every one reached that state.
+    fn sync_bundled(
+        &self,
+        dir: &Path,
+        enabled: bool,
+        refresh: bool,
+        done: Completion,
+    ) -> EngineResult;
 }
 
 pub trait BrowsingData {

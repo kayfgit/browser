@@ -48,9 +48,11 @@ pub(crate) fn sync_bundled(
     // A dispatch error means the engine will never call `done`; hand it one ourselves.
     let done = std::rc::Rc::new(std::cell::RefCell::new(Some(done)));
     let engine_done = done.clone();
+    // Never a refresh: that's for the builds that just unpacked new files.
     let result = service.sync_bundled(
         dir,
         enabled,
+        false,
         Box::new(move |result| {
             if let Some(done) = engine_done.borrow_mut().take() {
                 done(result);
