@@ -5,6 +5,7 @@ mod bridge_protocol;
 mod input;
 mod key_ownership;
 mod native;
+mod netblock;
 mod page;
 pub(crate) mod smoke;
 mod watchdog;
@@ -160,8 +161,14 @@ struct Delegate {
     navigation: Rc<bridge::Navigation>,
     menu: Rc<RefCell<Option<servo::ContextMenu>>>,
     frame_pending: Rc<Cell<bool>>,
+    /// Ad blocking (`:ads`) and the list engine, for [`netblock`].
+    adblock_on: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    blocker: crate::blocklist::SharedBlocker,
 }
 impl servo::WebViewDelegate for Delegate {
+    fn load_web_resource(&self, webview: WebView, load: servo::WebResourceLoad) {
+        netblock::filter(&self.adblock_on, &self.blocker, &webview, load);
+    }
     fn notify_new_frame_ready(&self, _: WebView) {
         // Servo repeats this notification on every pump until the frame is
         // painted. Keep one outstanding request through presentation: posting
@@ -367,6 +374,8 @@ addEventListener('unhandledrejection', e => console.error('[unhandled rejection]
             navigation: navigation.clone(),
             menu: menu.clone(),
             frame_pending: frame_pending.clone(),
+            adblock_on: opts.adblock_on.clone(),
+            blocker: opts.blocker.clone(),
         }))
         .build();
     smoke::log("Servo build: page ready");

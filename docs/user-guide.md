@@ -307,8 +307,9 @@ engine written in Rust, shipped with the browser.
 Both engines can sit side by side in a split. Modes, every hint type (`f`, `F`,
 `yf`, `s`), zoom and history work the same in either.
 
-Servo's limits for now: no extensions (so no uBlock Origin) and no network-level ad
-blocking (a page-side script hides ad containers and skips YouTube ads instead), no private (`:open -n`) or no-JavaScript (`:nojs`) tabs, no downloads, and
+Servo's limits for now: no extensions (so no uBlock Origin; the browser blocks ad and
+tracker requests itself, from the same filter lists, and a page-side script hides ad
+containers), no private (`:open -n`) or no-JavaScript (`:nojs`) tabs, no downloads, and
 selecting page text is limited. Many sites render or behave differently than in
 Chromium; YouTube, for one, shows its page but not its videos yet, so use
 `:engine webview2` there. Servo keeps its own cookies and storage, so you sign in to sites separately

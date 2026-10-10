@@ -41,8 +41,8 @@ pub(crate) const RESEARCH_JS: &str = include_str!("../scripts/research.js");
 ///   * YouTube — prune the ad descriptors from the player-response JSON, skip/seek past
 ///     in-player ads, and remove the "ad blocker" enforcement modal.
 ///
-/// It follows the live `on` flag `NAVGUARD_JS` owns (`window.__adblockCosmetic`). To be
-/// replaced by an engine-level blocker for Servo.
+/// It follows the live `on` flag `NAVGUARD_JS` owns (`window.__adblockCosmetic`). Servo's
+/// network-level blocking is native (`engines::servo::netblock`).
 #[cfg(all(windows, feature = "servo-engine"))]
 pub(crate) const ADBLOCK_JS: &str = include_str!("../scripts/adblock.js");
 

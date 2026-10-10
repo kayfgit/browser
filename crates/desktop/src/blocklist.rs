@@ -196,13 +196,10 @@ pub(crate) fn blocks_request(
 
 /// What a sub-resource blocker should do with a request, once the engine has weighed in.
 ///
-/// CURRENTLY UNUSED. Its only consumer was the `WebResourceRequested` sub-resource blocker,
-/// removed because intercepting on the host UI thread stalled page loads (see
-/// `build_content_webview_private`); sub-resource blocking is uBlock Origin Lite's job now.
-/// Kept — with its tests — because it is the engine-side half of a `$redirect` surrogate,
-/// which is what a future declarativeNetRequest ruleset built from `SUPPLEMENT` would need.
-/// Delete it along with `RESOURCES` if that never happens.
-#[allow(dead_code)]
+/// Used by Servo's network blocker (`engines::servo::netblock`). WebView2 tabs don't use
+/// it: uBlock Origin Lite does their sub-resource blocking, and intercepting requests on the
+/// WebView2 host's UI thread stalled page loads.
+#[cfg_attr(not(all(windows, feature = "servo-engine")), allow(dead_code))]
 pub(crate) enum BlockAction {
     /// No matching rule — let the request reach the network untouched.
     Pass,
@@ -220,8 +217,8 @@ pub(crate) enum BlockAction {
 /// Origin's trick for killing an ad/tracker script without breaking the code that expects
 /// its API. Returns [`BlockAction::Pass`] while the engine is still building.
 ///
-/// Unused for now — see [`BlockAction`].
-#[allow(dead_code)]
+/// Servo-only — see [`BlockAction`].
+#[cfg_attr(not(all(windows, feature = "servo-engine")), allow(dead_code))]
 pub(crate) fn classify_request(
     blocker: &SharedBlocker,
     url: &str,
@@ -256,7 +253,7 @@ pub(crate) fn classify_request(
 
 /// Split a `data:<mime>;base64,<payload>` URL (the form adblock-rust returns for a redirect
 /// surrogate) into its MIME type and decoded bytes. `None` if it isn't a base64 data URL.
-#[allow(dead_code)] // only reachable from `classify_request` — see [`BlockAction`].
+#[cfg_attr(not(all(windows, feature = "servo-engine")), allow(dead_code))] // see [`BlockAction`]
 fn decode_data_url(data_url: &str) -> Option<(String, Vec<u8>)> {
     let rest = data_url.strip_prefix("data:")?;
     let (mime, b64) = rest.split_once(";base64,")?;
