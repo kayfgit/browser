@@ -87,6 +87,15 @@ pub(crate) enum UserEvent {
     },
     /// Leave insert/passthrough: move focus from the page back to the shell.
     ExitToNormal,
+    /// Esc in Insert, seen by the engine's key hook — which lets the page have it too,
+    /// so whatever the page tied to the field (a search popup) closes. Leaving Insert
+    /// takes keyboard focus off the page, and done at once that drops the Esc before
+    /// the page sees it, so the shell waits a beat ([`InsertEscapeDue`](Self::InsertEscapeDue)).
+    /// In a main frame the page script usually ends Insert first, once the page has
+    /// handled the key; this covers fields in iframes.
+    InsertEscape,
+    /// [`InsertEscape`](Self::InsertEscape)'s beat is up: leave Insert if still in it.
+    InsertEscapeDue,
     /// Reclaim keyboard focus for the shell (e.g. after a page finishes loading
     /// and WebView2 has grabbed focus), unless the page should keep focus.
     FocusShell,

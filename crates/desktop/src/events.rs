@@ -247,6 +247,15 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
         #[cfg(all(windows, feature = "servo-engine"))]
         UserEvent::Servo(_) => {}
         UserEvent::ExitToNormal => app.exit_to_normal(),
+        UserEvent::InsertEscape => {
+            let proxy = app.proxy.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                let _ = proxy.send_event(UserEvent::InsertEscapeDue);
+            });
+        }
+        UserEvent::InsertEscapeDue if app.mode == ModeKind::Insert => app.exit_to_normal(),
+        UserEvent::InsertEscapeDue => {}
         UserEvent::SyncAdblock => app.broadcast_adblock(),
         UserEvent::FocusShell => {
             match app.mode {
