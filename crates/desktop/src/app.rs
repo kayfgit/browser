@@ -176,6 +176,9 @@ pub(crate) enum UserEvent {
     /// not an ad domain). New tabs here are shell-managed rather than OS popups, so the
     /// native window is suppressed and the URL re-opened as a managed tab. Carries the URL.
     OpenPopupTab(String),
+    /// A later launch handed this browser an address (a link opened from another app):
+    /// open it as a new tab and come to the front. Empty: just come to the front.
+    OpenExternal(String),
     /// Something happened to a download: a page started one (ask the user), progress, or
     /// its end. From any tab — downloads don't belong to the tab on screen.
     Download(crate::downloads::DownloadEvent),

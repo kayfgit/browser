@@ -530,6 +530,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("js", ":js", "toggle JavaScript (reloads this tab; applies to new tabs)"),
     ("nojs", ":nojs <url>", "open a single page with JavaScript disabled"),
     ("adblock", ":ads · :adblock [on|off]", "no args: toggle · on (default): uBlock Origin Lite blocks ads, trackers and YouTube ads, and the built-in guard stops forced redirects and popunders · off: none · the pages on screen reload so the change takes hold"),
+    ("default", ":default [remove]", "register browser with Windows so it can be your default browser, then open Settings → Default apps to pick it (Windows doesn't let programs set themselves). Links from other apps open as a new tab in the running window. remove unregisters it"),
     ("downloads", ":downloads · :dl [dir <path>]", "every download asks first (y/Enter saves, n/Esc cancels; programs and installers get a warning) and shows its progress in the status bar · :downloads lists this session's downloads: Enter opens, e shows in folder, d cancels / forgets · dir shows or changes where they're saved (default: your Downloads folder)"),
     ("mute", ":mute · :audio", "toggle muting all page audio/video (live, all tabs)"),
     ("css", ":css", "toggle page styling off/on (live, all tabs)"),

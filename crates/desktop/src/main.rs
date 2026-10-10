@@ -48,6 +48,7 @@ mod draw;
 mod engines;
 mod events;
 mod extensions;
+mod external;
 mod favicon;
 mod find;
 mod freeze;
@@ -172,6 +173,12 @@ fn main() -> Result<()> {
         }
     }
     let is_test = std::env::var("BROWSER_TEST_QUIT_MS").is_ok();
+    // A browser is already running (a link from another app, or a second launch): give
+    // it the address and stop here, so links land in the one window. `--scratch` runs
+    // only meet other scratch runs; test runs always start their own.
+    if !is_test && external::hand_off(cli_arg.as_deref(), cli_scratch) {
+        return Ok(());
+    }
     let mut cfg = config::load();
     if cli_scratch {
         // In-memory only: never `config::save`d here, so the next ordinary launch
@@ -179,7 +186,9 @@ fn main() -> Result<()> {
         cfg.scratch = true;
         cfg.scratch_return = cfg.profile.take();
     }
-    let restore = if cli_arg.is_none() && !is_test {
+    // A page to open (a link from another app) still restores the session around it;
+    // only a `:command` argument starts empty.
+    let restore = if cli_arg.as_deref().is_none_or(external::acceptable) && !is_test {
         let path = if cli_scratch {
             session::cli_scratch_path()
         } else if cfg.scratch {
@@ -303,24 +312,23 @@ fn main() -> Result<()> {
     // Compile the ad/redirect blocklist engine off-thread; it goes live a beat after
     // launch (BlocklistReady), and navigations use the timing heuristic until then.
     blocklist::spawn_build(app.blocker.clone(), app.proxy.clone());
+    // Later launches hand their links to this browser.
+    if !is_test {
+        external::listen(app.proxy.clone(), cli_scratch);
+    }
 
-    // Optional: open a page immediately, e.g. `browser youtube.com`,
-    // or run a command, e.g. `browser ":nojs youtube.com"`. An explicit
-    // CLI target takes precedence over (and skips) session restore. With no
-    // argument, restore the previous session's tabs + UI state (window geometry was
-    // already applied at build time above).
-    engines::with_window_target(&event_loop, || match cli_arg {
-        Some(target) => {
-            let t = target.trim_start();
-            if let Some(cmd) = t.strip_prefix(':') {
-                app.run_command(cmd);
-            } else {
-                app.open_tab(&target, false, true);
-            }
+    // Restore the previous session's tabs + UI state (window geometry was already
+    // applied at build time above), then open the argument if there is one: a page,
+    // e.g. `browser youtube.com` or a link from another app, as a new tab; or a
+    // command, e.g. `browser ":nojs youtube.com"`, which skips the restore.
+    engines::with_window_target(&event_loop, || {
+        if let Some(s) = restore {
+            app.restore_session(s);
         }
-        None => {
-            if let Some(s) = restore {
-                app.restore_session(s);
+        if let Some(target) = cli_arg {
+            match target.trim_start().strip_prefix(':') {
+                Some(cmd) => app.run_command(cmd),
+                None => app.open_tab(&target, false, true),
             }
         }
     });

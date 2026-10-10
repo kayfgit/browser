@@ -94,7 +94,11 @@ right-click copies the current selection.
   reopens in the tab's own mode, so editing a `:research` tab stays in `:research`.
 - `:y` (`:yank`) copies the current address.
 - `:nojs` toggles JavaScript off for new tabs; `:nojs <url>` opens one page without it.
-- Pages opened from the command line (`browser <url>`) skip session restore for that run.
+- `browser <url>` from a terminal or another app opens the page as a new tab: in the
+  browser that's already running if there is one, otherwise after restoring your session.
+- `:default` registers the browser with Windows and opens Settings → Default apps, where
+  you can pick it as your web browser (Windows doesn't let programs set that themselves).
+  Links from other apps then open as new tabs. `:default remove` unregisters it.
 
 ## Tab types
 
