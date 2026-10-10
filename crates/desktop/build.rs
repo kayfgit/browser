@@ -13,6 +13,8 @@
 //!    `OUT_DIR`, which `bundled_extensions.rs` embeds and unpacks on first run. That
 //!    keeps the installed browser a self-contained pair of executables. The archive's
 //!    hash goes into `BUNDLED_EXTENSIONS_HASH` so a changed bundle gets re-extracted.
+//!    `_metadata` folders are skipped: Chromium writes its own indexes there whenever it
+//!    loads an unpacked extension, so they're per-machine output, not part of the bundle.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
@@ -52,8 +54,7 @@ fn pack_extensions() {
             .collect();
         dirs.sort_by_key(|e| e.file_name());
         for entry in dirs {
-            tar.append_dir_all(entry.file_name(), entry.path())
-                .expect("pack extension");
+            append_tree(&mut tar, &entry.path(), Path::new(&entry.file_name()));
         }
     }
     tar.into_inner()
@@ -67,4 +68,25 @@ fn pack_extensions() {
         "cargo:rustc-env=BUNDLED_EXTENSIONS_HASH={:016x}",
         hasher.finish()
     );
+}
+
+/// Add `dir` to the archive as `name`, in sorted order (so the archive, and its hash, only
+/// change when the files do), leaving out Chromium's `_metadata` output.
+fn append_tree<W: std::io::Write>(tar: &mut tar::Builder<W>, dir: &Path, name: &Path) {
+    tar.append_dir(name, dir).expect("pack extension folder");
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .expect("read extension folder")
+        .flatten()
+        .filter(|e| e.file_name() != "_metadata")
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let (path, inner) = (entry.path(), name.join(entry.file_name()));
+        if path.is_dir() {
+            append_tree(tar, &path, &inner);
+        } else {
+            tar.append_path_with_name(&path, &inner)
+                .expect("pack extension file");
+        }
+    }
 }

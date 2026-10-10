@@ -78,28 +78,7 @@ function abortCurrentScriptFn(
     const logPrefix = safe.makeLogPrefix('abort-current-script', target, needle, context);
     const reNeedle = safe.patternToRegex(needle);
     const reContext = safe.patternToRegex(context);
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
     const thisScript = document.currentScript;
-    const chain = safe.String_split.call(target, '.');
-    let owner = window;
-    let prop;
-    for (;;) {
-        prop = chain.shift();
-        if ( chain.length === 0 ) { break; }
-        if ( prop in owner === false ) { break; }
-        owner = owner[prop];
-        if ( owner instanceof Object === false ) { return; }
-    }
-    let value;
-    let desc = Object.getOwnPropertyDescriptor(owner, prop);
-    if (
-        desc instanceof Object === false ||
-        desc.get instanceof Function === false
-    ) {
-        value = owner[prop];
-        desc = undefined;
-    }
-    const debug = shouldDebug(extraArgs);
     const exceptionToken = getExceptionTokenFn();
     const scriptTexts = new WeakMap();
     const textContentGetter = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent').get;
@@ -107,8 +86,7 @@ function abortCurrentScriptFn(
         let text = textContentGetter.call(elem);
         if ( text.trim() !== '' ) { return text; }
         if ( scriptTexts.has(elem) ) { return scriptTexts.get(elem); }
-        const [ , mime, content ] =
-            /^data:([^,]*),(.+)$/.exec(elem.src.trim()) ||
+        const [ , mime, content ] = /^data:([^,]*),(.+)$/.exec(elem.src.trim()) ||
             [ '', '', '' ];
         try {
             switch ( true ) {
@@ -128,50 +106,28 @@ function abortCurrentScriptFn(
         const e = document.currentScript;
         if ( e instanceof HTMLScriptElement === false ) { return; }
         if ( e === thisScript ) { return; }
-        if ( context !== '' && reContext.test(e.src) === false ) {
-            // eslint-disable-next-line no-debugger
-            if ( debug === 'nomatch' || debug === 'all' ) { debugger; }
-            return;
-        }
+        if ( context !== '' && reContext.test(e.src) === false ) { return; }
         if ( safe.logLevel > 1 && context !== '' ) {
             safe.uboLog(logPrefix, `Matched src\n${e.src}`);
         }
         const scriptText = getScriptText(e);
-        if ( reNeedle.test(scriptText) === false ) {
-            // eslint-disable-next-line no-debugger
-            if ( debug === 'nomatch' || debug === 'all' ) { debugger; }
-            return;
-        }
+        if ( reNeedle.test(scriptText) === false ) { return; }
         if ( safe.logLevel > 1 ) {
             safe.uboLog(logPrefix, `Matched text\n${scriptText}`);
         }
-        // eslint-disable-next-line no-debugger
-        if ( debug === 'match' || debug === 'all' ) { debugger; }
         safe.uboLog(logPrefix, 'Aborted');
         throw new ReferenceError(exceptionToken);
     };
-    // eslint-disable-next-line no-debugger
-    if ( debug === 'install' ) { debugger; }
-    try {
-        Object.defineProperty(owner, prop, {
-            get: function() {
-                validate();
-                return desc instanceof Object
-                    ? desc.get.call(owner)
-                    : value;
-            },
-            set: function(a) {
-                validate();
-                if ( desc instanceof Object ) {
-                    desc.set.call(owner, a);
-                } else {
-                    value = a;
-                }
-            }
-        });
-    } catch(ex) {
-        safe.uboErr(logPrefix, `Error: ${ex}`);
-    }
+    let currentValue = trapPropertyFn(target, {
+        get: function() {
+            validate();
+            return currentValue;
+        },
+        set: function(a) {
+            validate();
+            currentValue = a;
+        }
+    }, { canThrow: true });
 }
 
 function abortOnPropertyRead(
@@ -424,12 +380,13 @@ function getRandomTokenFn() {
 function jsonPrune(
     rawPrunePaths = '',
     rawNeedlePaths = '',
-    stackNeedle = ''
+    stackNeedle = '',
+    ...varargs
 ) {
     const safe = safeSelf();
     const logPrefix = safe.makeLogPrefix('json-prune', rawPrunePaths, rawNeedlePaths, stackNeedle);
     const stackNeedleDetails = safe.initPattern(stackNeedle, { canNegate: true });
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
+    const extraArgs = safe.parseVarargs(varargs);
     proxyApplyFn('JSON.parse', function(context) {
         const objBefore = context.reflect();
         if ( rawPrunePaths === '' ) {
@@ -746,10 +703,11 @@ function parsePropertiesToMatchFn(propsToMatch, implicit = '') {
 
 function preventAddEventListener(
     type = '',
-    pattern = ''
+    pattern = '',
+    ...varargs
 ) {
     const safe = safeSelf();
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 2);
+    const extraArgs = safe.parseVarargs(varargs);
     const logPrefix = safe.makeLogPrefix('prevent-addEventListener', type, pattern);
     const reType = safe.patternToRegex(type, undefined, true);
     const rePattern = safe.patternToRegex(pattern);
@@ -781,8 +739,8 @@ function preventAddEventListener(
         return parts.join('');
     };
     const shouldPrevent = (thisArg, type, handler) => {
-        const matchesType = safe.RegExp_test.call(reType, type);
-        const matchesHandler = safe.RegExp_test.call(rePattern, handler);
+        const matchesType = safe.RegExp_test(reType, type);
+        const matchesHandler = safe.RegExp_test(rePattern, handler);
         const matchesEither = matchesType || matchesHandler;
         const matchesBoth = matchesType && matchesHandler;
         if ( safe.logLevel > 1 && matchesEither ) {
@@ -816,22 +774,23 @@ function preventAddEventListener(
         }
         return context.reflect();
     };
+    const protect = owner => {
+        const { addEventListener } = owner;
+        Object.defineProperty(owner, 'addEventListener', {
+            set() { },
+            get() { return addEventListener; }
+        });
+    };
     runAt(( ) => {
         proxyApplyFn('EventTarget.prototype.addEventListener', proxyFn);
-        if ( extraArgs.protect ) {
-            const { addEventListener } = EventTarget.prototype;
-            Object.defineProperty(EventTarget.prototype, 'addEventListener', {
-                set() { },
-                get() { return addEventListener; }
-            });
+        if ( extraArgs.protect ) { protect(EventTarget.prototype); }
+        if ( Object.hasOwn(document, 'addEventListener') ) {
+            proxyApplyFn('document.addEventListener', proxyFn);
+            if ( extraArgs.protect ) { protect(document); }
         }
-        proxyApplyFn('document.addEventListener', proxyFn);
-        if ( extraArgs.protect ) {
-            const { addEventListener } = document;
-            Object.defineProperty(document, 'addEventListener', {
-                set() { },
-                get() { return addEventListener; }
-            });
+        if ( Object.hasOwn(window, 'addEventListener') ) {
+            proxyApplyFn('window.addEventListener', proxyFn);
+            if ( extraArgs.protect ) { protect(window); }
         }
     }, extraArgs.runAt);
 }
@@ -844,7 +803,8 @@ function preventFetchFn(
     trusted = false,
     propsToMatch = '',
     responseBody = '',
-    responseType = ''
+    responseType = '',
+    ...varargs
 ) {
     const safe = safeSelf();
     const setTimeout = self.setTimeout;
@@ -855,7 +815,7 @@ function preventFetchFn(
         responseBody,
         responseType
     );
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 4);
+    const extraArgs = safe.parseVarargs(varargs);
     const propNeedles = parsePropertiesToMatchFn(propsToMatch, 'url');
     const validResponseProps = {
         ok: [ false, true ],
@@ -998,7 +958,7 @@ function preventSetTimeout(
 }
 
 function preventXhr(...args) {
-    return preventXhrFn(false, ...args);
+    preventXhrFn(false, ...args);
 }
 
 function preventXhrFn(
@@ -1171,7 +1131,8 @@ function preventXhrFn(
 
 function proxyApplyFn(
     target = '',
-    handler = ''
+    handler = '',
+    options = {}
 ) {
     let context = globalThis;
     let prop = target;
@@ -1232,20 +1193,22 @@ function proxyApplyFn(
         };
         proxyApplyFn.isCtor = new Map();
         proxyApplyFn.proxies = new WeakMap();
-        proxyApplyFn.nativeToString = Function.prototype.toString;
-        const proxiedToString = new Proxy(Function.prototype.toString, {
-            apply(target, thisArg) {
-                let proxied = thisArg;
-                for(;;) {
-                    const fn = proxyApplyFn.proxies.get(proxied);
-                    if ( fn === undefined ) { break; }
-                    proxied = fn;
+        if ( (options.skipToString || proxyApplyFn.skipToString) !== true ) {
+            proxyApplyFn.nativeToString = Function.prototype.toString;
+            const proxiedToString = new Proxy(Function.prototype.toString, {
+                apply(target, thisArg) {
+                    let proxied = thisArg;
+                    for(;;) {
+                        const fn = proxyApplyFn.proxies.get(proxied);
+                        if ( fn === undefined ) { break; }
+                        proxied = fn;
+                    }
+                    return proxyApplyFn.nativeToString.call(proxied);
                 }
-                return proxyApplyFn.nativeToString.call(proxied);
-            }
-        });
-        proxyApplyFn.proxies.set(proxiedToString, proxyApplyFn.nativeToString);
-        Function.prototype.toString = proxiedToString;
+            });
+            proxyApplyFn.proxies.set(proxiedToString, proxyApplyFn.nativeToString);
+            Function.prototype.toString = proxiedToString;
+        }
     }
     if ( proxyApplyFn.isCtor.has(target) === false ) {
         proxyApplyFn.isCtor.set(target, fn.prototype?.constructor === fn);
@@ -1268,71 +1231,95 @@ function proxyApplyFn(
 function removeAttr(
     rawToken = '',
     rawSelector = '',
-    behavior = ''
+    behavior = '',
+    ...varargs
 ) {
     if ( typeof rawToken !== 'string' ) { return; }
     if ( rawToken === '' ) { return; }
     const safe = safeSelf();
-    const logPrefix = safe.makeLogPrefix('remove-attr', rawToken, rawSelector, behavior);
+    const logPrefix = safe.makeLogPrefix('remove-attr',
+        rawToken, rawSelector, behavior, ...varargs
+    );
     const tokens = safe.String_split.call(rawToken, /\s*\|\s*/);
-    const selector = tokens
-        .map(a => `${rawSelector}[${CSS.escape(a)}]`)
-        .join(',');
+    const selector = tokens.map(a => {
+        const b = CSS.escape(a);
+        return rawSelector.includes(`[${b}]`) ? rawSelector : `${rawSelector}[${b}]`;
+    }).join(',');
+    const lazily = /\basap\b/.test(behavior) === false;
+    const options = safe.parseVarargs(varargs);
     if ( safe.logLevel > 1 ) {
         safe.uboLog(logPrefix, `Target selector:\n\t${selector}`);
     }
-    const asap = /\basap\b/.test(behavior);
-    let timerId;
-    const rmattrAsync = ( ) => {
-        if ( timerId !== undefined ) { return; }
-        timerId = onIdleFn(( ) => {
-            timerId = undefined;
+    const rmattrFromNode = node => {
+        for ( const attr of tokens ) {
+            if ( node.hasAttribute(attr) === false ) { continue; }
+            node.removeAttribute(attr);
+            safe.uboLog(logPrefix, `Removed attribute '${attr}'`);
+        }
+    };
+    const rmattr = nodes => {
+        for ( const node of nodes ?? document.querySelectorAll(selector) ) {
+            rmattrFromNode(node);
+        }
+    };
+    const rmAttrLazily = ( ) => {
+        if ( rmAttrLazily.timer !== undefined ) { return; }
+        rmAttrLazily.timer = onIdleFn(( ) => {
+            rmAttrLazily.timer = undefined;
             rmattr();
         }, { timeout: 17 });
     };
-    const rmattr = ( ) => {
-        if ( timerId !== undefined ) {
-            offIdleFn(timerId);
-            timerId = undefined;
-        }
-        try {
-            const nodes = document.querySelectorAll(selector);
-            for ( const node of nodes ) {
-                for ( const attr of tokens ) {
-                    if ( node.hasAttribute(attr) === false ) { continue; }
-                    node.removeAttribute(attr);
-                    safe.uboLog(logPrefix, `Removed attribute '${attr}'`);
+    const mutationHandler = mutations => {
+        for ( const { addedNodes, removedNodes } of mutations ) {
+            for ( const node of addedNodes ) {
+                if ( node.nodeType !== 1 ) { continue; }
+                if ( lazily ) { return rmAttrLazily(); }
+                if ( node.matches(selector) ) {
+                    rmattrFromNode(node);
+                }
+                if ( node.childElementCount ) {
+                    rmattr(node.querySelectorAll(selector));
                 }
             }
-        } catch {
+            if ( lazily ) { return; }
+            for ( const node of removedNodes ) {
+                if ( node.nodeType !== 1 ) { continue; }
+                if ( node.matches(selector) ) {
+                    rmattrFromNode(node);
+                }
+            }
         }
     };
-    const mutationHandler = mutations => {
-        if ( timerId !== undefined ) { return; }
-        let skip = true;
-        for ( let i = 0; i < mutations.length && skip; i++ ) {
-            const { type, addedNodes, removedNodes } = mutations[i];
-            if ( type === 'attributes' ) { skip = false; }
-            for ( let j = 0; j < addedNodes.length && skip; j++ ) {
-                if ( addedNodes[j].nodeType === 1 ) { skip = false; break; }
-            }
-            for ( let j = 0; j < removedNodes.length && skip; j++ ) {
-                if ( removedNodes[j].nodeType === 1 ) { skip = false; break; }
-            }
+    const stop = ( ) => {
+        if ( start.observer ) {
+            start.observer.disconnect();
+            start.observer = undefined;
         }
-        if ( skip ) { return; }
-        asap ? rmattr() : rmattrAsync();
+        if ( rmAttrLazily.timer ) {
+            offIdleFn(rmAttrLazily.timer);
+            rmAttrLazily.timer = undefined;
+        }
+        if ( safe.logLevel > 1 ) {
+            safe.uboLog(logPrefix, 'Quitting');
+        }
     };
     const start = ( ) => {
         rmattr();
-        if ( /\bstay\b/.test(behavior) === false ) { return; }
-        const observer = new MutationObserver(mutationHandler);
-        observer.observe(document, {
+        if ( /\bstay\b/.test(behavior) === false ) {
+            if ( options.quitAfter === undefined ) { return; }
+        }
+        start.observer = new MutationObserver(mutationHandler);
+        start.observer.observe(document, {
             attributes: true,
             attributeFilter: tokens,
             childList: true,
             subtree: true,
         });
+        if ( options.quitAfter ) {
+            runAt(( ) => {
+                self.setTimeout(stop, options.quitAfter * 1000);
+            }, 'load');
+        }
     };
     runAt(( ) => { start(); }, safe.String_split.call(behavior, /\s+/));
 }
@@ -1379,15 +1366,14 @@ function runAtHtmlElementFn(fn) {
 }
 
 function safeSelf() {
-    if ( scriptletGlobals.safeSelf ) {
-        return scriptletGlobals.safeSelf;
+    if ( safeSelf.safe ) {
+        return safeSelf.safe;
     }
     const self = globalThis;
     const safe = {
         'Array_from': Array.from,
         'Error': self.Error,
-        'Function_toStringFn': self.Function.prototype.toString,
-        'Function_toString': thisArg => safe.Function_toStringFn.call(thisArg),
+        'Function_toString': Function.prototype.call.bind(self.Function.prototype.toString),
         'Math_floor': Math.floor,
         'Math_max': Math.max,
         'Math_min': Math.min,
@@ -1400,7 +1386,7 @@ function safeSelf() {
         'Object_hasOwn': Object.hasOwn.bind(Object),
         'Object_toString': Object.prototype.toString,
         'RegExp': self.RegExp,
-        'RegExp_test': self.RegExp.prototype.test,
+        'RegExp_test': Function.prototype.call.bind(self.RegExp.prototype.test),
         'RegExp_exec': self.RegExp.prototype.exec,
         'Request_clone': self.Request.prototype.clone,
         'String': self.String,
@@ -1411,10 +1397,8 @@ function safeSelf() {
         'removeEventListener': self.EventTarget.prototype.removeEventListener,
         'fetch': self.fetch,
         'JSON': self.JSON,
-        'JSON_parseFn': self.JSON.parse,
-        'JSON_stringifyFn': self.JSON.stringify,
-        'JSON_parse': (...args) => safe.JSON_parseFn.call(safe.JSON, ...args),
-        'JSON_stringify': (...args) => safe.JSON_stringifyFn.call(safe.JSON, ...args),
+        'JSON_parse': Function.prototype.call.bind(self.JSON.parse, self.JSON),
+        'JSON_stringify': Function.prototype.call.bind(self.JSON.stringify, self.JSON),
         'log': console.log.bind(console),
         // Properties
         logLevel: 0,
@@ -1467,7 +1451,7 @@ function safeSelf() {
         testPattern(details, haystack) {
             if ( details.matchAll ) { return true; }
             if ( details.re ) {
-                return this.RegExp_test.call(details.re, haystack) === details.expect;
+                return this.RegExp_test(details.re, haystack) === details.expect;
             }
             return haystack.includes(details.pattern) === details.expect;
         },
@@ -1485,21 +1469,20 @@ function safeSelf() {
             }
             return /^/;
         },
-        getExtraArgs(args, offset = 0) {
-            const entries = args.slice(offset).reduce((out, v, i, a) => {
-                if ( (i & 1) === 0 ) {
-                    const rawValue = a[i+1];
-                    const value = /^\d+$/.test(rawValue)
-                        ? parseInt(rawValue, 10)
-                        : rawValue;
-                    out.push([ a[i], value ]);
-                }
+        parseVarargs(varargs) {
+            const entries = varargs.reduce((out, v, i, a) => {
+                if ( i & 1 ) { return out; }
+                const rawValue = a[i+1];
+                const value = /^\d+$/.test(rawValue)
+                    ? parseInt(rawValue, 10)
+                    : rawValue;
+                out.push([ a[i], value ]);
                 return out;
             }, []);
             return this.Object_fromEntries(entries);
         },
     };
-    scriptletGlobals.safeSelf = safe;
+    safeSelf.safe = safe;
     if ( scriptletGlobals.bcSecret === undefined ) { return safe; }
     // This is executed only when the logger is opened
     safe.logLevel = scriptletGlobals.logLevel || 1;
@@ -1566,12 +1549,13 @@ function setConstant(
 function setConstantFn(
     trusted = false,
     chain = '',
-    rawValue = ''
+    rawValue = '',
+    ...varargs
 ) {
     if ( chain === '' ) { return; }
     const safe = safeSelf();
     const logPrefix = safe.makeLogPrefix('set-constant', chain, rawValue);
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
+    const extraArgs = safe.parseVarargs(varargs);
     function setConstant(chain, rawValue) {
         const trappedProp = (( ) => {
             const pos = chain.lastIndexOf('.');
@@ -1713,9 +1697,77 @@ function setConstantFn(
     }, extraArgs.runAt);
 }
 
-function shouldDebug(details) {
-    if ( details instanceof Object === false ) { return false; }
-    return scriptletGlobals.canDebug && details.debug;
+function trapPropertyFn(propChain, handler, options = {}) {
+    if ( propChain === '' ) { return; }
+    let owner = self;
+    let prop = propChain;
+    for (;;) {
+        const pos = prop.indexOf('.');
+        if ( pos === -1 ) { break; }
+        owner = owner[prop.slice(0, pos)];
+        if ( owner instanceof Object === false ) { return; }
+        prop = prop.slice(pos + 1);
+    }
+    const safe = safeSelf();
+    if ( trapPropertyFn.db === undefined ) {
+        trapPropertyFn.db = new WeakMap();
+        trapPropertyFn.entryFromContext = (owner, prop) => {
+            const handlers = trapPropertyFn.db.get(owner);
+            return handlers?.get(prop);
+        };
+        trapPropertyFn.getter = (owner, prop) => {
+            const entry = trapPropertyFn.entryFromContext(owner, prop);
+            if ( entry === undefined ) { return; }
+            let r = entry.value;
+            for ( const desc of entry.stack ) {
+                try { r = desc.get(); } catch (e) {
+                    if ( entry.canThrow ) { throw e; }
+                }
+            }
+            return r;
+        };
+        trapPropertyFn.setter = (owner, prop, value) => {
+            const entry = trapPropertyFn.entryFromContext(owner, prop);
+            if ( entry === undefined ) { return; }
+            entry.value = value;
+            for ( const desc of entry.stack ) {
+                try { desc.set(value); } catch (e) {
+                    if ( entry.canThrow ) { throw e; }
+                }
+            }
+        };
+    }
+    const { db } = trapPropertyFn;
+    const handlers = db.get(owner) || new Map();
+    if ( handlers.size === 0 ) {
+        db.set(owner, handlers);
+    }
+    const entry = handlers.get(prop) || {
+        value: owner[prop],
+        stack: [],
+    };
+    entry.stack.push(handler);
+    if ( entry.stack.length > 1 ) { return entry.value; }
+    Object.assign(entry, options);
+    handlers.set(prop, entry);
+    const desc = safe.Object_getOwnPropertyDescriptor(owner, prop);
+    if ( desc instanceof safe.Object ) {
+        if ( desc.get || desc.set ) {
+            entry.stack.push(desc);
+        }
+    }
+    try {
+        safe.Object_defineProperty(owner, prop, {
+            get() {
+                return trapPropertyFn.getter(owner, prop);
+            },
+            set(value) {
+                trapPropertyFn.setter(owner, prop, value);
+            }
+        });
+    } catch {
+    }
+    return entry.value;
 }
 
 function validateConstantFn(trusted, raw, extraArgs = {}) {
@@ -1770,23 +1822,640 @@ function validateConstantFn(trusted, raw, extraArgs = {}) {
     return value;
 }
 
+function zeta_j7s0f4ys() { // google-ima.js
+'use strict';
+
+
+
+
+
+if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
+  const VERSION = "3.764.0";
+  const ima = {};
+
+  class AdDisplayContainer {
+    constructor(containerElement) {
+      const divElement = document.createElement("div");
+      divElement.style.setProperty("display", "none", "important");
+      divElement.style.setProperty("visibility", "collapse", "important");
+      containerElement.appendChild(divElement);
+    }
+    destroy() {}
+    initialize() {}
+  }
+
+  class ImaSdkSettings {
+    constructor() {
+      this.c = true;
+      this.f = {};
+      this.i = false;
+      this.l = "";
+      this.p = "";
+      this.r = 0;
+      this.t = "";
+      this.v = "";
+    }
+    getCompanionBackfill() {}
+    getDisableCustomPlaybackForIOS10Plus() {
+      return this.i;
+    }
+    getFeatureFlags() {
+      return this.f;
+    }
+    getLocale() {
+      return this.l;
+    }
+    getNumRedirects() {
+      return this.r;
+    }
+    getPlayerType() {
+      return this.t;
+    }
+    getPlayerVersion() {
+      return this.v;
+    }
+    getPpid() {
+      return this.p;
+    }
+    isCookiesEnabled() {
+      return this.c;
+    }
+    setAutoPlayAdBreaks() {}
+    setCompanionBackfill() {}
+    setCookiesEnabled(c) {
+      this.c = !!c;
+    }
+    setDisableCustomPlaybackForIOS10Plus(i) {
+      this.i = !!i;
+    }
+    setFeatureFlags(f) {
+      this.f = f;
+    }
+    setLocale(l) {
+      this.l = l;
+    }
+    setNumRedirects(r) {
+      this.r = r;
+    }
+    setPlayerType(t) {
+      this.t = t;
+    }
+    setPlayerVersion(v) {
+      this.v = v;
+    }
+    setPpid(p) {
+      this.p = p;
+    }
+    setSessionId() {}
+    setVpaidAllowed() {}
+    setVpaidMode() {}
+
+    // https://github.com/uBlockOrigin/uBlock-issues/issues/2265#issuecomment-1637094149
+    getDisableFlashAds() {
+    }
+    setDisableFlashAds() {
+    }
+  }
+  ImaSdkSettings.CompanionBackfillMode = {
+    ALWAYS: "always",
+    ON_MASTER_AD: "on_master_ad",
+  };
+  ImaSdkSettings.VpaidMode = {
+    DISABLED: 0,
+    ENABLED: 1,
+    INSECURE: 2,
+  };
+
+  class EventHandler {
+    constructor() {
+      this.listeners = new Map();
+    }
+
+    _dispatch(e) {
+      let listeners = this.listeners.get(e.type);
+      listeners = listeners ? Array.from(listeners.values()) : [];
+      for (const listener of listeners) {
+        try {
+          listener(e);
+        } catch (r) {
+          console.error(r);
+        }
+      }
+    }
+
+    addEventListener(types, c, options, context) {
+      if (!Array.isArray(types)) {
+        types = [types];
+      }
+
+      for (const t of types) {
+        if (!this.listeners.has(t)) {
+          this.listeners.set(t, new Map());
+        }
+        this.listeners.get(t).set(c, c.bind(context || this));
+      }
+    }
+
+    removeEventListener(types, c) {
+      if (!Array.isArray(types)) {
+        types = [types];
+      }
+
+      for (const t of types) {
+        const typeSet = this.listeners.get(t);
+        if (typeSet) {
+          typeSet.delete(c);
+        }
+      }
+    }
+  }
+
+  class AdsLoader extends EventHandler {
+    constructor() {
+      super();
+      this.settings = new ImaSdkSettings();
+    }
+    contentComplete() {}
+    destroy() {}
+    getSettings() {
+      return this.settings;
+    }
+    getVersion() {
+      return VERSION;
+    }
+    requestAds(_r, _c) {
+      requestAnimationFrame(() => {
+        const { ADS_MANAGER_LOADED } = AdsManagerLoadedEvent.Type;
+        const event = new ima.AdsManagerLoadedEvent(ADS_MANAGER_LOADED, _r, _c);
+        this._dispatch(event);
+      });
+      const error = new ima.AdError(
+        "adPlayError",
+        1205, 1205,
+        "The browser prevented playback initiated without user interaction.",
+        _r, _c
+      );
+      requestAnimationFrame( () => {
+        this._dispatch(new ima.AdErrorEvent(error));
+      });
+    }
+  }
+
+  class AdsManager extends EventHandler {
+    constructor() {
+      super();
+      this.volume = 1;
+      this._enablePreloading = false;
+    }
+    collapse() {}
+    configureAdsManager() {}
+    destroy() {}
+    discardAdBreak() {}
+    expand() {}
+    focus() {}
+    getAdSkippableState() {
+      return false;
+    }
+    getCuePoints() {
+      return [0];
+    }
+    getCurrentAd() {
+      return currentAd;
+    }
+    getCurrentAdCuePoints() {
+      return [];
+    }
+    getRemainingTime() {
+      return 0;
+    }
+    getVolume() {
+      return this.volume;
+    }
+    init() {
+      if (this._enablePreloading) {
+        this._dispatch(new ima.AdEvent(AdEvent.Type.LOADED));
+      }
+    }
+    isCustomClickTrackingUsed() {
+      return false;
+    }
+    isCustomPlaybackUsed() {
+      return false;
+    }
+    pause() {}
+    requestNextAdBreak() {}
+    resize() {}
+    resume() {}
+    setVolume(v) {
+      this.volume = v;
+    }
+    skip() {}
+    start() {
+      requestAnimationFrame(() => {
+        for (const type of [
+          AdEvent.Type.LOADED,
+          AdEvent.Type.STARTED,
+          AdEvent.Type.CONTENT_PAUSE_REQUESTED,
+          AdEvent.Type.AD_BUFFERING,
+          AdEvent.Type.FIRST_QUARTILE,
+          AdEvent.Type.MIDPOINT,
+          AdEvent.Type.THIRD_QUARTILE,
+          AdEvent.Type.COMPLETE,
+          AdEvent.Type.ALL_ADS_COMPLETED,
+          AdEvent.Type.CONTENT_RESUME_REQUESTED,
+        ]) {
+          try {
+            this._dispatch(new ima.AdEvent(type));
+          } catch (e) {
+            console.error(e);
+          }
+        }
+      });
+    }
+    stop() {}
+    updateAdsRenderingSettings() {}
+  }
+
+  class AdsRenderingSettings {}
+
+  class AdsRequest {
+    setAdWillAutoPlay() {}
+    setAdWillPlayMuted() {}
+    setContinuousPlayback() {}
+  }
+
+  class AdPodInfo {
+    getAdPosition() {
+      return 1;
+    }
+    getIsBumper() {
+      return false;
+    }
+    getMaxDuration() {
+      return -1;
+    }
+    getPodIndex() {
+      return 1;
+    }
+    getTimeOffset() {
+      return 0;
+    }
+    getTotalAds() {
+      return 1;
+    }
+  }
+
+  class Ad {
+    constructor() {
+      this._pi = new AdPodInfo();
+    }
+    getAdId() {
+      return "";
+    }
+    getAdPodInfo() {
+      return this._pi;
+    }
+    getAdSystem() {
+      return "";
+    }
+    getAdvertiserName() {
+      return "";
+    }
+    getApiFramework() {
+      return null;
+    }
+    getCompanionAds() {
+      return [];
+    }
+    getContentType() {
+      return "";
+    }
+    getCreativeAdId() {
+      return "";
+    }
+    getCreativeId() {
+      return "";
+    }
+    getDealId() {
+      return "";
+    }
+    getDescription() {
+      return "";
+    }
+    getDuration() {
+      return 8.5;
+    }
+    getHeight() {
+      return 0;
+    }
+    getMediaUrl() {
+      return null;
+    }
+    getMinSuggestedDuration() {
+      return -2;
+    }
+    getSkipTimeOffset() {
+      return -1;
+    }
+    getSurveyUrl() {
+      return null;
+    }
+    getTitle() {
+      return "";
+    }
+    getTraffickingParameters() {
+      return {};
+    }
+    getTraffickingParametersString() {
+      return "";
+    }
+    getUiElements() {
+      return [""];
+    }
+    getUniversalAdIdRegistry() {
+      return "unknown";
+    }
+    getUniversalAdIds() {
+      return [new UniversalAdIdInfo()];
+    }
+    getUniversalAdIdValue() {
+      return "unknown";
+    }
+    getVastMediaBitrate() {
+      return 0;
+    }
+    getVastMediaHeight() {
+      return 0;
+    }
+    getVastMediaWidth() {
+      return 0;
+    }
+    getWidth() {
+      return 0;
+    }
+    getWrapperAdIds() {
+      return [""];
+    }
+    getWrapperAdSystems() {
+      return [""];
+    }
+    getWrapperCreativeIds() {
+      return [""];
+    }
+    isLinear() {
+      return true;
+    }
+    isSkippable() {
+      return true;
+    }
+  }
+
+  class CompanionAd {
+    getAdSlotId() {
+      return "";
+    }
+    getContent() {
+      return "";
+    }
+    getContentType() {
+      return "";
+    }
+    getHeight() {
+      return 1;
+    }
+    getWidth() {
+      return 1;
+    }
+  }
+
+  class AdError {
+    constructor(type, code, vast, message, request, context) {
+      this.errorCode = code;
+      this.message = message;
+      this.type = type;
+      this.adsRequest = request;
+      this.userRequestContext = context;
+      this.vastErrorCode = vast;
+    }
+    getErrorCode() {
+      return this.errorCode;
+    }
+    getInnerError() {
+        return null;
+    }
+    getMessage() {
+      return this.message;
+    }
+    getType() {
+      return this.type;
+    }
+    getVastErrorCode() {
+      return this.vastErrorCode;
+    }
+    toString() {
+      return `AdError ${this.errorCode}: ${this.message}`;
+    }
+  }
+  AdError.ErrorCode = {};
+  AdError.Type = {};
+
+  const isEngadget = () => {
+    try {
+      for (const ctx of Object.values(window.vidible._getContexts())) {
+        const player = ctx.getPlayer();
+        if (!player) { continue;}
+        const div = player.div;
+        if (!div) { continue; }
+        if (div.innerHTML.includes("www.engadget.com")) {
+          return true;
+        }
+      }
+    } catch {
+    }
+    return false;
+  };
+
+  const currentAd = isEngadget() ? undefined : new Ad();
+
+  class AdEvent {
+    constructor(type) {
+      this.type = type;
+    }
+    getAd() {
+      return currentAd;
+    }
+    getAdData() {
+      return {};
+    }
+  }
+  AdEvent.Type = {
+    AD_BREAK_READY: "adBreakReady",
+    AD_BUFFERING: "adBuffering",
+    AD_CAN_PLAY: "adCanPlay",
+    AD_METADATA: "adMetadata",
+    AD_PROGRESS: "adProgress",
+    ALL_ADS_COMPLETED: "allAdsCompleted",
+    CLICK: "click",
+    COMPLETE: "complete",
+    CONTENT_PAUSE_REQUESTED: "contentPauseRequested",
+    CONTENT_RESUME_REQUESTED: "contentResumeRequested",
+    DURATION_CHANGE: "durationChange",
+    EXPANDED_CHANGED: "expandedChanged",
+    FIRST_QUARTILE: "firstQuartile",
+    IMPRESSION: "impression",
+    INTERACTION: "interaction",
+    LINEAR_CHANGE: "linearChange",
+    LINEAR_CHANGED: "linearChanged",
+    LOADED: "loaded",
+    LOG: "log",
+    MIDPOINT: "midpoint",
+    PAUSED: "pause",
+    RESUMED: "resume",
+    SKIPPABLE_STATE_CHANGED: "skippableStateChanged",
+    SKIPPED: "skip",
+    STARTED: "start",
+    THIRD_QUARTILE: "thirdQuartile",
+    USER_CLOSE: "userClose",
+    VIDEO_CLICKED: "videoClicked",
+    VIDEO_ICON_CLICKED: "videoIconClicked",
+    VIEWABLE_IMPRESSION: "viewable_impression",
+    VOLUME_CHANGED: "volumeChange",
+    VOLUME_MUTED: "mute",
+  };
+
+  class AdErrorEvent {
+    constructor(error) {
+      this.type = "adError";
+      this.error = error;
+    }
+    getError() {
+      return this.error;
+    }
+    getUserRequestContext() {
+      return this.error?.userRequestContext || {};
+    }
+  }
+  AdErrorEvent.Type = {
+    AD_ERROR: "adError",
+  };
+
+  const manager = new AdsManager();
+
+  class AdsManagerLoadedEvent {
+    constructor(type, request, context) {
+      this.type = type;
+      this.adsRequest = request;
+      this.userRequestContext = context;
+    }
+    getAdsManager(c, settings) {
+      if (settings && settings.enablePreloading) {
+        manager._enablePreloading = true;
+      }
+      return manager;
+    }
+    getUserRequestContext() {
+      return this.userRequestContext || {};
+    }
+  }
+  AdsManagerLoadedEvent.Type = {
+    ADS_MANAGER_LOADED: "adsManagerLoaded",
+  };
+
+  class CustomContentLoadedEvent {}
+  CustomContentLoadedEvent.Type = {
+    CUSTOM_CONTENT_LOADED: "deprecated-event",
+  };
+
+  class CompanionAdSelectionSettings {}
+  CompanionAdSelectionSettings.CreativeType = {
+    ALL: "All",
+    FLASH: "Flash",
+    IMAGE: "Image",
+  };
+  CompanionAdSelectionSettings.ResourceType = {
+    ALL: "All",
+    HTML: "Html",
+    IFRAME: "IFrame",
+    STATIC: "Static",
+  };
+  CompanionAdSelectionSettings.SizeCriteria = {
+    IGNORE: "IgnoreSize",
+    SELECT_EXACT_MATCH: "SelectExactMatch",
+    SELECT_NEAR_MATCH: "SelectNearMatch",
+  };
+
+  class AdCuePoints {
+    getCuePoints() {
+      return [];
+    }
+  }
+
+  class AdProgressData {}
+
+  class UniversalAdIdInfo {
+    getAdIdRegistry() {
+      return "";
+    }
+    getAdIdValue() {
+      return "";
+    }
+  }
+
+  Object.assign(ima, {
+    AdCuePoints,
+    AdDisplayContainer,
+    AdError,
+    AdErrorEvent,
+    AdEvent,
+    AdPodInfo,
+    AdProgressData,
+    AdsLoader,
+    AdsManager: manager,
+    AdsManagerLoadedEvent,
+    AdsRenderingSettings,
+    AdsRequest,
+    CompanionAd,
+    CompanionAdSelectionSettings,
+    CustomContentLoadedEvent,
+    gptProxyInstance: {},
+    ImaSdkSettings,
+    OmidAccessMode: {
+      DOMAIN: "domain",
+      FULL: "full",
+      LIMITED: "limited",
+    },
+    OmidVerificationVendor: {
+      1: "OTHER",
+      2: "GOOGLE",
+      GOOGLE: 2,
+      OTHER: 1
+    },
+    settings: new ImaSdkSettings(),
+    UiElements: {
+      AD_ATTRIBUTION: "adAttribution",
+      COUNTDOWN: "countdown",
+    },
+    UniversalAdIdInfo,
+    VERSION,
+    ViewMode: {
+      FULLSCREEN: "fullscreen",
+      NORMAL: "normal",
+    },
+  });
+
+  if (!window.google) {
+    window.google = {};
+  }
+
+  window.google.ima = ima;
+}
+}
+
 /******************************************************************************/
 
 const scriptletGlobals = {}; // eslint-disable-line
 
-const $scriptletFunctions$ = /* 15 */
-[preventSetTimeout,setConstant,preventFetch,jsonPrune,abortCurrentScript,preventAddEventListener,preventRequestAnimationFrame,preventXhr,abortOnPropertyRead,abortOnPropertyWrite,preventSetInterval,adjustSetInterval,adjustSetTimeout,removeAttr,noWindowOpenIf];
-
-const $scriptletArgs$ = /* 149 */ ["/siteAccessNotification|checkBaitElement/","rhoostatus","100","__NEXT_DATA__.runtimeConfig._qub_sdk.qubConfig.ad.adBlockerDetectorEnabled","false","pagead2.googlesyndication.com","displayCookieWallBanner","siteParams.aabMessage","LCI.adNetwork","undefined","jQuery","adblocker","penci_options_set.ad_blocker_detector","ima","{}","DOMContentLoaded","adblock","integrityObserver.corrupted","0","checkAdsBlocked","noopFunc","Date.now","dAp","true","detected","isAdblock","load","/www3\\.doubleclick\\.net|tagger\\.opecloud\\.com|fwmrm\\.net/","emptyArr","chp_ads_blocker_detector","adsBlocked","tag.min.js","fwmrm","checkDiv","navigator.brave","js.sddan.com","ABDetector","document.getElementById","Blocking Ads","document.createElement","moneyAbovePrivacy","bAdBlocker","Object.prototype.autoRecov","noPub","1","canRunAds","adClasses","[]","dtctAB","adskeeper.co.uk","document.write","alert","setTimeout","bloqueur","Promise","window.location","msg_ab","gothamBatAdblock","adblockdetected","adsbygoogle","document.querySelector","oadbActive","window.adsapp","ujloijdkhjkwus","$","checkAds","wIsAdBlocked","mdpDeBlocker","adBlockDetected","adback","google_jobrunner","adParams siteParams.aabMessage","onload","ptv.Data.uniroll","pmd.Data.uniroll","OAS_AD","ads.enableAntiAdBlocking","v.fwmrm.net","Object.prototype.isBlockerDetected","__TF1_CONFIG__.featureFlag.contentAccess.isAdblockCheckRequired","__TF1_CONFIG__.adblock.display","__TF1_CONFIG__.adblock.serverRequest","static.adsafeprotected.com/favicon.ico","/^https:\\/\\/ads\\.stickyadstv\\.com\\/$/ method:HEAD","defaultConsentString","*","0.001","event_listener_timeout","/userConsentProcess|this===/","href","a[href]#clickfakeplayer","return t()","sessionStorage","click","Popup","advanced_ads_ready","userConsentProcessEnded","randno","25","FastClick","FastClick.attach","setTimeoutIds_",".content-propose > a[href].btn-ad-iframe","empire.isAdbActive","empire.directHideAds","empire.countpremium.film","empire.countpremium.serie","empire.countpremiumMore.film.count","empire.countpremiumMore.serie.count","empire.countpremiumaccount.film","empire.countpremiumaccount.serie","empire.mediaData.advisorDirect","","empire.mediaData.advisorMovie","empire.mediaData.advisorSerie","adsConfig","isSetupAccess","/userConsentProcessEnded|\\[0\\]\\+\"With\"/","interstitial","JSON.parse","document.createElement('script')","document.documentElement).appendChild","Object.prototype.withAds","AC.config.ads","getAudioAdUrl","zoneSett","aEteAffiche","__yget_ad_list","_adb","td_ad_background_click_link","Object.prototype.sendPauseMidrollTracking","__data.application.settings.featPlayerAds","ads.*.default ads.*.url ads.enableMidrolls","ads","applaunch.data.player.features.ad.enabled applaunch.data.player.features.ad.dai.enabled","appName","tv.freewheel.SDK.Util.pingURLWithForm","trueFunc","tv.freewheel.SDK.Util.pingURLWithImage","tv.freewheel.SDK.Util.pingURLWithScript","tv.freewheel.SDK.Util.pingURLWithXMLHTTPRequest","tv.freewheel.SDK.Util.sendAdRequestWithXMLHTTPRequest","__NEXT_DATA__.runtimeConfig.playerTF1.ads.enable","<=1?(clearInterval","data.result.items.sidebar.[-].type.[=].advertiser_ads","data.search_id","fetch","Uint8Array","#clickfakeplayer"];
-
-const $scriptletArglists$ = /* 127 */ "0,0;0,1,2;1,3,4;2,5;0,6;3,7;1,8,9;4,10,11;1,12,4;1,13,14;5,15,16;1,17,18;1,19,20;6,21;1,22,23;0,24;7,5;0,25;5,15,25;5,26,25;2,27,28;4,29;8,30;2,31;2,32;1,33,20;1,34,9;2,35;8,36;4,37,38;4,39,16;1,40,23;1,41,4;8,42;1,43,44;1,45,23;1,46,47;9,48;2,49;4,50,51;4,52,53;4,54,51;10,55;4,37,56;8,57;1,58,4;10,59;5,15,59;1,17,4;4,60,61;1,62,23;1,63,4;4,64,65;1,66,4;8,67;1,68,4;4,37,69;0,59;1,70,20;3,71;8,72;1,73,14;1,74,14;1,75,20;3,76;7,77;1,78,4;1,79,4;1,80,4;1,81,4;2,82;2,83;11,84,85,86;12,87,85,86;12,88,85,86;13,89,90;12,91,85,86;0,92;5,93,94;1,95,20;12,96,85,86;14;0,97,98;1,99,20;1,100,20;12,101,85,86;13,89,102;1,103,4;1,104,9;1,105,18;1,106,18;1,107,18;1,108,18;1,109,18;1,110,18;1,111,112;1,113,44;1,114,44;1,115,47;1,116,23;12,117,85,86;5,15,118;4,119,120;4,39,121;1,122,4;1,123,14;1,124,20;8,125;1,126,23;8,127;8,128;9,129;1,130,20;1,131,4;3,132,133;3,134,135;1,136,137;1,138,137;1,139,137;1,140,137;1,141,137;1,142,4;11,143,85,86;3,144,145;4,146,147;13,89,148;9,127";
-
-const $scriptletArglistRefs$ = /* 120 */ "65,66,116,117,118,119,120;104;9;32;106;67,68,69,70,71,116,117,118,119,120;104;101;106;85;32;32;33;104;44;111;23;24;77,81;61,62;123;107;104;108;102,103;3;115;12,37;63;32;70,71,72,121;9;105;54;25;16,28;106;30;27;34;63;76;16,37;125;50;13,14,15;4;104;82;58;35;45;43;7,8;109;64,113,114;55;60;85;29;81,122;1,10,45;44;16;42;38,39,40,41;126;60;79;80;74;52;3;20;75;100;2;17,18,19;81,87,88,89,90,91,92,93,94;51;6;110;59;56;73;57;16,26,81,87,88,89,90,91,92,93,94,95,96,97;104;5;0;104;104;98;26;26,81,87,88,89,90,91,92,93,94;53;124;75;21;56;16,26,81,86,87,88,89,90,91,92,93,94,95,96,97;7,8;36;3;35;112;3;49;5,48;99;5,11;3;3,31;3;46,47;83,84;22;3;3;78";
-
-const $scriptletHostnames$ = /* 120 */ ["m6.fr","geo.fr","qub.ca","rtl.be","rtl.fr","tf1.fr","gala.fr","macg.co","rtl2.fr","20min.ch","7sur7.be","dhnet.be","radio.fr","voici.fr","9docu.org","actu17.fr","darkino.*","france.tv","japscan.*","playtv.fr","qwant.com","11anim.com","capital.fr","e-sushi.fr","japscan.me","planhub.ca","rtlplay.be","rustica.fr","skyrock.fr","sudinfo.be","tf1info.fr","tvaplus.ca","allocine.fr","bleachmx.fr","cinefil.com","ebookdz.com","funradio.fr","lemanip.com","malekal.com","pianoweb.fr","skyrock.com","sudouest.fr","systemed.fr","1jour1film.*","20minutes.fr","cookomix.com","gamekult.com","gentside.com","jeune-gay.fr","jtrouver.com","mac4ever.com","varmatin.com","abcbourse.com","adala-news.fr","basketusa.com","canalplus.com","hack-life.net","iphonesoft.fr","lessentiel.lu","monumentum.fr","nakastream.tv","nicematin.com","vostfr.stream","air-journal.fr","chat.babel.com","crunchyscan.fr","ecranlarge.com","iphonetweak.fr","justarrived.lu","magicmaman.com","marieclaire.fr","monacomatin.mc","monlatuque.com","rmcbfmplay.com","1jour1film.cyou","cosmopolitan.fr","coupdepouce.com","cyclismactu.net","empire-stream.*","hollywoodpq.com","lecrabeinfo.net","lindependant.fr","linternaute.com","recreatisse.com","supersoluce.com","voyageforum.com","empire-anime.com","femmeactuelle.fr","journaldunet.com","journalduweb.org","maxisciences.com","programme-tv.net","e-player-stream.*","empire-stream.net","empire-streamz.fr","jardiner-malin.fr","observalgerie.com","seriepourvous.com","super-ethanol.com","ultimate-catch.eu","empire-streaming.*","equinoxmagazine.fr","jaitoutcompris.com","meteo-grenoble.com","parlons-basket.com","prod-player.tf1.fr","techno-science.net","cliqueduplateau.com","commentcamarche.net","e-player-stream.app","journaldesfemmes.fr","lameteoagricole.net","signal-arnaques.com","animedigitalnetwork.fr","lecourrier-du-soir.com","occasions.decathlon.fr","benjaminellisbernard.fr","animationdigitalnetwork.fr","animationdigitalnetwork.com","player.melaniezettofrais.online"];
-
-const $scriptletFromRegexes$ = /* 0 */ [];
-
+const $hasHostnames$ = true;
 const $hasEntities$ = true;
 const $hasAncestors$ = false;
 const $hasRegexes$ = false;
@@ -1834,8 +2503,10 @@ const entries = (( ) => {
 })();
 if ( entries.length === 0 ) { return; }
 
-const todoIndices = new Set();
-if ( $scriptletHostnames$.length ) {
+const todo = new Set();
+
+if ( $hasHostnames$ ) {
+    const $scriptletHostnames$ = /* 127 */ ["m6.fr","geo.fr","qub.ca","rtl.be","rtl.fr","tf1.fr","gala.fr","macg.co","oqee.tv","rtl2.fr","20min.ch","7sur7.be","dhnet.be","radio.fr","voici.fr","9docu.org","actu17.fr","darkino.*","france.tv","japscan.*","playtv.fr","qwant.com","11anim.com","capital.fr","chatnow.fr","e-sushi.fr","japscan.me","planhub.ca","rmcplus.fr","rtlplay.be","rustica.fr","skyrock.fr","sudinfo.be","tf1info.fr","tv.free.fr","tvaplus.ca","allocine.fr","bleachmx.fr","cinefil.com","ebookdz.com","funradio.fr","lemanip.com","malekal.com","pianoweb.fr","skyrock.com","sudouest.fr","systemed.fr","webflix.art","1jour1film.*","20minutes.fr","cookomix.com","gamekult.com","gentside.com","jeune-gay.fr","jtrouver.com","mac4ever.com","sushiscan.st","tvasports.ca","varmatin.com","abcbourse.com","adala-news.fr","basketusa.com","canalplus.com","hack-life.net","iphonesoft.fr","lessentiel.lu","monumentum.fr","nakastream.tv","nicematin.com","vostfr.stream","air-journal.fr","chat.babel.com","crunchyscan.fr","ecranlarge.com","iphonetweak.fr","justarrived.lu","magicmaman.com","marieclaire.fr","monacomatin.mc","monlatuque.com","rmcbfmplay.com","1jour1film.cyou","cosmopolitan.fr","coupdepouce.com","cyclismactu.net","empire-stream.*","hollywoodpq.com","lecrabeinfo.net","lindependant.fr","linternaute.com","recreatisse.com","supersoluce.com","voyageforum.com","empire-anime.com","femmeactuelle.fr","journaldunet.com","journalduweb.org","maxisciences.com","programme-tv.net","e-player-stream.*","empire-stream.net","empire-streamz.fr","jardiner-malin.fr","observalgerie.com","seriepourvous.com","super-ethanol.com","ultimate-catch.eu","empire-streaming.*","equinoxmagazine.fr","jaitoutcompris.com","meteo-grenoble.com","parlons-basket.com","prod-player.tf1.fr","techno-science.net","cliqueduplateau.com","commentcamarche.net","e-player-stream.app","journaldesfemmes.fr","lameteoagricole.net","signal-arnaques.com","animedigitalnetwork.fr","lecourrier-du-soir.com","occasions.decathlon.fr","benjaminellisbernard.fr","animationdigitalnetwork.fr","animationdigitalnetwork.com","player.melaniezettofrais.online"];
     const collectArglistRefIndices = (out, hn, r) => {
         let l = 0, i = 0, d = 0;
         let candidate = '';
@@ -1870,6 +2541,7 @@ if ( $scriptletHostnames$.length ) {
             }
         }
     };
+    const todoIndices = new Set();
     indicesFromHostname(todoIndices, entries[0]);
     if ( $hasAncestors$ ) {
         for ( const entry of entries ) {
@@ -1877,20 +2549,20 @@ if ( $scriptletHostnames$.length ) {
             indicesFromHostname(todoIndices, entry, '>>');
         }
     }
-    $scriptletHostnames$.length = 0;
-}
-
-// Collect arglist references
-const todo = new Set();
-if ( todoIndices.size !== 0 ) {
-    const arglistRefs = $scriptletArglistRefs$.split(';');
-    for ( const i of todoIndices ) {
-        for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
-            todo.add(ref);
+    // Collect arglist references
+    if ( todoIndices.size ) {
+        const $scriptletArglistRefs$ = /* 127 */ "74,75,125,126,127,128,129;113;16;41;115;76,77,78,79,80,125,126,127,128,129;113;110;20;115;94;41;41;42;113;53;120;32;33;86,90;70,71;132;116;113;6;117;111,112;10;1,2;124;19,46;72;41;79,80,81,130;20;16;114;63;34;24,37;115;39;36;43;72;85;24,46;90;134;59;21,22,23;11;113;91;67;44;3,4,5;9;54;52;14,15;118;73,122,123;64;69;94;38;90,131;8,17,54;53;24;51;47,48,49,50;135;69;88;89;83;61;10;28,29;84;109;9;25,26,27;90,96,97,98,99,100,101,102,103;60;13;119;68;65;82;66;24,35,90,96,97,98,99,100,101,102,103,104,105,106;113;12;7;113;113;107;35;35,90,96,97,98,99,100,101,102,103;62;133;84;30;65;24,35,90,95,96,97,98,99,100,101,102,103,104,105,106;14,15;45;10;44;121;10;58;12,57;108;12,18;10;10,40;10;55,56;92,93;31;6,10;6,10;87";
+        const arglistRefs = $scriptletArglistRefs$.split(';');
+        for ( const i of todoIndices ) {
+            for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
+                todo.add(ref);
+            }
         }
     }
 }
+
 if ( $hasRegexes$ ) {
+    const $scriptletFromRegexes$ = /* 0 */ [];
     const { hns } = entries[0];
     for ( let i = 0, n = $scriptletFromRegexes$.length; i < n; i += 3 ) {
         const needle = $scriptletFromRegexes$[i+0];
@@ -1907,10 +2579,13 @@ if ( $hasRegexes$ ) {
         }
     }
 }
-if ( todo.size === 0 ) { return; }
 
-// Execute scriplets
-{
+// Execute scriptlets
+if ( todo.size && todo.has(0) === false ) {
+    const $scriptletFunctions$ = /* 16 */
+[preventSetTimeout,preventFetch,abortOnPropertyRead,abortCurrentScript,setConstant,jsonPrune,preventAddEventListener,zeta_j7s0f4ys,preventRequestAnimationFrame,preventXhr,abortOnPropertyWrite,preventSetInterval,adjustSetInterval,adjustSetTimeout,removeAttr,noWindowOpenIf];
+    const $scriptletArgs$ = /* 158 */ ["offsetHeight","200","imasdk.googleapis.com","__vpx","Array.prototype.forEach","/bloqueur|amazon-adsystem\\.com/","/walled|adsbygoogle|new Image\\(\\)\\.src|\\)return;if\\(_/","getComputedStyle","/siteAccessNotification|checkBaitElement/","rhoostatus","100","__NEXT_DATA__.runtimeConfig._qub_sdk.qubConfig.ad.adBlockerDetectorEnabled","false","pagead2.googlesyndication.com","displayCookieWallBanner","siteParams.aabMessage","LCI.adNetwork","undefined","jQuery","adblocker","penci_options_set.ad_blocker_detector","ima","{}","DOMContentLoaded","adblock","integrityObserver.corrupted","0","checkAdsBlocked","noopFunc","Date.now","dAp","true","detected","isAdblock","load",".offsetParent||0===","/www3\\.doubleclick\\.net|tagger\\.opecloud\\.com|fwmrm\\.net|imasdk\\.googleapis\\.com/","emptyArr","chp_ads_blocker_detector","adsBlocked","tag.min.js","fwmrm","checkDiv","navigator.brave","js.sddan.com","ABDetector","document.getElementById","Blocking Ads","document.createElement","moneyAbovePrivacy","bAdBlocker","Object.prototype.autoRecov","noPub","1","canRunAds","adClasses","[]","dtctAB","adskeeper.co.uk","document.write","alert","setTimeout","bloqueur","Promise","window.location","msg_ab","gothamBatAdblock","adblockdetected","adsbygoogle","document.querySelector","oadbActive","window.adsapp","ujloijdkhjkwus","$","checkAds","wIsAdBlocked","mdpDeBlocker","adBlockDetected","adback","google_jobrunner","adParams siteParams.aabMessage","onload","ptv.Data.uniroll","pmd.Data.uniroll","OAS_AD","ads.enableAntiAdBlocking","v.fwmrm.net","Object.prototype.isBlockerDetected","__TF1_CONFIG__.featureFlag.contentAccess.isAdblockCheckRequired","__TF1_CONFIG__.adblock.display","__TF1_CONFIG__.adblock.serverRequest","static.adsafeprotected.com/favicon.ico","/^https:\\/\\/ads\\.stickyadstv\\.com\\/$/ method:HEAD","defaultConsentString","*","0.001","event_listener_timeout","/userConsentProcess|this===/","href","a[href]#clickfakeplayer","return t()","sessionStorage","click","Popup","advanced_ads_ready","userConsentProcessEnded","randno","25","FastClick","FastClick.attach","setTimeoutIds_",".content-propose > a[href].btn-ad-iframe","empire.isAdbActive","empire.directHideAds","empire.countpremium.film","empire.countpremium.serie","empire.countpremiumMore.film.count","empire.countpremiumMore.serie.count","empire.countpremiumaccount.film","empire.countpremiumaccount.serie","empire.mediaData.advisorDirect","","empire.mediaData.advisorMovie","empire.mediaData.advisorSerie","adsConfig","isSetupAccess","/userConsentProcessEnded|\\[0\\]\\+\"With\"/","interstitial","JSON.parse","document.createElement('script')","document.documentElement).appendChild","Object.prototype.withAds","AC.config.ads","getAudioAdUrl","zoneSett","aEteAffiche","__yget_ad_list","_adb","td_ad_background_click_link","Object.prototype.sendPauseMidrollTracking","__data.application.settings.featPlayerAds","ads.*.default ads.*.url ads.enableMidrolls","ads","applaunch.data.player.features.ad.enabled applaunch.data.player.features.ad.dai.enabled","appName","tv.freewheel.SDK.Util.pingURLWithForm","trueFunc","tv.freewheel.SDK.Util.pingURLWithImage","tv.freewheel.SDK.Util.pingURLWithScript","tv.freewheel.SDK.Util.pingURLWithXMLHTTPRequest","tv.freewheel.SDK.Util.sendAdRequestWithXMLHTTPRequest","__NEXT_DATA__.runtimeConfig.playerTF1.ads.enable","<=1?(clearInterval","data.result.items.sidebar.[-].type.[=].advertiser_ads","data.search_id","fetch","Uint8Array","#clickfakeplayer"];
+    const $scriptletArglists$ = /* 136 */ ";0,0,1;1,2;2,3;3,4,5;0,6;0,7;0,8;0,9,10;4,11,12;1,13;0,14;5,15;4,16,17;3,18,19;4,20,12;4,21,22;6,23,24;4,25,26;4,27,28;7;8,29;4,30,31;0,32;9,13;0,33;6,23,33;6,34,33;0,35;1,36,37;3,38;2,39;1,40;1,41;4,42,28;4,43,17;1,44;2,45;3,46,47;3,48,24;4,49,31;4,50,12;2,51;4,52,53;4,54,31;4,55,56;10,57;1,58;3,59,60;3,61,62;3,63,60;11,64;3,46,65;2,66;4,67,12;11,68;6,23,68;4,25,12;3,69,70;4,71,31;4,72,12;3,73,74;4,75,12;2,76;4,77,12;3,46,78;0,68;4,79,28;5,80;2,81;4,82,22;4,83,22;4,84,28;5,85;9,86;4,87,12;4,88,12;4,89,12;4,90,12;1,91;1,92;12,93,94,95;13,96,94,95;13,97,94,95;14,98,99;13,100,94,95;0,101;6,102,103;4,104,28;13,105,94,95;15;0,106,107;4,108,28;4,109,28;13,110,94,95;14,98,111;4,112,12;4,113,17;4,114,26;4,115,26;4,116,26;4,117,26;4,118,26;4,119,26;4,120,121;4,122,53;4,123,53;4,124,56;4,125,31;13,126,94,95;6,23,127;3,128,129;3,48,130;4,131,12;4,132,22;4,133,28;2,134;4,135,31;2,136;2,137;10,138;4,139,28;4,140,12;5,141,142;5,143,144;4,145,146;4,147,146;4,148,146;4,149,146;4,150,146;4,151,12;12,152,94,95;5,153,154;3,155,156;14,98,157;10,136";
     const arglists = $scriptletArglists$.split(';');
     const args = $scriptletArgs$;
     for ( const ref of todo ) {

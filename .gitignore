@@ -21,6 +21,8 @@
 
 # Browser runtime data and native smoke-test output (also outside target/)
 *.WebView2/
+# Indexes Chromium writes into an unpacked extension when it loads one
+crates/desktop/extensions/*/_metadata/
 desktop-smoke/
 installed-smoke/
 

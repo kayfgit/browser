@@ -19,20 +19,13 @@ use std::sync::{Arc, Mutex};
 /// The folder of unpacked extensions to load into WebView2 (uBlock Origin Lite).
 ///
 /// An `extensions` folder next to the executable wins (a hand-assembled install).
-/// Debug builds then use the source tree directly, so editing the extension needs no
-/// rebuild. Everything else uses the copy embedded in the executable, unpacked to
-/// the local data folder (see [`bundled_extensions`](crate::bundled_extensions)).
+/// Everything else, debug builds included, uses the copy embedded in the executable,
+/// unpacked outside the source tree (see [`bundled_extensions`](crate::bundled_extensions)).
 pub(crate) fn ublock_extensions_dir() -> Option<std::path::PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         let beside = exe.with_file_name("extensions");
         if beside.is_dir() {
             return Some(beside);
-        }
-    }
-    if cfg!(debug_assertions) {
-        let dev = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("extensions");
-        if dev.is_dir() {
-            return Some(dev);
         }
     }
     crate::bundled_extensions::dir()

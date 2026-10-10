@@ -78,28 +78,7 @@ function abortCurrentScriptFn(
     const logPrefix = safe.makeLogPrefix('abort-current-script', target, needle, context);
     const reNeedle = safe.patternToRegex(needle);
     const reContext = safe.patternToRegex(context);
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
     const thisScript = document.currentScript;
-    const chain = safe.String_split.call(target, '.');
-    let owner = window;
-    let prop;
-    for (;;) {
-        prop = chain.shift();
-        if ( chain.length === 0 ) { break; }
-        if ( prop in owner === false ) { break; }
-        owner = owner[prop];
-        if ( owner instanceof Object === false ) { return; }
-    }
-    let value;
-    let desc = Object.getOwnPropertyDescriptor(owner, prop);
-    if (
-        desc instanceof Object === false ||
-        desc.get instanceof Function === false
-    ) {
-        value = owner[prop];
-        desc = undefined;
-    }
-    const debug = shouldDebug(extraArgs);
     const exceptionToken = getExceptionTokenFn();
     const scriptTexts = new WeakMap();
     const textContentGetter = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent').get;
@@ -107,8 +86,7 @@ function abortCurrentScriptFn(
         let text = textContentGetter.call(elem);
         if ( text.trim() !== '' ) { return text; }
         if ( scriptTexts.has(elem) ) { return scriptTexts.get(elem); }
-        const [ , mime, content ] =
-            /^data:([^,]*),(.+)$/.exec(elem.src.trim()) ||
+        const [ , mime, content ] = /^data:([^,]*),(.+)$/.exec(elem.src.trim()) ||
             [ '', '', '' ];
         try {
             switch ( true ) {
@@ -128,50 +106,28 @@ function abortCurrentScriptFn(
         const e = document.currentScript;
         if ( e instanceof HTMLScriptElement === false ) { return; }
         if ( e === thisScript ) { return; }
-        if ( context !== '' && reContext.test(e.src) === false ) {
-            // eslint-disable-next-line no-debugger
-            if ( debug === 'nomatch' || debug === 'all' ) { debugger; }
-            return;
-        }
+        if ( context !== '' && reContext.test(e.src) === false ) { return; }
         if ( safe.logLevel > 1 && context !== '' ) {
             safe.uboLog(logPrefix, `Matched src\n${e.src}`);
         }
         const scriptText = getScriptText(e);
-        if ( reNeedle.test(scriptText) === false ) {
-            // eslint-disable-next-line no-debugger
-            if ( debug === 'nomatch' || debug === 'all' ) { debugger; }
-            return;
-        }
+        if ( reNeedle.test(scriptText) === false ) { return; }
         if ( safe.logLevel > 1 ) {
             safe.uboLog(logPrefix, `Matched text\n${scriptText}`);
         }
-        // eslint-disable-next-line no-debugger
-        if ( debug === 'match' || debug === 'all' ) { debugger; }
         safe.uboLog(logPrefix, 'Aborted');
         throw new ReferenceError(exceptionToken);
     };
-    // eslint-disable-next-line no-debugger
-    if ( debug === 'install' ) { debugger; }
-    try {
-        Object.defineProperty(owner, prop, {
-            get: function() {
-                validate();
-                return desc instanceof Object
-                    ? desc.get.call(owner)
-                    : value;
-            },
-            set: function(a) {
-                validate();
-                if ( desc instanceof Object ) {
-                    desc.set.call(owner, a);
-                } else {
-                    value = a;
-                }
-            }
-        });
-    } catch(ex) {
-        safe.uboErr(logPrefix, `Error: ${ex}`);
-    }
+    let currentValue = trapPropertyFn(target, {
+        get: function() {
+            validate();
+            return currentValue;
+        },
+        set: function(a) {
+            validate();
+            currentValue = a;
+        }
+    }, { canThrow: true });
 }
 
 function abortOnPropertyRead(
@@ -248,12 +204,13 @@ function abortOnPropertyWrite(
 
 function abortOnStackTrace(
     chain = '',
-    needle = ''
+    needle = '',
+    ...varargs
 ) {
     if ( typeof chain !== 'string' ) { return; }
     const safe = safeSelf();
     const needleDetails = safe.initPattern(needle, { canNegate: true });
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 2);
+    const extraArgs = safe.parseVarargs(varargs);
     if ( needle === '' ) { extraArgs.log = 'all'; }
     const makeProxy = function(owner, chain) {
         const pos = chain.indexOf('.');
@@ -544,12 +501,13 @@ function getRandomTokenFn() {
 function jsonPrune(
     rawPrunePaths = '',
     rawNeedlePaths = '',
-    stackNeedle = ''
+    stackNeedle = '',
+    ...varargs
 ) {
     const safe = safeSelf();
     const logPrefix = safe.makeLogPrefix('json-prune', rawPrunePaths, rawNeedlePaths, stackNeedle);
     const stackNeedleDetails = safe.initPattern(stackNeedle, { canNegate: true });
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
+    const extraArgs = safe.parseVarargs(varargs);
     proxyApplyFn('JSON.parse', function(context) {
         const objBefore = context.reflect();
         if ( rawPrunePaths === '' ) {
@@ -887,10 +845,11 @@ function parsePropertiesToMatchFn(propsToMatch, implicit = '') {
 
 function preventAddEventListener(
     type = '',
-    pattern = ''
+    pattern = '',
+    ...varargs
 ) {
     const safe = safeSelf();
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 2);
+    const extraArgs = safe.parseVarargs(varargs);
     const logPrefix = safe.makeLogPrefix('prevent-addEventListener', type, pattern);
     const reType = safe.patternToRegex(type, undefined, true);
     const rePattern = safe.patternToRegex(pattern);
@@ -922,8 +881,8 @@ function preventAddEventListener(
         return parts.join('');
     };
     const shouldPrevent = (thisArg, type, handler) => {
-        const matchesType = safe.RegExp_test.call(reType, type);
-        const matchesHandler = safe.RegExp_test.call(rePattern, handler);
+        const matchesType = safe.RegExp_test(reType, type);
+        const matchesHandler = safe.RegExp_test(rePattern, handler);
         const matchesEither = matchesType || matchesHandler;
         const matchesBoth = matchesType && matchesHandler;
         if ( safe.logLevel > 1 && matchesEither ) {
@@ -957,22 +916,23 @@ function preventAddEventListener(
         }
         return context.reflect();
     };
+    const protect = owner => {
+        const { addEventListener } = owner;
+        Object.defineProperty(owner, 'addEventListener', {
+            set() { },
+            get() { return addEventListener; }
+        });
+    };
     runAt(( ) => {
         proxyApplyFn('EventTarget.prototype.addEventListener', proxyFn);
-        if ( extraArgs.protect ) {
-            const { addEventListener } = EventTarget.prototype;
-            Object.defineProperty(EventTarget.prototype, 'addEventListener', {
-                set() { },
-                get() { return addEventListener; }
-            });
+        if ( extraArgs.protect ) { protect(EventTarget.prototype); }
+        if ( Object.hasOwn(document, 'addEventListener') ) {
+            proxyApplyFn('document.addEventListener', proxyFn);
+            if ( extraArgs.protect ) { protect(document); }
         }
-        proxyApplyFn('document.addEventListener', proxyFn);
-        if ( extraArgs.protect ) {
-            const { addEventListener } = document;
-            Object.defineProperty(document, 'addEventListener', {
-                set() { },
-                get() { return addEventListener; }
-            });
+        if ( Object.hasOwn(window, 'addEventListener') ) {
+            proxyApplyFn('window.addEventListener', proxyFn);
+            if ( extraArgs.protect ) { protect(window); }
         }
     }, extraArgs.runAt);
 }
@@ -985,7 +945,8 @@ function preventFetchFn(
     trusted = false,
     propsToMatch = '',
     responseBody = '',
-    responseType = ''
+    responseType = '',
+    ...varargs
 ) {
     const safe = safeSelf();
     const setTimeout = self.setTimeout;
@@ -996,7 +957,7 @@ function preventFetchFn(
         responseBody,
         responseType
     );
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 4);
+    const extraArgs = safe.parseVarargs(varargs);
     const propNeedles = parsePropertiesToMatchFn(propsToMatch, 'url');
     const validResponseProps = {
         ok: [ false, true ],
@@ -1124,7 +1085,7 @@ function preventSetTimeout(
 }
 
 function preventXhr(...args) {
-    return preventXhrFn(false, ...args);
+    preventXhrFn(false, ...args);
 }
 
 function preventXhrFn(
@@ -1297,7 +1258,8 @@ function preventXhrFn(
 
 function proxyApplyFn(
     target = '',
-    handler = ''
+    handler = '',
+    options = {}
 ) {
     let context = globalThis;
     let prop = target;
@@ -1358,20 +1320,22 @@ function proxyApplyFn(
         };
         proxyApplyFn.isCtor = new Map();
         proxyApplyFn.proxies = new WeakMap();
-        proxyApplyFn.nativeToString = Function.prototype.toString;
-        const proxiedToString = new Proxy(Function.prototype.toString, {
-            apply(target, thisArg) {
-                let proxied = thisArg;
-                for(;;) {
-                    const fn = proxyApplyFn.proxies.get(proxied);
-                    if ( fn === undefined ) { break; }
-                    proxied = fn;
+        if ( (options.skipToString || proxyApplyFn.skipToString) !== true ) {
+            proxyApplyFn.nativeToString = Function.prototype.toString;
+            const proxiedToString = new Proxy(Function.prototype.toString, {
+                apply(target, thisArg) {
+                    let proxied = thisArg;
+                    for(;;) {
+                        const fn = proxyApplyFn.proxies.get(proxied);
+                        if ( fn === undefined ) { break; }
+                        proxied = fn;
+                    }
+                    return proxyApplyFn.nativeToString.call(proxied);
                 }
-                return proxyApplyFn.nativeToString.call(proxied);
-            }
-        });
-        proxyApplyFn.proxies.set(proxiedToString, proxyApplyFn.nativeToString);
-        Function.prototype.toString = proxiedToString;
+            });
+            proxyApplyFn.proxies.set(proxiedToString, proxyApplyFn.nativeToString);
+            Function.prototype.toString = proxiedToString;
+        }
     }
     if ( proxyApplyFn.isCtor.has(target) === false ) {
         proxyApplyFn.isCtor.set(target, fn.prototype?.constructor === fn);
@@ -1394,71 +1358,95 @@ function proxyApplyFn(
 function removeAttr(
     rawToken = '',
     rawSelector = '',
-    behavior = ''
+    behavior = '',
+    ...varargs
 ) {
     if ( typeof rawToken !== 'string' ) { return; }
     if ( rawToken === '' ) { return; }
     const safe = safeSelf();
-    const logPrefix = safe.makeLogPrefix('remove-attr', rawToken, rawSelector, behavior);
+    const logPrefix = safe.makeLogPrefix('remove-attr',
+        rawToken, rawSelector, behavior, ...varargs
+    );
     const tokens = safe.String_split.call(rawToken, /\s*\|\s*/);
-    const selector = tokens
-        .map(a => `${rawSelector}[${CSS.escape(a)}]`)
-        .join(',');
+    const selector = tokens.map(a => {
+        const b = CSS.escape(a);
+        return rawSelector.includes(`[${b}]`) ? rawSelector : `${rawSelector}[${b}]`;
+    }).join(',');
+    const lazily = /\basap\b/.test(behavior) === false;
+    const options = safe.parseVarargs(varargs);
     if ( safe.logLevel > 1 ) {
         safe.uboLog(logPrefix, `Target selector:\n\t${selector}`);
     }
-    const asap = /\basap\b/.test(behavior);
-    let timerId;
-    const rmattrAsync = ( ) => {
-        if ( timerId !== undefined ) { return; }
-        timerId = onIdleFn(( ) => {
-            timerId = undefined;
+    const rmattrFromNode = node => {
+        for ( const attr of tokens ) {
+            if ( node.hasAttribute(attr) === false ) { continue; }
+            node.removeAttribute(attr);
+            safe.uboLog(logPrefix, `Removed attribute '${attr}'`);
+        }
+    };
+    const rmattr = nodes => {
+        for ( const node of nodes ?? document.querySelectorAll(selector) ) {
+            rmattrFromNode(node);
+        }
+    };
+    const rmAttrLazily = ( ) => {
+        if ( rmAttrLazily.timer !== undefined ) { return; }
+        rmAttrLazily.timer = onIdleFn(( ) => {
+            rmAttrLazily.timer = undefined;
             rmattr();
         }, { timeout: 17 });
     };
-    const rmattr = ( ) => {
-        if ( timerId !== undefined ) {
-            offIdleFn(timerId);
-            timerId = undefined;
-        }
-        try {
-            const nodes = document.querySelectorAll(selector);
-            for ( const node of nodes ) {
-                for ( const attr of tokens ) {
-                    if ( node.hasAttribute(attr) === false ) { continue; }
-                    node.removeAttribute(attr);
-                    safe.uboLog(logPrefix, `Removed attribute '${attr}'`);
+    const mutationHandler = mutations => {
+        for ( const { addedNodes, removedNodes } of mutations ) {
+            for ( const node of addedNodes ) {
+                if ( node.nodeType !== 1 ) { continue; }
+                if ( lazily ) { return rmAttrLazily(); }
+                if ( node.matches(selector) ) {
+                    rmattrFromNode(node);
+                }
+                if ( node.childElementCount ) {
+                    rmattr(node.querySelectorAll(selector));
                 }
             }
-        } catch {
+            if ( lazily ) { return; }
+            for ( const node of removedNodes ) {
+                if ( node.nodeType !== 1 ) { continue; }
+                if ( node.matches(selector) ) {
+                    rmattrFromNode(node);
+                }
+            }
         }
     };
-    const mutationHandler = mutations => {
-        if ( timerId !== undefined ) { return; }
-        let skip = true;
-        for ( let i = 0; i < mutations.length && skip; i++ ) {
-            const { type, addedNodes, removedNodes } = mutations[i];
-            if ( type === 'attributes' ) { skip = false; }
-            for ( let j = 0; j < addedNodes.length && skip; j++ ) {
-                if ( addedNodes[j].nodeType === 1 ) { skip = false; break; }
-            }
-            for ( let j = 0; j < removedNodes.length && skip; j++ ) {
-                if ( removedNodes[j].nodeType === 1 ) { skip = false; break; }
-            }
+    const stop = ( ) => {
+        if ( start.observer ) {
+            start.observer.disconnect();
+            start.observer = undefined;
         }
-        if ( skip ) { return; }
-        asap ? rmattr() : rmattrAsync();
+        if ( rmAttrLazily.timer ) {
+            offIdleFn(rmAttrLazily.timer);
+            rmAttrLazily.timer = undefined;
+        }
+        if ( safe.logLevel > 1 ) {
+            safe.uboLog(logPrefix, 'Quitting');
+        }
     };
     const start = ( ) => {
         rmattr();
-        if ( /\bstay\b/.test(behavior) === false ) { return; }
-        const observer = new MutationObserver(mutationHandler);
-        observer.observe(document, {
+        if ( /\bstay\b/.test(behavior) === false ) {
+            if ( options.quitAfter === undefined ) { return; }
+        }
+        start.observer = new MutationObserver(mutationHandler);
+        start.observer.observe(document, {
             attributes: true,
             attributeFilter: tokens,
             childList: true,
             subtree: true,
         });
+        if ( options.quitAfter ) {
+            runAt(( ) => {
+                self.setTimeout(stop, options.quitAfter * 1000);
+            }, 'load');
+        }
     };
     runAt(( ) => { start(); }, safe.String_split.call(behavior, /\s+/));
 }
@@ -1505,15 +1493,14 @@ function runAtHtmlElementFn(fn) {
 }
 
 function safeSelf() {
-    if ( scriptletGlobals.safeSelf ) {
-        return scriptletGlobals.safeSelf;
+    if ( safeSelf.safe ) {
+        return safeSelf.safe;
     }
     const self = globalThis;
     const safe = {
         'Array_from': Array.from,
         'Error': self.Error,
-        'Function_toStringFn': self.Function.prototype.toString,
-        'Function_toString': thisArg => safe.Function_toStringFn.call(thisArg),
+        'Function_toString': Function.prototype.call.bind(self.Function.prototype.toString),
         'Math_floor': Math.floor,
         'Math_max': Math.max,
         'Math_min': Math.min,
@@ -1526,7 +1513,7 @@ function safeSelf() {
         'Object_hasOwn': Object.hasOwn.bind(Object),
         'Object_toString': Object.prototype.toString,
         'RegExp': self.RegExp,
-        'RegExp_test': self.RegExp.prototype.test,
+        'RegExp_test': Function.prototype.call.bind(self.RegExp.prototype.test),
         'RegExp_exec': self.RegExp.prototype.exec,
         'Request_clone': self.Request.prototype.clone,
         'String': self.String,
@@ -1537,10 +1524,8 @@ function safeSelf() {
         'removeEventListener': self.EventTarget.prototype.removeEventListener,
         'fetch': self.fetch,
         'JSON': self.JSON,
-        'JSON_parseFn': self.JSON.parse,
-        'JSON_stringifyFn': self.JSON.stringify,
-        'JSON_parse': (...args) => safe.JSON_parseFn.call(safe.JSON, ...args),
-        'JSON_stringify': (...args) => safe.JSON_stringifyFn.call(safe.JSON, ...args),
+        'JSON_parse': Function.prototype.call.bind(self.JSON.parse, self.JSON),
+        'JSON_stringify': Function.prototype.call.bind(self.JSON.stringify, self.JSON),
         'log': console.log.bind(console),
         // Properties
         logLevel: 0,
@@ -1593,7 +1578,7 @@ function safeSelf() {
         testPattern(details, haystack) {
             if ( details.matchAll ) { return true; }
             if ( details.re ) {
-                return this.RegExp_test.call(details.re, haystack) === details.expect;
+                return this.RegExp_test(details.re, haystack) === details.expect;
             }
             return haystack.includes(details.pattern) === details.expect;
         },
@@ -1611,21 +1596,20 @@ function safeSelf() {
             }
             return /^/;
         },
-        getExtraArgs(args, offset = 0) {
-            const entries = args.slice(offset).reduce((out, v, i, a) => {
-                if ( (i & 1) === 0 ) {
-                    const rawValue = a[i+1];
-                    const value = /^\d+$/.test(rawValue)
-                        ? parseInt(rawValue, 10)
-                        : rawValue;
-                    out.push([ a[i], value ]);
-                }
+        parseVarargs(varargs) {
+            const entries = varargs.reduce((out, v, i, a) => {
+                if ( i & 1 ) { return out; }
+                const rawValue = a[i+1];
+                const value = /^\d+$/.test(rawValue)
+                    ? parseInt(rawValue, 10)
+                    : rawValue;
+                out.push([ a[i], value ]);
                 return out;
             }, []);
             return this.Object_fromEntries(entries);
         },
     };
-    scriptletGlobals.safeSelf = safe;
+    safeSelf.safe = safe;
     if ( scriptletGlobals.bcSecret === undefined ) { return safe; }
     // This is executed only when the logger is opened
     safe.logLevel = scriptletGlobals.logLevel || 1;
@@ -1692,12 +1676,13 @@ function setConstant(
 function setConstantFn(
     trusted = false,
     chain = '',
-    rawValue = ''
+    rawValue = '',
+    ...varargs
 ) {
     if ( chain === '' ) { return; }
     const safe = safeSelf();
     const logPrefix = safe.makeLogPrefix('set-constant', chain, rawValue);
-    const extraArgs = safe.getExtraArgs(Array.from(arguments), 3);
+    const extraArgs = safe.parseVarargs(varargs);
     function setConstant(chain, rawValue) {
         const trappedProp = (( ) => {
             const pos = chain.lastIndexOf('.');
@@ -1839,11 +1824,6 @@ function setConstantFn(
     }, extraArgs.runAt);
 }
 
-function shouldDebug(details) {
-    if ( details instanceof Object === false ) { return false; }
-    return scriptletGlobals.canDebug && details.debug;
-}
-
 function spoofCSS(
     selector,
     ...args
@@ -1962,6 +1942,79 @@ function spoofCSS(
     });
 }
 
+function trapPropertyFn(propChain, handler, options = {}) {
+    if ( propChain === '' ) { return; }
+    let owner = self;
+    let prop = propChain;
+    for (;;) {
+        const pos = prop.indexOf('.');
+        if ( pos === -1 ) { break; }
+        owner = owner[prop.slice(0, pos)];
+        if ( owner instanceof Object === false ) { return; }
+        prop = prop.slice(pos + 1);
+    }
+    const safe = safeSelf();
+    if ( trapPropertyFn.db === undefined ) {
+        trapPropertyFn.db = new WeakMap();
+        trapPropertyFn.entryFromContext = (owner, prop) => {
+            const handlers = trapPropertyFn.db.get(owner);
+            return handlers?.get(prop);
+        };
+        trapPropertyFn.getter = (owner, prop) => {
+            const entry = trapPropertyFn.entryFromContext(owner, prop);
+            if ( entry === undefined ) { return; }
+            let r = entry.value;
+            for ( const desc of entry.stack ) {
+                try { r = desc.get(); } catch (e) {
+                    if ( entry.canThrow ) { throw e; }
+                }
+            }
+            return r;
+        };
+        trapPropertyFn.setter = (owner, prop, value) => {
+            const entry = trapPropertyFn.entryFromContext(owner, prop);
+            if ( entry === undefined ) { return; }
+            entry.value = value;
+            for ( const desc of entry.stack ) {
+                try { desc.set(value); } catch (e) {
+                    if ( entry.canThrow ) { throw e; }
+                }
+            }
+        };
+    }
+    const { db } = trapPropertyFn;
+    const handlers = db.get(owner) || new Map();
+    if ( handlers.size === 0 ) {
+        db.set(owner, handlers);
+    }
+    const entry = handlers.get(prop) || {
+        value: owner[prop],
+        stack: [],
+    };
+    entry.stack.push(handler);
+    if ( entry.stack.length > 1 ) { return entry.value; }
+    Object.assign(entry, options);
+    handlers.set(prop, entry);
+    const desc = safe.Object_getOwnPropertyDescriptor(owner, prop);
+    if ( desc instanceof safe.Object ) {
+        if ( desc.get || desc.set ) {
+            entry.stack.push(desc);
+        }
+    }
+    try {
+        safe.Object_defineProperty(owner, prop, {
+            get() {
+                return trapPropertyFn.getter(owner, prop);
+            },
+            set(value) {
+                trapPropertyFn.setter(owner, prop, value);
+            }
+        });
+    } catch {
+    }
+    return entry.value;
+}
+
 function validateConstantFn(trusted, raw, extraArgs = {}) {
     const safe = safeSelf();
     let value;
@@ -2018,19 +2071,7 @@ function validateConstantFn(trusted, raw, extraArgs = {}) {
 
 const scriptletGlobals = {}; // eslint-disable-line
 
-const $scriptletFunctions$ = /* 19 */
-[preventAddEventListener,abortOnPropertyRead,setConstant,preventSetTimeout,abortOnStackTrace,abortCurrentScript,preventFetch,spoofCSS,abortOnPropertyWrite,preventXhr,preventSetInterval,noEvalIf,noWindowOpenIf,adjustSetTimeout,adjustSetInterval,jsonPrune,preventInnerHTML,removeAttr,evaldataPrune];
-
-const $scriptletArgs$ = /* 237 */ ["DOMContentLoaded","detectAdBlocker","SPM_CONFIG.adblockOnly","checkAdScript","noopFunc","](getComputedStyle,","Element.prototype.attachShadow","Object.Score","document.querySelector","isAdblocked","MutationObserver","/bait\\.offsetHeight===0|isAdblocked|requestAnimationFrame\\(|AdBlock|AdGuard/","showModal","offsetHeight === 0","adsbygoogle.js",".adsbygoogle","display","block","pagead2.googlesyndication.com","EventTarget.prototype.addEventListener","window.getComputedStyle","document.getElementById","adBlockDetected","alert",".onerror","ad_id_for_555","","all520dddaaa2022ccc","true",".offsetHeight == 0","checkAdblock","/DOMContentLoaded|load|complete/","/check|detected/","ads",".offsetHeight","_AdBlockInit","/googlesyndication\\.com|doubleclick\\.net/","offsetHeig\\'+\\'ht\\']","/api/ads","alertadmodal","adsbygoogle","{}","adsbygoogle.loaded","float_right > div","document.dispatchEvent","/getexoloader/","decodeURIComponent","pagead","www3.doubleclick.net","adblock_tip","AD_SURVEY_Add_AdPos","AD_SURVEY_Add_AdPos_Simple","killads","/\\.height\\(\\) == 0|adsbygoogle/","myModal","loadErrorTip","ins.adsbygoogle","isAdsDisplayed","error","event.target.tagName","_0x","fuzqingAdPlus","Ad Block","all520dddaaa2022aaa","undefined","canRunAds","adBlock","adblock","0","can_run_ads","typeof(ad)","jQuery","\\u","document.writeln","发现严重BUG","document.createElement","make_rand_div","checker","google_tag_manager","/pagead2\\.googlesyndication\\.com|\\/fbevents\\.js/","google.ima.AdError","/#myModal'\\)\\.modal/","ga","google_empty_script_included","setTimeout","COOKIE_NAME","html","ADS_BLOCKED","$","adskilltest","/home/?adblock=","/!document\\.getElementById\\([\\s\\S]*?\\.style\\.display=/","showRemoveAdBlocker","Object.prototype.cnobpreroll_","Object.prototype.canobpreroll_","ad_num_show","!document.getElementById(btoa","daau_app","NativeAd","__jsadsuccess","checkSiteNormalLoad","__DOMAIN","onload","null","adbk","false","/ad block stop|warm_msg/","config.group","encodeURIComponent","preBid","preBid.displayAd","preBid.getPrerollVASTUrl","adStart","eval","document.write","player.VastADPlugin","ADSOBJET","Object.prototype.pgmp","invokeInterstitial","Object.prototype.ShouldLoadAds","delCookie","injectPops","myPlayer.adDisplay","NEWS_FEED","infoid","document.write(ad);","conone_lmg","location.href","3000","adCountDown","0.02",".s--","Object.prototype.ad_switch","dy_card_dyrun","/bit\\.ly|kbtv/","video-ad-timeout","*","tips","poped","*.*","adFeedbackData adType adServedUrls","list.*.link.ad list.*.link.kicker","configs.*.properties.slideshowWCSettings.interstitialNativeAds configs.*.properties.fullScreenSlideshowSettings.interstitialNativeAds properties.componentConfigs.slideshowConfigs.interstitialNativeAds properties.componentConfigs.slideshowConfigs.slideshowSettings.interstitialNativeAds","popunder","Object.prototype.adData","Object.prototype._adData","qciss.net","akumtagcc","myclick","/getCookie[\\s\\S]*?\\(\"\\\\x/","MM_openBrWindow","/\\.(gif|php)/","window.leave","CloseAd","lists","timerAdCountdown","88p2p.com","is_show","DPLAYER_PREROLL_AD.attachPreRollAd","sponsored","Function",".map(function","/<script src=.*Math\\.floor\\(Date\\.now\\(\\)/","click","window.open","adbyunion","Math.floor","data.*.list.[-].resourceData.adData","visitUrl","adRender","addImageAd","Uint8Array","loadAd","createFixedBottomBannerWithClose","/deposit-bonus?platform=26&utm_source=","mmPopup() {","div","_mtj","document.getElementsByTagName","try{e()}catch(e){if(t[e.message])return;",".current=setTimeout","5000","0.001","localStorage","position:","window.location.href","allData.safeLevel","1","ecjkox.com","ads_codes","touchend","!/external","adUI","1000","appData","[]","topData","midData","btmData","coupletData","data-ads_url","[data-ads_url]","parentNode.insertBefore","1500","navigator","Math.random","return a.split","WebSocket","adModal","adInfo","isAdLoaded","Object.prototype.noAD","__PROXY_META","__ad_unblock_id_obfuscation","/getCookie|checkCK|checkCookie|checkC00kie|checkCoookie|checkCookiiiie|document\\.cookie|buttonClose|exptime/","infoList","data.CardList.[].children_list.ad_list data.CardList.[-].params.advertiser_name","addEventListener(\"touchstart\"","adObj","clientheight","/(?=^(?![\\s\\S]*(static|jquery)))/","data.[-].ad.adScene items.*.video.*.data.[-].ad.adScene data.template.tabs.*.blocks.*.data.data.*.videos.feature_ad data.template.tabs.*.blocks.*.data.data.videos.*.ad","style","#banner[style*=\"background-image:url\"]","CreativePlayerwebPlugin.AD_EVENT.AD_DESTROY","CreativePlayerwebPlugin.AD_EVENT.AD_LOAD_START","ad","data.cm_info.ads","pageData.__banners.0.commercial.mediaUrl","pageData.__banners.0.commercial.jumpUrl","pageData.__banners.0.commercial.title","pageData.__banners.1.commercial.mediaUrl","pageData.__banners.1.commercial.jumpUrl","pageData.__banners.1.commercial.title","detailParams.is_ad_play","entity.commercial","new Function(document["];
-
-const $scriptletArglists$ = /* 213 */ "0,0,1;1,2;2,3,4;3,5;4,6,7;4,8,9;5,10,9;3,11;0,0,12;3,13;6,14;7,15,16,17;6,18;5,19,20;5,21,22;4,23,24;2,25,26;2,27,28;3,29;8,30;0,31,32;1,33;3,34;2,35,4;6,36;3,37;9,38;1,39;2,40,41;2,42,28;3,43;5,44,45;5,46,47;6,48;9,40;5,8,20;3,49;2,50,4;2,51,4;2,52,28;3,53;3,54;3,55;3,56;2,57,28;0,58,59;3,60;2,61,41;10,62;1,22;2,63,64;2,65,28;0,0,66;2,67,68;2,69,28;3,67;5,23,70;5,71,72;5,73,72;3,74;4,75,76;3,77;2,78,41;9,18;6,79;2,80,4;5,21,81;2,82,4;2,83,28;5,84,85;3,86;11,87;2,40,4;5,88,89;3,90;10,90;5,21,91;0,26,92;2,93,28;2,94,28;3,95;3,40;2,33,26;5,88,96;1,97;2,98,4;2,99,28;3,100;8,101;2,102,103;2,104,105;3,106;2,107,26;11,108;2,109,41;2,110,4;2,111,4;8,112;5,113,60;5,114,60;2,115,4;2,116,41;12;4,117,118;1,119;8,120;5,71,121;2,122,64;2,123,4;5,88,124;5,114,125;2,126,4;0,0,75;3,127,128;13,129,26,130;14,131,26,130;2,132,68;2,133,64;12,134;13,135,136,130;5,114,137;2,138,28;15,139,140;15,136,141;15,142;1,143;2,144,41;13,26,26,130;2,145,41;12,68,146;1,147;1,148;5,114,149;2,150,4;5,114,151;5,152;13,153,26,130;2,154,64;5,88,143;14,155,26,130;12,156;2,157,105;2,158,4;0,0,159;5,160,161;5,114,162;0,163,164;1,165;5,166,137;15,167;5,75,168;2,169,4;1,170;4,171,172;1,173;5,88,174;5,88,175;16,176,177;5,178,177;3,179;5,73;13,180,181,182;5,114;0,0,183;5,114,184;3,185;2,186,187;3,188;5,114,189;0,190,185;12,191;14,192,193,130;2,194,195;2,196,195;2,197,195;2,198,195;2,199,195;17,200,201;3,202,193;3,202,203;5,204,127;5,205,202;5,75,206;11,207;5,88,208;2,209,41;2,210,28;2,211,28;8,212;8,213;3,214;2,215,195;15,216;3,217;2,218,4;0,190,219;4,75,220;15,221;17,222,223;2,224,26;2,225,26;15,33;15,226;15,227;2,228,26;2,229,26;2,230,26;2,231,26;2,232,26;2,233,26;2,234,105;18,235;5,160,236";
-
-const $scriptletArglistRefs$ = /* 234 */ "20,184;78,79;67,68;103,104;186,187;122,123,124;202;12;91,140;169;92;150;78,79;43;94,95,96;56;134;103,104;21;17,41,113;141;168;131;139;51;185,198;36;39,57,58;47;212;188,189;26;120;66;149;70;9;192,199,200,201;20,184;111;102;59;142;114;98;93;131;188,189;164;12;193;138;89,90,91;4,5,6,7,8;171,197;62,63,64,65;46;12;204,205,206,207,208,209,210;23,28,29,151;14;129;45;82;141;134;101;121;127;102;193;18,172,173,174,175,176;17,50;112;103,104;27;159;161;13;194;4,5,6,7,8;4,5,6,7,8;4,5,6,7,8;193;163;39;71;0;199,200;130;98,99;15;201;204,205,206,207,208,209,210;204,205,206,207,208,209,210;204,205,206,207,208,209,210;158;60;135;138;16,17;141;51,54,55;74,75;170;24;148;201;49;30,31;30,31;97;169;102;177;39;69;158;3,145;43,44;165;188,189;3,145;37,38;4,5,6,7,8,102;3,145;108;177;195;105;211;211;211;211;211;211;128;177;201;109;49;3,145;102,160;166;128;32;144;84;167;35;23;203;136;188,189;23;1;76;125;211;211;85,86,87,88;34;106;102,146,157;2;40;77;190,191;190,191;25;169;169;42,85,86,87;42;102;102;22;81;134;52,53;196;155,156;85,86,87;83;48;51;12;199,200,201,-203;188,189;147;136;19;190,191;190,191;190,191;117;152,153,154;152,153,154;118,119;132;178,179,180,181,182;143;61;115,116;126;72;110;30,31;188,189;73;190,191;188,189;162;80;137;100;158;158;158;158;158;158;158;158;158;169;193;183,195;-203;107;10,11;133;190,191;33";
-
-const $scriptletHostnames$ = /* 234 */ ["8se.me","ddys.*","ebb.io","iyf.tv","le.com","msn.cn","qq.com","4gtv.tv","5278.cc","beqg.cc","cnys.tv","crxs.me","ddrk.me","logi.im","now.com","slit.cn","wnacg.*","yfsp.tv","2urs.com","520cc.cc","69xx.one","av6k.com","avcao.cc","bde4.com","bde4.icu","huya.com","itdog.cn","jkpan.cc","koyi.pub","mxdm.xyz","nanai.tw","noy1.top","o8tv.com","poedb.tw","sohu.com","t66y.com","tstrs.me","v.qq.com","xchina.*","xkyn.com","123pan.cn","233tw.com","51cg1.com","51zxw.net","akkxs.net","applnn.cc","axjbt.com","daybuy.tw","efuxs.com","fsbot.xyz","fxshu.top","ggjav.com","hboav.com","huavod.cc","iqiyi.com","linetv.tw","moeci.com","mpyit.com","nivod2.tv","nodejs.cn","playav.cc","qciss.net","rjno1.com","sssam.com","theav.xyz","wnacg1.cc","x99av.com","xvideo.cc","youku.com","123865.com","360lele.cc","445nan.com","520call.me","85tube.com","aiyifan.tv","caq98i.top","cidetxt.cc","douyin.com","dqzboy.com","enhuku.com","huavod.com","huavod.net","huavod.top","huoqwk.com","iplark.com","itbaoku.cn","jav777.xyz","laosu.tech","lpl.qq.com","m.86kl.com","m.lwxs.com","mcappx.com","new.qq.com","nivod2.com","nivod4.com","nivod5.com","nunuju.net","pcbeta.com","pixnet.net","porn87.com","surirt.com","theporn.cc","tingfm.com","tsubasa.im","vikacg.com","wandhi.com","wnacg05.cc","www.qq.com","1090ys8.com","18comic.org","18comic.vip","3dmgame.com","69shumi.com","88files.net","91porna.com","bigpixel.cn","bingfeng.tw","bz88888.net","clp126.shop","ekamus.info","erciyan.com","free.com.tw","hsq233.shop","huanqiu.com","huaren.live","jav224.shop","jianshu.com","jkptgbf.xyz","m.13xsw.com","m.91zww.com","m.nivod2.tv","m.nivod4.tv","m.nivod5.tv","m.nivod7.tv","m.nivod8.tv","m.nivod9.tv","m.youku.com","mfulbvu.xyz","news.qq.com","nunuyy3.org","papalah.com","ttp229.shop","umbooks.com","v.ifeng.com","v.youku.com","vxetable.cn","xl02.com.de","youneed.win","youziks.com","1keydata.com","baomidou.com","bilibili.com","bukaivip.com","candylife.tw","docsmall.com","freedidi.com","getitfree.cn","goodav17.com","m.nivod2.com","m.nivod4.com","ohmanhua.com","pansearch.me","pornbest.org","wikisport.cc","wxredian.com","xbeibeix.com","xiebruce.top","axu.pages.dev","axutongxue.cn","bilinovel.com","biquge321.com","biquge543.com","cocomanga.com","colamanga.com","embedrise.com","freejavbt.com","ftchinese.com","haoweichi.com","hentaicomic.*","linovelib.com","m.1024txt.com","macromicro.me","onemanhua.com","pg-wuming.com","pincong.rocks","slashlook.com","slashview.com","sports.qq.com","uptogo.com.tw","yeshuyuan.com","zhenbuka3.com","174.127.195.98","axutongxue.com","axutongxue.net","axutongxue.vip","dianyingim.com","hanime1-me.icu","hanime1-me.top","iwatchme2u.com","javlibrary.com","m.shuhaige.net","moegirl.org.cn","ruanyifeng.com","tangdoucdn.com","v-wb.youku.com","wenxuecity.com","dogfight360.com","jmcomic-zzz.org","pokemonhubs.com","youranshare.com","axutongxue.space","foodieteller.com","haiwaishubao.com","league-funny.com","m.biqiugege8.com","player.hboav.com","banzhu1111111.com","banzhu2222222.com","banzhu3333333.com","banzhu4444444.com","banzhu5555555.com","banzhu6666666.com","banzhu7777777.com","banzhu8888888.com","banzhu9999999.com","m.biquge12345.com","wap.biqugewx.info","wap.yushuwu.cloud","work.weixin.qq.com","hamivideo.hinet.net","helper-employer.com","edc1014070.pixnet.net","axutongxue.onrender.com","taiwanlibrarysearch.herokuapp.com"];
-
-const $scriptletFromRegexes$ = /* 0 */ [];
-
+const $hasHostnames$ = true;
 const $hasEntities$ = true;
 const $hasAncestors$ = false;
 const $hasRegexes$ = false;
@@ -2078,8 +2119,10 @@ const entries = (( ) => {
 })();
 if ( entries.length === 0 ) { return; }
 
-const todoIndices = new Set();
-if ( $scriptletHostnames$.length ) {
+const todo = new Set();
+
+if ( $hasHostnames$ ) {
+    const $scriptletHostnames$ = /* 246 */ ["4hu.tv","8se.me","ddys.*","ebb.io","iyf.tv","le.com","msn.cn","qq.com","4gtv.tv","5278.cc","beqg.cc","cnys.tv","crxs.me","ddrk.me","jptt.tv","logi.im","now.com","slit.cn","wnacg.*","yfsp.tv","2urs.com","520cc.cc","69xx.one","av6k.com","avcao.cc","bde4.com","bde4.icu","huya.com","itdog.cn","jkpan.cc","koyi.pub","mxdm.xyz","nanai.tw","noy1.top","o8tv.com","poedb.tw","sohu.com","sudugu.*","t66y.com","tstrs.me","v.qq.com","xchina.*","xkyn.com","123pan.cn","233tw.com","51cg1.com","51zxw.net","akkxs.net","applnn.cc","axjbt.com","daybuy.tw","efuxs.com","fsbot.xyz","fxshu.top","ggjav.com","hboav.com","huavod.cc","iqiyi.com","linetv.tw","moeci.com","mpyit.com","nivod2.tv","nodejs.cn","playav.cc","qciss.net","rjno1.com","sssam.com","sudugu.cc","theav.xyz","wnacg1.cc","x99av.com","xvideo.cc","youku.com","123865.com","360lele.cc","445nan.com","520call.me","85tube.com","aiyifan.tv","caq98i.top","cidetxt.cc","d44t95.com","douyin.com","dqzboy.com","enhuku.com","g655p8.com","hanjuk.com","huavod.com","huavod.net","huavod.top","huoqwk.com","iplark.com","itbaoku.cn","jav777.xyz","laosu.tech","lpl.qq.com","m.86kl.com","m.lwxs.com","mcappx.com","mrds66.com","new.qq.com","nivod2.com","nivod4.com","nivod5.com","nunuju.net","pcbeta.com","pixnet.net","porn87.com","surirt.com","theporn.cc","tingfm.com","tsubasa.im","vikacg.com","wandhi.com","wnacg05.cc","www.qq.com","1090ys8.com","18comic.org","18comic.vip","3dmgame.com","69shumi.com","88files.net","91porna.com","bigpixel.cn","bingfeng.tw","bz88888.net","clp126.shop","ekamus.info","erciyan.com","free.com.tw","hsq233.shop","huanqiu.com","huaren.live","ikanbot.com","jav224.shop","jianshu.com","jkptgbf.xyz","m.13xsw.com","m.91zww.com","m.nivod2.tv","m.nivod4.tv","m.nivod5.tv","m.nivod7.tv","m.nivod8.tv","m.nivod9.tv","m.youku.com","mfulbvu.xyz","news.qq.com","nunuyy3.org","papalah.com","ttp229.shop","umbooks.com","v.ifeng.com","v.youku.com","vxetable.cn","xl02.com.de","youneed.win","youziks.com","1keydata.com","baomidou.com","bilibili.com","bukaivip.com","candylife.tw","docsmall.com","freedidi.com","gamersky.com","getitfree.cn","goodav17.com","m.nivod2.com","m.nivod4.com","ohmanhua.com","pansearch.me","pornbest.org","wikisport.cc","wxredian.com","xbeibeix.com","xiebruce.top","axu.pages.dev","axutongxue.cn","bilinovel.com","biquge321.com","biquge543.com","cocomanga.com","colamanga.com","embedrise.com","freejavbt.com","ftchinese.com","haoweichi.com","hentaicomic.*","linovelib.com","m.1024txt.com","macromicro.me","onemanhua.com","pg-wuming.com","pincong.rocks","slashlook.com","slashview.com","soft8ware.com","sports.qq.com","uptogo.com.tw","xgcartoon.com","yeshuyuan.com","zhenbuka3.com","174.127.195.98","axutongxue.com","axutongxue.net","axutongxue.vip","dianyingim.com","hanime1-me.icu","hanime1-me.top","iwatchme2u.com","javlibrary.com","m.shuhaige.net","moegirl.org.cn","ruanyifeng.com","tangdoucdn.com","v-wb.youku.com","wenxuecity.com","dogfight360.com","jmcomic-zzz.org","pokemonhubs.com","youranshare.com","axutongxue.space","foodieteller.com","haiwaishubao.com","league-funny.com","m.biqiugege8.com","player.hboav.com","banzhu1111111.com","banzhu2222222.com","banzhu3333333.com","banzhu4444444.com","banzhu5555555.com","banzhu6666666.com","banzhu7777777.com","banzhu8888888.com","banzhu9999999.com","m.biquge12345.com","wap.biqugewx.info","wap.yushuwu.cloud","work.weixin.qq.com","hamivideo.hinet.net","helper-employer.com","edc1014070.pixnet.net","axutongxue.onrender.com","taiwanlibrarysearch.herokuapp.com"];
     const collectArglistRefIndices = (out, hn, r) => {
         let l = 0, i = 0, d = 0;
         let candidate = '';
@@ -2114,6 +2157,7 @@ if ( $scriptletHostnames$.length ) {
             }
         }
     };
+    const todoIndices = new Set();
     indicesFromHostname(todoIndices, entries[0]);
     if ( $hasAncestors$ ) {
         for ( const entry of entries ) {
@@ -2121,20 +2165,20 @@ if ( $scriptletHostnames$.length ) {
             indicesFromHostname(todoIndices, entry, '>>');
         }
     }
-    $scriptletHostnames$.length = 0;
-}
-
-// Collect arglist references
-const todo = new Set();
-if ( todoIndices.size !== 0 ) {
-    const arglistRefs = $scriptletArglistRefs$.split(';');
-    for ( const i of todoIndices ) {
-        for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
-            todo.add(ref);
+    // Collect arglist references
+    if ( todoIndices.size ) {
+        const $scriptletArglistRefs$ = /* 246 */ "145,146;22,194;80,81;69,70;105,106;196,197;124,125,126;212;14;93,142;179;94;160;80,81;150;45;96,97,98;58;136;105,106;23;19,43,115;143;178;133;141;53;195,208;38;41,59,60;49;222;198,199;28;122;68;159;168;72;11;202,209,210,211;22,194;113;104;61;152;116;100;95;133;198,199;174;14;203;140;91,92,93;6,7,8,9,10;181,207;64,65,66,67;48;14;214,215,216,217,218,219,220;25,30,31,161;16;131;47;84;168;143;136;103;123;129;104;203;20,182,183,184,185,186;19,52;114;105,106;29;169;145,146;171;15;204;145,146;149;6,7,8,9,10;6,7,8,9,10;6,7,8,9,10;203;173;41;73;2;209,210;132;100,101;17;152;211;214,215,216,217,218,219,220;214,215,216,217,218,219,220;214,215,216,217,218,219,220;168;62;137;140;18,19;143;53,56,57;76,77;144,180;26;158;211;51;32,33;32,33;99;179;104;187;41;71;168;5,155;45,46;175;198,199;5,155;39,40;6,7,8,9,10,104;147;5,155;110;187;205;107;221;221;221;221;221;221;130;187;211;111;51;5,155;104,170;176;130;34;154;86;177;37;25;213;138;198,199;25;3;151;78;127;221;221;87,88,89,90;36;108;104,156,167;4;42;79;200,201;200,201;27;179;179;44,87,88,89;44;104;104;24;83;136;54,55;206;165,166;87,88,89;85;50;53;14;1;209,210,211,-213;198,199;148;157;138;21;200,201;200,201;200,201;119;162,163,164;162,163,164;120,121;134;188,189,190,191,192;153;63;117,118;128;74;112;32,33;198,199;75;200,201;198,199;172;82;139;102;168;168;168;168;168;168;168;168;168;179;203;193,205;-213;109;12,13;135;200,201;35";
+        const arglistRefs = $scriptletArglistRefs$.split(';');
+        for ( const i of todoIndices ) {
+            for ( const ref of JSON.parse(`[${arglistRefs[i]}]`) ) {
+                todo.add(ref);
+            }
         }
     }
 }
+
 if ( $hasRegexes$ ) {
+    const $scriptletFromRegexes$ = /* 0 */ [];
     const { hns } = entries[0];
     for ( let i = 0, n = $scriptletFromRegexes$.length; i < n; i += 3 ) {
         const needle = $scriptletFromRegexes$[i+0];
@@ -2151,10 +2195,13 @@ if ( $hasRegexes$ ) {
         }
     }
 }
-if ( todo.size === 0 ) { return; }
 
-// Execute scriplets
-{
+// Execute scriptlets
+if ( todo.size && todo.has(0) === false ) {
+    const $scriptletFunctions$ = /* 19 */
+[preventSetTimeout,preventAddEventListener,abortOnPropertyRead,setConstant,abortOnStackTrace,abortCurrentScript,preventFetch,spoofCSS,abortOnPropertyWrite,preventXhr,preventSetInterval,noEvalIf,noWindowOpenIf,adjustSetTimeout,adjustSetInterval,jsonPrune,preventInnerHTML,removeAttr,evaldataPrune];
+    const $scriptletArgs$ = /* 246 */ ["triggerAdBlockModal","DOMContentLoaded","detectAdBlocker","SPM_CONFIG.adblockOnly","checkAdScript","noopFunc","](getComputedStyle,","Element.prototype.attachShadow","Object.Score","document.querySelector","isAdblocked","MutationObserver","/bait\\.offsetHeight===0|isAdblocked|requestAnimationFrame\\(|AdBlock|AdGuard/","showModal","offsetHeight === 0","adsbygoogle.js",".adsbygoogle","display","block","pagead2.googlesyndication.com","EventTarget.prototype.addEventListener","window.getComputedStyle","document.getElementById","adBlockDetected","alert",".onerror","ad_id_for_555","","all520dddaaa2022ccc","true",".offsetHeight == 0","checkAdblock","/DOMContentLoaded|load|complete/","/check|detected/","ads",".offsetHeight","_AdBlockInit","/googlesyndication\\.com|doubleclick\\.net/","offsetHeig\\'+\\'ht\\']","/api/ads","alertadmodal","adsbygoogle","{}","adsbygoogle.loaded","float_right > div","document.dispatchEvent","/getexoloader/","decodeURIComponent","pagead","www3.doubleclick.net","adblock_tip","AD_SURVEY_Add_AdPos","AD_SURVEY_Add_AdPos_Simple","killads","/\\.height\\(\\) == 0|adsbygoogle/","myModal","loadErrorTip","ins.adsbygoogle","isAdsDisplayed","error","event.target.tagName","_0x","fuzqingAdPlus","Ad Block","all520dddaaa2022aaa","undefined","canRunAds","adBlock","adblock","0","can_run_ads","typeof(ad)","jQuery","\\u","document.writeln","发现严重BUG","document.createElement","make_rand_div","checker","google_tag_manager","/pagead2\\.googlesyndication\\.com|\\/fbevents\\.js/","google.ima.AdError","/#myModal'\\)\\.modal/","ga","google_empty_script_included","setTimeout","COOKIE_NAME","html","ADS_BLOCKED","$","adskilltest","/home/?adblock=","/!document\\.getElementById\\([\\s\\S]*?\\.style\\.display=/","showRemoveAdBlocker","Object.prototype.cnobpreroll_","Object.prototype.canobpreroll_","ad_num_show","!document.getElementById(btoa","daau_app","NativeAd","__jsadsuccess","checkSiteNormalLoad","__DOMAIN","onload","null","adbk","false","/ad block stop|warm_msg/","config.group","encodeURIComponent","preBid","preBid.displayAd","preBid.getPrerollVASTUrl","adStart","eval","document.write","player.VastADPlugin","ADSOBJET","Object.prototype.pgmp","invokeInterstitial","Object.prototype.ShouldLoadAds","delCookie","injectPops","myPlayer.adDisplay","NEWS_FEED","infoid","document.write(ad);","conone_lmg","location.href","3000","adCountDown","0.02",".s--","Object.prototype.ad_switch","dy_card_dyrun","/bit\\.ly|kbtv/","video-ad-timeout","*","tips","poped","*.*","adFeedbackData adType adServedUrls","list.*.link.ad list.*.link.kicker","configs.*.properties.slideshowWCSettings.interstitialNativeAds configs.*.properties.fullScreenSlideshowSettings.interstitialNativeAds properties.componentConfigs.slideshowConfigs.interstitialNativeAds properties.componentConfigs.slideshowConfigs.slideshowSettings.interstitialNativeAds","popunder","Object.prototype.adData","Object.prototype._adData","qciss.net","akumtagcc","myclick","/getCookie[\\s\\S]*?\\(\"\\\\x/","MM_openBrWindow","/\\.(gif|php)/","window.leave","CloseAd","lists","timerAdCountdown","88p2p.com","is_show","data.item data.ads","Object.prototype.getAd","getAd","_blank","mount_adsqrt_ad","new Function","player.adList","localStorage","showAd","DPLAYER_PREROLL_AD.attachPreRollAd","sponsored","Function",".map(function","/<script src=.*Math\\.floor\\(Date\\.now\\(\\)/","click","window.open","adbyunion","Math.floor","data.*.list.[-].resourceData.adData","visitUrl","adRender","addImageAd","Uint8Array","loadAd","createFixedBottomBannerWithClose","/deposit-bonus?platform=26&utm_source=","mmPopup() {","div","_mtj","document.getElementsByTagName","try{e()}catch(e){if(t[e.message])return;",".current=setTimeout","5000","0.001","position:","window.location.href","allData.safeLevel","1","ecjkox.com","ads_codes","touchend","!/external","adUI","1000","appData","[]","topData","midData","btmData","coupletData","data-ads_url","[data-ads_url]","parentNode.insertBefore","1500","navigator","Math.random","return a.split","WebSocket","adModal","adInfo","isAdLoaded","Object.prototype.noAD","__PROXY_META","__ad_unblock_id_obfuscation","/getCookie|checkCK|checkCookie|checkC00kie|checkCoookie|checkCookiiiie|document\\.cookie|buttonClose|exptime/","infoList","data.CardList.[].children_list.ad_list data.CardList.[-].params.advertiser_name","addEventListener(\"touchstart\"","adObj","clientheight","/(?=^(?![\\s\\S]*(static|jquery)))/","data.[-].ad.adScene items.*.video.*.data.[-].ad.adScene data.template.tabs.*.blocks.*.data.data.*.videos.feature_ad data.template.tabs.*.blocks.*.data.data.videos.*.ad","style","#banner[style*=\"background-image:url\"]","CreativePlayerwebPlugin.AD_EVENT.AD_DESTROY","CreativePlayerwebPlugin.AD_EVENT.AD_LOAD_START","ad","data.cm_info.ads","pageData.__banners.0.commercial.mediaUrl","pageData.__banners.0.commercial.jumpUrl","pageData.__banners.0.commercial.title","pageData.__banners.1.commercial.mediaUrl","pageData.__banners.1.commercial.jumpUrl","pageData.__banners.1.commercial.title","detailParams.is_ad_play","entity.commercial","new Function(document["];
+    const $scriptletArglists$ = /* 223 */ ";0,0;1,1,2;2,3;3,4,5;0,6;4,7,8;4,9,10;5,11,10;0,12;1,1,13;0,14;6,15;7,16,17,18;6,19;5,20,21;5,22,23;4,24,25;3,26,27;3,28,29;0,30;8,31;1,32,33;2,34;0,35;3,36,5;6,37;0,38;9,39;2,40;3,41,42;3,43,29;0,44;5,45,46;5,47,48;6,49;9,41;5,9,21;0,50;3,51,5;3,52,5;3,53,29;0,54;0,55;0,56;0,57;3,58,29;1,59,60;0,61;3,62,42;10,63;2,23;3,64,65;3,66,29;1,1,67;3,68,69;3,70,29;0,68;5,24,71;5,72,73;5,74,73;0,75;4,76,77;0,78;3,79,42;9,19;6,80;3,81,5;5,22,82;3,83,5;3,84,29;5,85,86;0,87;11,88;3,41,5;5,89,90;0,91;10,91;5,22,92;1,27,93;3,94,29;3,95,29;0,96;0,41;3,34,27;5,89,97;2,98;3,99,5;3,100,29;0,101;8,102;3,103,104;3,105,106;0,107;3,108,27;11,109;3,110,42;3,111,5;3,112,5;8,113;5,114,61;5,115,61;3,116,5;3,117,42;12;4,118,119;2,120;8,121;5,72,122;3,123,65;3,124,5;5,89,125;5,115,126;3,127,5;1,1,76;0,128,129;13,130,27,131;14,132,27,131;3,133,69;3,134,65;12,135;13,136,137,131;5,115,138;3,139,29;15,140,141;15,137,142;15,143;2,144;3,145,42;13,27,27,131;3,146,42;12,69,147;2,148;2,149;5,115,150;3,151,5;5,115,152;5,153;13,154,27,131;3,155,65;5,89,144;14,156,27,131;12,157;3,158,106;15,159;3,160,5;0,161;12,162;4,76,163;5,76,164;3,165,42;5,166,167;3,168,5;1,1,169;5,170,171;5,115,172;1,173,174;2,175;5,176,138;15,177;5,76,178;3,179,5;2,180;4,181,182;2,183;5,89,184;5,89,185;16,186,187;5,188,187;0,189;5,74;13,190,191,192;5,115;1,1,166;5,115,193;0,194;3,195,196;0,197;5,115,198;1,199,194;12,200;14,201,202,131;3,203,204;3,205,204;3,206,204;3,207,204;3,208,204;17,209,210;0,211,202;0,211,212;5,213,128;5,214,211;5,76,215;11,216;5,89,217;3,218,42;3,219,29;3,220,29;8,221;8,222;0,223;3,224,204;15,225;0,226;3,227,5;1,199,228;4,76,229;15,230;17,231,232;3,233,27;3,234,27;15,34;15,235;15,236;3,237,27;3,238,27;3,239,27;3,240,27;3,241,27;3,242,27;3,243,106;18,244;5,170,245";
     const arglists = $scriptletArglists$.split(';');
     const args = $scriptletArgs$;
     for ( const ref of todo ) {
