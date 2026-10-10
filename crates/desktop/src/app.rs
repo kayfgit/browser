@@ -174,6 +174,12 @@ pub(crate) enum UserEvent {
     DownloadBlocked(String),
     /// The network blocklist engine finished compiling and is now live.
     BlocklistReady,
+    /// The bundled ad blocker (uBO Lite) couldn't be installed, enabled or disabled in a
+    /// WebView2 profile. Carries the reason; logged to `:errors`.
+    AdblockFailed(String),
+    /// `:ads` finished switching the bundled ad blocker in every profile: reload the
+    /// visible pages so the change takes hold.
+    AdblockApplied,
     /// The async `GetBrowserExtensions` query finished — carries the installed extensions
     /// (id/name/enabled). The shell caches them and (re)renders the `:extensions` picker.
     ExtensionsListed {
@@ -356,8 +362,8 @@ pub(crate) struct App {
     pub(crate) modifiers: ModifiersState,
     /// When true, new tabs are opened with JavaScript disabled.
     pub(crate) nojs: bool,
-    /// Ad blocking: the mode, what a bare `:ads` returns to, and the flag shared with
-    /// every tab. Changed through [`set_adblock_mode`](Self::set_adblock_mode) so open
+    /// Ad blocking: on/off, the flag shared with
+    /// every tab. Changed through [`set_adblock`](Self::set_adblock) so open
     /// tabs follow; persisted.
     pub(crate) adblock: crate::adblock::Adblock,
     /// Monotonic request token: stale extension-list responses must not replace a
@@ -1389,9 +1395,8 @@ impl App {
             content_zoom: self.content_zoom,
             nojs: self.nojs,
             no_scrollbar: self.no_scrollbar,
-            adblock: self.adblock.blocking(),
-            adblock_mode: self.adblock.mode().name().to_string(),
-            adblock_prev: self.adblock.prev().name().to_string(),
+            adblock: self.adblock.on(),
+            adblock_mode: self.adblock.session_name().to_string(),
             search_template: self.search_template.clone(),
             term_command: self.term_command.clone(),
             active,
@@ -1416,10 +1421,10 @@ impl App {
         // Set BEFORE the tabs are opened below, so each restored webview bakes the
         // hidden-scrollbar state into its `__featureDefaults` init script.
         self.no_scrollbar = s.no_scrollbar;
-        // Adopt the saved ad-blocker state (default: on). Tabs restored below enforce the
-        // extension state as they're built; here we just set the mode + shared flag (no
-        // webviews exist yet, so the full `set_adblock_mode` sweep would be a no-op).
-        self.adblock.restore(&s.adblock_mode, &s.adblock_prev);
+        // Adopt the saved ad-blocker state (default: on). Tabs restored below bring the
+        // bundled extension to this state as they're built; here we just set the shared
+        // flag (no webviews exist yet, so the full `set_adblock` sweep would be a no-op).
+        self.adblock.restore(&s.adblock_mode);
         // Compared against the LIVE zoom, not 1.0: at startup that's the same thing,
         // but a profile switch must also step a zoomed-in chrome back DOWN to a
         // profile saved at 100%.

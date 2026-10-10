@@ -463,6 +463,8 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
             // Quiet by default (don't clobber a useful status); the engine simply
             // starts catching navigations from here on.
         }
+        UserEvent::AdblockFailed(reason) => app.set_error(format!("ad blocker: {reason}")),
+        UserEvent::AdblockApplied => app.reload_visible_web_panes(),
         UserEvent::ExtensionsListed {
             request,
             view,

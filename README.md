@@ -29,8 +29,8 @@ With no pages open, the browser sits at about 30 MB with zero engine processes.
 - **Splits**: tmux-like panes inside a tab (`Ctrl+W` then `s`/`v`), and the panes can mix
   web pages, read views and terminals.
 - **Built-in terminal**: `:te` opens your shell (nushell, PowerShell, cmd, WSL…) in a tab.
-- **Ad blocking**: bundled uBlock Origin Lite plus a native filter engine and a guard
-  against forced redirects and pop-unders.
+- **Ad blocking**: bundled uBlock Origin Lite, plus a guard against forced redirects
+  and pop-unders.
 - **Sessions and profiles**: `:w` saves your tabs, splits and window layout;
   `:saveprofile work` / `:profile work` switch between whole workspaces.
 - **Command bar**: autocomplete from history, `!bangs` (`!yt lofi`, `!gh wry`), and

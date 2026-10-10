@@ -73,8 +73,6 @@ mod term;
 mod update;
 mod vim;
 mod visited;
-// Re-exported so modules (and the Servo engine) can keep using `crate::ADBLOCK_JS`.
-use adblock::AdblockMode;
 use app::{clipboard_get, clipboard_set, App, ExtInfo, ModeKind, UserEvent};
 use commands::COMMANDS;
 use draw::Painter;
@@ -82,8 +80,11 @@ use find::FindState;
 use hints::HintAct;
 use pages::commands_document;
 pub(crate) use scripts::{
-    ADBLOCK_JS, BRIDGE_JS, CARET_JS, FEATURES_JS, FIND_JS, HINT_JS, IPC_PRELUDE, RESEARCH_JS,
+    BRIDGE_JS, CARET_JS, FEATURES_JS, FIND_JS, HINT_JS, IPC_PRELUDE, NAVGUARD_JS, RESEARCH_JS,
 };
+// Only Servo still runs the page-side cosmetic blocker (WebView2 has uBO Lite).
+#[cfg(all(windows, feature = "servo-engine"))]
+pub(crate) use scripts::ADBLOCK_JS;
 use tabs::{js_string, parse_open_flags, parse_tab_flag, Source, Tab};
 use term::program_exists;
 
@@ -228,8 +229,7 @@ fn main() -> Result<()> {
         active: None,
         modifiers: ModifiersState::default(),
         nojs: false,
-        // Blocking on by default: uBO Lite (network) plus the native layers, which cover
-        // different halves of the job (see `AdblockMode`). Session restore may override.
+        // Blocking on by default (see `adblock`). Session restore may override.
         adblock: adblock::Adblock::default(),
         term_drag: None,
         term_clicks: None,

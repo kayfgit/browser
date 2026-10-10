@@ -157,7 +157,7 @@ impl App {
                 if let Some(view) = self.tabs[index].webview() {
                     let _ = view.evaluate_script(&format!(
                         "window.__setAdblock&&window.__setAdblock({})",
-                        self.adblock.blocking()
+                        self.adblock.on()
                     ));
                 }
                 None

@@ -1,4 +1,7 @@
 //! WebView2 profile extension APIs.
+use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2BrowserExtension, ICoreWebView2BrowserExtensionList, ICoreWebView2Profile7,
     ICoreWebView2_13,
@@ -72,80 +75,137 @@ pub(crate) fn set_enabled(webview: &WebView, id: String, enabled: bool) -> Engin
     apply(webview, move |_ext, eid| eid == id, enabled)
 }
 
-/// Enable/disable EVERY installed extension — the switch the `:adblock` mode uses to make
-/// one engine active at a time (disable uBlock while native blocking runs, and back).
-pub(crate) fn set_all_enabled(webview: &WebView, enabled: bool) -> EngineResult {
-    apply(webview, |_, _| true, enabled)
-}
-
-/// Add every unpacked extension under `dir` to the shared profile (async, best-effort) —
-/// a mirror of wry's own builder-time loading, for the one case that path no longer
-/// covers: switching to `Ubo` mode in a session whose webviews were all built in
-/// `native`/`off` mode (which deliberately never (re-)add the bundled dir), on a profile
-/// that never had the extension installed. Re-adding an already-installed extension
-/// doesn't duplicate it — WebView2 keeps one copy and resets it to ENABLED, which is
-/// exactly the state the Ubo switch wants anyway.
-pub(crate) fn install_dir(webview: &WebView, dir: &std::path::Path) -> EngineResult {
+/// [`Extensions::sync_bundled`](browser_engine::Extensions::sync_bundled): add each
+/// unpacked extension under `dir`, drop stale copies of it, and set it to `enabled`.
+///
+/// Adding is idempotent (WebView2 keeps one copy per folder) and hands back the installed
+/// extension, which is how we learn its ID without touching anything else in the profile —
+/// extensions the user installed keep whatever state they gave them.
+///
+/// The enable/disable step is explicit because adding no longer does it: on runtime 154 a
+/// profile that once had the extension disabled keeps it disabled through every re-add.
+/// Until 2026-10 that left uBO Lite silently OFF, because nothing else turned it back on
+/// and every failure here was dropped. `done` now reports them.
+pub(crate) fn sync_bundled(
+    webview: &WebView,
+    dir: &Path,
+    enabled: bool,
+    done: Completion,
+) -> EngineResult {
     let profile = profile7(webview).ok_or("extension APIs unavailable in this runtime")?;
-    let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
-    for entry in entries.flatten() {
-        let path = windows_core::HSTRING::from(entry.path().as_os_str());
-        let handler = ProfileAddBrowserExtensionCompletedHandler::create(Box::new(|_, _| Ok(())));
-        unsafe { profile.AddBrowserExtension(&path, &handler) }.map_err(|e| e.to_string())?;
+    let folders: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    let tally = Rc::new(Tally {
+        left: Cell::new(folders.len()),
+        error: RefCell::new(None),
+        done: RefCell::new(Some(done)),
+    });
+    if folders.is_empty() {
+        tally.left.set(1);
+        tally.finish(Ok(()));
     }
-    Ok(())
-}
-
-/// Add every unpacked extension under `dir`, then remove any OTHER installed extension
-/// with the same name. An unpacked extension without a manifest `key` gets its ID from
-/// its folder path, so when the bundle moves (the source tree → the unpacked copy in
-/// the data folder), the profile keeps the old copy too and both would run. Async and
-/// best-effort, like the rest of this module.
-pub(crate) fn install_dir_replacing(webview: &WebView, dir: &std::path::Path) -> EngineResult {
-    let profile = profile7(webview).ok_or("extension APIs unavailable in this runtime")?;
-    let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
-    for entry in entries.flatten() {
-        let path = windows_core::HSTRING::from(entry.path().as_os_str());
-        let lookup = profile.clone();
+    let verb = if enabled { "enable" } else { "disable" };
+    for folder in folders {
+        let label = folder
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let (added_tally, lookup) = (tally.clone(), profile.clone());
         let handler =
             ProfileAddBrowserExtensionCompletedHandler::create(Box::new(move |hr, added| {
-                let Some(added) = added.filter(|_| hr.is_ok()) else {
-                    return Ok(());
+                let tally = added_tally;
+                let added = match (hr, added) {
+                    (Ok(()), Some(added)) => added,
+                    (Err(e), _) => {
+                        tally.finish(Err(format!("{label}: couldn't load it: {e}")));
+                        return Ok(());
+                    }
+                    (Ok(()), None) => {
+                        tally.finish(Err(format!("{label}: WebView2 didn't report it loaded")));
+                        return Ok(());
+                    }
                 };
-                let keep = pwstr_of(|p| unsafe { added.Id(p) });
+                let id = pwstr_of(|p| unsafe { added.Id(p) });
                 let name = pwstr_of(|p| unsafe { added.Name(p) });
-                if keep.is_empty() || name.is_empty() {
-                    return Ok(());
+                remove_stale_copies(&lookup, id, name.clone());
+                // Always set the state, never check it first: the object `Add` hands back
+                // reports `IsEnabled == true` even while the profile holds the extension
+                // disabled (measured on runtime 154), which is how a skip-if-already-set
+                // check left it off.
+                let enable_tally = tally.clone();
+                let what = format!("{name}: couldn't {verb} it");
+                let failed = what.clone();
+                let after = BrowserExtensionEnableCompletedHandler::create(Box::new(move |hr| {
+                    enable_tally.finish(hr.map_err(|e| format!("{what}: {e}")));
+                    Ok(())
+                }));
+                if let Err(e) = unsafe { added.Enable(enabled, &after) } {
+                    tally.finish(Err(format!("{failed}: {e}")));
                 }
-                let sweep = ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(
-                    move |_hr, list| {
-                        let Some(list) = list.as_ref() else {
-                            return Ok(());
-                        };
-                        let mut count = 0u32;
-                        let _ = unsafe { list.Count(&mut count) };
-                        for i in 0..count {
-                            let Ok(ext) = (unsafe { list.GetValueAtIndex(i) }) else {
-                                continue;
-                            };
-                            let id = pwstr_of(|p| unsafe { ext.Id(p) });
-                            let other = pwstr_of(|p| unsafe { ext.Name(p) });
-                            if id != keep && other == name {
-                                let done = BrowserExtensionRemoveCompletedHandler::create(
-                                    Box::new(|_hr| Ok(())),
-                                );
-                                let _ = unsafe { ext.Remove(&done) };
-                            }
-                        }
-                        Ok(())
-                    },
-                ));
-                let _ = unsafe { lookup.GetBrowserExtensions(&sweep) };
                 Ok(())
             }));
-        unsafe { profile.AddBrowserExtension(&path, &handler) }.map_err(|e| e.to_string())?;
+        let path = windows_core::HSTRING::from(folder.as_os_str());
+        if let Err(e) = unsafe { profile.AddBrowserExtension(&path, &handler) } {
+            tally.finish(Err(format!("{}: couldn't load it: {e}", folder.display())));
+        }
     }
     Ok(())
+}
+
+/// Counts down the extensions [`sync_bundled`] is waiting on and reports once, with the
+/// first failure if there was one. Completion handlers run on the UI thread, so `Rc`.
+struct Tally {
+    left: Cell<usize>,
+    error: RefCell<Option<String>>,
+    done: RefCell<Option<Completion>>,
+}
+
+impl Tally {
+    fn finish(&self, result: EngineResult) {
+        if let Err(e) = result {
+            self.error.borrow_mut().get_or_insert(e);
+        }
+        let left = self.left.get().saturating_sub(1);
+        self.left.set(left);
+        if left == 0 {
+            if let Some(done) = self.done.borrow_mut().take() {
+                done(self.error.take().map_or(Ok(()), Err));
+            }
+        }
+    }
+}
+
+/// Remove every installed extension named `name` other than `keep`. An unpacked extension
+/// without a manifest `key` gets its ID from its folder path, so when the bundle moves
+/// (a new unpack location), the profile keeps the old copy too and both would run.
+fn remove_stale_copies(profile: &ICoreWebView2Profile7, keep: String, name: String) {
+    if keep.is_empty() || name.is_empty() {
+        return;
+    }
+    let sweep = ProfileGetBrowserExtensionsCompletedHandler::create(Box::new(move |_hr, list| {
+        let Some(list) = list.as_ref() else {
+            return Ok(());
+        };
+        let mut count = 0u32;
+        let _ = unsafe { list.Count(&mut count) };
+        for i in 0..count {
+            let Ok(ext) = (unsafe { list.GetValueAtIndex(i) }) else {
+                continue;
+            };
+            let id = pwstr_of(|p| unsafe { ext.Id(p) });
+            let other = pwstr_of(|p| unsafe { ext.Name(p) });
+            if id != keep && other == name {
+                let done = BrowserExtensionRemoveCompletedHandler::create(Box::new(|_hr| Ok(())));
+                let _ = unsafe { ext.Remove(&done) };
+            }
+        }
+        Ok(())
+    }));
+    let _ = unsafe { profile.GetBrowserExtensions(&sweep) };
 }
 
 /// Shared body of the enable/disable calls: fetch the list, then `Enable(enabled)` every

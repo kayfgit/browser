@@ -195,16 +195,17 @@ launch reopens the shell there. How the directory is detected depends on the she
 
 ## Ad blocking and privacy
 
-Ad blocking is on by default and has two halves that work together:
+Ad blocking is on by default:
 
-- **uBlock Origin Lite**, bundled and loaded into WebView2, blocks ad and tracker
-  requests at the network level.
-- **Native layers** hide leftover ad containers, strip YouTube's video ads, stop
-  pop-unders, and block forced redirects to known ad/scam domains (matched against
-  EasyList, EasyPrivacy, uBlock's lists and Peter Lowe's list).
+- **uBlock Origin Lite**, bundled and loaded into WebView2, does the blocking: ad and
+  tracker requests, ad containers, and YouTube's video ads.
+- A **redirect and pop-up guard** stops pop-unders and forced redirects to known ad/scam
+  domains (matched against EasyList, EasyPrivacy, uBlock's lists and Peter Lowe's list).
+  An extension can't do this part, so the browser does it itself.
 
-`:ads` toggles blocking, `:adblock native` runs only the native layers (useful for
-ruling the extension out if a site breaks), and `:extensions` lists installed extensions.
+`:ads` toggles blocking (or `:adblock on|off`) and reloads the pages on screen so the
+change takes hold. If the extension can't be switched on or off, the reason shows up in
+`:errors`. `:extensions` lists installed extensions.
 
 Other protections and toggles:
 
@@ -307,7 +308,7 @@ Both engines can sit side by side in a split. Modes, every hint type (`f`, `F`,
 `yf`, `s`), zoom and history work the same in either.
 
 Servo's limits for now: no extensions (so no uBlock Origin) and no network-level ad
-blocking, no private (`:open -n`) or no-JavaScript (`:nojs`) tabs, no downloads, and
+blocking (a page-side script hides ad containers and skips YouTube ads instead), no private (`:open -n`) or no-JavaScript (`:nojs`) tabs, no downloads, and
 selecting page text is limited. Many sites render or behave differently than in
 Chromium; YouTube, for one, shows its page but not its videos yet, so use
 `:engine webview2` there. Servo keeps its own cookies and storage, so you sign in to sites separately

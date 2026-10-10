@@ -1,7 +1,8 @@
 //! The JavaScript the browser injects into pages, one file each under
 //! `crates/desktop/scripts/`. Every web view gets `IPC_PRELUDE`, `BRIDGE_JS`,
-//! `FIND_JS`, `CARET_JS` and `FEATURES_JS` (plus `ADBLOCK_JS` in its own init
-//! script); `RESEARCH_JS` only in `:research` tabs; `HINT_JS` on demand.
+//! `FIND_JS`, `CARET_JS` and `FEATURES_JS`, plus `NAVGUARD_JS` (in its own init script
+//! on WebView2); Servo views also get `ADBLOCK_JS`; `RESEARCH_JS` only in `:research`
+//! tabs; `HINT_JS` on demand.
 
 /// Defines `window.__post`, the ONE safe path for page→shell IPC, prepended to every
 /// injected bundle so it exists before anything posts. wry builds an `http::Uri` from
@@ -33,25 +34,24 @@ pub(crate) const HINT_JS: &str = include_str!("../scripts/hints.js");
 /// since wry exposes no sub-resource request blocker to stop the loads outright.
 pub(crate) const RESEARCH_JS: &str = include_str!("../scripts/research.js");
 
-/// uBlock-style content blocker, injected at document-start into every web tab while
-/// adblock is on. NETWORK-level blocking — stopping ad/scam scripts, iframes and XHRs from
-/// ever loading — belongs to the uBlock Origin Lite extension, which does it declaratively
-/// inside Chromium's network stack. This page-side script is the OTHER half, and not a
-/// fallback: uBO Lite can't see its `<all_urls>` grant under WebView2, so it demotes itself
-/// to network-only and does no cosmetic filtering at all. Everything below is therefore the
-/// only thing doing these jobs. Being an initialization script, it also can't lose a race
-/// with an extension service worker, and it toggles live without a reload:
+/// Page-side cosmetic ad blocker, for Servo only (WebView2 tabs get all of this from the
+/// bundled uBlock Origin Lite). Injected at document-start while adblock is on:
 ///   * cosmetic — imperatively hide generic ad containers (EasyList-ish) plus YouTube's
 ///     ad slots (inline `display:none`, which survives a strict CSP a `<style>` wouldn't);
 ///   * YouTube — prune the ad descriptors from the player-response JSON, skip/seek past
-///     in-player ads, and remove the "ad blocker" enforcement modal;
-///   * redirects/popups — report a trusted cross-site gesture (`nav-intent`, the signal
-///     the native redirect guard needs) and neuter scripted `window.open` popunders.
+///     in-player ads, and remove the "ad blocker" enforcement modal.
 ///
-/// Every layer honours a live `on` flag: the shell flips it via `window.__setAdblock`
-/// on `:ads` (no reload needed) and bakes the initial value as `__adblockDefault` per
-/// tab so a tab opened while a toggle is active starts in that state.
+/// It follows the live `on` flag `NAVGUARD_JS` owns (`window.__adblockCosmetic`). To be
+/// replaced by an engine-level blocker for Servo.
+#[cfg(all(windows, feature = "servo-engine"))]
 pub(crate) const ADBLOCK_JS: &str = include_str!("../scripts/adblock.js");
+
+/// The redirect/popup guard, injected into every web tab (all frames) while adblock is on:
+/// reports a trusted cross-site gesture (`nav-intent`, the signal the native redirect
+/// guard needs) and neuters scripted cross-origin `window.open` popunders. It owns the
+/// live toggle: the shell flips it via `window.__setAdblock` on `:ads` and bakes the
+/// initial value as `__adblockDefault` per tab.
+pub(crate) const NAVGUARD_JS: &str = include_str!("../scripts/navguard.js");
 
 /// Live page-feature toggles, injected into every web tab. Four independent flags,
 /// each seeded from `window.__featureDefaults` (baked per tab from the shell's state)
@@ -61,8 +61,8 @@ pub(crate) const ADBLOCK_JS: &str = include_str!("../scripts/adblock.js");
 ///   * `video`     — strip video players and embeds, sparing captcha iframes.
 ///   * `scrollbar` — hide the page's scrollbars.
 ///
-/// (Pop-up/popunder blocking now lives entirely under `:ads` — the native new-window
-/// handler plus the all-frames `window.open` neuter in [`ADBLOCK_JS`].)
+/// (Pop-up/popunder blocking lives under `:ads` — the native new-window handler plus
+/// the all-frames `window.open` neuter in [`NAVGUARD_JS`].)
 ///
 /// Mirrors the `:ads` pattern so `:mute`/`:css` apply instantly to all tabs.
 pub(crate) const FEATURES_JS: &str = include_str!("../scripts/features.js");

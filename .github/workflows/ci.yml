@@ -41,9 +41,10 @@ jobs:
       - name: tests
         run: cargo test --workspace --locked
 
-      # The injected page scripts (bridge, hints, Servo's message queue) have Node tests.
+      # The injected page scripts (bridge, hints, redirect guard, Servo's message queue)
+      # have Node tests.
       - name: page script tests
-        run: node --test crates/desktop/tests/bridge-hints.cjs crates/desktop/tests/scroll-hints.cjs crates/desktop/tests/servo-bridge-queue.cjs
+        run: node --test crates/desktop/tests/bridge-hints.cjs crates/desktop/tests/scroll-hints.cjs crates/desktop/tests/navguard.cjs crates/desktop/tests/servo-bridge-queue.cjs
 
   servo:
     name: clippy, docs (with Servo)

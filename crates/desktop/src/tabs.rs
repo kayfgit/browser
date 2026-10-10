@@ -10,9 +10,7 @@ use browser_engine::{EngineView, RectPx};
 use crate::blocklist::AD_HOSTS;
 use crate::panes::{PaneNode, PaneRect, FOCUS_BORDER};
 use crate::term::TermSession;
-use crate::{
-    read_view, session, vim, AdblockMode, App, ModeKind, UserEvent, CLOSED_CAP, RESEARCH_JS,
-};
+use crate::{read_view, session, vim, App, ModeKind, UserEvent, CLOSED_CAP, RESEARCH_JS};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
@@ -664,8 +662,7 @@ impl App {
                     browser_engine::StorageMode::Persistent
                 },
                 bounds: self.content_rect(),
-                adblock: self.adblock.blocking(),
-                adblock_mode: self.adblock.mode(),
+                adblock: self.adblock.on(),
                 mute: self.mute,
                 no_css: self.no_css,
                 no_video: self.no_video,
@@ -1308,63 +1305,77 @@ impl App {
         }
     }
 
-    /// Bare `:ads`/`:adblock` — a quick on/off toggle for whichever engine you're
-    /// running: off when one is active, otherwise back on with the SAME engine
-    /// ([`Adblock::toggled`](crate::adblock::Adblock::toggled)), so native → off → native rather than
-    /// silently landing on the uBlock default. Use `:adblock native|ubo|off` to switch
-    /// engines outright.
+    /// Bare `:ads`/`:adblock` — flip ad blocking on/off.
     pub(crate) fn toggle_adblock(&mut self) {
-        self.set_adblock_mode(self.adblock.toggled());
+        self.set_adblock(!self.adblock.on());
     }
 
-    /// Turn ad blocking on or off across every layer at once.
-    ///
-    /// There is no longer an engine to choose: uBlock Origin Lite (network) and the native
-    /// side (cosmetic, YouTube, redirect/popup guards) run TOGETHER, because each covers
-    /// what the other structurally can't — see [`AdblockMode`]. One flag drives all of it:
-    /// `adblock_on` for the native guards, `__setAdblock` for the page-side script, and the
-    /// extension's profile-wide enable. Persisted on the next session write; re-applied to
-    /// newly built webviews (see `build_content_webview`).
-    pub(crate) fn set_adblock_mode(&mut self, mode: AdblockMode) {
-        // Also remembers what we're leaving, so a later bare `:ads` (or one after an
-        // explicit `:adblock off`) turns it back on.
-        self.adblock.set(mode);
-        let on = mode.blocking();
-        let ext = mode.extension();
-        // A session whose webviews were built in another mode never added the bundled
-        // extension, and a fresh profile may never have had it installed — so add it
-        // (profile-wide, idempotent) before the enable sweep below. Any one webview
-        // reaches the shared profile.
-        #[cfg(windows)]
-        if ext {
-            if let (Some(dir), Some(wv)) = (
-                ublock_extensions_dir(),
-                self.tabs.iter().find_map(|t| t.webview()),
-            ) {
-                crate::extensions::install_dir(wv, &dir);
-            }
-        }
+    /// Turn ad blocking on or off. The redirect/popup guard (and Servo's page-side
+    /// blocker) follow at once. The bundled uBlock Origin Lite is switched in every
+    /// WebView2 profile — one regular tab reaches the shared profile, each private tab has
+    /// its own — and it only takes hold on a page's next load, so the visible pages reload
+    /// once every profile has answered ([`UserEvent::AdblockApplied`]). Failures land in
+    /// `:errors`. Persisted on the next session write.
+    pub(crate) fn set_adblock(&mut self, on: bool) {
+        self.adblock.set(on);
+        self.broadcast_adblock();
+        let mut views = Vec::new();
+        let mut regular = false;
         for tab in &self.tabs {
-            if let Some(wv) = tab.webview() {
-                let _ =
-                    wv.evaluate_script(&format!("window.__setAdblock&&window.__setAdblock({on})"));
-                #[cfg(windows)]
-                crate::extensions::set_all_enabled(wv, ext);
+            let Some(view) = tab.webview().filter(|v| v.extensions().is_some()) else {
+                continue;
+            };
+            if !tab.private {
+                if regular {
+                    continue;
+                }
+                regular = true;
+            }
+            views.push(view);
+        }
+        let state = if on { "on" } else { "off" };
+        match ublock_extensions_dir() {
+            Some(dir) if !views.is_empty() => {
+                let left = std::rc::Rc::new(std::cell::Cell::new(views.len()));
+                for view in views {
+                    let (left, proxy) = (left.clone(), self.proxy.clone());
+                    crate::extensions::sync_bundled(
+                        view,
+                        &dir,
+                        on,
+                        Box::new(move |result| {
+                            if let Err(e) = result {
+                                let _ = proxy.send_event(UserEvent::AdblockFailed(e));
+                            }
+                            left.set(left.get() - 1);
+                            if left.get() == 0 {
+                                let _ = proxy.send_event(UserEvent::AdblockApplied);
+                            }
+                        }),
+                    );
+                }
+                self.set_status(format!("adblock {state} — reloading the visible pages"));
+            }
+            // No WebView2 tab yet: each new one syncs itself as it's built.
+            _ => self.set_status(format!("adblock {state}")),
+        }
+        self.window.request_redraw();
+    }
+
+    /// Reload every web page in the active window (all panes of a split), e.g. so an
+    /// extension switched on or off takes hold.
+    pub(crate) fn reload_visible_web_panes(&mut self) {
+        let mut visible = Vec::new();
+        if let Some(w) = self.active_window() {
+            self.windows[w].leaves(&mut visible);
+        } else if let Some(a) = self.active {
+            visible.push(a);
+        }
+        for i in visible {
+            if let Some(view) = self.tabs.get(i).and_then(|t| t.webview()) {
+                let _ = view.reload();
             }
         }
-        // The cosmetic/YouTube layer applies instantly. The extension's rules bind at
-        // request time and its content scripts at document start, so entering/leaving `Ubo`
-        // only fully takes hold on the next load — say so rather than implying otherwise.
-        self.set_status(match mode {
-            AdblockMode::Ubo => {
-                "adblock on — uBO Lite (network) + native (cosmetic, youtube, redirects)"
-            }
-            AdblockMode::Native => {
-                "adblock on — native only (cosmetic, youtube, redirects); no extension"
-            }
-            AdblockMode::Off => "adblock off — reload to drop what this page already applied",
-        });
-        self.window.request_redraw();
     }
 
     /// Push the shell's current page-side blocker state into every web tab, overriding
@@ -1372,7 +1383,7 @@ impl App {
     /// every document load ([`UserEvent::SyncAdblock`]) so a tab whose webview was built
     /// in a different mode converges instead of staying frozen at its creation-time value.
     pub(crate) fn broadcast_adblock(&self) {
-        let on = self.adblock.blocking();
+        let on = self.adblock.on();
         for tab in &self.tabs {
             if let Some(wv) = tab.webview() {
                 let _ =
