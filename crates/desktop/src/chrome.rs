@@ -1259,17 +1259,10 @@ impl App {
                             .push(("   [ai]  i: ask · H/L: chats · v/y select".into(), draw::AI)),
                     }
                 }
-                // Terminal: [term] live (i types), [COPY] in vi/copy mode.
-                if self.active_is_term() {
-                    if self.active_term_vi() {
-                        segs.push((
-                            "   [COPY]  hjkl/w/b move · f find · v select · y yank · i resume"
-                                .into(),
-                            draw::TERM,
-                        ));
-                    } else {
-                        segs.push(("   [term]  i: type · Ctrl+S: copy-mode".into(), draw::TERM));
-                    }
+                // Terminal: a hint only when it isn't in copy mode. Normal mode on a
+                // terminal IS copy mode, and its key list was just noise in the bar.
+                if self.active_is_term() && !self.active_term_vi() {
+                    segs.push(("   [term]  i: type · Ctrl+S: copy-mode".into(), draw::TERM));
                 }
                 // Vim pager tabs (`:error`/`:errors`, `:res`): show [VISUAL]/[VISUAL
                 // LINE] while selecting, else a hint keyed to the tab — the red [error]
