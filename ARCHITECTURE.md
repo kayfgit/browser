@@ -154,7 +154,7 @@ Keyboard and focus:
 
 Pages and engines:
 
-- [engines/](crates/desktop/src/engines/mod.rs): adapters behind the `crates/engine` contract. [engines/webview2/](crates/desktop/src/engines/webview2/mod.rs) is the only code that owns WebView2 objects; `engines/servo/` is the second engine, with page content in Servo's content processes (`watchdog.rs` notices crashed ones).
+- [engines/](crates/desktop/src/engines/mod.rs): adapters behind the `crates/engine` contract. [engines/webview2/](crates/desktop/src/engines/webview2/mod.rs) is the only code that owns WebView2 objects; `engines/servo/` is the second engine, with page content in Servo's content processes (`watchdog.rs` notices crashed ones). [engines/trident/](crates/desktop/src/engines/trident/mod.rs) is Internet Explorer 11's MSHTML: each view is a copy of this executable started with `--trident-host` in an AppContainer (`sandbox.rs`), hosting the WebBrowser control (`host.rs`) and talking JSON lines over its stdin and stdout (`protocol.rs`).
 - [scripts.rs](crates/desktop/src/scripts.rs): the JavaScript injected into pages (the files are in [crates/desktop/scripts/](crates/desktop/scripts/bridge.js)).
 - [navguard.rs](crates/desktop/src/navguard.rs) and [blocklist.rs](crates/desktop/src/blocklist.rs): blocking ad redirects and known-bad domains.
 - [extensions.rs](crates/desktop/src/extensions.rs), [bundled_extensions.rs](crates/desktop/src/bundled_extensions.rs): the extension picker and the bundled uBlock Origin Lite.

@@ -3,6 +3,8 @@ mod events;
 #[cfg(all(windows, feature = "servo-engine"))]
 pub(crate) mod servo;
 mod shell;
+#[cfg(windows)]
+pub(crate) mod trident;
 pub(crate) use shell::unavailable_content;
 mod webview2;
 
@@ -66,6 +68,18 @@ pub(crate) const PROVIDERS: &[ProviderDescriptor] = &[
             page_messages: true,
         },
     },
+    #[cfg(windows)]
+    ProviderDescriptor {
+        id: "trident",
+        family: "trident",
+        display_name: "Trident (Internet Explorer 11)",
+        capabilities: Capabilities {
+            private: false,
+            disable_javascript: false,
+            document_scripts: true,
+            page_messages: true,
+        },
+    },
 ];
 
 pub(crate) fn resolve(
@@ -90,6 +104,8 @@ pub(crate) fn build(
         "webview2" => webview2::build(parent, opts, identity).map_err(|e| format!("{e:#}")),
         #[cfg(all(windows, feature = "servo-engine"))]
         "servo" => servo::build(parent, opts, identity).map_err(|e| format!("{e:#}")),
+        #[cfg(windows)]
+        "trident" => trident::build(parent, opts, identity).map_err(|e| format!("{e:#}")),
         _ => Err(format!("no factory for {}", provider.id)),
     })
     .map_err(anyhow::Error::msg)

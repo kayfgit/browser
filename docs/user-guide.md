@@ -18,7 +18,7 @@ and `:help <topic>` jumps to one (`:help theme`, `:help selection`, `:help bangs
 - [The `:ai` assistant](#the-ai-assistant)
 - [Updates](#updates)
 - [What's new](#whats-new)
-- [Engines: WebView2 and Servo](#engines-webview2-and-servo)
+- [Engines: WebView2, Servo and Trident](#engines-webview2-servo-and-trident)
 
 ## The window
 
@@ -308,17 +308,19 @@ only works for a copy installed with the installer; a copy built from source upd
 `:news` (or `:changelog`) shows what changed in each release, newest first; `f`
 follows a commit link. The first launch after an update says so in the status bar.
 
-## Engines: WebView2 and Servo
+## Engines: WebView2, Servo and Trident
 
-Web pages render in one of two engines. **WebView2** (Microsoft Edge's Chromium,
+Web pages render in one of three engines. **WebView2** (Microsoft Edge's Chromium,
 built into Windows) is the default. **[Servo](https://servo.org/)** is an independent
-engine written in Rust, shipped with the browser.
+engine written in Rust, shipped with the browser. **Trident** is Internet Explorer 11's
+engine, built into Windows, for testing old sites.
 
 - `:engines` lists the installed engines.
-- `:engine servo` reopens the current page in Servo; `:engine webview2` goes back.
+- `:engine servo` (or `:engine trident`) reopens the current page in that engine;
+  `:engine webview2` goes back.
 - `:engine default servo` makes new web tabs open in Servo.
 
-Both engines can sit side by side in a split. Modes, every hint type (`f`, `F`,
+The engines can sit side by side in a split. Modes, every hint type (`f`, `F`,
 `yf`, `s`), zoom and history work the same in either.
 
 Servo's limits for now: no extensions (so no uBlock Origin; the browser blocks ad and
@@ -333,3 +335,18 @@ page state don't carry over.
 If a Servo page crashes, only its pane is affected: it shows what happened, and
 `:reload` opens the page again. Once Servo has started, it stays loaded until you quit
 the browser.
+
+**Trident** is for checking old intranet, government and bank sites that only ever
+worked in Internet Explorer, not for everyday browsing. Its tabs are marked `[ie]`.
+- **Sandboxed:** IE's engine is old and a favourite target for attacks, so every
+  Trident tab runs in its own sandboxed process (a Windows AppContainer). A page there
+  can reach the network, but not your files, the browser's profile or other engines'
+  cookies, and it can't start programs.
+- **Safety settings on top:** ActiveX controls that aren't marked safe, installing
+  controls, Java and IE's own downloads are always blocked. Safe built-in controls like
+  `Microsoft.XMLHTTP`, which old sites rely on, still work.
+- **Crashes:** a crash takes down only that tab, which `:reload` reopens.
+- **What works:** modes, hints, zoom and history work as in the other engines.
+- **What doesn't:** there's no ad blocking, no private or no-JavaScript tabs and no
+  downloads. Pages render in IE11 mode unless they ask for an older one.
+- **Sign-ins:** Trident keeps its own cookies, apart from the other engines.

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use tao::event::{ElementState, Event, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
 use tao::event_loop::ControlFlow;
 
-#[cfg(all(windows, feature = "servo-engine"))]
+#[cfg(windows)]
 use crate::engines;
 use crate::{clipboard_set, shellkeys, App, HintAct, ModeKind, UserEvent};
 
@@ -246,6 +246,8 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
         // Consumed by `engines::servo::intercept` at the top of `handle`.
         #[cfg(all(windows, feature = "servo-engine"))]
         UserEvent::Servo(_) => {}
+        #[cfg(windows)]
+        UserEvent::Trident(event) => engines::trident::on_event(app, event),
         UserEvent::ExitToNormal => app.exit_to_normal(),
         UserEvent::InsertEscape => {
             let proxy = app.proxy.clone();
