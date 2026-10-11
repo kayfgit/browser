@@ -252,6 +252,12 @@ impl App {
 }
 
 pub(crate) fn crashed_content(provider: &str, url: &str, reason: &str) -> TabContent {
+    // WebView2 is the fallback engine, so only another engine's crash can suggest it.
+    let next = if provider == "webview2" {
+        ":reload to open it again.".to_string()
+    } else {
+        ":reload to open it again, or :engine webview2 to open it in another engine.".into()
+    };
     TabContent::Unavailable {
         provider: provider.into(),
         error: reason.into(),
@@ -263,7 +269,7 @@ pub(crate) fn crashed_content(provider: &str, url: &str, reason: &str) -> TabCon
             reason.into(),
             String::new(),
             "The rest of the browser is unaffected.".into(),
-            ":reload to open it again, or :engine webview2 to open it in another engine.".into(),
+            next,
         ]),
     }
 }
