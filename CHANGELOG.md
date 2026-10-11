@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.1](https://github.com/kayfgit/browser/compare/v0.9.0...v0.9.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* :default opens Settings instead of File Explorer ([a3bcaad](https://github.com/kayfgit/browser/commit/a3bcaadeb2989623d38b04c4bf0a482f64531ce8))
+* YouTube's right-click menu no longer closes after a second ([4edb799](https://github.com/kayfgit/browser/commit/4edb79942ae50ecbf2a16e621eadbfd75e7194c8))
+
 ## [0.9.0](https://github.com/kayfgit/browser/compare/v0.8.0...v0.9.0) (2026-10-10)
 
 
