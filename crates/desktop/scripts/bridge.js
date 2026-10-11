@@ -247,7 +247,12 @@
     e.preventDefault = function () { pageMenu = true; return cancel.call(e); };
     cancel.call(e);
     ctxClose();
-    setTimeout(function () { if (!pageMenu) ctxOpen(e); }, 0);
+    setTimeout(function () {
+      if (!pageMenu) { ctxOpen(e); return; }
+      // The page's menu closes when the page loses focus, which the shell's focus
+      // reclaim does within a second: let the page keep it, as for a control click.
+      if (!window.__mode || window.__mode === 'normal') post('page-hold');
+    }, 0);
   }, true);
   function ctxOpen(e) {
     var items = [];
