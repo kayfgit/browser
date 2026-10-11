@@ -1018,6 +1018,10 @@ impl App {
                 if t.private {
                     label.insert_str(0, "[p] ");
                 }
+                // So are Trident (IE11) tabs: old security, testing only.
+                if t.provider() == Some("trident") {
+                    label.insert_str(0, "[ie] ");
+                }
                 // A split window shows how many panes it holds, tmux-style.
                 if panes > 1 {
                     label.push_str(&format!(" ¦{panes}"));

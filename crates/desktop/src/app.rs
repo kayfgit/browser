@@ -80,6 +80,9 @@ pub(crate) const GESTURE_GRACE: Duration = Duration::from_millis(600);
 pub(crate) enum UserEvent {
     #[cfg(all(windows, feature = "servo-engine"))]
     Servo(crate::engines::servo::Event),
+    /// A Trident helper process said something (see `engines::trident`).
+    #[cfg(windows)]
+    Trident(crate::engines::trident::Event),
     /// Callback from one live view incarnation; never a tab index.
     Engine {
         view: browser_engine::ViewId,

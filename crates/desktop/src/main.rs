@@ -129,6 +129,11 @@ fn main() -> Result<()> {
     if engines::servo::run_content_process() {
         return Ok(());
     }
+    // So do Trident's sandboxed helpers (`engines::trident`).
+    #[cfg(windows)]
+    if engines::trident::run_if_helper() {
+        return Ok(());
+    }
 
     // Give this process a single explicit AppUserModelID *before* anything is
     // spawned. Child processes inherit it at creation time, so every descendant —
