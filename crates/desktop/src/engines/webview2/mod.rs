@@ -409,7 +409,7 @@ pub(crate) fn build(
 
 fn verify_storage(view: &WebView, expected: browser_engine::StorageMode) -> Result<()> {
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_13;
-    use windows_core::{Interface, BOOL};
+    use windows_core061::{Interface, BOOL};
     use wry::WebViewExtWindows;
     // Old runtimes without the profile API can serve regular pages, but cannot
     // provide the evidence needed to honor a private request.

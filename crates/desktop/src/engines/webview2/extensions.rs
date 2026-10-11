@@ -10,7 +10,7 @@ use webview2_com::{
     take_pwstr, BrowserExtensionEnableCompletedHandler, BrowserExtensionRemoveCompletedHandler,
     ProfileAddBrowserExtensionCompletedHandler, ProfileGetBrowserExtensionsCompletedHandler,
 };
-use windows_core::{Interface, BOOL, PWSTR};
+use windows_core061::{Interface, BOOL, PWSTR};
 use wry::{WebView, WebViewExtWindows};
 
 use browser_engine::{Completion, EngineResult, ExtensionInfo as ExtInfo};
@@ -26,7 +26,7 @@ fn profile7(webview: &WebView) -> Option<ICoreWebView2Profile7> {
 }
 
 /// Read a `PWSTR`-returning getter into an owned `String` (empty on failure).
-fn pwstr_of(f: impl FnOnce(*mut PWSTR) -> windows_core::Result<()>) -> String {
+fn pwstr_of(f: impl FnOnce(*mut PWSTR) -> windows_core061::Result<()>) -> String {
     let mut p = PWSTR::null();
     if f(&mut p).is_ok() {
         take_pwstr(p)
@@ -261,7 +261,7 @@ fn add_and_set(
         set_enabled_reporting(&added, &name, enabled, tally);
         Ok(())
     }));
-    let path = windows_core::HSTRING::from(folder.as_os_str());
+    let path = windows_core061::HSTRING::from(folder.as_os_str());
     if let Err(e) = unsafe { profile.AddBrowserExtension(&path, &handler) } {
         tally.finish(Err(format!("{}: couldn't load it: {e}", folder.display())));
     }

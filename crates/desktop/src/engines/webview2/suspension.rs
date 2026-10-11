@@ -4,7 +4,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
 };
 use webview2_com::TrySuspendCompletedHandler;
-use windows_core::Interface;
+use windows_core061::Interface;
 use wry::{WebView, WebViewExtWindows};
 
 use browser_engine::EngineResult;

@@ -13,7 +13,7 @@ use std::{
 };
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
 use webview2_com::{take_pwstr, ContentLoadingEventHandler, NavigationStartingEventHandler};
-use windows_core::{BOOL, PWSTR};
+use windows_core061::{BOOL, PWSTR};
 use wry::{WebView, WebViewExtWindows};
 
 /// Whether the webview's OWN session history can step back/forward one page — i.e.

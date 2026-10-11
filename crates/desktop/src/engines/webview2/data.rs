@@ -8,7 +8,7 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_BROWSING_DATA_KINDS_CACHE_STORAGE, COREWEBVIEW2_BROWSING_DATA_KINDS_COOKIES,
     COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE, COREWEBVIEW2_BROWSING_DATA_KINDS_DOWNLOAD_HISTORY,
 };
-use windows_core::Interface;
+use windows_core061::Interface;
 use wry::{WebView, WebViewExtWindows};
 
 fn flags(kind: DataKind) -> COREWEBVIEW2_BROWSING_DATA_KINDS {
@@ -45,7 +45,7 @@ pub(crate) fn clear(
         let profile = core13.Profile().map_err(|e| e.to_string())?;
         let profile2: ICoreWebView2Profile2 = profile
             .cast()
-            .map_err(|e: windows_core::Error| e.to_string())?;
+            .map_err(|e: windows_core061::Error| e.to_string())?;
         let handler = ClearBrowsingDataCompletedHandler::create(Box::new(move |hr| {
             done(hr.map_err(|e| e.to_string()));
             Ok(())
