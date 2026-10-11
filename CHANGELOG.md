@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.10.0](https://github.com/kayfgit/browser/compare/v0.9.0...v0.10.0) (2026-10-11)
+
+
+### Features
+
+* :resources names Trident and Servo engine processes ([786bd87](https://github.com/kayfgit/browser/commit/786bd87ff1886988f20e0361e1e91bbcf27d6f22))
+* crashed WebView2 pages get the crash page and :reload ([e058752](https://github.com/kayfgit/browser/commit/e058752f4325b36724f8c46104b9161a61971e59))
+* Trident, Internet Explorer 11's engine, sandboxed ([b802a26](https://github.com/kayfgit/browser/commit/b802a26802f6d06e7e269c27e65c24093d1ebb8a))
+
+
+### Bug Fixes
+
+* :default opens Settings instead of File Explorer ([a3bcaad](https://github.com/kayfgit/browser/commit/a3bcaadeb2989623d38b04c4bf0a482f64531ce8))
+* YouTube's right-click menu no longer closes after a second ([4edb799](https://github.com/kayfgit/browser/commit/4edb79942ae50ecbf2a16e621eadbfd75e7194c8))
+
 ## [0.9.0](https://github.com/kayfgit/browser/compare/v0.8.0...v0.9.0) (2026-10-10)
 
 
