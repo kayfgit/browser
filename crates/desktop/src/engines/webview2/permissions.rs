@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tao::event_loop::EventLoopProxy;
 use webview2_com::Microsoft::Web::WebView2::Win32::*;
 use webview2_com::{take_pwstr, PermissionRequestedEventHandler};
-use windows_core::PWSTR;
+use windows_core061::PWSTR;
 use wry::{WebView, WebViewExtWindows};
 
 use crate::UserEvent;

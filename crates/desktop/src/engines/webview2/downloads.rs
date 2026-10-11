@@ -16,7 +16,7 @@ use webview2_com::{
     take_pwstr, BytesReceivedChangedEventHandler, DownloadStartingEventHandler,
     StateChangedEventHandler,
 };
-use windows_core::{Interface, HSTRING, PWSTR};
+use windows_core061::{Interface, HSTRING, PWSTR};
 use wry::{WebView, WebViewExtWindows};
 
 use crate::downloads::DownloadEvent;
@@ -195,7 +195,7 @@ fn send(proxy: &EventLoopProxy<UserEvent>, event: DownloadEvent) {
     let _ = proxy.send_event(UserEvent::Download(event));
 }
 
-fn read(f: impl FnOnce(*mut PWSTR) -> windows_core::Result<()>) -> String {
+fn read(f: impl FnOnce(*mut PWSTR) -> windows_core061::Result<()>) -> String {
     let mut p = PWSTR::null();
     if f(&mut p).is_ok() {
         take_pwstr(p)

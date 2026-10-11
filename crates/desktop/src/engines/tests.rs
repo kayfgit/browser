@@ -244,7 +244,12 @@ fn native_engine_access_stays_inside_the_provider() {
                 .filter(|line| !line.trim_start().starts_with("//"))
             {
                 // Restrict imports/paths, not explanatory references in comments.
-                for native in ["wry::", "webview2_com::", "windows061::"] {
+                for native in [
+                    "wry::",
+                    "webview2_com::",
+                    "windows061::",
+                    "windows_core061::",
+                ] {
                     assert!(
                         !line.contains(native),
                         "native engine access outside adapter: {}: {line}",
