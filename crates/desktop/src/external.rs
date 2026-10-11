@@ -143,6 +143,17 @@ pub(crate) fn register() -> Result<String, String> {
         (class.clone(), None, format!("{name} URL")),
         (class.clone(), Some("URL Protocol"), String::new()),
         (format!(r"{class}\DefaultIcon"), None, icon.clone()),
+        // The name and icon Settings shows for the handler (else just "browser.exe").
+        (
+            format!(r"{class}\Application"),
+            Some("ApplicationName"),
+            name.to_string(),
+        ),
+        (
+            format!(r"{class}\Application"),
+            Some("ApplicationIcon"),
+            icon.clone(),
+        ),
         (
             format!(r"{class}\shell\open\command"),
             None,
@@ -262,13 +273,27 @@ fn associations_changed() {
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None) };
 }
 
-/// Open Settings → Default apps at this browser's entry.
+/// Open Settings → Default apps at this browser's entry. Through the shell, not
+/// `explorer.exe <uri>`: Explorer ignores this deep link and opens Documents instead.
+#[cfg(windows)]
 fn open_default_apps(name: &str) {
+    use windows::core::{w, HSTRING};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let uri = format!(
         "ms-settings:defaultapps?registeredAppUser={}",
         url::form_urlencoded::byte_serialize(name.as_bytes()).collect::<String>()
     );
-    let _ = std::process::Command::new("explorer.exe").arg(uri).spawn();
+    unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            &HSTRING::from(uri),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
 }
 
 #[cfg(test)]
