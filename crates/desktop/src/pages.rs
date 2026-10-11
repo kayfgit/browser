@@ -140,6 +140,24 @@ impl App {
             }
         };
 
+        // Engine processes that are copies of this executable get their engine's name,
+        // or they'd all read "browser.exe": Trident's sandboxed helpers, and otherwise
+        // Servo's content processes.
+        let own = std::process::id();
+        #[cfg(windows)]
+        let trident = crate::engines::trident::helper_pids();
+        #[cfg(not(windows))]
+        let trident: Vec<u32> = Vec::new();
+        let name_of = |p: &procmon::ProcSample| -> String {
+            let copy = p.pid != own && p.name.eq_ignore_ascii_case("browser.exe");
+            if copy && trident.contains(&p.pid) {
+                format!("{} (trident)", p.name)
+            } else if copy && cfg!(feature = "servo-engine") {
+                format!("{} (servo)", p.name)
+            } else {
+                p.name.clone()
+            }
+        };
         let total_mem: u64 = sample.iter().map(|p| p.working_set).sum();
         let (mut total_cpu, mut total_disk) = (0.0f64, 0.0f64);
         let mut rows = Vec::with_capacity(sample.len());
@@ -156,7 +174,7 @@ impl App {
                 procmon::fmt_bytes(p.working_set),
                 cpu_s,
                 disk_s,
-                p.name,
+                name_of(p),
                 p.pid
             ));
         }

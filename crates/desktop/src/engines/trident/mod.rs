@@ -257,6 +257,21 @@ pub(super) fn build(
     Ok((Box::new(View(state)), page))
 }
 
+/// The process IDs of the running helpers, so `:resources` can tell them apart from
+/// the browser itself (they're copies of the same executable).
+pub(crate) fn helper_pids() -> Vec<u32> {
+    use windows::Win32::System::Threading::GetProcessId;
+    VIEWS.with(|views| {
+        views
+            .borrow()
+            .values()
+            .filter_map(Weak::upgrade)
+            .map(|state| unsafe { GetProcessId(state.process) })
+            .filter(|&pid| pid != 0)
+            .collect()
+    })
+}
+
 /// Forward a helper's events to the UI thread until its output ends.
 fn read_events(stdout: std::fs::File, proxy: EventLoopProxy<UserEvent>, id: ViewId) {
     std::thread::spawn(move || {
