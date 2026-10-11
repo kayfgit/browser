@@ -121,6 +121,7 @@ test('a page with its own right-click menu gets only that menu', () => {
   assert.equal(prevented, true, 'the native menu is still cancelled');
   p.timers.splice(0).forEach((fn) => fn());
   assert.equal(p.appended.length, 0, "no shell menu on top of the page's");
+  assert.deepEqual(p.messages, ['page-hold'], "the page keeps focus, so its menu stays open");
 });
 
 // A page with real hit-testing: `stack` lists elements topmost first, and
