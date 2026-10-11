@@ -55,12 +55,12 @@ these myself, so this is where help would matter most.
 
 | Engine | Why it's worth it | How it would plug in | Effort |
 |---|---|---|---|
-| **WebKit** (Safari, every iPhone browser) | Catches the "broken in Safari" bugs without a Mac. It's WebKit rather than Safari: no Apple fonts, some codecs missing, no iOS touch behaviour. | Playwright's prebuilt Windows WebKit, downloaded only when installed (`:engine install webkit`), running as its own process with its window placed in our pane. | Large |
-| **Gecko** (Firefox) | The other independent engine with real users, with its own layout and standards quirks. | Mozilla has no desktop embedding API, so the same way as WebKit: a separate (Playwright-patched) Firefox process, driven remotely. Building that external-engine host once covers both. | Large |
+| **WebKit** (Safari, every iPhone browser), [#40](../../issues/40) | Catches the "broken in Safari" bugs without a Mac. It's WebKit rather than Safari: no Apple fonts, some codecs missing, no iOS touch behaviour. | Playwright's prebuilt Windows WebKit, downloaded only when installed (`:engine install webkit`), running as its own process with its window placed in our pane. | Large |
+| **Gecko** (Firefox), [#41](../../issues/41) | The other independent engine with real users, with its own layout and standards quirks. | Mozilla has no desktop embedding API, so the same way as WebKit: a separate (Playwright-patched) Firefox process, driven remotely. Building that external-engine host once covers both. | Large |
 | **Ladybird** | A fully independent engine written from scratch from the specs, good at exposing pages that rely on quirks. | Once it has a Windows build: its 2026 alpha is Linux and macOS only. | Later |
 
 Forks (Edge, Brave, Opera, Arc, Waterfox, Orion, …) aren't on the list: they share an
-engine with one above. If you want to help, open an issue or a draft PR. How engines plug
+engine with one above. If you want to help, comment on the engine's issue, or open a draft PR. How engines plug
 in is described in [ARCHITECTURE.md](ARCHITECTURE.md) (the `crates/engine` contract) and
 [docs/engine-integration.md](docs/engine-integration.md), which covers how Servo and
 Trident were added.
