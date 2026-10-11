@@ -332,9 +332,9 @@ Chromium; YouTube, for one, shows its page but not its videos yet, so use
 in each engine. Switching engines reopens the page's address; form contents and other
 page state don't carry over.
 
-If a Servo page crashes, only its pane is affected: it shows what happened, and
-`:reload` opens the page again. Once Servo has started, it stays loaded until you quit
-the browser.
+If a page crashes, in any engine, only its pane is affected: it shows what happened,
+and `:reload` opens the page again, starting a new engine if the whole engine stopped.
+Once Servo has started, it stays loaded until you quit the browser.
 
 **Trident** is for checking old intranet, government and bank sites that only ever
 worked in Internet Explorer, not for everyday browsing. Its tabs are marked `[ie]`.

@@ -2,6 +2,7 @@
 //! Page callbacks carry the identity of the view that emitted them. Storage mode
 //! is checked against the runtime before loading the requested location.
 
+mod crashes;
 mod data;
 pub(crate) mod downloads;
 mod extensions;
@@ -378,6 +379,8 @@ pub(crate) fn build(
     downloads::install(&webview, opts.proxy.clone());
     // Permission requests are answered from the bar, not Edge's unreachable bubble.
     permissions::install(&webview, opts.proxy.clone());
+    // A dead page or engine process gets the crash page, not a black pane.
+    crashes::install(&webview, proxy.clone());
     // The shell's leave/reclaim keys and the reset chord, inside iframes too.
     keys::install(&webview, proxy.clone());
     // NOTE: there is deliberately no `WebResourceRequested` sub-resource blocker here.
