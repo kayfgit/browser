@@ -117,7 +117,11 @@ raw-window-handle = { version = "0.6", optional = true }
 scoped-tls = { version = "1", optional = true }
 rustls = { version = "0.23", features = ["aws_lc_rs"], optional = true }
 webview2-com = "0.38"
-windows-core = "0.61"
+# webview2-com's interfaces are built on windows-core 0.61, so the WebView2 adapter uses
+# it under this name. Plain `windows_core` is 0.62, which `windows::core::implement`
+# expands to (the Trident adapter's COM objects).
+windows-core061 = { package = "windows-core", version = "0.61" }
+windows-core = "0.62"
 # WebView2 COM interop (favicon.rs reads the favicon `IStream`) needs the `windows` 0.61 types webview2-com-sys is built against, NOT our 0.62 below —
 # the two are distinct types. This renamed alias resolves to that same 0.61 build so the
 # COM types unify.
@@ -129,17 +133,24 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Gdi",
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Isolation",
     "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
     "Win32_System_JobObjects",
+    "Win32_System_Com",
+    "Win32_System_Com_Urlmon",
     "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
     "Win32_System_Pipes",
     "Win32_System_ProcessStatus",
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",

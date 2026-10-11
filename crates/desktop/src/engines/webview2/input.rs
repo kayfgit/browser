@@ -3,7 +3,7 @@
 //! clipboard, opening a pop-up); `Input.dispatchMouseEvent` arrives as real input.
 use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
-use windows_core::HSTRING;
+use windows_core061::HSTRING;
 use wry::{WebView, WebViewExtWindows};
 
 use browser_engine::EngineResult;
@@ -32,7 +32,7 @@ pub(crate) fn click(webview: &WebView, x: f64, y: f64) -> EngineResult {
 
 /// Send `events` (in order) through `Input.dispatchMouseEvent`, each one from the
 /// completion of the one before. Stops at the first event the page refuses.
-fn dispatch(core: ICoreWebView2, mut events: Vec<String>) -> windows_core::Result<()> {
+fn dispatch(core: ICoreWebView2, mut events: Vec<String>) -> windows_core061::Result<()> {
     if events.is_empty() {
         return Ok(());
     }

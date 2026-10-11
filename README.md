@@ -46,8 +46,9 @@ features. Find them on [@kayfofalltrades](https://www.youtube.com/@kayfofalltrad
 
 ## Help wanted: more engines
 
-browser already runs pages in two engines: WebView2 (Blink, what Chrome and Edge use)
-and [Servo](https://servo.org/). I'd love to add the other engines that actually render
+browser already runs pages in three engines: WebView2 (Blink, what Chrome and Edge
+use), [Servo](https://servo.org/) and Trident (Internet Explorer 11's engine, sandboxed,
+for testing old intranet sites). I'd love to add the other engines that actually render
 the web differently, so web developers can check their site against all of them from one
 window, without a Mac or a pile of browsers. My PC is too weak to build or test most of
 these myself, so this is where help would matter most.
@@ -56,13 +57,13 @@ these myself, so this is where help would matter most.
 |---|---|---|---|
 | **WebKit** (Safari, every iPhone browser) | Catches the "broken in Safari" bugs without a Mac. It's WebKit rather than Safari: no Apple fonts, some codecs missing, no iOS touch behaviour. | Playwright's prebuilt Windows WebKit, downloaded only when installed (`:engine install webkit`), running as its own process with its window placed in our pane. | Large |
 | **Gecko** (Firefox) | The other independent engine with real users, with its own layout and standards quirks. | Mozilla has no desktop embedding API, so the same way as WebKit: a separate (Playwright-patched) Firefox process, driven remotely. Building that external-engine host once covers both. | Large |
-| **Trident** (Internet Explorer 11's MSHTML) | For anyone maintaining old enterprise, government or bank intranet apps. Built into every Windows and supported by Microsoft until at least 2029. For testing, not browsing. | Windows' WebBrowser control in a child window, like our other panes. No download. | Small |
 | **Ladybird** | A fully independent engine written from scratch from the specs, good at exposing pages that rely on quirks. | Once it has a Windows build: its 2026 alpha is Linux and macOS only. | Later |
 
 Forks (Edge, Brave, Opera, Arc, Waterfox, Orion, …) aren't on the list: they share an
 engine with one above. If you want to help, open an issue or a draft PR. How engines plug
 in is described in [ARCHITECTURE.md](ARCHITECTURE.md) (the `crates/engine` contract) and
-[docs/engine-integration.md](docs/engine-integration.md), which covers how Servo was added.
+[docs/engine-integration.md](docs/engine-integration.md), which covers how Servo and
+Trident were added.
 
 ## Install
 

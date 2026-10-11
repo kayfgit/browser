@@ -16,7 +16,7 @@ pub(crate) fn install(
 ) {
     use webview2_com::FaviconChangedEventHandler;
     use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2, ICoreWebView2_15};
-    use windows_core::Interface;
+    use windows_core061::Interface;
     use wry::WebViewExtWindows;
 
     let Ok(core) = (unsafe { webview.controller().CoreWebView2() }) else {
@@ -48,7 +48,7 @@ fn fetch(
 ) {
     use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG;
     use webview2_com::{take_pwstr, GetFaviconCompletedHandler};
-    use windows_core::PWSTR;
+    use windows_core061::PWSTR;
 
     // No declared icon → drop the previous page's, rather than leaving it on a site
     // that has none.

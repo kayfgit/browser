@@ -380,3 +380,52 @@ the patched `servo-paint-api` to `vendor/servo-paint-api`, the linker setup to
 `setup-servo-linker.ps1`, and its bridge-queue Node test to
 `crates/desktop/tests/servo-bridge-queue.cjs`. The message-queue and key-routing unit
 tests now also run in builds without Servo. The lab's code remains in git history.
+
+## Trident (Internet Explorer 11)
+
+`engines/trident/` adds Internet Explorer 11's MSHTML, built into Windows, for testing old
+intranet sites. MSHTML is old and heavily attacked, and once it's hosted outside IE it has
+no sandbox of its own. So it never runs in the browser process.
+
+- **Process per view.** Each view is a copy of `browser.exe` started with `--trident-host`
+  (`host.rs`). It hosts the WebBrowser control through its own OLE container: a client
+  site, an in-place site and frame, and `IDocHostUIHandler` (declared by hand, because
+  `windows` doesn't carry the MSHTML interfaces). The browser places the helper's window
+  in the pane with `SetParent`. Commands and events are JSON lines over the helper's stdin
+  and stdout (`protocol.rs`), and page messages arrive through `window.external.post`.
+- **Sandbox** (`sandbox.rs`). Helpers run in an AppContainer (`kayf.browser.trident`) with
+  only the `internetClient` and `privateNetworkClientServer` capabilities. They inherit
+  only their two pipe ends, can't create child processes, and belong to a job that kills
+  them with the browser. A security manager (`IInternetSecurityManager` through
+  `IServiceProvider`) also refuses unsafe ActiveX, installing controls, Java and IE
+  downloads. AppContainer processes also get their own WinINet cookie store.
+- **Measured on 2026-10-11:** the helper's token is AppContainer at Low integrity, and
+  `new ActiveXObject` creates `Microsoft.XMLHTTP` but not `Scripting.FileSystemObject` or
+  `WScript.Shell`. Killing the helper shows the crash page, `:reload` starts a new one,
+  and quitting the browser leaves none behind. The executable needs no permissions for
+  the container: it starts from `%LOCALAPPDATA%` too, because Windows opens the image
+  with the parent's rights.
+
+Gotchas, for the next engine:
+
+- The `implement` macro expands to `::windows_core`, so that name must be the same
+  `windows-core` as the `windows` crate (0.62). webview2-com's 0.61 is renamed to
+  `windows_core061`.
+- The hosted control renders in IE7 mode and leaves pointer events off ("legacy input")
+  unless `FEATURE_BROWSER_EMULATION` (11001) and `FEATURE_NINPUT_LEGACYMODE` (0) are set
+  for the executable. Without pointer events the bridge never sees `pointerdown`, so
+  pane clicks and control focus break.
+- IE11 has no `Event.isTrusted`, and the bridge ignores untrusted input. `prelude.js`
+  marks events created with `createEvent` and calls every other event trusted. It also
+  fills in `closest`, `matches`, `remove`, `isConnected`, `NodeList.forEach`,
+  `scrollBy`/`scrollTo` with options, `new MouseEvent`, and the standard key names (IE
+  says `Esc`, `Left`, `Spacebar`).
+- `OLECMDID_OPTICAL_ZOOM` fails (`0x80040100`) until a document has loaded, so the helper
+  stores the zoom level and applies it on every `DocumentComplete`.
+- Scripts run through `execScript` on the document's window, on `NavigateComplete2` and
+  again on `DocumentComplete`. The bridge's document-keyed guards make the second run a
+  no-op.
+
+Diagnostics: `BROWSER_TRIDENT_LOG=<file>` records every line the helpers send, and
+`BROWSER_TRIDENT_PROBE=<js>` adds a script to every page (report with
+`__post('dbg:...')`).
