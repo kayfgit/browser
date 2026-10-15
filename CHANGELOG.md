@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.11.0](https://github.com/kayfgit/browser/compare/v0.10.0...v0.11.0) (2026-10-15)
+
+
+### Features
+
+* :fullscreen keeps the bars; `;` and :hud decide whether they show ([f41356e](https://github.com/kayfgit/browser/commit/f41356e4c541ad544f0de16136761488d5c788fa))
+* pop-up windows open as a narrow pane beside their page ([f41356e](https://github.com/kayfgit/browser/commit/f41356e4c541ad544f0de16136761488d5c788fa))
+* Shift and Ctrl with hjkl make fine and big steps in :resize and :move ([f41356e](https://github.com/kayfgit/browser/commit/f41356e4c541ad544f0de16136761488d5c788fa))
+* sign-in pop-ups get through ad blocking ([f41356e](https://github.com/kayfgit/browser/commit/f41356e4c541ad544f0de16136761488d5c788fa))
+* tabs in a vertical sidebar, and `;` to hide the HUD ([f41356e](https://github.com/kayfgit/browser/commit/f41356e4c541ad544f0de16136761488d5c788fa))
+
+
+### Bug Fixes
+
+* `;` toggles the HUD from terminal copy mode when no find is pending ([f41356e](https://github.com/kayfgit/browser/commit/f41356e4c541ad544f0de16136761488d5c788fa))
+* a --scratch run no longer points config.toml at the scratch profile ([f41356e](https://github.com/kayfgit/browser/commit/f41356e4c541ad544f0de16136761488d5c788fa))
+* hints and Insert reach text fields inside web components ([d63798f](https://github.com/kayfgit/browser/commit/d63798f047761ea77691b129162ebeb4e9d5d323))
+* mouse-clicked new-window links open as tabs with ad blocking off ([f41356e](https://github.com/kayfgit/browser/commit/f41356e4c541ad544f0de16136761488d5c788fa))
+* the :ai assistant waits out Groq's rate limit and sends smaller requests ([f41356e](https://github.com/kayfgit/browser/commit/f41356e4c541ad544f0de16136761488d5c788fa))
+
 ## [0.10.0](https://github.com/kayfgit/browser/compare/v0.9.0...v0.10.0) (2026-10-11)
 
 
