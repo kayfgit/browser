@@ -649,11 +649,12 @@ impl App {
                         "F" => pending = Some((false, false)),
                         "t" => pending = Some((true, true)),
                         "T" => pending = Some((false, true)),
-                        ";" => {
-                            if let Some((ch, fwd, till)) = last_find {
-                                pty.vi_find_char(ch, fwd, till);
-                            }
-                        }
+                        // With no find to repeat, `;` is the shell's own key: hide/show
+                        // the HUD (key_normal handles it once this returns unconsumed).
+                        ";" => match last_find {
+                            Some((ch, fwd, till)) => pty.vi_find_char(ch, fwd, till),
+                            None => consumed = false,
+                        },
                         "," => {
                             if let Some((ch, fwd, till)) = last_find {
                                 pty.vi_find_char(ch, !fwd, till);

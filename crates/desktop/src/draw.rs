@@ -50,6 +50,8 @@ pub struct Theme {
     pub bar_fg: Rgb,
     pub accent: Rgb,
     pub bg: Rgb,
+    /// Tabs in a vertical sidebar on the left instead of the top strip.
+    pub sidebar: bool,
 }
 
 impl Default for Theme {
@@ -60,6 +62,7 @@ impl Default for Theme {
             bar_fg: BAR_FG,
             accent: ACCENT,
             bg: BG,
+            sidebar: false,
         }
     }
 }

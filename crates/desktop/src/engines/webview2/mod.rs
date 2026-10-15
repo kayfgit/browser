@@ -11,6 +11,7 @@ mod input;
 mod keys;
 mod navigation;
 pub(crate) mod permissions;
+pub(crate) mod popups;
 mod suspension;
 
 use crate::tabs::{
@@ -125,16 +126,28 @@ fn legacy_data_dirs() -> Vec<std::path::PathBuf> {
 }
 
 pub(crate) fn build(
-    parent: &Window,
+    parent: &std::rc::Rc<Window>,
     opts: BuildOptions<'_>,
     identity: browser_engine::ViewIdentity,
 ) -> Result<(Box<dyn EngineView>, PageState)> {
-    let BuildOptions {
-        source,
-        disable_js,
-        extra_init,
-        ..
-    } = opts;
+    let (view, page) = build_view(parent, &opts, identity, None)?;
+    match opts.source {
+        Source::Url(url) => view.inner.load_url(&url)?,
+        Source::Html(html) => view.inner.load_html(&html)?,
+    }
+    Ok((Box::new(view), page))
+}
+
+/// Build a shell view without loading anything into it. `environment` is the
+/// opener's, for a pop-up (see [`popups`]); a regular view makes its own.
+fn build_view(
+    parent: &std::rc::Rc<Window>,
+    opts: &BuildOptions<'_>,
+    identity: browser_engine::ViewIdentity,
+    environment: Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment>,
+) -> Result<(WebView2View, PageState)> {
+    let disable_js = opts.disable_js;
+    let extra_init = opts.extra_init;
     let private = identity.storage == browser_engine::StorageMode::Private;
     let proxy = super::PageEventProxy::new(opts.proxy.clone(), identity.id);
     let nav_intent: crate::navguard::NavIntent = Arc::new(Mutex::new(None));
@@ -156,6 +169,10 @@ pub(crate) fn build(
     // navigation guards do, to tell a real "open in new tab" from a scripted popunder.
     let popup_intent = nav_intent.clone();
     let popup_blocker = opts.blocker.clone();
+    // Pop-ups that must stay tied to this page become panes built like this view.
+    let popup_seed = popups::Seed::new(parent, opts, identity.id);
+    let gesture: popups::Gesture = Default::default();
+    let popup_gesture = gesture.clone();
     // This tab's current top origin, so the blocklist's `$third-party` rules resolve
     // against the right source on each navigation. `cur_top` is the full top-frame URL.
     let cur_origin = Arc::new(Mutex::new(String::new()));
@@ -171,8 +188,15 @@ pub(crate) fn build(
     let blocker = opts.blocker.clone();
     // Wry falls back to a regular controller on runtimes without Environment10.
     // Build blank, verify the real storage mode, and only then load user content.
-    let mut isolated_context = data_dir().map(|dir| wry::WebContext::new(Some(dir)));
-    let mut builder = if let Some(context) = isolated_context.as_mut() {
+    let mut isolated_context = environment
+        .is_none()
+        .then(data_dir)
+        .flatten()
+        .map(|dir| wry::WebContext::new(Some(dir)));
+    let mut builder = if let Some(env) = environment {
+        // A pop-up must live in its opener's environment (its profile and cookies).
+        WebViewBuilder::new().with_environment(env)
+    } else if let Some(context) = isolated_context.as_mut() {
         WebViewBuilder::new_with_web_context(context)
     } else {
         WebViewBuilder::new()
@@ -336,20 +360,50 @@ pub(crate) fn build(
         // they now re-open as a shell-managed tab; scripted popunders (timers/onload,
         // or synthetic clicks aimed at an ad domain) carry no gesture or hit the
         // blocklist, so they stay blocked. Either way the native OS window is suppressed
-        // — new tabs here live in our tab strip, not as OS popups. `:ads` off restores
-        // normal popups. (The page-side `window.open` neuter is a further backstop.)
-        .with_new_window_req_handler(move |url, _features| {
-            if !popup_adblock.load(Ordering::Relaxed) {
-                return NewWindowResponse::Allow;
+        // — new tabs here live in our tab strip, not as OS popups. (The page-side
+        // `window.open` neuter is a further backstop.)
+        //
+        // `:ads` off drops the guard but not the shell: nothing opens as an OS window.
+        // (WebView2's own windows sat outside the shell, out of reach of every key.)
+        //
+        // A plain new window (a `target=_blank` link) becomes a tab. A window the page
+        // SIZED (Gmail's and Google's sign-in pop-ups) or a blank one its script will
+        // fill in has to stay tied to the page that opened it — the sign-in reports
+        // back through `window.opener` — so it becomes a narrow pane beside that page
+        // instead, built on this view's own environment (see `popups`). Private tabs
+        // keep the OS pop-up for those: a pane would need the same InPrivate profile.
+        //
+        // With `:ads` on, a sized window a real click opened (a sign-in window) gets
+        // through as well as a real link click — see `popups::wanted_with_adblock`.
+        .with_new_window_req_handler(move |url, features| {
+            let user = popup_gesture
+                .borrow_mut()
+                .take()
+                .is_some_and(|(asked, user)| asked == url && user);
+            let wanted = !popup_adblock.load(Ordering::Relaxed)
+                || popups::wanted_with_adblock(
+                    crate::navguard::recent(&popup_intent),
+                    features.size.is_some(),
+                    user,
+                    crate::blocklist::blocks_navigation(&popup_blocker, &url, "")
+                        || url_is_ad_host(&url),
+                );
+            if !wanted {
+                let _ = popup_proxy.send_event(UserEvent::PopupBlocked(url));
+                return NewWindowResponse::Deny;
             }
-            let wanted = crate::navguard::recent(&popup_intent)
-                && !crate::blocklist::blocks_navigation(&popup_blocker, &url, "")
-                && !url_is_ad_host(&url);
-            let _ = popup_proxy.send_event(if wanted {
-                UserEvent::OpenPopupTab(url)
-            } else {
-                UserEvent::PopupBlocked(url)
-            });
+            let blank = url.is_empty() || url == "about:blank";
+            if features.size.is_some() || blank {
+                if private {
+                    return NewWindowResponse::Allow;
+                }
+                return match popup_seed.build(&features) {
+                    Ok(webview) => NewWindowResponse::Create { webview },
+                    // Reported in `:errors`; the OS pop-up still lets the sign-in work.
+                    Err(_) => NewWindowResponse::Allow,
+                };
+            }
+            let _ = popup_proxy.send_event(UserEvent::OpenPopupTab(url));
             NewWindowResponse::Deny
         });
     if disable_js {
@@ -375,6 +429,8 @@ pub(crate) fn build(
         nav_intent.clone(),
         proxy.clone(),
     );
+    // Whether each new-window request came from a real click (see `popups::Gesture`).
+    popups::watch_gestures(&webview, gesture);
     // Downloads ask first and report progress to the shell (see `downloads`).
     downloads::install(&webview, opts.proxy.clone());
     // Permission requests are answered from the bar, not Edge's unreachable bubble.
@@ -395,17 +451,13 @@ pub(crate) fn build(
     // Watch WebView2's own favicon for this tab, so the strip can show it.
     #[cfg(windows)]
     favicon::install(&webview, page.icon.clone(), proxy.clone());
-    match source {
-        Source::Url(url) => webview.load_url(&url)?,
-        Source::Html(html) => webview.load_html(&html)?,
-    }
     Ok((
-        Box::new(WebView2View {
+        WebView2View {
             inner: webview,
             identity,
             nav_intent,
             _context: isolated_context,
-        }),
+        },
         page,
     ))
 }

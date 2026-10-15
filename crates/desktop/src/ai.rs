@@ -12,6 +12,7 @@ use tao::event::KeyEvent;
 use tao::keyboard::{Key, KeyCode};
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::markdown::LineStyle;
 use crate::tabs::{TabContent, TabNav};
@@ -40,7 +41,7 @@ pub(crate) const MODELS: &[&str] = &[
     "deepseek-r1-distill-llama-70b",
 ];
 /// Keep answers terse — this is a quick-question surface, not a chat companion.
-const SYSTEM_PROMPT: &str = concat!(
+const SYSTEM_PROMPT: &str =
     "You are an assistant embedded in a terminal browser, and you can OPERATE it, not \
      just talk about it. You have tools to open pages, split the layout into panes, \
      switch/close/reopen tabs, navigate, clear browsing data, and set aliases. \
@@ -49,20 +50,31 @@ const SYSTEM_PROMPT: &str = concat!(
      tools instead of explaining how. Break a request into a sequence of tool calls \
      and make them ONE AT A TIME: you'll see each result and then continue with the \
      next step. For example, to put two sites side by side: open the first, then \
-     split (vertical), then open the second in the new pane. Plan bigger requests \
+     split with the second as the split's target. Plan bigger requests \
      (\"set up a layout for web dev\") as such a sequence. Don't ask for confirmation \
      — just do it — and when the whole task is finished, reply with one short \
      sentence summarizing what you did. \
      \
      For questions or chit-chat that don't require operating the browser, just answer \
      directly and briefly, with no preamble. For conversions/calculations, give the \
-     result first.",
-    // Support knowledge: terminal working-directory save/restore (`:w`).
-    // Kept in a raw string because the shell hooks are full of backslashes.
-    r#"
+     result first. For questions about how one of the browser's own features works, \
+     look it up with the docs tool first instead of guessing.";
 
-Built-in feature knowledge (use it when the user asks; answer from here, don't guess):
-Terminal cwd restore: :w saves each terminal tab's current directory and the next
+/// Built-in feature knowledge the assistant fetches with the `docs` action. It used
+/// to ride in [`SYSTEM_PROMPT`], but every round of every turn re-sends the system
+/// prompt, and on Groq's free tier (8k tokens per minute) those ~600 tokens were a
+/// large part of why a three-step task hit the rate limit. Looked up on demand, it
+/// costs nothing for the turns that don't need it.
+pub(crate) fn docs(topic: &str) -> Option<&'static str> {
+    match topic {
+        "terminal_cwd" => Some(DOCS_TERMINAL_CWD),
+        _ => None,
+    }
+}
+
+/// Terminal working-directory save/restore (`:w`). Kept in a raw string because the
+/// shell hooks are full of backslashes.
+const DOCS_TERMINAL_CWD: &str = r#"Terminal cwd restore: :w saves each terminal tab's current directory and the next
 launch reopens the shell there (restore is invisible: the cd rides in as a startup
 argument - nu -e / pwsh -NoExit -Command / cmd /K - so it also wins over a `cd ~` in
 the shell's startup config). u-reopen of a closed terminal does the same. Per shell:
@@ -84,8 +96,7 @@ So if someone says ':w with a wsl terminal doesn't restore the directory', the f
 that ~/.bashrc hook; if a plain terminal restores to the wrong place, check for a `cd`
 in the shell's own startup config (the browser's cd still wins, but only for the shells
 listed above - unknown shells get the command typed into the prompt instead).
-Screen CONTENTS of a terminal are intentionally not saved - only the directory."#
-);
+Screen CONTENTS of a terminal are intentionally not saved - only the directory."#;
 
 /// How many past conversations to keep on disk (oldest dropped first).
 const AI_CHATS_CAP: usize = 100;
@@ -161,6 +172,29 @@ pub(crate) enum AiStep {
     },
 }
 
+/// Why a Groq round failed. Groq's free tier allows about 8k tokens per minute and
+/// every round re-sends the whole request, so a multi-step task can run into the
+/// limit halfway; the 429 says how long to wait, which `RateLimited` carries so the
+/// round can sleep and try again instead of abandoning the task.
+pub(crate) enum AskError {
+    RateLimited { wait: Duration, msg: String },
+    Failed(String),
+}
+
+impl AskError {
+    fn into_message(self) -> String {
+        match self {
+            AskError::RateLimited { msg, .. } | AskError::Failed(msg) => msg,
+        }
+    }
+}
+
+/// How often one round retries after a rate limit before giving up.
+const RATE_LIMIT_RETRIES: u32 = 3;
+/// The longest rate-limit wait worth sitting through. Groq's per-minute limits
+/// clear within a minute; a longer wait is a daily limit, so report it instead.
+const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(65);
+
 /// Cap on tool-execution rounds per user prompt, so a confused model can't loop
 /// forever calling tools. Generous enough for a big "set up my layout" request.
 pub(crate) const MAX_TOOL_ROUNDS: u32 = 16;
@@ -175,6 +209,9 @@ pub(crate) struct AiState {
     pub(crate) messages: Vec<AiMessage>,
     pub(crate) input: String,
     pub(crate) pending: bool,
+    /// While `pending`: Groq rate-limited the turn and it resumes after this many
+    /// seconds (shown instead of "thinking…"). Cleared by the next reply.
+    pub(crate) waiting: Option<u64>,
     /// A prompt to run as soon as a key is available (`:ai <q>` before any key).
     pub(crate) pending_prompt: Option<String>,
     /// The rendered conversation as a navigable read-only vim buffer.
@@ -197,6 +234,7 @@ impl AiState {
             messages: Vec::new(),
             input: String::new(),
             pending: false,
+            waiting: None,
             pending_prompt,
             buf: vim::TextBuffer::new(Vec::new()),
             styles: Vec::new(),
@@ -280,19 +318,32 @@ pub(crate) fn save_chats(chats: &[AiChat]) {
     }
 }
 
+/// How much earlier conversation (in characters, about four per token) a turn sends
+/// along. Every round re-sends it, so a long chat would otherwise eat Groq's
+/// per-minute token budget on its own.
+const HISTORY_BUDGET: usize = 6000;
+
 /// Build the OpenAI-format message list for a fresh turn: the system prompt followed
-/// by the visible chat history (errors are local-only, so they're skipped). The new
-/// user prompt must already be the last `AiMessage` in `history`.
+/// by the most recent chat history that fits [`HISTORY_BUDGET`] (errors are
+/// local-only, so they're skipped). The new user prompt must already be the last
+/// `AiMessage` in `history`; it is always sent, however long.
 pub(crate) fn build_convo(history: &[AiMessage]) -> Vec<serde_json::Value> {
-    let mut msgs = vec![serde_json::json!({"role": "system", "content": SYSTEM_PROMPT})];
-    for m in history {
+    let mut recent = Vec::new();
+    let mut used = 0;
+    for m in history.iter().rev() {
         let role = match m.role {
             AiRole::You => "user",
             AiRole::Ai => "assistant",
             AiRole::Err => continue,
         };
-        msgs.push(serde_json::json!({"role": role, "content": m.text}));
+        used += m.text.len();
+        if used > HISTORY_BUDGET && !recent.is_empty() {
+            break;
+        }
+        recent.push(serde_json::json!({"role": role, "content": m.text}));
     }
+    let mut msgs = vec![serde_json::json!({"role": "system", "content": SYSTEM_PROMPT})];
+    msgs.extend(recent.into_iter().rev());
     msgs
 }
 
@@ -306,7 +357,7 @@ pub(crate) fn ask_raw(
     key: &str,
     model: &str,
     messages: &[serde_json::Value],
-) -> Result<AiStep, String> {
+) -> Result<AiStep, AskError> {
     let body = serde_json::json!({
         "model": model,
         "messages": messages,
@@ -316,17 +367,23 @@ pub(crate) fn ask_raw(
         "parallel_tool_calls": false,
     });
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(40))
+        .timeout(Duration::from_secs(40))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| AskError::Failed(e.to_string()))?;
     let resp = client
         .post(GROQ_URL)
         .bearer_auth(key)
         .json(&body)
         .send()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| AskError::Failed(e.to_string()))?;
     let status = resp.status();
-    let val: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+    let retry_after = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .map(Duration::from_secs_f64);
+    let val: serde_json::Value = resp.json().map_err(|e| AskError::Failed(e.to_string()))?;
     if !status.is_success() {
         let err = val.get("error");
         // Groq's `tool_use_failed` 400: the model tried to call a tool but its output
@@ -345,7 +402,15 @@ pub(crate) fn ask_raw(
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
             .unwrap_or("request failed");
-        return Err(format!("groq {}: {msg}", status.as_u16()));
+        // Groq appends an upsell to its limit errors; the chat doesn't need it.
+        let msg = msg.split(" Need more tokens?").next().unwrap_or(msg);
+        let msg = format!("groq {}: {msg}", status.as_u16());
+        if status.as_u16() == 429 {
+            if let Some(wait) = retry_in(&msg).or(retry_after) {
+                return Err(AskError::RateLimited { wait, msg });
+            }
+        }
+        return Err(AskError::Failed(msg));
     }
     let message = val
         .get("choices")
@@ -383,7 +448,38 @@ pub(crate) fn ask_raw(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .map(AiStep::Done)
-        .ok_or_else(|| "empty response".to_string())
+        .ok_or_else(|| AskError::Failed("empty response".into()))
+}
+
+/// The wait in a Groq rate-limit message — "Please try again in 20.9775s" (also
+/// `1m2.5s`, `350ms`). More precise than the whole-second `retry-after` header.
+fn retry_in(msg: &str) -> Option<Duration> {
+    let rest = &msg[msg.find("try again in ")? + "try again in ".len()..];
+    let mut secs = 0.0;
+    let mut num = String::new();
+    let mut chars = rest.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_ascii_digit() || c == '.' {
+            num.push(c);
+            continue;
+        }
+        let n: f64 = num.parse().ok()?;
+        num.clear();
+        secs += match c {
+            'h' => n * 3600.0,
+            'm' if chars.peek() == Some(&'s') => {
+                chars.next();
+                n / 1000.0
+            }
+            'm' => n * 60.0,
+            's' => n,
+            _ => return None,
+        };
+        if !chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+            return Some(Duration::from_secs_f64(secs));
+        }
+    }
+    None
 }
 
 /// Turn parsed/recovered `(name, args)` pairs into an [`AiStep::Calls`], synthesising
@@ -688,7 +784,15 @@ fn render(ai: &AiState, model: &str, has_key: bool, cols: usize) -> (Vec<String>
         }
         push_line(&mut lines, &mut styles, "", draw::DIM, cols);
     }
-    if ai.pending {
+    if let (true, Some(secs)) = (ai.pending, ai.waiting) {
+        push_line(
+            &mut lines,
+            &mut styles,
+            &format!("· Groq's rate limit — continuing in {secs}s…"),
+            draw::DIM,
+            cols,
+        );
+    } else if ai.pending {
         push_line(&mut lines, &mut styles, "· thinking…", draw::DIM, cols);
     } else {
         push_line(
@@ -897,7 +1001,7 @@ impl App {
         let Some(vk) = self.map_vim_key(key) else {
             return false;
         };
-        let (w, _) = self.inner();
+        let w = self.focused_pane_rect().w.max(1);
         let cw = self.painter.measure("M").max(1);
         let line_h = self.painter.line_height().max(1);
         let cols = (((w as usize).saturating_sub(16)) / cw).max(1);
@@ -1009,7 +1113,24 @@ impl App {
         };
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
-            let result = ask_raw(&key, &model, &convo);
+            let mut retries = 0;
+            let result = loop {
+                match ask_raw(&key, &model, &convo) {
+                    Err(AskError::RateLimited { wait, .. })
+                        if retries < RATE_LIMIT_RETRIES && wait <= MAX_RATE_LIMIT_WAIT =>
+                    {
+                        retries += 1;
+                        let _ = proxy.send_event(UserEvent::AiWaiting {
+                            id,
+                            secs: wait.as_secs_f64().ceil() as u64,
+                        });
+                        // A little past the stated wait: the window it measures
+                        // slides, and arriving early just earns another 429.
+                        std::thread::sleep(wait + Duration::from_millis(500));
+                    }
+                    other => break other.map_err(AskError::into_message),
+                }
+            };
             let _ = proxy.send_event(UserEvent::AiReply {
                 id,
                 convo,
@@ -1229,6 +1350,9 @@ impl App {
         round: u32,
         result: Result<AiStep, String>,
     ) {
+        if let Some(ai) = self.ai_by_id_mut(id) {
+            ai.waiting = None;
+        }
         let (calls, assistant_msg) = match result {
             Ok(AiStep::Done(text)) => {
                 return self.ai_finish(
@@ -1272,10 +1396,12 @@ impl App {
                 Ok(msg) => (msg, AiRole::Ai),
                 Err(e) => (e, AiRole::Err),
             };
-            visible.push(AiMessage {
-                role,
-                text: text.clone(),
-            });
+            // A docs lookup is for the model; the chat only notes that it happened.
+            let shown = match (c.name.as_str(), role) {
+                ("docs", AiRole::Ai) => "*(read the browser's docs)*".to_string(),
+                _ => text.clone(),
+            };
+            visible.push(AiMessage { role, text: shown });
             tool_msgs
                 .push(serde_json::json!({ "role": "tool", "tool_call_id": c.id, "content": text }));
         }
@@ -1334,6 +1460,24 @@ impl App {
             }
         }
         self.commit_ai(id);
+        self.window.request_redraw();
+    }
+
+    /// A round for the AI tab `id` hit Groq's rate limit and will retry in `secs`:
+    /// say so in the chat, or on the status bar when the turn runs in the background.
+    pub(crate) fn ai_waiting(&mut self, id: u64, secs: u64) {
+        let watching = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.ai())
+            .is_some_and(|a| a.id == id);
+        if let Some(ai) = self.ai_by_id_mut(id) {
+            ai.waiting = Some(secs);
+            ai.follow = true;
+        }
+        if !watching {
+            self.set_status(format!("ai: Groq's rate limit — continuing in {secs}s"));
+        }
         self.window.request_redraw();
     }
 
@@ -1545,6 +1689,43 @@ mod tests {
             ],
         };
         assert_eq!(chat.name(), "center a div");
+    }
+
+    #[test]
+    fn retry_in_reads_groqs_wait() {
+        let msg = "groq 429: Rate limit reached for model `openai/gpt-oss-120b` on tokens per \
+                   minute (TPM): Limit 8000, Used 5616, Requested 5181. Please try again \
+                   in 20.9775s.";
+        assert_eq!(retry_in(msg), Some(Duration::from_secs_f64(20.9775)));
+        assert_eq!(
+            retry_in("try again in 1m2.5s."),
+            Some(Duration::from_secs_f64(62.5))
+        );
+        assert_eq!(
+            retry_in("try again in 350ms"),
+            Some(Duration::from_millis(350))
+        );
+        assert_eq!(retry_in("Rate limit reached"), None);
+    }
+
+    #[test]
+    fn build_convo_sends_only_recent_history() {
+        let msg = |role, text: &str| AiMessage {
+            role,
+            text: text.to_string(),
+        };
+        let mut history: Vec<AiMessage> = (0..40)
+            .map(|i| msg(AiRole::You, &format!("{i}{}", "x".repeat(400))))
+            .collect();
+        history.push(msg(AiRole::Err, "local only"));
+        history.push(msg(AiRole::You, "the new prompt"));
+        let convo = build_convo(&history);
+        assert_eq!(convo[0]["role"], "system");
+        assert_eq!(convo.last().unwrap()["content"], "the new prompt");
+        assert!(convo.len() < 20, "sent {} messages", convo.len());
+        assert!(convo.iter().all(|m| m["content"] != "local only"));
+        // The oldest kept message is the newest that no longer fits, not message 0.
+        assert!(convo[1]["content"].as_str().unwrap().starts_with("26"));
     }
 
     #[test]

@@ -131,24 +131,36 @@ impl PaneNode {
 
     /// Replace the leaf showing `target` with a `dir` split of `target` and `new`.
     pub(crate) fn insert_split(self, target: usize, dir: SplitDir, new: usize) -> PaneNode {
+        self.insert_split_at(target, dir, new, 0.5)
+    }
+
+    /// [`insert_split`](Self::insert_split) with the new pane taking `1 - ratio` of the
+    /// target's space instead of half.
+    pub(crate) fn insert_split_at(
+        self,
+        target: usize,
+        dir: SplitDir,
+        new: usize,
+        ratio: f32,
+    ) -> PaneNode {
         match self {
             PaneNode::Leaf(t) if t == target => PaneNode::Split {
                 dir,
-                ratio: 0.5,
+                ratio,
                 a: Box::new(PaneNode::Leaf(t)),
                 b: Box::new(PaneNode::Leaf(new)),
             },
             PaneNode::Leaf(t) => PaneNode::Leaf(t),
             PaneNode::Split {
                 dir: d,
-                ratio,
+                ratio: r,
                 a,
                 b,
             } => PaneNode::Split {
                 dir: d,
-                ratio,
-                a: Box::new(a.insert_split(target, dir, new)),
-                b: Box::new(b.insert_split(target, dir, new)),
+                ratio: r,
+                a: Box::new(a.insert_split_at(target, dir, new, ratio)),
+                b: Box::new(b.insert_split_at(target, dir, new, ratio)),
             },
         }
     }
@@ -302,10 +314,11 @@ impl App {
         let (w, h) = self.inner();
         let top = self.tab_bar_h() as i32;
         let bot = h as i32 - self.bar_h() as i32;
+        let side = self.sidebar_w() as i32;
         PaneRect {
-            x: 0,
+            x: side,
             y: top,
-            w: w as i32,
+            w: (w as i32 - side).max(1),
             h: (bot - top).max(1),
         }
     }
@@ -537,6 +550,88 @@ impl App {
     /// side by side; `:split` = Col, stacked) and focusing the new pane. The new pane
     /// grows the ACTIVE window's tree, so it stays "inside" the same tab-strip entry
     /// (tmux-style) rather than spawning another tab.
+    /// Give each pop-up the engine built ([`UserEvent::PopupPane`](crate::UserEvent::PopupPane))
+    /// a pane: a side-by-side split beside the page that opened it, as wide as the
+    /// pop-up asked to be (a sign-in window is ~500px), and focused so the keys, hints
+    /// and vim motions reach it. A pop-up whose opener is gone gets its own tab.
+    pub(crate) fn adopt_popups(&mut self) {
+        for popup in crate::engines::take_popups() {
+            let popup = match popup {
+                Ok(popup) => popup,
+                Err(e) => {
+                    self.set_error(e);
+                    continue;
+                }
+            };
+            let opener = self
+                .tabs
+                .iter()
+                .position(|t| t.webview().is_some_and(|v| v.identity().id == popup.opener));
+            let place = opener.and_then(|o| {
+                let w = self.windows.iter().position(|w| w.contains_leaf(o))?;
+                Some((o, w))
+            });
+            // How much of the opener's width the opener keeps. The opener's pane is the
+            // whole content band unless its window is already split; the band is close
+            // enough either way, the pane can be resized after (Ctrl+W H/L).
+            let ratio = match popup.width {
+                Some(css_w) => {
+                    let px = css_w * self.window.scale_factor() + 2.0 * FOCUS_BORDER as f64;
+                    let band = self.content_band().w.max(1) as f64;
+                    (1.0 - px / band).clamp(0.3, 0.8) as f32
+                }
+                None => 0.6,
+            };
+            let idx = self.tabs.len();
+            self.tabs.push(Tab {
+                id: crate::layout::TabId::new(),
+                content: crate::tabs::TabContent::Web(popup.view, popup.page),
+                // Until its first load reports the real address; a window the opener
+                // writes into never does.
+                url: "about:blank".into(),
+                nojs: false,
+                research: false,
+                read: false,
+                private: false,
+                nav: crate::tabs::TabNav {
+                    settling: true,
+                    ..Default::default()
+                },
+            });
+            match place {
+                Some((o, w)) => {
+                    let tree = std::mem::replace(&mut self.windows[w], PaneNode::Leaf(idx));
+                    self.windows[w] = tree.insert_split_at(o, SplitDir::Row, idx, ratio);
+                }
+                None => self.windows.push(PaneNode::Leaf(idx)),
+            }
+            self.active = Some(idx);
+            self.mode = ModeKind::Normal;
+        }
+        self.find_reset();
+        self.refresh_visibility();
+        self.window.set_focus();
+        self.window.request_redraw();
+    }
+
+    /// A pop-up pane's page closed its window (a finished sign-in does): close the
+    /// pane, and if it had focus, hand focus back to the pane beside it — usually the
+    /// page that opened it.
+    pub(crate) fn close_popup_pane(&mut self, i: usize) {
+        let was_active = self.active == Some(i);
+        let focus_after = self.drop_tab(i);
+        self.active = if was_active {
+            focus_after
+        } else {
+            self.active.map(|a| if a > i { a - 1 } else { a })
+        };
+        if was_active {
+            self.mode = ModeKind::Normal;
+        }
+        self.refresh_visibility();
+        self.window.request_redraw();
+    }
+
     pub(crate) fn split_pane(&mut self, dir: SplitDir) {
         let before = self.layout_now();
         let mut created = Vec::new();
@@ -925,6 +1020,19 @@ mod tests {
         // Splitting leaf 1 again adds leaf 2 beside it: [0, 1, 2].
         let t = t.insert_split(1, SplitDir::Col, 2);
         assert_eq!(leaves(&t), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn insert_split_at_gives_the_new_pane_the_rest() {
+        // A pop-up beside pane 1 of a split: only that leaf splits, at the given ratio,
+        // and the existing divider keeps its own.
+        let t = split(SplitDir::Row, 0, 1).insert_split_at(1, SplitDir::Row, 2, 0.7);
+        assert_eq!(leaves(&t), vec![0, 1, 2]);
+        let PaneNode::Split { ratio, b, .. } = &t else {
+            panic!("expected a split")
+        };
+        assert_eq!(*ratio, 0.5);
+        assert!(matches!(**b, PaneNode::Split { ratio, .. } if ratio == 0.7));
     }
 
     #[test]

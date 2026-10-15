@@ -215,8 +215,8 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         name: "theme",
         summary: "Customize the browser's appearance: the command/status bar HEIGHT, the \
                   interface COLOURS (the bar background and text, the accent/highlight \
-                  colour, and the page background), and the `:te` TERMINAL's font, font \
-                  size, and colours. Use for requests like 'make the command bar 25% \
+                  colour, and the page background), where the TABS go (a top strip or a \
+                  vertical sidebar), and the `:te` TERMINAL's font, font size, and colours. Use for requests like 'make the command bar 25% \
                   taller', 'set the bar background to green', 'change the terminal font \
                   to Cascadia Code', 'use the dracula terminal colours'. Only set the \
                   fields the user mentions; leave the rest out to keep them unchanged. \
@@ -254,6 +254,13 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
                 values: &[],
                 required: false,
                 desc: "Page and welcome-screen background colour (name or hex).",
+            },
+            ParamSpec {
+                name: "tabs",
+                values: &["top", "side"],
+                required: false,
+                desc: "Where the tabs go: top = a strip above the page (the default); \
+                       side = a vertical sidebar on the left, like Zen browser.",
             },
             ParamSpec {
                 name: "term_font",
@@ -335,14 +342,22 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "split",
         summary: "Split the layout into tmux-style panes so two pages show at once. The \
-                  NEW pane becomes focused, so a following 'open' fills it — that's how to \
-                  put two sites side by side.",
-        params: &[ParamSpec {
-            name: "direction",
-            values: &["vertical", "horizontal"],
-            required: false,
-            desc: "vertical = panes side by side (default); horizontal = stacked top/bottom.",
-        }],
+                  NEW pane becomes focused; give a target to open it there in the same \
+                  step — that's how to put two sites side by side.",
+        params: &[
+            ParamSpec {
+                name: "direction",
+                values: &["vertical", "horizontal"],
+                required: false,
+                desc: "vertical = panes side by side (default); horizontal = stacked top/bottom.",
+            },
+            ParamSpec {
+                name: "target",
+                values: &[],
+                required: false,
+                desc: "A URL or search query to open in the new pane.",
+            },
+        ],
     },
     ActionSpec {
         name: "close",
@@ -372,6 +387,19 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
             values: &["back", "forward", "reload"],
             required: true,
             desc: "back or forward in history, or reload the current page.",
+        }],
+    },
+    ActionSpec {
+        name: "docs",
+        summary: "Read the browser's own documentation on a feature before answering a \
+                  question about it. terminal_cwd: how :w saves and restores each \
+                  terminal's working directory, per shell (cmd, nushell, PowerShell, \
+                  WSL), and why a directory might not come back.",
+        params: &[ParamSpec {
+            name: "topic",
+            values: &["terminal_cwd"],
+            required: true,
+            desc: "The feature to read about.",
         }],
     },
 ];
@@ -650,15 +678,25 @@ impl App {
                 } else {
                     SplitDir::Row
                 });
+                let how = if horizontal {
+                    "top/bottom"
+                } else {
+                    "side by side"
+                };
+                // The new pane is focused, so opening here fills it — one round
+                // instead of a split round plus an open round.
+                let target = str_arg("target");
+                if target.is_empty() {
+                    return Ok(format!("split the layout {how}"));
+                }
+                self.open_tab(target, self.nojs, false);
                 Ok(format!(
-                    "split the layout {}",
-                    if horizontal {
-                        "top/bottom"
-                    } else {
-                        "side by side"
-                    }
+                    "split the layout {how} and opened {target} in the new pane"
                 ))
             }
+            "docs" => crate::ai::docs(str_arg("topic"))
+                .map(str::to_string)
+                .ok_or_else(|| "no docs on that topic — answer from what you know".into()),
             "close" => {
                 self.close_active();
                 Ok("closed the tab".into())
@@ -796,6 +834,12 @@ impl App {
                 ));
             }
         }
+        let tabs = arg("tabs").map(str::to_ascii_lowercase);
+        if let Some(t) = &tabs {
+            if !is_default(t) && !matches!(t.as_str(), "top" | "side" | "sidebar" | "left") {
+                return Err(format!("tabs go 'top' or 'side', not '{t}'"));
+            }
+        }
         let mut term_font_file = String::new();
         if let Some(s) = arg("term_font") {
             if !is_default(s) {
@@ -858,6 +902,12 @@ impl App {
             set_opt(&mut self.config.theme.bg, s, is_default(s));
             changed.push(format!("background to {s}"));
         }
+        if let Some(t) = &tabs {
+            let side = matches!(t.as_str(), "side" | "sidebar" | "left");
+            self.config.theme.tabs = side.then(|| "side".to_string());
+            changed.push(format!("tabs to the {}", if side { "side" } else { "top" }));
+            height_changed = true;
+        }
         if let Some(s) = arg("term_font") {
             set_opt(&mut self.config.term.font, s, is_default(s));
             if term_font_file.is_empty() {
@@ -911,7 +961,8 @@ impl App {
         if changed.is_empty() {
             return Err(
                 "tell me what to change — bar height, bar background/text, accent, \
-                        background, or the terminal's font/font size/scheme/colours"
+                        background, tabs (top/side), or the terminal's font/font \
+                        size/scheme/colours"
                     .into(),
             );
         }
@@ -1029,6 +1080,7 @@ impl App {
             ("bar_fg", &t.bar_fg),
             ("accent", &t.accent),
             ("bg", &t.bg),
+            ("tabs", &t.tabs),
             ("term_font", &tc.font),
             ("term_scheme", &tc.scheme),
             ("term_bg", &tc.bg),
@@ -1293,6 +1345,14 @@ mod tests {
         assert!(by_name("clear")["what"].get("enum").is_some());
         assert!(by_name("alias")["name"].get("enum").is_none());
         assert_eq!(by_name("alias")["name"]["type"], "string");
+    }
+
+    #[test]
+    fn every_docs_topic_has_docs() {
+        let docs = ACTIONS.iter().find(|a| a.name == "docs").unwrap();
+        for topic in docs.params[0].values {
+            assert!(crate::ai::docs(topic).is_some(), "no docs for {topic}");
+        }
     }
 
     #[test]

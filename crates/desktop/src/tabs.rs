@@ -981,6 +981,18 @@ impl App {
         None
     }
 
+    /// Map a y pixel in the vertical tab sidebar to a zero-based tab-strip window
+    /// position, laid out by the same [`side_rows`](crate::chrome::side_rows) that
+    /// paints it.
+    pub(crate) fn sidebar_tab_at(&self, py: f64) -> Option<usize> {
+        let labels = self.tab_labels();
+        let bottom = self.inner().1.saturating_sub(self.bar_h()) as usize;
+        let py = py.max(0.0) as usize;
+        crate::chrome::side_rows(&self.painter, self.sidebar_w() as usize, bottom, &labels)
+            .iter()
+            .position(|r| py >= r.y && py < r.y + r.h)
+    }
+
     /// Move the active window one slot left (-1) or right (+1) in the tab strip.
     /// Reordering the `windows` vec leaves every tab index (and each window's pane
     /// tree) untouched, so nothing about the layout changes — just the strip order.

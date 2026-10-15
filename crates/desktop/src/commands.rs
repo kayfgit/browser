@@ -109,6 +109,9 @@ pub(crate) const BUILTIN_VERBS: &[&str] = &[
     "sc",
     "freeze",
     "unfreeze",
+    "sidebar",
+    "vtabs",
+    "hud",
     "thaw",
     "reload",
     "r",
@@ -208,6 +211,9 @@ pub(crate) const COMMANDS: &[&str] = &[
     "forward",
     "freeze",
     "unfreeze",
+    "sidebar",
+    "vtabs",
+    "hud",
     "fullscreen",
     "move",
     "commands",
@@ -634,7 +640,7 @@ impl App {
                         self.set_error(
                             "usage: :theme (edit config) · :theme <key> <value> · :theme \
                              install <scheme> · :theme reload · :theme show — keys: \
-                             bar_height_pct, bar_bg, bar_fg, accent, bg, term_font, \
+                             bar_height_pct, bar_bg, bar_fg, accent, bg, tabs, term_font, \
                              term_font_px, term_scheme, term_bg, term_fg ('default' resets)",
                         );
                     } else {
@@ -643,6 +649,19 @@ impl App {
                 }
             }
             "restore" => self.run_action("restore", serde_json::json!({})),
+            // Tabs in a vertical sidebar: `:sidebar` toggles, `:sidebar on|off` sets.
+            // Saved with the theme (it's the `tabs` theme key).
+            "sidebar" | "vtabs" => {
+                let side = match rest.trim() {
+                    "on" => true,
+                    "off" => false,
+                    _ => !self.theme.sidebar,
+                };
+                let tabs = if side { "side" } else { "top" };
+                self.run_action("theme", serde_json::json!({ "tabs": tabs }));
+            }
+            // Same as `;`: hide/show the tab strip/sidebar and the command bar.
+            "hud" => self.toggle_hud(),
             // `:help` opens the full page; `:help <topic>` jumps straight to that
             // command/action/section (e.g. :help theme, :help caret, :help bangs).
             "commands" | "help" => {

@@ -700,12 +700,13 @@ impl App {
             .any(|(t, _)| self.tabs.get(*t).is_some_and(|t| t.webview().is_none()));
         let bar_h = self.bar_h() as usize;
         let tab_h = self.tab_bar_h() as usize;
+        let side_w = self.sidebar_w() as usize;
         // Minimized / degenerate size: skip the frame. The tab + command bars are a
         // FIXED height; in a window shorter than they are (e.g. during Show Desktop /
         // minimize, where the client area collapses) drawing them writes past the
         // bottom of the pixel buffer (buf.len() == w*h) and panics. Nothing is
         // visible when minimized anyway, so there's nothing to paint.
-        if (h as usize) < tab_h + bar_h + 4 || w < 8 {
+        if (h as usize) < tab_h + bar_h + 4 || (w as usize) < side_w + 8 {
             return Ok(());
         }
         // Command bar: draw the `:`-line with horizontal scroll-to-caret so editing
@@ -788,7 +789,7 @@ impl App {
         let baseline = bar_top + (bar_h * 2 / 3);
         // Draw the opaque command bar; called LAST so nothing bleeds through it.
         let draw_bar = |buf: &mut [u32]| {
-            // Chrome hidden (fullscreen, Normal mode) → bar height is 0. Drawing anyway
+            // Chrome hidden (`;`, or a page fullscreen) → bar height is 0. Drawing anyway
             // would paint the command line at `baseline == hz`, i.e. a sliver clipped at
             // the very bottom edge of the screen — the "command bar cut off in
             // fullscreen" bug. Skip it entirely; `:` un-hides the bar by switching mode.
@@ -927,6 +928,16 @@ impl App {
             }
             draw::fill_band(&mut buf, wz, hz, 0, tab_h, theme.bar_bg);
             draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels, theme.accent);
+            draw_sidebar(
+                p,
+                &mut buf,
+                wz,
+                side_w,
+                bar_top,
+                &tab_labels,
+                theme.bar_bg,
+                theme.accent,
+            );
             draw_bar(&mut buf);
             // GDI's full-window copy can overwrite an OpenGL child surface until
             // its next frame. Present only chrome/native areas, preserving live
@@ -952,7 +963,25 @@ impl App {
             draw_bar(&mut buf);
             draw::fill_band(&mut buf, wz, hz, 0, tab_h, theme.bar_bg);
             draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels, theme.accent);
+            draw_sidebar(
+                p,
+                &mut buf,
+                wz,
+                side_w,
+                bar_top,
+                &tab_labels,
+                theme.bar_bg,
+                theme.accent,
+            );
             let mut damage = Vec::new();
+            if side_w > 0 && bar_top > 0 {
+                damage.push(softbuffer::Rect {
+                    x: 0,
+                    y: 0,
+                    width: NonZeroU32::new(side_w as u32).unwrap(),
+                    height: NonZeroU32::new(bar_top as u32).unwrap(),
+                });
+            }
             if tab_h > 0 {
                 damage.push(softbuffer::Rect {
                     x: 0,
@@ -1089,11 +1118,17 @@ impl App {
             ModeKind::Find => vec![(format!("/{}", self.cmdline.text()), fg)],
             ModeKind::Resize => vec![
                 ("[RESIZE]".into(), accent),
-                ("  hjkl resize window · Esc done".into(), draw::DIM),
+                (
+                    "  hjkl resize window (Shift: fine · Ctrl: big) · Esc done".into(),
+                    draw::DIM,
+                ),
             ],
             ModeKind::Move => vec![
                 ("[MOVE]".into(), accent),
-                ("  hjkl move window · Esc done".into(), draw::DIM),
+                (
+                    "  hjkl move window (Shift: fine · Ctrl: big) · Esc done".into(),
+                    draw::DIM,
+                ),
             ],
             ModeKind::PaneResize => vec![
                 ("[RESIZE PANE]".into(), accent),
@@ -1672,16 +1707,113 @@ fn draw_load_sweep(
     if h <= thickness {
         return;
     }
-    let cell = c.w.saturating_sub(4);
+    let (x0, x1) = sweep_span(c.x, c.w, age);
+    draw::fill_rect(buf, w, h, x0, h - thickness, x1, h, accent);
+}
+
+/// The x range of the loading sweep's segment inside a cell `[x, x + w)` at `age`.
+/// The segment enters from off the left edge and leaves past the right one, so the
+/// sweep reads as continuous travel rather than a bar that pops in and out.
+fn sweep_span(x: usize, w: usize, age: std::time::Duration) -> (usize, usize) {
+    let cell = w.saturating_sub(4);
     let seg = (cell / 3).max(4);
-    // The segment enters from off the left edge and leaves past the right one, so the
-    // sweep reads as continuous travel rather than a bar that pops in and out.
     let travel = (cell + seg) as u128;
     let phase = (age.as_millis() % SWEEP_MS) * travel / SWEEP_MS;
     let left = phase as i64 - seg as i64;
-    let x0 = (c.x as i64 + 2 + left.max(0)) as usize;
-    let x1 = (c.x as i64 + 2 + (left + seg as i64).min(cell as i64)).max(x0 as i64) as usize;
-    draw::fill_rect(buf, w, h, x0, h - thickness, x1, h, accent);
+    let x0 = (x as i64 + 2 + left.max(0)) as usize;
+    let x1 = (x as i64 + 2 + (left + seg as i64).min(cell as i64)).max(x0 as i64) as usize;
+    (x0, x1)
+}
+
+/// One row of the vertical tab sidebar (`:sidebar`): the `N:` number, the favicon
+/// slot and the label, like a [`TabCell`] stood on its side.
+pub(crate) struct SideRow {
+    pub(crate) prefix: String,
+    pub(crate) label: String,
+    /// Top edge and height of the row.
+    pub(crate) y: usize,
+    pub(crate) h: usize,
+    pub(crate) label_x: usize,
+    pub(crate) icon_x: Option<usize>,
+}
+
+/// Lay out the sidebar: one row per tab-strip entry, top to bottom, inside a column
+/// `sw` px wide that ends at `bottom` (the command bar). The numbers share one width
+/// so the labels line up; rows past the bottom are dropped (marked with `…`). Shared
+/// by [`draw_sidebar`] and [`App::sidebar_tab_at`] so clicks match the pixels.
+pub(crate) fn side_rows(
+    p: &Painter,
+    sw: usize,
+    bottom: usize,
+    entries: &[TabEntry],
+) -> Vec<SideRow> {
+    let lh = p.line_height();
+    let row_h = lh + lh / 2;
+    let ic = icon_px(p);
+    let num_w = p.measure(&format!("{}:", entries.len())) + p.measure(" ");
+    let mut out = Vec::new();
+    let mut y = lh / 3;
+    for (i, e) in entries.iter().enumerate() {
+        if y + row_h > bottom {
+            break;
+        }
+        let slot = if e.web { ic + 4 } else { 0 };
+        let label_x = 8 + num_w + slot;
+        out.push(SideRow {
+            prefix: format!("{}:", i + 1),
+            label: fit_px(p, &e.label, sw.saturating_sub(label_x + 8)),
+            y,
+            h: row_h,
+            label_x,
+            icon_x: e.web.then_some(8 + num_w),
+        });
+        y += row_h;
+    }
+    out
+}
+
+/// Paint the vertical tab sidebar into the column `[0, sw)` above the command bar
+/// (`bottom`): the active tab on a highlighted row, each with its number, favicon,
+/// label and loading sweep, and a thin edge where the page begins.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_sidebar(
+    p: &Painter,
+    buf: &mut [u32],
+    w: usize,
+    sw: usize,
+    bottom: usize,
+    entries: &[TabEntry],
+    bar_bg: draw::Rgb,
+    accent: draw::Rgb,
+) {
+    if sw == 0 || bottom == 0 {
+        return;
+    }
+    draw::fill_rect(buf, w, bottom, 0, 0, sw, bottom, bar_bg);
+    draw::fill_rect(buf, w, bottom, sw - 1, 0, sw, bottom, draw::SEL);
+    let ic = icon_px(p);
+    let rows = side_rows(p, sw, bottom, entries);
+    for (r, e) in rows.iter().zip(entries.iter()) {
+        if e.active {
+            draw::fill_rect(buf, w, bottom, 3, r.y, sw - 4, r.y + r.h, draw::SEL);
+        }
+        let baseline = r.y + r.h * 2 / 3;
+        p.text(buf, w, bottom, 8, baseline, &r.prefix, e.color);
+        p.text(buf, w, bottom, r.label_x, baseline, &r.label, e.color);
+        if let (Some(ix), Some(icon)) = (r.icon_x, &e.icon) {
+            let iy = baseline.saturating_sub(ic * 5 / 6);
+            crate::favicon::blit(icon, buf, w, bottom, ix as i32, iy as i32, ic);
+        }
+        if let Some(age) = e.loading {
+            let (x0, x1) = sweep_span(3, sw - 7, age);
+            let y1 = r.y + r.h;
+            draw::fill_rect(buf, w, bottom, x0, y1 - 2, x1, y1, accent);
+        }
+    }
+    if rows.len() < entries.len() {
+        let y = rows.last().map(|r| r.y + r.h).unwrap_or(0);
+        p.text(buf, w, bottom, 8, y + p.line_height(), "…", draw::DIM);
+    }
 }
 
 /// Paint the engine-free welcome screen: title + a key/command cheat-sheet.

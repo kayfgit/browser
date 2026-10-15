@@ -18,7 +18,9 @@ use crate::pages::{now_hms, ErrorEntry, ERROR_LOG_CAP};
 use crate::panes::{PaneNode, PaneRect};
 use crate::status::Tone;
 use crate::tabs::{NativeRead, Tab};
-use crate::{read_view, session, BAR_H, BASE_PX, TAB_BAR_H, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP};
+use crate::{
+    read_view, session, BAR_H, BASE_PX, SIDEBAR_W, TAB_BAR_H, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP,
+};
 
 /// How long the `Ctrl+W` pane prefix stays armed for its follow-up key. Past this a
 /// stale prefix is dropped and the next key is handled normally, so a forgotten
@@ -179,6 +181,12 @@ pub(crate) enum UserEvent {
     /// not an ad domain). New tabs here are shell-managed rather than OS popups, so the
     /// native window is suppressed and the URL re-opened as a managed tab. Carries the URL.
     OpenPopupTab(String),
+    /// A page opened a pop-up that must stay tied to it (a sized sign-in window, or a
+    /// blank one its script fills in): the engine built it as a view and queued it —
+    /// give it a pane beside its opener. See [`crate::engines::take_popups`].
+    PopupPane,
+    /// A pop-up pane's page closed its window (`window.close()`): close the pane.
+    PopupClosed,
     /// A later launch handed this browser an address (a link opened from another app):
     /// open it as a new tab and come to the front. Empty: just come to the front.
     OpenExternal(String),
@@ -244,6 +252,11 @@ pub(crate) enum UserEvent {
         convo: Vec<serde_json::Value>,
         round: u32,
         result: Result<crate::ai::AiStep, String>,
+    },
+    /// A Groq round for the `:ai` tab `id` was rate-limited and retries in `secs`.
+    AiWaiting {
+        id: u64,
+        secs: u64,
     },
     /// Esc reached a focused page in Normal mode (see [`crate::shellkeys`]): pull
     /// keyboard focus back to the shell.
@@ -599,6 +612,9 @@ pub(crate) struct App {
     /// the engine exits; the content band shows a frozen notice instead of
     /// the pages. `:unfreeze` rebuilds them. See [`freeze`](crate::freeze).
     pub(crate) frozen: bool,
+    /// The HUD (tab strip / sidebar + command bar) is hidden with `;` — see
+    /// [`chrome_hidden`](App::chrome_hidden). Not saved: a fresh launch shows it.
+    pub(crate) hud_hidden: bool,
 }
 
 /// Put `text` on the system clipboard (best-effort; failures are ignored).
@@ -650,14 +666,41 @@ impl App {
     }
 
     /// Whether the native chrome (tab bar + command/status bar) is hidden right now.
-    /// We only go fully immersive (no bars) in fullscreen while in plain Normal mode —
-    /// idly watching a video. ANY other mode keeps the chrome so its state stays
-    /// visible: typing a command (`:`/`/`), and crucially Passthrough — so on a
-    /// fullscreen YouTube video the `[PASS]` tag still shows and you can tell keys are
-    /// going to the page. Press `:` to summon the bar from Normal, or Ctrl+S to leave
-    /// passthrough and go immersive; leaving the mode hides the bars again.
+    ///
+    /// `;` (the HUD toggle) decides — window fullscreen (`:f`) doesn't hide anything by
+    /// itself. Hidden, it stays hidden through the modes whose state shows on the page
+    /// itself (typing in a field, hints, the page caret), so the page doesn't jump each
+    /// time one starts. The bar comes back for typing in it (`:`, `/`) and for anything
+    /// else whose state only the bar shows — above all passthrough, so on a fullscreen
+    /// video the `[PASS]` tag still tells you keys are going to the page.
+    ///
+    /// The one automatic case is a PAGE going fullscreen (YouTube's fullscreen button):
+    /// the video fills the screen without bars in Normal mode, as in any browser.
     pub(crate) fn chrome_hidden(&self) -> bool {
-        self.is_fullscreen() && self.mode == ModeKind::Normal
+        match self.mode {
+            ModeKind::Normal => self.hud_hidden || (self.fs_from_page && self.is_fullscreen()),
+            ModeKind::Insert | ModeKind::Hint | ModeKind::Caret => self.hud_hidden,
+            _ => false,
+        }
+    }
+
+    /// `;` — hide or show the HUD (tab strip / sidebar and command bar) and refit the
+    /// panes to the space it frees or takes.
+    pub(crate) fn toggle_hud(&mut self) {
+        self.hud_hidden = !self.hud_hidden;
+        self.relayout_active();
+        self.window.request_redraw();
+    }
+
+    /// Width of the vertical tab sidebar: 0 unless the tabs are on the side
+    /// (`:sidebar`), a tab is open, and the chrome is showing. At most half the window,
+    /// so a tiny window still has room for the page.
+    pub(crate) fn sidebar_w(&self) -> u32 {
+        if !self.theme.sidebar || self.windows.is_empty() || self.chrome_hidden() {
+            0
+        } else {
+            self.scaled(SIDEBAR_W).min(self.inner().0 / 2)
+        }
     }
 
     /// Command/status bar height at the current zoom (0 when chrome is hidden).
@@ -693,6 +736,7 @@ impl App {
         if let Some(c) = tc.bg.as_deref().and_then(crate::draw::parse_color) {
             t.bg = c;
         }
+        t.sidebar = tc.tabs.as_deref() == Some("side");
         self.theme = t;
     }
 
@@ -743,7 +787,7 @@ impl App {
         // The strip shows one entry per window; with none (only the AI overlay, or
         // nothing open) it collapses to zero height so the welcome screen stays clean.
         let no_visible_tabs = self.windows.is_empty();
-        if no_visible_tabs || self.chrome_hidden() {
+        if no_visible_tabs || self.chrome_hidden() || self.theme.sidebar {
             0
         } else {
             self.scaled(TAB_BAR_H)
@@ -754,10 +798,11 @@ impl App {
     pub(crate) fn content_rect(&self) -> RectPx {
         let (w, h) = self.inner();
         let top = self.tab_bar_h();
+        let side = self.sidebar_w();
         RectPx {
-            x: 0,
+            x: side as i32,
             y: top as i32,
-            w,
+            w: w.saturating_sub(side).max(1),
             h: h.saturating_sub(top + self.bar_h()),
         }
     }
@@ -1170,9 +1215,9 @@ impl App {
         // A manual toggle owns the fullscreen state — clear the page-initiated flag
         // so a later page fs-exit doesn't fight it.
         self.fs_from_page = false;
-        // Entering fullscreen hides the bars (Normal mode); leaving restores them.
-        // The window resize usually relayouts, but do it explicitly so the page
-        // refits even if the inner size didn't change.
+        // A manual fullscreen keeps the bars (`;` hides them); a page fullscreen it
+        // replaces may have hidden them, so refit explicitly — the window resize
+        // usually relayouts, but not if the inner size didn't change.
         self.relayout_active();
     }
 
