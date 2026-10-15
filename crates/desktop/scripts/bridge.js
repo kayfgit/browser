@@ -26,6 +26,18 @@
     return !!el.isContentEditable;
   }
   window.__shellEditable = editable;
+  // The focused element, looking inside shadow roots: for a field in a web component
+  // (Reddit's search box) `document.activeElement` is only the outermost host, which
+  // isn't editable, so Insert would end the moment the field took focus.
+  function deepActive() {
+    var a = document.activeElement;
+    while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+    return a;
+  }
+  // An event's real target: events leaving a shadow root are retargeted to its host.
+  function origin(e) {
+    return (e.composedPath && e.composedPath()[0]) || e.target;
+  }
   document.addEventListener('keydown', function (e) {
     var m = window.__mode;
     if (m === 'insert') {
@@ -41,7 +53,7 @@
           if (window.__mode !== 'insert') return;
           // Normal before the blur, so the focusout below doesn't report a second exit.
           window.__mode = 'normal';
-          var a = document.activeElement;
+          var a = deepActive();
           if (a && editable(a) && a.blur) a.blur();
           post('insert-escape');
         }, 0);
@@ -65,7 +77,7 @@
     if (window.__mode !== 'insert') return;
     setTimeout(function () {
       if (document.fullscreenElement || Date.now() - __fsChangeAt < 700) return;
-      var a = document.activeElement;
+      var a = deepActive();
       if (!a || !editable(a)) post('insert-blur');
     }, 0);
   }, true);
@@ -114,7 +126,7 @@
   // and from a script `.focus()` (no click) on the next key.
   function onClick(e) {
     if (window.__mode && window.__mode !== 'normal') return;
-    var kind = classify(e.target);
+    var kind = classify(origin(e));
     if (kind === 'field') { post('page-edit'); return; }
     if (kind === 'ctrl') { post('page-hold'); return; }
     grabBack();
@@ -139,7 +151,7 @@
     // fetches its menu before showing it) lost focus in that window and the popover
     // never appeared: the button looked dead. Posting at pointerdown closes it.
     if (window.__mode && window.__mode !== 'normal') return;
-    if (classify(e.target) === 'ctrl') { __ctrlPressAt = Date.now(); post('page-hold'); }
+    if (classify(origin(e)) === 'ctrl') { __ctrlPressAt = Date.now(); post('page-hold'); }
   }, true);
   // A control that moves focus into a text field (a search icon that opens a search
   // box) means the user is about to type there: enter Insert, exactly as if the field
@@ -149,7 +161,7 @@
   var __ctrlPressAt = 0;
   document.addEventListener('focusin', function (e) {
     if (window.__mode && window.__mode !== 'normal') return;
-    if (Date.now() - __ctrlPressAt > 1500 || !editable(e.target)) return;
+    if (Date.now() - __ctrlPressAt > 1500 || !editable(origin(e))) return;
     __ctrlPressAt = 0;
     post('page-edit');
   }, true);
@@ -172,8 +184,7 @@
     if ((window.__mode || 'normal') !== 'normal' || !e.isTrusted) return;
     if (e.altKey || e.metaKey || MODIFIERS[e.key]) return;
     if (e.ctrlKey && EDIT_CHORDS[(e.key || '').toLowerCase()]) return;
-    var t = e.composedPath ? e.composedPath()[0] : e.target;
-    if (editable(t)) { post('page-edit'); return; }
+    if (editable(origin(e))) { post('page-edit'); return; }
     if (PAGE_KEYS[e.key] && !e.ctrlKey) return;
     e.preventDefault();
     e.stopImmediatePropagation();
