@@ -64,10 +64,24 @@
   // The shell's native new-window handler is the primary guard (it also catches frames
   // and about:blank shells); this is the in-page backstop. Runs in every frame, so the
   // ad iframe's own window.open is stopped at the source.
+  //
+  // Except a sign-in window: a SIZED pop-up opened by a real click or key press this
+  // instant (Gmail's or Google's sign-in, a "Sign in with Google" button in its iframe).
+  // Pop-unders ride your clicks too, but they want a whole tab or window. The shell's
+  // native handler applies the same rule with the engine's own verdict on the gesture,
+  // and keeps the ad/scam domain list, so this only stops neutering what it will allow.
   var _winOpen = firstRun && window.open ? window.open.bind(window) : null;
+  function signInWindow(features) {
+    var ua = typeof navigator !== 'undefined' && navigator.userActivation;
+    var active = ua && ua.isActive;
+    return !!active && /(^|,)\s*(width|height)\s*=/i.test(String(features || ''));
+  }
   if (_winOpen) {
-    window.open = function (u) {
-      if (state.on && (!u || crossOrigin(u))) { reportPopup(u || 'about:blank'); return null; }
+    window.open = function (u, name, features) {
+      if (state.on && (!u || crossOrigin(u)) && !signInWindow(features)) {
+        reportPopup(u || 'about:blank');
+        return null;
+      }
       return _winOpen.apply(null, arguments);
     };
   }

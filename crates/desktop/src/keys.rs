@@ -11,6 +11,12 @@ use crate::hints::HintAct;
 use crate::panes::SplitDir;
 use crate::{clipboard_get, clipboard_set, vim, App, ModeKind, COMMANDS};
 
+/// `:resize` / `:move` step per `h`/`j`/`k`/`l`, in physical pixels; Shift makes it
+/// [`WINDOW_STEP_SMALL`], Ctrl [`WINDOW_STEP_LARGE`].
+const WINDOW_STEP: i32 = 40;
+const WINDOW_STEP_SMALL: i32 = 8;
+const WINDOW_STEP_LARGE: i32 = 200;
+
 impl App {
     pub(crate) fn handle_key(&mut self, key: &KeyEvent) {
         // Alt+Tab straggler: switching INTO the browser can (re)deliver the Tab that
@@ -346,6 +352,8 @@ impl App {
                 }
                 "x" => self.close_active(),
                 "r" => self.reload_active(),
+                // Hide / show the HUD (tab strip or sidebar + command bar).
+                ";" => self.toggle_hud(),
                 // Undo / redo the last layout change (close, split, pane move, …).
                 "U" => self.undo_layout(),
                 "R" => self.redo_layout(),
@@ -658,7 +666,7 @@ impl App {
             return false;
         };
         // Viewport in cells (monospace), matching the draw geometry below.
-        let (w, _) = self.inner();
+        let w = self.focused_pane_rect().w.max(1);
         let cw = self.painter.measure("M").max(1);
         let line_h = self.painter.line_height().max(1);
         let cols = ((w as usize).saturating_sub(2 * 8)) / cw;
@@ -703,7 +711,7 @@ impl App {
     /// visual selection.
     pub(crate) fn enter_read_caret(&mut self) {
         // Geometry first (immutable borrows of painter), before borrowing the tab.
-        let (w, _) = self.inner();
+        let w = self.focused_pane_rect().w.max(1);
         let cw = self.painter.measure("M").max(1);
         let line_h = self.painter.line_height().max(1);
         let cols = (((w as usize).saturating_sub(16)) / cw).max(1);
@@ -738,7 +746,7 @@ impl App {
     /// a specific word (e.g. a find match) and `hjkl` move relative to it instead of
     /// scrolling the page. Keeps the current scroll context.
     pub(crate) fn place_read_caret_at(&mut self, line: usize, col: usize) {
-        let (w, _) = self.inner();
+        let w = self.focused_pane_rect().w.max(1);
         let cw = self.painter.measure("M").max(1);
         let line_h = self.painter.line_height().max(1);
         let cols = (((w as usize).saturating_sub(16)) / cw).max(1);
@@ -766,7 +774,7 @@ impl App {
         let Some(vk) = self.map_vim_key(key) else {
             return false;
         };
-        let (w, _) = self.inner();
+        let w = self.focused_pane_rect().w.max(1);
         let cw = self.painter.measure("M").max(1);
         let line_h = self.painter.line_height().max(1);
         let cols = (((w as usize).saturating_sub(16)) / cw).max(1);
@@ -1252,8 +1260,11 @@ impl App {
         // Native terminal: the SHELL keeps keyboard focus (there's no webview) and
         // forwards keys to the PTY.
         if self.active_is_term() {
-            // Abandon any half-typed vi find-char (f/F/t/T awaiting its target).
+            // Abandon any half-typed vi find-char (f/F/t/T awaiting its target), and
+            // forget the last one: the next copy-mode session starts fresh, so its `;`
+            // toggles the HUD until it makes a find of its own.
             self.term_find_pending = None;
+            self.term_last_find = None;
             // Leave copy/vi mode (if active) so the live grid takes input again.
             if let Some(s) = self
                 .active
@@ -1348,32 +1359,42 @@ impl App {
     // --- window control (resize / move / fullscreen) --------------------------
 
     pub(crate) fn key_resize(&mut self, key: &KeyEvent) {
-        const STEP: i32 = 40;
-        match &key.logical_key {
-            Key::Escape | Key::Enter => self.mode = ModeKind::Normal,
-            Key::Character(s) => match *s {
-                "h" => self.resize_window(-STEP, 0),
-                "l" => self.resize_window(STEP, 0),
-                "j" => self.resize_window(0, STEP),
-                "k" => self.resize_window(0, -STEP),
-                _ => {}
-            },
-            _ => {}
+        match self.window_step(key) {
+            Some((dx, dy)) => self.resize_window(dx, dy),
+            None if matches!(key.logical_key, Key::Escape | Key::Enter) => {
+                self.mode = ModeKind::Normal
+            }
+            None => {}
         }
     }
 
     pub(crate) fn key_move(&mut self, key: &KeyEvent) {
-        const STEP: i32 = 40;
-        match &key.logical_key {
-            Key::Escape | Key::Enter => self.mode = ModeKind::Normal,
-            Key::Character(s) => match *s {
-                "h" => self.move_window(-STEP, 0),
-                "l" => self.move_window(STEP, 0),
-                "j" => self.move_window(0, STEP),
-                "k" => self.move_window(0, -STEP),
-                _ => {}
-            },
-            _ => {}
+        match self.window_step(key) {
+            Some((dx, dy)) => self.move_window(dx, dy),
+            None if matches!(key.logical_key, Key::Escape | Key::Enter) => {
+                self.mode = ModeKind::Normal
+            }
+            None => {}
+        }
+    }
+
+    /// The `(dx, dy)` an `h`/`j`/`k`/`l` press moves or resizes the window by in
+    /// `:resize` / `:move`: 40px, Shift for fine 8px nudges, Ctrl for 200px jumps.
+    /// Matched on the physical key, so Shift (`H`) and Ctrl don't change which key it is.
+    fn window_step(&self, key: &KeyEvent) -> Option<(i32, i32)> {
+        let step = if self.modifiers.control_key() {
+            WINDOW_STEP_LARGE
+        } else if self.modifiers.shift_key() {
+            WINDOW_STEP_SMALL
+        } else {
+            WINDOW_STEP
+        };
+        match key.physical_key {
+            KeyCode::KeyH => Some((-step, 0)),
+            KeyCode::KeyL => Some((step, 0)),
+            KeyCode::KeyJ => Some((0, step)),
+            KeyCode::KeyK => Some((0, -step)),
+            _ => None,
         }
     }
 

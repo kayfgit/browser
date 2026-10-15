@@ -154,6 +154,10 @@ impl App {
                 self.refresh_tab_url_record(index, record);
                 None
             }
+            UserEvent::PopupClosed => {
+                self.close_popup_pane(index);
+                None
+            }
             UserEvent::SyncAdblock => {
                 if let Some(view) = self.tabs[index].webview() {
                     let _ = view.evaluate_script(&format!(

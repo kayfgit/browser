@@ -25,7 +25,16 @@ and `:help <topic>` jumps to one (`:help theme`, `:help selection`, `:help bangs
 The window is borderless: the tab bar is on top, the command/status bar at the
 bottom, and everything is driven from the keyboard. Drag the tab bar to move the
 window; `:resize` and `:move` enter modes where `h`/`j`/`k`/`l` size or move it
-(`Esc` to finish), and `:f` toggles fullscreen.
+(hold Shift for fine steps, Ctrl for big ones; `Esc` to finish), and `:f` toggles
+fullscreen. Fullscreen keeps the bars; `;` (below) hides them. A page going fullscreen
+by itself (YouTube's fullscreen button) does hide them while it lasts.
+
+`:sidebar` moves the tabs into a vertical sidebar on the left (like Zen browser) and
+back; the choice is saved. Click a tab there to switch to it, or drag the empty part
+below the tabs to move the window. `;` hides the tabs and the command bar so the page
+fills the window, and `;` again brings them back. While they're hidden, `:` and `/`
+still show the bar for as long as you type, and passthrough shows it too, so you can
+always tell that keys are going to the page.
 
 With no tabs open no browser engine is running at all (about 30 MB). The WebView2
 engine starts with the first web tab, and quitting (or a crash) leaves no stray
@@ -135,6 +144,17 @@ be any tab type.
   tab or pane, a split, moving, swapping or breaking out a pane, flipping or resizing a
   split, moving a tab. Undoing a close reopens the page in the pane it was in (a
   terminal restarts in its directory). A run of resizes counts as one change.
+
+Pop-up windows open inside the browser, never as separate windows. A link that opens
+a new window becomes a tab. A pop-up that has to stay connected to its page (Gmail's
+or Google's sign-in window, or a blank window the page fills in) opens as a narrow
+pane beside the page, about as wide as it asked to be, with the keys, hints and vim
+motions all working in it. It closes itself when it's done (a finished sign-in), or
+close it with `x`. With ad blocking on, a pop-up to another site gets through when it
+asks for a window size (as sign-in windows do) and a real click or key press opened
+it, unless it's going to a known ad or scam domain. Other scripted pop-ups to other
+sites are blocked, since that's how pop-unders work. In a private tab, pop-ups that
+must stay connected to their page still open as their own window.
 
 ## Sessions, profiles and saved pages
 
@@ -279,6 +299,10 @@ by side", "wipe my cookies from the last hour", "make the command bar taller and
 It uses [Groq](https://groq.com/); the first time, it asks for your API key, which is
 stored in the browser's data folder. `:model` picks the model, and `:aihist` lists past
 chats. The `:commands` page lists everything it can do.
+
+Groq's free tier allows about 8,000 tokens a minute, and a multi-step request can run
+into that. The assistant then waits as long as Groq asks (usually under half a
+minute) and carries on by itself; the chat shows the countdown.
 
 `i` starts typing a question, Enter sends it, and Esc or Ctrl+S leaves the field.
 Answers are rendered: headings, lists, tables, links and code blocks show formatted,

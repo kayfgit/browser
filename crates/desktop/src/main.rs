@@ -95,6 +95,8 @@ use term::program_exists;
 const BAR_H: u32 = 28;
 /// Height of the top tab bar at zoom 1.0 (only shown with ≥1 tab open).
 const TAB_BAR_H: u32 = 24;
+/// Width of the vertical tab sidebar (`:sidebar`) at zoom 1.0.
+const SIDEBAR_W: u32 = 190;
 /// Native chrome font size in px at zoom 1.0.
 const BASE_PX: f32 = 17.0;
 /// Global zoom bounds and step.
@@ -186,8 +188,10 @@ fn main() -> Result<()> {
     }
     let mut cfg = config::load();
     if cli_scratch {
-        // In-memory only: never `config::save`d here, so the next ordinary launch
-        // comes back to the profile the user actually left off in.
+        // In-memory only: the pin keeps every later `config::save` (a theme or alias
+        // change during the run) from writing it, so the next ordinary launch comes
+        // back to the profile the user actually left off in.
+        config::pin_profile_pointer(&cfg);
         cfg.scratch = true;
         cfg.scratch_return = cfg.profile.take();
     }
@@ -308,6 +312,7 @@ fn main() -> Result<()> {
         installing_scheme: None,
         term_last_find: None,
         frozen: false,
+        hud_hidden: false,
     };
     // Resolve the persisted appearance overrides into the live chrome theme and
     // terminal style (colours + optional custom terminal font).

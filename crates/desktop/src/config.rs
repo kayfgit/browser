@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -100,6 +101,10 @@ pub(crate) struct ThemeConfig {
     /// Page/welcome background.
     #[serde(default)]
     pub(crate) bg: Option<String>,
+    /// Where the tabs go: `"side"` for a vertical sidebar on the left (`:sidebar`);
+    /// unset (or `"top"`) keeps the strip along the top.
+    #[serde(default)]
+    pub(crate) tabs: Option<String>,
 }
 
 /// Appearance overrides for `:te` terminal tabs. Like [`ThemeConfig`], every field is
@@ -226,7 +231,35 @@ pub(crate) fn save(cfg: &Config) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(s) = toml::to_string_pretty(cfg) {
+    if let Ok(s) = toml::to_string_pretty(&for_disk(cfg)) {
         let _ = std::fs::write(path, s);
+    }
+}
+
+/// Which profile the config file points at — `(profile, scratch, scratch_return)` —
+/// as it was on disk when a `--scratch` run started. That run points the live config
+/// at a throwaway scratch slate IN MEMORY ONLY, but every customization (`:theme`,
+/// `:alias`, `:bang`, …) re-saves the whole config, which wrote `scratch = true`
+/// to disk and sent the next ordinary launch into scratch instead of the user's
+/// profile. [`save`] writes these values back in place of the run's own.
+static PINNED_POINTER: OnceLock<(Option<String>, bool, Option<String>)> = OnceLock::new();
+
+/// Keep the on-disk profile pointer as it is in `cfg` for the rest of this process
+/// (see [`PINNED_POINTER`]). Call before changing it for a `--scratch` run.
+pub(crate) fn pin_profile_pointer(cfg: &Config) {
+    let _ = PINNED_POINTER.set((cfg.profile.clone(), cfg.scratch, cfg.scratch_return.clone()));
+}
+
+/// `cfg` as it should be written: unchanged, unless the profile pointer is pinned.
+fn for_disk(cfg: &Config) -> std::borrow::Cow<'_, Config> {
+    match PINNED_POINTER.get() {
+        Some((profile, scratch, scratch_return)) => {
+            let mut c = cfg.clone();
+            c.profile = profile.clone();
+            c.scratch = *scratch;
+            c.scratch_return = scratch_return.clone();
+            std::borrow::Cow::Owned(c)
+        }
+        None => std::borrow::Cow::Borrowed(cfg),
     }
 }

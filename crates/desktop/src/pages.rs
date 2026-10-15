@@ -559,7 +559,9 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("reload", ":reload · :r", "reload"),
     ("tabnext", ":tabnext · :tn · :tabprev · :tp", "switch tabs"),
     ("back", ":back · :forward", "history navigation"),
-    ("fullscreen", ":f · :fullscreen", "toggle fullscreen (hides the bars; `:` brings them back). YouTube's fullscreen button does this too"),
+    ("fullscreen", ":f · :fullscreen", "toggle fullscreen; the bars stay (`;` hides them). A page's own fullscreen (YouTube's button) hides them while it lasts"),
+    ("sidebar", ":sidebar [on|off] · :vtabs", "tabs in a vertical sidebar on the left instead of the top strip (toggles; saved like :theme — it's `:theme tabs side|top`). Click a tab to switch, drag the empty part to move the window"),
+    ("hud", ":hud", "hide / show the tab strip (or sidebar) and command bar — same as `;`"),
     ("resize", ":resize · :move", "window-control modes (then hjkl, Esc)"),
     ("error", ":error · :err", "latest error in a read-only vim tab (v/y to select & copy)"),
     ("errors", ":errors · :errs", "every error this session (newest first), same vim tab"),
@@ -734,6 +736,7 @@ pub(crate) fn commands_markdown() -> String {
         ("Ctrl+W then s / v", "split the pane stacked / side-by-side (also :split / :vsplit)"),
         ("Ctrl+W then c", "close the focused pane"),
         ("Ctrl+V", "passthrough mode (every key to the page)"),
+        (";", "hide / show the HUD (tabs + command bar); `:` and `/` still bring the bar up while you type, passthrough shows it too"),
         ("+ / - / )", "zoom the page content in / out / reset (web tabs)"),
         ("Ctrl +/-/0", "zoom the browser UI and terminals in / out / reset"),
     ]);

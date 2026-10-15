@@ -76,3 +76,35 @@ test('a trusted press on a cross-site link reports navigation intent', () => {
   p.context.document.listeners.pointerdown[0]({ isTrusted: false, target: link });
   assert.deepEqual(p.messages, ['nav-intent']);
 });
+
+// Sign-in windows (Gmail's, "Sign in with Google"): a sized pop-up opened by a real
+// click this instant gets through; a pop-under riding a click wants a whole window.
+function withActivation(p, isActive) {
+  p.context.navigator = { userActivation: { isActive } };
+}
+
+test('a sized pop-up opened by a real click gets through while blocking is on', () => {
+  const p = page();
+  withActivation(p, true);
+  p.run();
+  assert.notEqual(p.window.open('https://accounts.test/signin', 'signin', 'width=500,height=600'), null);
+  assert.deepEqual(p.opened, ['https://accounts.test/signin']);
+  assert.deepEqual(p.messages, []);
+});
+
+test('a click-driven pop-under without a size is still neutered', () => {
+  const p = page();
+  withActivation(p, true);
+  p.run();
+  assert.equal(p.window.open('https://ads.test/pop'), null);
+  assert.equal(p.window.open('https://ads.test/pop', '_blank', 'noopener'), null);
+  assert.deepEqual(p.opened, []);
+});
+
+test('a sized pop-up nobody clicked for is still neutered', () => {
+  const p = page();
+  withActivation(p, false);
+  p.run();
+  assert.equal(p.window.open('https://ads.test/pop', 'x', 'width=500,height=600'), null);
+  assert.deepEqual(p.opened, []);
+});

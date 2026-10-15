@@ -184,6 +184,15 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             if app.bar_h() > 0 && app.cursor_pos.1 >= bar_top {
                 // Click the command/status bar: edit the URL or place the caret.
                 app.bar_click(app.cursor_pos.0);
+            } else if app.sidebar_w() > 0 && app.cursor_pos.0 < app.sidebar_w() as f64 {
+                // The vertical tab sidebar: a row switches to that tab, the empty
+                // space below the tabs moves the (borderless) window.
+                if let Some(i) = app.sidebar_tab_at(app.cursor_pos.1) {
+                    app.jump_to(i);
+                    app.window.request_redraw();
+                } else {
+                    let _ = app.window.drag_window();
+                }
             } else if !app.tabs.is_empty() && app.cursor_pos.1 < app.tab_bar_h() as f64 {
                 if let Some(i) = app.tab_at_pixel(app.cursor_pos.0) {
                     app.jump_to(i);
@@ -465,6 +474,9 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
             app.set_status(format!("blocked pop-up → {short}  (:ads off to allow)"));
             app.window.request_redraw();
         }
+        UserEvent::PopupPane => app.adopt_popups(),
+        // Only meaningful from its pop-up's view, which `route_engine_event` handles.
+        UserEvent::PopupClosed => {}
         UserEvent::OpenPopupTab(url) => {
             // A real new-tab click the popup guard cleared: re-open it as a managed
             // tab (new tabs here live in our tab strip, not as OS popups).
@@ -564,6 +576,7 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
             round,
             result,
         } => app.ai_reply(id, convo, round, result),
+        UserEvent::AiWaiting { id, secs } => app.ai_waiting(id, secs),
         UserEvent::PageFullscreen(on) => app.set_page_fullscreen(on),
         // An SPA navigation changed the page URL without a document load: sync the
         // stored URL (and, for real steps, the H/L back stack) + repaint the bar.
