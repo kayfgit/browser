@@ -267,3 +267,48 @@ test('Esc leaves Insert alone if the page already left it', () => {
   assert.equal(esc.blurred(), 0);
   assert.deepEqual(p.messages, []);
 });
+
+// Web components (Reddit's search box): the field sits inside nested OPEN shadow
+// roots, which a plain querySelectorAll never enters.
+function shadowRoot(children, matches) {
+  return {
+    querySelectorAll(sel) { return sel === '*' ? children : matches; },
+  };
+}
+
+test('hints reach a text field nested two shadow roots deep', () => {
+  const input = element('INPUT', { left: 10, top: 10, width: 300, height: 30 },
+    { getAttribute: (a) => (a === 'type' ? 'text' : null) });
+  const inner = element('FACEPLATE-SEARCH-INPUT', { left: 0, top: 0, width: 400, height: 50 });
+  inner.shadowRoot = shadowRoot([input], [input]);
+  const outer = element('REDDIT-SEARCH-LARGE', { left: 0, top: 0, width: 400, height: 50 });
+  outer.shadowRoot = shadowRoot([inner], []);
+  const p = hitPage({ clickables: [outer], stack: [outer] });
+  // `clickables` answers every selector, so the host itself is labelled too; the
+  // field is the second label.
+  const labels = Object.keys(p.window.__hintMap);
+  assert.equal(labels.length, 2);
+  assert.equal(p.window.__hintMap[labels[1]].el, input);
+  p.window.__hintInput(labels[1], 'follow');
+  assert.deepEqual(p.messages, ['hint-edit']);
+  assert.equal(p.window.__hintTarget, input);
+});
+
+test('a click on a field inside a shadow root enters Insert', () => {
+  const p = page();
+  const input = { tagName: 'INPUT', getAttribute: () => 'text', closest() { return this; } };
+  p.button.dispatchEvent({ type: 'click', isTrusted: true, composedPath: () => [input, p.button] });
+  assert.deepEqual(p.messages, ['page-edit']);
+});
+
+test('Insert survives focus moving into a field inside a shadow root', () => {
+  const p = page();
+  const input = { tagName: 'INPUT', getAttribute: () => 'search' };
+  // The document only knows the outermost host as focused.
+  p.document.activeElement = { tagName: 'REDDIT-SEARCH-LARGE', getAttribute: () => null,
+    shadowRoot: { activeElement: input } };
+  p.window.__mode = 'insert';
+  p.button.dispatchEvent({ type: 'focusout' });
+  p.timers.splice(0).forEach((fn) => fn());
+  assert.deepEqual(p.messages, []);
+});

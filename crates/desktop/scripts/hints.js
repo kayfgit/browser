@@ -26,7 +26,17 @@
     var st = getComputedStyle(el);
     return st.visibility !== 'hidden' && st.display !== 'none';
   }
-  var els = scrollMode ? window.__scrollCandidates() : Array.prototype.slice.call(document.querySelectorAll(sel)).filter(function (el) {
+  // Web components keep their insides in shadow roots, which querySelectorAll never
+  // enters: Reddit's search box is an <input> two shadow roots down. Query every
+  // open shadow root too (closed ones are unreachable by design).
+  function deepQuery(root, selector, out) {
+    Array.prototype.push.apply(out, root.querySelectorAll(selector));
+    Array.prototype.forEach.call(root.querySelectorAll('*'), function (el) {
+      if (el.shadowRoot) deepQuery(el.shadowRoot, selector, out);
+    });
+    return out;
+  }
+  var els = scrollMode ? window.__scrollCandidates() : deepQuery(document, sel, []).filter(function (el) {
     if (!onScreen(el)) return false;
     // A `javascript:` link has no address worth copying.
     return !copyMode || (el.href && !/^javascript:/i.test(el.href));
@@ -147,9 +157,24 @@
     }
     fireClick(el);
   }
+  // The element at a point, descending into shadow roots (the document only reports
+  // the outermost shadow host).
+  function deepAt(x, y) {
+    var hit = document.elementFromPoint(x, y);
+    while (hit && hit.shadowRoot) {
+      var inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    return hit;
+  }
+  // `node` is `el` or inside it, counting a shadow root as inside its host.
+  function within(el, node) {
+    for (var n = node; n; n = n.parentNode || n.host) if (n === el) return true;
+    return false;
+  }
   function hits(el, p) {
-    var hit = document.elementFromPoint(p.x, p.y);
-    return !!hit && (hit === el || el.contains(hit));
+    return within(el, deepAt(p.x, p.y));
   }
   // A viewport point where a click reaches `el`: its aim point (captcha checkbox) or
   // center, else any uncovered spot on it. If an overlay covers all of them (YouTube
@@ -170,10 +195,10 @@
     }
     var peeled = [];
     for (var n = 0; n < 8; n++) {
-      var top = document.elementFromPoint(first.x, first.y);
-      if (!top || top === el || el.contains(top)) break;
+      var top = deepAt(first.x, first.y);
+      if (!top || within(el, top)) break;
       // An ancestor on top means `el` itself takes no clicks: nothing to peel.
-      if (top.contains(el) || top === document.body || top === document.documentElement) break;
+      if (within(top, el) || top === document.body || top === document.documentElement) break;
       peeled.push([top, top.style.getPropertyValue('pointer-events'),
                    top.style.getPropertyPriority('pointer-events')]);
       top.style.setProperty('pointer-events', 'none', 'important');
