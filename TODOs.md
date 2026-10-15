@@ -32,13 +32,14 @@ issues:
 [*] - add a way for users to freely install extensions
 [] - after running ":ai open github and wikipedia side by side please" it opened github.com on the left, splitted vertically but didnt open wikipedia, and then gave me: "! groq 429: Rate limit reached for model `openai/gpt-oss-120b` in organization `org_01kva1e35pet7tkmy9tte02502` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Used 5616, Requested 5181. Please try again in 20.9775s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing"
 [?] - random not responding 08/10/2026 i forgot the time
-[] - for some reason the hint mode cant reach reddit's search bar, neither does the insert mode
+[*] - for some reason the hint mode cant reach reddit's search bar, neither does the insert mode
 
 feats:
-[] - make ";" toggle browser hud visibility
+[*] - make ";" toggle browser hud visibility
 [/] - add vertical sidebar like zen browser
-[*] - make it so every browser related error is shown in :error/:errors (like if an engine crashes/errors, extension stops working, everything)
-[] - allow dragging links into the browser that opens on the default engine
+[*] - make it so every browser related warning/error is shown in :error/:errors (like if an engine crashes/errors, extension stops working, everything)
+[] - allow dragging links into the browser that opens in a new tab on the default engine
+[] - while in :resize or :move, allow holding shift + hjkl for small adjustments, and ctrl + hjkl for large adjustments
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
