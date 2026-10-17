@@ -1,4 +1,4 @@
-//! Engine-free internal pages: the `:error(s)` pager, the `:res` resource
+//! Engine-free internal pages: the `:msg` / `:warn` / `:err` log pagers, the `:res` resource
 //! monitor, and the `:commands` / `:version` pages, plus their line renderers.
 
 use std::time::Instant;
@@ -6,38 +6,81 @@ use std::time::Instant;
 use crate::tabs::{TabContent, TabNav};
 use crate::{procmon, vim, App, Tab};
 
-/// One recorded failure: when it happened, the command that triggered it (if
-/// known), and the message. Rendered by `:error` / `:errors`.
-pub(crate) struct ErrorEntry {
+/// How serious a logged message is, and so which page lists it: every one shows in
+/// `:msg`, warnings also in `:warn`, errors also in `:err`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Level {
+    /// Ordinary feedback ("opened …", "no closed tab to reopen").
+    Msg,
+    /// Something went wrong around you but nothing failed outright: a blocked
+    /// pop-up or redirect, an engine helper process that restarted.
+    Warn,
+    /// A failure: a page that couldn't load, a crashed engine, an extension error.
+    Err,
+}
+
+impl Level {
+    fn name(self) -> &'static str {
+        match self {
+            Level::Msg => "message",
+            Level::Warn => "warning",
+            Level::Err => "error",
+        }
+    }
+}
+
+/// One logged status message: when, the command that raised it (if known), how
+/// serious it was, and the text. Rendered by `:msg` / `:warn` / `:err`.
+pub(crate) struct LogEntry {
     /// Local wall-clock time, `HH:MM:SS`.
     pub(crate) time: String,
     /// The command line that raised it (e.g. `:open foo`), if any.
     pub(crate) command: Option<String>,
+    pub(crate) level: Level,
     pub(crate) message: String,
 }
 
 impl App {
-    /// Open the `:error` / `:errors` page: render the session error log in an
-    /// engine-free, read-only **vim-style** tab so the full text (which may be long,
-    /// like the WebView2 HRESULT messages) is readable, navigable, and — crucially —
-    /// selectable/yankable without retyping. `all = false` shows just the most recent
-    /// error; `all = true` shows every error this session, newest first.
-    pub(crate) fn open_error_page(&mut self, all: bool) {
-        if self.errors.is_empty() {
-            self.set_status("no errors this session");
+    /// Open a log page: the session's messages in an engine-free, read-only
+    /// **vim-style** tab, so the full text (which may be long, like the WebView2
+    /// HRESULT messages) is readable, navigable, and selectable/yankable without
+    /// retyping. `only` keeps one level (`:warn`, `:err`) or, with `None`, shows
+    /// everything (`:msg`); `all = false` shows just the most recent entry.
+    pub(crate) fn open_log_page(&mut self, only: Option<Level>, all: bool) {
+        let kept = self
+            .log
+            .iter()
+            .filter(|e| only.is_none_or(|l| e.level == l))
+            .count();
+        if kept == 0 {
+            self.set_status(match only {
+                Some(Level::Err) => "no errors this session",
+                Some(Level::Warn) => "no warnings this session",
+                _ => "no messages this session",
+            });
             return;
         }
-        let lines = error_lines(&self.errors, all);
+        let lines = log_lines(&self.log, only, all);
+        let page = match only {
+            Some(Level::Err) => "browser://error",
+            Some(Level::Warn) => "browser://warn",
+            _ => "browser://msg",
+        };
         self.place_tab(
             Tab {
                 id: crate::layout::TabId::new(),
-                url: "browser://error".into(),
+                url: page.into(),
                 nojs: false,
                 read: false,
                 research: false,
                 private: false,
                 nav: TabNav::default(),
-                content: TabContent::Pager(vim::TextBuffer::new(lines)),
+                content: TabContent::Pager({
+                    let tints = log_tints(&lines);
+                    let mut buffer = vim::TextBuffer::new(lines);
+                    buffer.tints = tints;
+                    buffer
+                }),
             },
             true,
         );
@@ -141,22 +184,23 @@ impl App {
         };
 
         // Engine processes that are copies of this executable get their engine's name,
-        // or they'd all read "browser.exe": Trident's sandboxed helpers, and otherwise
-        // Servo's content processes.
+        // or they'd all read "browser.exe", each from its engine's own list of IDs:
+        // Trident's sandboxed helpers, and Servo's content processes (its pages). Servo's
+        // core runs inside the browser process itself, so that row says so too.
         let own = std::process::id();
         #[cfg(windows)]
         let trident = crate::engines::trident::helper_pids();
         #[cfg(not(windows))]
         let trident: Vec<u32> = Vec::new();
+        #[cfg(all(windows, feature = "servo-engine"))]
+        let (servo, servo_loaded) = (
+            crate::engines::servo::content_pids(),
+            crate::engines::servo::runtime_view_count().is_some(),
+        );
+        #[cfg(not(all(windows, feature = "servo-engine")))]
+        let (servo, servo_loaded): (Vec<u32>, bool) = (Vec::new(), false);
         let name_of = |p: &procmon::ProcSample| -> String {
-            let copy = p.pid != own && p.name.eq_ignore_ascii_case("browser.exe");
-            if copy && trident.contains(&p.pid) {
-                format!("{} (trident)", p.name)
-            } else if copy && cfg!(feature = "servo-engine") {
-                format!("{} (servo)", p.name)
-            } else {
-                p.name.clone()
-            }
+            engine_label(&p.name, p.pid, own, &trident, &servo, servo_loaded)
         };
         let total_mem: u64 = sample.iter().map(|p| p.working_set).sum();
         let (mut total_cpu, mut total_disk) = (0.0f64, 0.0f64);
@@ -206,20 +250,6 @@ impl App {
             "MEM", "CPU", "DISK", "PROCESS", "PID"
         ));
         lines.extend(rows);
-
-        #[cfg(all(windows, feature = "servo-engine"))]
-        if let Some(views) = crate::engines::servo::runtime_view_count() {
-            lines.push(String::new());
-            lines.push(format!("Servo: {views} open views; shared runtime loaded."));
-            lines.push(format!(
-                "Servo CPU/memory/I/O are included in browser.exe (PID {}).",
-                std::process::id()
-            ));
-            lines.push(
-                "The shell and Servo share this process; separate engine totals are unavailable."
-                    .into(),
-            );
-        }
 
         // Roll the sample forward for the next delta.
         self.res_prev = sample
@@ -428,38 +458,102 @@ impl App {
     }
 }
 
-/// Maximum number of past errors kept in the session log (oldest dropped first).
-pub(crate) const ERROR_LOG_CAP: usize = 200;
+/// The `:res` name for a process: its exe name, plus which engine it serves when
+/// it's a copy of this executable — `(trident)` for a Trident helper, `(servo)` for
+/// a Servo content process — and `(+servo)` on the browser process itself while
+/// Servo's core is loaded in it.
+fn engine_label(
+    name: &str,
+    pid: u32,
+    own: u32,
+    trident: &[u32],
+    servo: &[u32],
+    servo_loaded: bool,
+) -> String {
+    if pid == own {
+        return if servo_loaded {
+            format!("{name} (+servo)")
+        } else {
+            name.to_string()
+        };
+    }
+    if trident.contains(&pid) {
+        format!("{name} (trident)")
+    } else if servo.contains(&pid) {
+        format!("{name} (servo)")
+    } else {
+        name.to_string()
+    }
+}
 
-/// Build the plain-text lines shown by `:error` / `:errors` in the vim pager. Each
-/// error becomes a header line (`[HH:MM:SS] :command — error N`) followed by its
-/// message (split on newlines), with a blank line between entries. `all = false`
-/// renders only the most recent error; `all = true` renders every logged error in
-/// chronological order (oldest first, newest last). The text is intentionally flat
-/// so vim motions/text-objects work cleanly over it (e.g. `yi(` to grab a
-/// `HRESULT(0x…)` token).
-pub(crate) fn error_lines(errors: &[ErrorEntry], all: bool) -> Vec<String> {
+/// Maximum number of messages kept in the session log (oldest dropped first).
+pub(crate) const LOG_CAP: usize = 500;
+
+/// Build the plain-text lines shown by the log pages in the vim pager. Each entry
+/// becomes a header line (`[HH:MM:SS] :command — error N`, numbered within the page)
+/// followed by its message (split on newlines), with a blank line between entries.
+/// `only` keeps one level; `all = false` renders only the most recent entry, `all =
+/// true` every one in chronological order (oldest first, newest last). The text is
+/// intentionally flat so vim motions/text-objects work cleanly over it (e.g. `yi(`
+/// to grab a `HRESULT(0x…)` token).
+pub(crate) fn log_lines(log: &[LogEntry], only: Option<Level>, all: bool) -> Vec<String> {
+    let kept: Vec<&LogEntry> = log
+        .iter()
+        .filter(|e| only.is_none_or(|l| e.level == l))
+        .collect();
     let mut out = Vec::new();
-    let mut emit = |n: usize, e: &ErrorEntry| {
+    let mut emit = |n: usize, e: &LogEntry| {
         let cmd = e.command.as_deref().unwrap_or("(no command)");
-        out.push(format!("[{}] {} — error {}", e.time, cmd, n + 1));
+        out.push(format!(
+            "[{}] {} — {} {}",
+            e.time,
+            cmd,
+            e.level.name(),
+            n + 1
+        ));
         for line in e.message.lines() {
             out.push(line.to_string());
         }
         out.push(String::new());
     };
     if all {
-        for (n, e) in errors.iter().enumerate() {
+        for (n, e) in kept.iter().enumerate() {
             emit(n, e);
         }
-    } else if let Some(e) = errors.last() {
-        emit(errors.len() - 1, e);
+    } else if let Some(e) = kept.last() {
+        emit(kept.len() - 1, e);
     }
     // Drop the trailing blank so the buffer doesn't end on an empty line.
     if out.last().is_some_and(|l| l.is_empty()) {
         out.pop();
     }
     out
+}
+
+/// Colours for a log page's lines (see [`log_lines`]): each message line takes its
+/// entry's level — red for an error, amber for a warning — from the header above it.
+/// Headers and plain messages are left to the page's default colours.
+pub(crate) fn log_tints(lines: &[String]) -> Vec<Vec<crate::vim::Tint>> {
+    let mut level = None;
+    lines
+        .iter()
+        .map(|line| {
+            if line.starts_with('[') && line.contains("] ") {
+                level = if line.contains(" — error ") {
+                    Some(crate::draw::ERR)
+                } else if line.contains(" — warning ") {
+                    Some(crate::draw::WARN)
+                } else {
+                    None
+                };
+                return Vec::new();
+            }
+            match level {
+                Some(color) if !line.is_empty() => vec![(0, color)],
+                _ => Vec::new(),
+            }
+        })
+        .collect()
 }
 
 /// Local wall-clock time as `HH:MM:SS`, for stamping logged errors.
@@ -562,9 +656,13 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("fullscreen", ":f · :fullscreen", "toggle fullscreen; the bars stay (`;` hides them). A page's own fullscreen (YouTube's button) hides them while it lasts"),
     ("sidebar", ":sidebar [on|off] · :vtabs", "tabs in a vertical sidebar on the left instead of the top strip (toggles; saved like :theme — it's `:theme tabs side|top`). Click a tab to switch, drag the empty part to move the window"),
     ("hud", ":hud", "hide / show the tab strip (or sidebar) and command bar — same as `;`"),
+    ("glance", ":glance <url> · :glance clicks [on|off]", "open a page in a glance: a card floating over this page, which stays dimmed behind it (`t` keeps it as a tab, `x` / Esc / a click on the page closes it). `clicks on` makes every plain link click open a glance, like Zen; off, it's `q` hints and the right-click menu"),
+    ("button", ":button <label> <command> · :unbutton <label> · :buttons [off|reset]", "the clickable buttons on the tab strip (or the sidebar's top row): back, forward and reload by default. Add one that runs any command (`:button ✉ open -t mail.google.com`), remove one, list them, hide them, or bring the defaults back"),
     ("resize", ":resize · :move", "window-control modes (then hjkl, Esc)"),
     ("error", ":error · :err", "latest error in a read-only vim tab (v/y to select & copy)"),
-    ("errors", ":errors · :errs", "every error this session (newest first), same vim tab"),
+    ("errors", ":errors · :errs", "every error this session (newest last), same vim tab"),
+    ("warn", ":warn · :warns", "latest warning / every warning this session (blocked pop-ups and redirects, engine helpers that restarted, …)"),
+    ("msg", ":msg · :messages", "everything the status bar has said this session — messages, warnings and errors"),
     ("resources", ":res · :resources", "live memory/CPU/disk across the whole browser tree (freezes while you select)"),
     ("freeze", ":freeze · :unfreeze", "stop the web engine to free its memory, keeping every tab; :unfreeze reloads them"),
     ("save", ":save [name] · :favorite · :bookmark", "keep the current page for later, optionally under a short name (re-saving the same page renames it instead of duplicating)"),
@@ -719,6 +817,8 @@ pub(crate) fn commands_markdown() -> String {
         ("i", "insert mode (passthrough on a terminal tab)"),
         ("f / F", "hint mode — label every link, type the label to follow (F: open in a new tab)"),
         ("yf", "hint mode, but the label COPIES that link's address instead of going there (cyan labels)"),
+        ("q", "hint mode, but the label opens that link in a GLANCE over this page (purple labels; see :glance)"),
+        ("t", "in a glance: keep it as a tab of its own (x or Esc closes it)"),
         ("s", "hint scrollable boxes; pick a label, then hjkl, gg/G, Ctrl+D/U or PgUp/PgDn scroll that box; v selects text inside it; Esc exits"),
         ("yy", "copy this page's address to the clipboard (same as :y)"),
         ("v / V", "selection mode on read & web tabs — hjkl/w/b move, v/V select, y yank, Esc exits"),
@@ -1082,23 +1182,61 @@ mod tests {
         );
     }
 
-    fn entry(time: &str, command: Option<&str>, message: &str) -> ErrorEntry {
-        ErrorEntry {
+    fn entry(time: &str, command: Option<&str>, level: Level, message: &str) -> LogEntry {
+        LogEntry {
             time: time.into(),
             command: command.map(Into::into),
+            level,
             message: message.into(),
         }
     }
 
     #[test]
+    fn res_names_each_engines_processes_from_its_own_list() {
+        let (own, trident, servo) = (10, [20], [30]);
+        let label = |pid, loaded| engine_label("browser.exe", pid, own, &trident, &servo, loaded);
+        assert_eq!(label(20, true), "browser.exe (trident)");
+        assert_eq!(label(30, true), "browser.exe (servo)");
+        assert_eq!(label(10, true), "browser.exe (+servo)");
+        assert_eq!(label(10, false), "browser.exe");
+        // Another copy no engine claims isn't guessed at.
+        assert_eq!(label(40, true), "browser.exe");
+    }
+
+    #[test]
     fn latest_error_has_header_then_message_lines() {
-        let errs = vec![
-            entry("00:00:01", Some(":open a"), "boom"),
-            entry("00:00:02", None, "bad\nthings"),
+        let log = vec![
+            entry("00:00:01", Some(":open a"), Level::Err, "boom"),
+            entry("00:00:02", None, Level::Err, "bad\nthings"),
+            entry("00:00:03", None, Level::Msg, "opened"),
         ];
-        let lines = error_lines(&errs, false);
+        let lines = log_lines(&log, Some(Level::Err), false);
         assert_eq!(lines[0], "[00:00:02] (no command) — error 2");
         assert_eq!(&lines[1..], &["bad".to_string(), "things".to_string()]);
+    }
+
+    #[test]
+    fn each_log_page_keeps_its_level_and_msg_keeps_everything() {
+        let log = vec![
+            entry("00:00:01", None, Level::Msg, "opened a"),
+            entry("00:00:02", None, Level::Warn, "blocked pop-up"),
+            entry("00:00:03", Some(":read x"), Level::Err, "read failed"),
+        ];
+        let warn = log_lines(&log, Some(Level::Warn), true);
+        assert_eq!(
+            warn,
+            vec!["[00:00:02] (no command) — warning 1", "blocked pop-up"]
+        );
+        let all = log_lines(&log, None, true);
+        assert_eq!(all.iter().filter(|l| l.starts_with('[')).count(), 3);
+        assert!(all.contains(&"[00:00:03] :read x — error 3".to_string()));
+        // Each message is tinted by its own entry's level; headers are left alone.
+        let tints = log_tints(&all);
+        let at = |text: &str| tints[all.iter().position(|l| l == text).unwrap()].clone();
+        assert_eq!(at("opened a"), vec![]);
+        assert_eq!(at("blocked pop-up"), vec![(0, crate::draw::WARN)]);
+        assert_eq!(at("read failed"), vec![(0, crate::draw::ERR)]);
+        assert_eq!(at("[00:00:03] :read x — error 3"), vec![]);
     }
 
     #[test]
@@ -1165,10 +1303,10 @@ mod tests {
     #[test]
     fn all_errors_are_oldest_first_with_command_and_time() {
         let errs = vec![
-            entry("00:00:01", Some(":open a"), "e1"),
-            entry("00:00:09", Some(":bad"), "e2"),
+            entry("00:00:01", Some(":open a"), Level::Err, "e1"),
+            entry("00:00:09", Some(":bad"), Level::Err, "e2"),
         ];
-        let lines = error_lines(&errs, true);
+        let lines = log_lines(&errs, Some(Level::Err), true);
         assert_eq!(lines[0], "[00:00:01] :open a — error 1");
         assert_eq!(lines[1], "e1");
         assert_eq!(lines[2], ""); // blank separator

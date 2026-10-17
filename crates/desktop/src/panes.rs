@@ -345,6 +345,10 @@ impl App {
         let band = self.content_band();
         let mut panes = Vec::new();
         let mut divs = Vec::new();
+        // A focused glance floats over its page's window (see `glance`).
+        if self.glance_layout(band, &mut panes, &mut divs) {
+            return (panes, divs);
+        }
         match self.active_window() {
             Some(w) => self.windows[w].layout(band, &mut panes, &mut divs),
             None => {

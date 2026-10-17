@@ -45,6 +45,8 @@ mod data;
 mod devtools;
 mod downloads;
 mod draw;
+#[cfg(windows)]
+mod droplink;
 mod engines;
 mod events;
 mod extensions;
@@ -52,6 +54,7 @@ mod external;
 mod favicon;
 mod find;
 mod freeze;
+mod glance;
 mod hints;
 mod keys;
 mod layout;
@@ -221,6 +224,13 @@ fn main() -> Result<()> {
     };
     let window = builder.build(&event_loop).context("creating window")?;
     let window = Rc::new(window);
+    // Links dragged onto the shell's own areas open in a new tab (`droplink`).
+    #[cfg(windows)]
+    let drop_error = {
+        use tao::platform::windows::WindowExtWindows;
+        let hwnd = windows::Win32::Foundation::HWND(window.hwnd() as *mut core::ffi::c_void);
+        droplink::install(hwnd, proxy.clone()).err()
+    };
 
     let context = softbuffer::Context::new(window.clone())
         .map_err(|e| anyhow::anyhow!("softbuffer context: {e}"))?;
@@ -242,7 +252,7 @@ fn main() -> Result<()> {
         native_hints: Vec::new(),
         status: status::Status::default(),
         ai_prev_active: None,
-        errors: Vec::new(),
+        log: Vec::new(),
         current_command: None,
         find: FindState::default(),
         tabs: Vec::new(),
@@ -313,11 +323,20 @@ fn main() -> Result<()> {
         term_last_find: None,
         frozen: false,
         hud_hidden: false,
+        button_hover: None,
+        glance: None,
     };
     // Resolve the persisted appearance overrides into the live chrome theme and
     // terminal style (colours + optional custom terminal font).
     app.rebuild_theme();
     app.rebuild_term_style();
+    #[cfg(windows)]
+    if let Some(e) = drop_error {
+        app.record(
+            pages::Level::Err,
+            &format!("dragging links into the browser won't work: {e}"),
+        );
+    }
 
     // Compile the ad/redirect blocklist engine off-thread; it goes live a beat after
     // launch (BlocklistReady), and navigations use the timing heuristic until then.

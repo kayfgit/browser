@@ -50,6 +50,8 @@ pub(crate) fn decode_page_message(body: &str) -> Option<UserEvent> {
         "caret-exit" => UserEvent::CaretExit,
         // Right-click menu: "Inspect" and "View page source".
         "inspect" => UserEvent::Inspect,
+        // A click on the dimmed page behind a glance.
+        "glance-close" => UserEvent::GlanceClose,
         "view-source" => UserEvent::ViewSource,
         "fs-enter" => UserEvent::PageFullscreen(true),
         "fs-exit" => UserEvent::PageFullscreen(false),
@@ -72,6 +74,11 @@ pub(crate) fn decode_page_message(body: &str) -> Option<UserEvent> {
                 "clip" => UserEvent::ClipCopy(arg.into()),
                 // A hint in new-tab mode resolved to a link.
                 "hint-open" => UserEvent::HintOpen(arg.into()),
+                // A link dragged onto the page that the page didn't take.
+                "drop-link" => UserEvent::DroppedLink(arg.into()),
+                // Open a link in a glance: a `q` hint, the right-click menu, or a
+                // plain click with glance-on-click on.
+                "hint-glance" | "glance-open" => UserEvent::GlanceOpen(arg.into()),
                 // A hint picked a control: `hint-click:<x>,<y>` asks for a trusted click.
                 "hint-click" => {
                     let (x, y) = arg.split_once(',')?;
@@ -159,10 +166,13 @@ impl App {
                 None
             }
             UserEvent::SyncAdblock => {
+                // Each new document starts from its built-in defaults: bring it to the
+                // shell's live ad-blocking and glance-on-click state.
                 if let Some(view) = self.tabs[index].webview() {
                     let _ = view.evaluate_script(&format!(
-                        "window.__setAdblock&&window.__setAdblock({})",
-                        self.adblock.on()
+                        "window.__setAdblock&&window.__setAdblock({});window.__glanceClicks={};",
+                        self.adblock.on(),
+                        self.config.glance_clicks
                     ));
                 }
                 None
@@ -216,6 +226,12 @@ impl App {
                 self.set_error(format!("{provider}: {reason} (:reload to reopen)"));
                 None
             }
+            UserEvent::EngineWarning(what) => {
+                let provider = self.tabs[index].provider().unwrap_or("engine").to_string();
+                let page = crate::chrome::history_display(&self.tabs[index].url);
+                self.set_warning(format!("{provider}: {what} ({page})"));
+                None
+            }
             UserEvent::Inspect => {
                 self.inspect_tab(index);
                 None
@@ -238,6 +254,9 @@ impl App {
             // These notify the user, but cannot change another tab's document or mode.
             event @ (UserEvent::RedirectBlocked(_)
             | UserEvent::PopupBlocked(_)
+            | UserEvent::DroppedLink(_)
+            | UserEvent::GlanceOpen(_)
+            | UserEvent::GlanceClose
             | UserEvent::Redraw) => Some(event),
             event => active_ui_event(event, index, self.active),
         }

@@ -191,6 +191,11 @@ impl App {
                 _ => {}
             }
         }
+        // In a glance, Esc closes it (back to the page behind).
+        if self.active_is_glance() && matches!(key.logical_key, Key::Escape) {
+            self.close_glance();
+            return;
+        }
         // Terminal copy/vi mode (Shift+Esc): vi motions move a cursor over the live
         // grid, v/V select, y yanks, i/Enter resumes. Unhandled keys (`:`/x/n/p) fall
         // through to the normal browser bindings.
@@ -331,6 +336,10 @@ impl App {
                 // So suppress hints on terminal tabs (the source of the f/F conflict).
                 "f" if !self.active_is_term() => self.enter_hint(HintAct::Follow),
                 "s" => self.enter_hint(HintAct::Scroll),
+                // `q` hints open the picked link in a glance over this page.
+                "q" if !self.active_is_term() => self.enter_hint(HintAct::Glance),
+                // In a glance, `t` keeps it as a tab of its own.
+                "t" if self.active_is_glance() => self.keep_glance(),
                 // Shift+F: hints open the picked link in a NEW tab (like `:open -t`).
                 "F" if !self.active_is_term() => self.enter_hint(HintAct::NewTab),
                 // `y` is a prefix, not an action — the next key says what to yank
@@ -1165,22 +1174,14 @@ impl App {
                             .map(|c| format!("{cmd}{}", &c[prefix.len()..]));
                     }
                 }
-                let rest = rest.trim();
                 // Otherwise, history completion for open-like verbs only.
-                if rest.is_empty()
-                    || !matches!(
-                        verb,
-                        "open" | "o" | "read" | "research" | "rs" | "nojs" | "tabopen" | "t"
-                    )
-                {
+                if !matches!(
+                    verb,
+                    "open" | "o" | "read" | "research" | "rs" | "nojs" | "tabopen" | "t"
+                ) {
                     return None;
                 }
-                let needle = rest.to_ascii_lowercase();
-                let disp = self.visited.urls().map(history_display).find(|d| {
-                    let dl = d.to_ascii_lowercase();
-                    dl.starts_with(&needle) || dl.contains(&format!("/{needle}"))
-                })?;
-                Some(format!("{verb} {disp}"))
+                complete_from_history(cmd, rest, self.visited.urls())
             }
         }
     }
@@ -1487,9 +1488,52 @@ fn digit_index(code: KeyCode) -> Option<usize> {
     })
 }
 
+/// Complete an open-like command line (`cmd`, whose argument part is `rest`) from the
+/// visited `urls`: the address after any `-t`/`-n` flags (`:open -t exam`) is matched
+/// against each URL's display form, and the flags stay in the line as typed.
+fn complete_from_history<'a>(
+    cmd: &str,
+    rest: &str,
+    urls: impl Iterator<Item = &'a str>,
+) -> Option<String> {
+    let (_, _, query) = crate::tabs::parse_open_flags(rest);
+    let query = query.trim_end();
+    if query.is_empty() || !cmd.ends_with(query) {
+        return None;
+    }
+    let typed = &cmd[..cmd.len() - query.len()];
+    let needle = query.to_ascii_lowercase();
+    let disp = urls.map(history_display).find(|d| {
+        let dl = d.to_ascii_lowercase();
+        dl.starts_with(&needle) || dl.contains(&format!("/{needle}"))
+    })?;
+    Some(format!("{typed}{disp}"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::completion_parts;
+    use super::{complete_from_history, completion_parts};
+
+    #[test]
+    fn history_completion_skips_open_flags() {
+        let urls = ["https://example.com/", "https://github.com/kayfgit"];
+        let complete = |cmd: &str| {
+            let rest = cmd.split_once(' ').unwrap().1;
+            complete_from_history(cmd, rest, urls.iter().copied())
+        };
+        assert_eq!(complete("open exam").as_deref(), Some("open example.com"));
+        // `:open -t` (and `-n`, combined) used to search history for "-t exam".
+        assert_eq!(
+            complete("open -t exam").as_deref(),
+            Some("open -t example.com")
+        );
+        assert_eq!(
+            complete("open -tn git").as_deref(),
+            Some("open -tn github.com/kayfgit")
+        );
+        // Only flags so far: nothing to complete yet.
+        assert_eq!(complete("open -t "), None);
+    }
 
     #[test]
     fn completion_parts_splits_verb_args_and_completed_token() {

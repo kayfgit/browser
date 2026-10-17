@@ -1,6 +1,7 @@
 //! The `:` command dispatcher: verb parsing + execution, target resolution
 //! (bangs / queries / URLs), and the `:search` template resolver.
 
+use crate::pages::Level;
 use crate::panes::SplitDir;
 use crate::{parse_open_flags, parse_tab_flag, program_exists, App, ModeKind};
 
@@ -23,6 +24,12 @@ pub(crate) const BUILTIN_VERBS: &[&str] = &[
     "err",
     "errors",
     "errs",
+    "warn",
+    "warns",
+    "warnings",
+    "msg",
+    "msgs",
+    "messages",
     "research",
     "rs",
     "te",
@@ -112,6 +119,10 @@ pub(crate) const BUILTIN_VERBS: &[&str] = &[
     "sidebar",
     "vtabs",
     "hud",
+    "glance",
+    "button",
+    "unbutton",
+    "buttons",
     "thaw",
     "reload",
     "r",
@@ -169,6 +180,10 @@ pub(crate) const COMMANDS: &[&str] = &[
     "ai",
     "error",
     "errors",
+    "warn",
+    "warnings",
+    "messages",
+    "msg",
     "te",
     "term",
     "shell",
@@ -214,6 +229,10 @@ pub(crate) const COMMANDS: &[&str] = &[
     "sidebar",
     "vtabs",
     "hud",
+    "glance",
+    "button",
+    "unbutton",
+    "buttons",
     "fullscreen",
     "move",
     "commands",
@@ -298,10 +317,14 @@ impl App {
                     self.start_read(rest, !new_tab, true);
                 }
             }
-            // Inspect this session's errors in an engine-free, scrollable tab:
-            // `:error` shows the most recent one, `:errors` shows them all.
-            "error" | "err" => self.open_error_page(false),
-            "errors" | "errs" => self.open_error_page(true),
+            // This session's log in an engine-free, scrollable tab. `:err` / `:warn`
+            // show the most recent error / warning, `:errors` / `:warns` all of them,
+            // and `:msg` everything the bar has said: messages, warnings and errors.
+            "error" | "err" => self.open_log_page(Some(Level::Err), false),
+            "errors" | "errs" => self.open_log_page(Some(Level::Err), true),
+            "warn" => self.open_log_page(Some(Level::Warn), false),
+            "warns" | "warnings" => self.open_log_page(Some(Level::Warn), true),
+            "msg" | "msgs" | "messages" => self.open_log_page(None, true),
             // Like :open (URL or → search engine) but lighter: JS on, images kept,
             // heavy media/embeds stripped. For "how do I…" / "best way to…" lookups.
             "research" | "rs" => {
@@ -660,8 +683,40 @@ impl App {
                 let tabs = if side { "side" } else { "top" };
                 self.run_action("theme", serde_json::json!({ "tabs": tabs }));
             }
+            // A link in a floating card over this page (see `glance`); `:glance clicks
+            // on|off` makes plain link clicks open one.
+            "glance" => self.glance_command(rest),
             // Same as `;`: hide/show the tab strip/sidebar and the command bar.
             "hud" => self.toggle_hud(),
+            // Clickable buttons: `:button <label> <command…>` adds or replaces one,
+            // `:unbutton <label>` removes it, `:buttons` lists them, `:buttons off` hides
+            // them all and `:buttons reset` brings back back/forward/reload.
+            "button" => {
+                let (label, command) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                self.run_action(
+                    "button",
+                    serde_json::json!({ "do": "add", "label": label, "command": command.trim() }),
+                );
+            }
+            "unbutton" => self.run_action(
+                "button",
+                serde_json::json!({ "do": "remove", "label": rest }),
+            ),
+            "buttons" => match rest {
+                "off" | "reset" => self.run_action("button", serde_json::json!({ "do": rest })),
+                _ => {
+                    let list: Vec<String> = self
+                        .buttons()
+                        .iter()
+                        .map(|b| format!("{} :{}", b.label, b.run))
+                        .collect();
+                    self.set_status(if list.is_empty() {
+                        "no buttons — :button <label> <command> adds one, :buttons reset the defaults".into()
+                    } else {
+                        format!("buttons: {}", list.join("   "))
+                    });
+                }
+            },
             // `:help` opens the full page; `:help <topic>` jumps straight to that
             // command/action/section (e.g. :help theme, :help caret, :help bangs).
             "commands" | "help" => {

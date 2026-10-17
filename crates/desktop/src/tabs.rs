@@ -790,6 +790,11 @@ impl App {
     }
 
     pub(crate) fn close_active(&mut self) {
+        // `x` in a glance closes the glance, back to the page behind it.
+        if self.active_is_glance() {
+            self.close_glance();
+            return;
+        }
         // The AI tab is a persistent background singleton: `x` HIDES it (switches to a
         // content tab, keeping the conversation alive) rather than destroying it.
         if self.active_is_ai() {
@@ -968,7 +973,7 @@ impl App {
     /// click zones always agree with the pixels.
     pub(crate) fn tab_at_pixel(&self, px: f64) -> Option<usize> {
         let labels = self.tab_labels();
-        let limit = self.inner().0 as usize;
+        let limit = self.tab_strip_w() as usize;
         let px = px.max(0.0) as usize;
         for (pos, cell) in crate::chrome::tab_cells(&self.painter, limit, &labels)
             .iter()
@@ -981,6 +986,67 @@ impl App {
         None
     }
 
+    /// Where the clickable buttons are painted: at the right end of the top tab strip,
+    /// or in a row at the top of the sidebar. None while the chrome is hidden or no
+    /// tab is open (there's no strip to put them on).
+    pub(crate) fn button_cells(&self) -> Vec<crate::chrome::ButtonCell> {
+        let labels: Vec<String> = self.buttons().into_iter().map(|b| b.label).collect();
+        if labels.is_empty() {
+            return Vec::new();
+        }
+        let p = &self.painter;
+        if self.sidebar_w() > 0 {
+            let lh = p.line_height();
+            return crate::chrome::button_row(p, &labels, 6, lh / 3, crate::chrome::side_row_h(p));
+        }
+        let h = self.tab_bar_h() as usize;
+        if h == 0 {
+            return Vec::new();
+        }
+        let x =
+            (self.inner().0 as usize).saturating_sub(crate::chrome::button_row_w(p, &labels) + 6);
+        crate::chrome::button_row(p, &labels, x, 0, h)
+    }
+
+    /// The width the top strip's tabs may use: the window, less the buttons.
+    pub(crate) fn tab_strip_w(&self) -> u32 {
+        let w = self.inner().0;
+        if self.sidebar_w() > 0 {
+            return w;
+        }
+        match self.button_cells().first() {
+            Some(first) => (first.x as u32).saturating_sub(4),
+            None => w,
+        }
+    }
+
+    /// The y where the sidebar's tab rows start: below the button row, if any.
+    pub(crate) fn sidebar_rows_top(&self) -> usize {
+        let lh = self.painter.line_height();
+        if self.buttons().is_empty() {
+            lh / 3
+        } else {
+            lh / 3 + crate::chrome::side_row_h(&self.painter) + lh / 3
+        }
+    }
+
+    /// The button under window pixel `(x, y)`, if any.
+    pub(crate) fn button_at(&self, x: f64, y: f64) -> Option<usize> {
+        let (x, y) = (x.max(0.0) as usize, y.max(0.0) as usize);
+        self.button_cells()
+            .iter()
+            .position(|c| x >= c.x && x < c.x + c.w && y >= c.y && y < c.y + c.h)
+    }
+
+    /// Click button `i`: run its command, as if typed after `:`.
+    pub(crate) fn press_button(&mut self, i: usize) {
+        if let Some(button) = self.buttons().get(i) {
+            let run = button.run.clone();
+            self.run_command(&run);
+            self.window.request_redraw();
+        }
+    }
+
     /// Map a y pixel in the vertical tab sidebar to a zero-based tab-strip window
     /// position, laid out by the same [`side_rows`](crate::chrome::side_rows) that
     /// paints it.
@@ -988,9 +1054,15 @@ impl App {
         let labels = self.tab_labels();
         let bottom = self.inner().1.saturating_sub(self.bar_h()) as usize;
         let py = py.max(0.0) as usize;
-        crate::chrome::side_rows(&self.painter, self.sidebar_w() as usize, bottom, &labels)
-            .iter()
-            .position(|r| py >= r.y && py < r.y + r.h)
+        crate::chrome::side_rows(
+            &self.painter,
+            self.sidebar_w() as usize,
+            self.sidebar_rows_top(),
+            bottom,
+            &labels,
+        )
+        .iter()
+        .position(|r| py >= r.y && py < r.y + r.h)
     }
 
     /// Move the active window one slot left (-1) or right (+1) in the tab strip.

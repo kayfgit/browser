@@ -494,6 +494,11 @@ fn views() -> Vec<Rc<State>> {
     })
 }
 
+/// The IDs of Servo's live content processes (its pages run in them), for `:res`.
+pub(crate) fn content_pids() -> Vec<u32> {
+    watchdog::content_pids()
+}
+
 pub(crate) fn runtime_view_count() -> Option<usize> {
     RUNTIME.with(|slot| slot.borrow().as_ref().map(|_| views().len()))
 }
