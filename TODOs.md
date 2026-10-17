@@ -22,32 +22,27 @@ STUFF TO KEEP IN MIND:
 - I REALLY CARE ABOUT MALLEABILITY, users should be able to do absolutely anything they want with it
 
 general:
-[*] - ship every engine with the browser by default: the installer has all engines checked and users can uncheck the ones they dont want. package each engine separately so updates only redownload the browser (~20mb) unless an engine changed, and allow adding/removing engines later (something like :engine install gecko / :engine remove servo)
+[*] - ship only webview2 by default: the installer has all engines unchecked and users can check the ones they want, or install/remove later with :engine install <engine> and :engine remove <engine>
 
 issues:
 [?/] - random not responding after exiting cs2 (might have to do with constant changes to resolution)
 [?] - sometimes crashes after taking a windows screenshot (prntscreen button)
-[?] - saving a session with :w sometimes doesnt work, no idea why
 [/?] - random not responding after new update 26/07/2026 22:54
 [*] - add a way for users to freely install extensions
-[] - after running ":ai open github and wikipedia side by side please" it opened github.com on the left, splitted vertically but didnt open wikipedia, and then gave me: "! groq 429: Rate limit reached for model `openai/gpt-oss-120b` in organization `org_01kva1e35pet7tkmy9tte02502` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Used 5616, Requested 5181. Please try again in 20.9775s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing"
 [?] - random not responding 08/10/2026 i forgot the time
-[*] - for some reason the hint mode cant reach reddit's search bar, neither does the insert mode
+[] - inline history shows up on :open, but not :open -t
 
 feats:
-[*] - make ";" toggle browser hud visibility
-[/] - add vertical sidebar like zen browser
-[*] - make it so every browser related warning/error is shown in :error/:errors (like if an engine crashes/errors, extension stops working, everything)
+[*] - make every browser related warning/error/message show in :warn/:err/:msg (like if an engine crashes/errors, extension stops working, everything)
 [] - allow dragging links into the browser that opens in a new tab on the default engine
-[] - while in :resize or :move, allow holding shift + hjkl for small adjustments, and ctrl + hjkl for large adjustments
+[] - some buttons for back/forward history and reload on the top bar (also vertical bar), to make it usable with the mouse aswell (even though the focus is keyboard only). should be completely customizable
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
 [~*] - maybe add a :engine command to change browser engine? might be overkill and dont know if its possible
 [/] - ctrl+: enters command bar in vim mode, allows vim motions on the command bar itself.
-[] - maybe change the :read command into a :html toggle like :js and :css? if you think about it, removing html is basically removing the dom parsing and rendering only text, which is exactly what :read does
+[] - maybe change the :read command into :html with a toggle like :js and :css? if you think about it, removing html is basically removing the dom parsing and rendering only text, which is exactly what :read does
 [] - maybe add the zen browser glance feature, where i can preview a link in a floating window
 [] - maybe add webkit as a third engine, so web devs on windows/linux can check their sites against apple's engine without a mac. use playwright's prebuilt windows webkit build (downloaded only on :engine install webkit) instead of building it ourselves. its webkit, not safari: no apple fonts, some codecs missing, no ios touch/viewport stuff, so it catches most "broken in safari" bugs but not all. first do a quick spike to check it can draw inside our panes
 [] - maybe add gecko (firefox) as an engine too. mozilla has no desktop embedding api (geckoview is android only), so it'd run as a separate firefox process (playwright ships a patched windows firefox) driven remotely with its window put inside our pane. that's the same plumbing webkit needs, so build that external-engine host once and use it for both
-[x] - maybe add trident (ie11's engine, mshtml) as an engine. it's built into every windows install (no download), embeds with the old webbrowser control into a child window like our panes, and microsoft supports it until at least 2029. useful for people stuck maintaining old enterprise/government/bank intranet sites. testing only, not for browsing (old security). cheapest engine to add, maybe i can do this one myself
 [] - maybe add ladybird once it runs on windows. its a fully independent engine written from scratch off the specs, good at finding pages that lean on quirks instead of standards. its 2026 alpha is linux/macos only, windows is just a teaser for now
