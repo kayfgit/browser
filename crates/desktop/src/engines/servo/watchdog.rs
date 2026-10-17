@@ -13,7 +13,8 @@
 //! with it instead of lingering. Nothing else is put in that job.
 use super::{post, Event};
 use crate::UserEvent;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::Mutex;
 use tao::event_loop::EventLoopProxy;
 use windows::Win32::{
     Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
@@ -38,6 +39,18 @@ use windows::Win32::{
 const JOB_OBJECT_MSG_NEW_PROCESS: u32 = 6;
 const JOB_OBJECT_MSG_EXIT_PROCESS: u32 = 7;
 const JOB_OBJECT_MSG_ABNORMAL_EXIT_PROCESS: u32 = 8;
+
+/// The live content processes' IDs, kept by the watch thread for `:res` (which
+/// labels them "(servo)").
+static CONTENT_PIDS: Mutex<BTreeSet<u32>> = Mutex::new(BTreeSet::new());
+
+/// The IDs of Servo's live content processes.
+pub(super) fn content_pids() -> Vec<u32> {
+    CONTENT_PIDS
+        .lock()
+        .map(|pids| pids.iter().copied().collect())
+        .unwrap_or_default()
+}
 
 /// Start watching. Call once, before Servo can spawn a content process.
 pub(super) fn start(proxy: EventLoopProxy<UserEvent>) -> Result<(), String> {
@@ -143,12 +156,18 @@ fn watch(
                         }
                     }
                     content.insert(pid, process);
+                    if let Ok(mut pids) = CONTENT_PIDS.lock() {
+                        pids.insert(pid);
+                    }
                 }
             }
             JOB_OBJECT_MSG_EXIT_PROCESS | JOB_OBJECT_MSG_ABNORMAL_EXIT_PROCESS => {
                 let Some(process) = content.remove(&pid) else {
                     continue;
                 };
+                if let Ok(mut pids) = CONTENT_PIDS.lock() {
+                    pids.remove(&pid);
+                }
                 let mut code = 0u32;
                 let read = unsafe { GetExitCodeProcess(process, &mut code) }.is_ok();
                 unsafe {

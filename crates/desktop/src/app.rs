@@ -14,7 +14,7 @@ use tao::window::Window;
 use crate::draw::Painter;
 use crate::find::FindState;
 use crate::hints::NativeHint;
-use crate::pages::{now_hms, ErrorEntry, ERROR_LOG_CAP};
+use crate::pages::{now_hms, Level, LogEntry, LOG_CAP};
 use crate::panes::{PaneNode, PaneRect};
 use crate::status::Tone;
 use crate::tabs::{NativeRead, Tab};
@@ -136,6 +136,9 @@ pub(crate) enum UserEvent {
     /// that keeps the URL; `:reload` builds a fresh view. Only Servo reports it so far.
     #[cfg_attr(not(all(windows, feature = "servo-engine")), allow(dead_code))]
     EngineCrashed(String),
+    /// The view's engine hit a problem it recovers from by itself (a GPU or helper
+    /// process restarted, the page stopped responding): logged for `:warn`.
+    EngineWarning(String),
     /// The page's right-click menu asked for its developer tools.
     Inspect,
     /// The page's right-click menu asked to view its source.
@@ -181,6 +184,14 @@ pub(crate) enum UserEvent {
     /// not an ad domain). New tabs here are shell-managed rather than OS popups, so the
     /// native window is suppressed and the URL re-opened as a managed tab. Carries the URL.
     OpenPopupTab(String),
+    /// Open this address in a glance over the focused page (a `q` hint, the
+    /// right-click menu, or a plain click with `:glance clicks on`).
+    GlanceOpen(String),
+    /// A click on the dimmed page behind the glance: close it.
+    GlanceClose,
+    /// A link was dragged into the browser (onto a page that didn't take it, or onto
+    /// the shell's own areas): open it in a new tab on the default engine.
+    DroppedLink(String),
     /// A page opened a pop-up that must stay tied to it (a sized sign-in window, or a
     /// blank one its script fills in): the engine built it as a view and queued it —
     /// give it a pane beside its opener. See [`crate::engines::take_popups`].
@@ -384,10 +395,10 @@ pub(crate) struct App {
     /// AI tab returns there (rather than to a stray blank pane). `None` = the welcome
     /// screen. See [`hide_ai_tab`](Self::hide_ai_tab).
     pub(crate) ai_prev_active: Option<usize>,
-    /// Session error log: every failure (message + the command that triggered it +
-    /// a wall-clock timestamp), newest last. Inspected with `:error` (latest) and
-    /// `:errors` (all), capped to avoid unbounded growth.
-    pub(crate) errors: Vec<ErrorEntry>,
+    /// Session log: every status message, warning and error (text + level + the
+    /// command that triggered it + a wall-clock timestamp), newest last. Read with
+    /// `:msg` (everything), `:warn` and `:err`; capped to avoid unbounded growth.
+    pub(crate) log: Vec<LogEntry>,
     /// The command line currently executing (`:open foo`), so a failure it raises
     /// can be attributed to it in the error log. `None` outside `run_command`.
     pub(crate) current_command: Option<String>,
@@ -470,6 +481,11 @@ pub(crate) struct App {
     /// True while the pointer hovers the command/status bar. In Normal mode the bar
     /// shows the URL shortened to its host; hovering reveals the full address.
     pub(crate) bar_hover: bool,
+    /// The clickable button under the pointer (`:button`), highlighted.
+    pub(crate) button_hover: Option<usize>,
+    /// The open glance, if any: a link floating over the page it came from
+    /// (see [`crate::glance`]).
+    pub(crate) glance: Option<crate::glance::Glance>,
     /// The href of the link the page pointer is currently hovering, reported live by
     /// the page bridge. Shown right-aligned in the Normal-mode command bar (like a
     /// browser status bar); `None` when the pointer isn't over a link.
@@ -1243,21 +1259,60 @@ impl App {
 
     // --- commands -------------------------------------------------------------
 
-    /// Set an informational status message (rendered dim). Like every status, it
-    /// clears itself after [`STATUS_TIMEOUT`](crate::status::STATUS_TIMEOUT).
+    /// Set an informational status message (rendered dim) and log it for `:msg`.
+    /// Like every status, it clears itself after
+    /// [`STATUS_TIMEOUT`](crate::status::STATUS_TIMEOUT).
     pub(crate) fn set_status(&mut self, msg: impl Into<String>) {
-        self.status.show(msg.into(), Tone::Info, Instant::now());
+        let msg = msg.into();
+        self.record(Level::Msg, &msg);
+        self.status.show(msg, Tone::Info, Instant::now());
     }
 
     /// Show a status message made of coloured pieces (a rendered `:ai` answer).
     pub(crate) fn flash_status_segments(&mut self, segments: Vec<(String, crate::draw::Rgb)>) {
+        let text: String = segments.iter().map(|(t, _)| t.as_str()).collect();
+        self.record(Level::Msg, &text);
         self.status.show_segments(segments, Instant::now());
     }
 
-    /// Show a warning (red) that isn't logged to `:errors`. Used for a background
-    /// `:ai` failure whose detail already lives in the chat.
-    pub(crate) fn warn_status(&mut self, msg: impl Into<String>) {
+    /// Show a warning (amber) and log it for `:warn`: something went wrong around
+    /// you without failing outright — a blocked pop-up, an engine helper restarting.
+    pub(crate) fn set_warning(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        self.record(Level::Warn, &msg);
+        self.status.show(msg, Tone::Warn, Instant::now());
+    }
+
+    /// Show `msg` in red WITHOUT logging it — for a short pointer to a failure whose
+    /// detail the caller logs itself (a background `:ai` error: the bar says "see the
+    /// :ai tab", `:err` gets the actual error).
+    pub(crate) fn alert_status(&mut self, msg: impl Into<String>) {
         self.status.show(msg.into(), Tone::Error, Instant::now());
+    }
+
+    /// Add a message to the session log (`:msg`, and `:warn` / `:err` by level)
+    /// without showing it. The same message repeated back to back is logged once.
+    pub(crate) fn record(&mut self, level: Level, msg: &str) {
+        if msg.trim().is_empty() {
+            return;
+        }
+        if self
+            .log
+            .last()
+            .is_some_and(|e| e.level == level && e.message == msg)
+        {
+            return;
+        }
+        self.log.push(LogEntry {
+            time: now_hms(),
+            command: self.current_command.clone(),
+            level,
+            message: msg.to_string(),
+        });
+        if self.log.len() > LOG_CAP {
+            let overflow = self.log.len() - LOG_CAP;
+            self.log.drain(0..overflow);
+        }
     }
 
     /// Clear a transient status flash once its deadline has passed. Called on the
@@ -1285,19 +1340,10 @@ impl App {
         self.status.clear();
     }
 
-    /// Record a failure: show it in the status bar (red) and append it to the
-    /// session error log for `:error`/`:errors`.
+    /// Record a failure: show it in the status bar (red) and log it for `:err`.
     pub(crate) fn set_error(&mut self, msg: impl Into<String>) {
         let msg = msg.into();
-        self.errors.push(ErrorEntry {
-            time: now_hms(),
-            command: self.current_command.clone(),
-            message: msg.clone(),
-        });
-        if self.errors.len() > ERROR_LOG_CAP {
-            let overflow = self.errors.len() - ERROR_LOG_CAP;
-            self.errors.drain(0..overflow);
-        }
+        self.record(Level::Err, &msg);
         self.status.show(msg, Tone::Error, Instant::now());
     }
 
@@ -1412,8 +1458,10 @@ impl App {
         // layout in saved-index terms so it survives the restore's re-indexing.
         let mut live_to_saved = vec![None; self.tabs.len()];
         for (i, tab) in self.tabs.iter().enumerate() {
-            // Internal pages are session-specific; private tabs must leave no trace.
-            if tab.url.starts_with("browser://")
+            // Internal pages are session-specific; private tabs must leave no trace,
+            // and a glance is a passing look, not a tab.
+            if Some(i) == self.glance_index()
+                || tab.url.starts_with("browser://")
                 || (tab.vim().is_some() && tab.unavailable().is_none())
                 || tab.private
             {

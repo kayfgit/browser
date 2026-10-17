@@ -57,10 +57,17 @@ function page() {
     pushState() {}
     replaceState() {}
   }
+  const windowListeners = new Map();
   const window = {
     __post(message) { messages.push(message); },
-    addEventListener() {},
+    addEventListener(type, fn) {
+      if (!windowListeners.has(type)) windowListeners.set(type, []);
+      windowListeners.get(type).push(fn);
+    },
     PointerEvent: MouseEvent,
+  };
+  const fireWindow = (event) => {
+    for (const listener of windowListeners.get(event.type) || []) listener(event);
   };
   const context = vm.createContext({
     window, document, MouseEvent, History,
@@ -70,7 +77,7 @@ function page() {
     setTimeout(fn) { timers.push(fn); },
   });
   vm.runInContext(script('BRIDGE_JS'), context);
-  return { context, window, document, button, messages, clicks, timers, appended };
+  return { context, window, document, button, messages, clicks, timers, appended, fireWindow };
 }
 
 test('hinted button still clicks without selecting the pane under the mouse', () => {
@@ -311,4 +318,85 @@ test('Insert survives focus moving into a field inside a shadow root', () => {
   p.button.dispatchEvent({ type: 'focusout' });
   p.timers.splice(0).forEach((fn) => fn());
   assert.deepEqual(p.messages, []);
+});
+
+// A link dragged onto the page opens in a new tab, unless the page takes it itself.
+function linkDrop(p, { types = ['text/uri-list', 'text/plain'], data = 'https://example.com/x', target, taken = false } = {}) {
+  let prevented = taken;
+  const event = (type) => ({
+    type,
+    get defaultPrevented() { return prevented; },
+    preventDefault() { prevented = true; },
+    target: target || p.button,
+    composedPath: () => [target || p.button],
+    dataTransfer: { types, getData: (t) => (t === 'text/uri-list' ? data : ''), dropEffect: 'none' },
+  });
+  const over = event('dragover');
+  p.fireWindow(over);
+  const overAccepted = prevented;
+  prevented = taken;
+  const drop = event('drop');
+  p.fireWindow(drop);
+  return { overAccepted, dropPrevented: prevented };
+}
+
+test('a link dropped on the page opens in a new tab instead of replacing it', () => {
+  const p = page();
+  const r = linkDrop(p, { data: ['# a comment', 'https://example.com/x'].join('\r\n') });
+  assert.equal(r.overAccepted, true, 'dragover must be cancelled or no drop event fires');
+  assert.equal(r.dropPrevented, true, 'the page must not navigate to the link');
+  assert.deepEqual(p.messages, ['drop-link:https://example.com/x']);
+});
+
+test('a drop the page takes, a file, or a drop into a text field is left alone', () => {
+  const taken = page();
+  linkDrop(taken, { taken: true });
+  const file = page();
+  linkDrop(file, { types: ['Files', 'text/uri-list'] });
+  const field = page();
+  const input = { tagName: 'INPUT', getAttribute: () => 'text' };
+  linkDrop(field, { target: input });
+  for (const p of [taken, file, field]) assert.deepEqual(p.messages, []);
+});
+
+// Glance: `q` hints label links only and hand the picked link to the shell.
+test('glance hints label only links and open the pick in a glance', () => {
+  const link = element('A', { left: 10, top: 10, width: 100, height: 20 },
+    { href: 'https://example.com/a', closest(sel) { return sel === 'a[href]' ? this : null; } });
+  const button = element('BUTTON', { left: 10, top: 50, width: 100, height: 20 });
+  const p = hitPage({ clickables: [link], stack: [link, button] });
+  // hitPage answers every selector with `clickables`; in glance mode that's `a[href]`.
+  p.window.__hintInput('a', 'glance');
+  assert.deepEqual(p.messages, ['hint-glance:https://example.com/a']);
+});
+
+// Glance-on-click: a plain click on a link opens a glance only when it's switched on.
+function linkClick(p, { on = true, inGlance = false, mods = {}, href = 'https://example.com/x' } = {}) {
+  p.window.__glanceClicks = on;
+  p.window.__glanceInGlance = inGlance;
+  const a = { tagName: 'A', href, hasAttribute: () => false,
+    closest(sel) { return sel.startsWith('a[href]') || sel.includes('a[href]') ? this : null; },
+    getAttribute: () => null };
+  let prevented = false;
+  p.button.dispatchEvent({
+    type: 'click', isTrusted: true, button: 0, ...mods,
+    get defaultPrevented() { return prevented; },
+    preventDefault() { prevented = true; }, stopImmediatePropagation() {},
+    composedPath: () => [a],
+  });
+  return prevented;
+}
+
+test('with glance clicks on, a plain link click opens a glance instead of navigating', () => {
+  const p = page();
+  assert.equal(linkClick(p), true);
+  assert.ok(p.messages.includes('glance-open:https://example.com/x'));
+});
+
+test('glance clicks leave off, modifier clicks and clicks inside a glance alone', () => {
+  for (const opts of [{ on: false }, { inGlance: true }, { mods: { ctrlKey: true } }]) {
+    const p = page();
+    assert.equal(linkClick(p, opts), false, JSON.stringify(opts));
+    assert.ok(!p.messages.some((m) => m.startsWith('glance-open:')), JSON.stringify(opts));
+  }
 });

@@ -463,7 +463,11 @@ impl App {
                 }
             }
             Err(error) if manual => self.set_error(format!("update check failed: {error}")),
-            Err(_) => {}
+            // A background check you didn't ask for: log it, don't flash the bar.
+            Err(error) => self.record(
+                crate::pages::Level::Warn,
+                &format!("background update check failed: {error}"),
+            ),
         }
         self.window.request_redraw();
     }
@@ -532,6 +536,11 @@ impl App {
             Err(error) => {
                 if now {
                     self.set_error(format!("update failed: {error}"));
+                } else {
+                    self.record(
+                        crate::pages::Level::Warn,
+                        &format!("downloading the update in the background failed: {error}"),
+                    );
                 }
                 return;
             }

@@ -26,6 +26,8 @@ pub const AI: Rgb = (0xc6, 0x9c, 0xf6);
 pub const PRIVATE: Rgb = (0x9d, 0x7c, 0xd8);
 /// Error/failure messages in the status bar.
 pub const ERR: Rgb = (0xe0, 0x6c, 0x6c);
+/// Warnings (`:warn`, a blocked pop-up on the bar): amber.
+pub const WARN: Rgb = (0xe0, 0xb0, 0x5c);
 /// Command-bar text-selection highlight.
 pub const SEL: Rgb = (0x2d, 0x4f, 0x7a);
 /// Read-mode caret: the row the cursor is on (vim's `cursorline` — a touch

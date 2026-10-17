@@ -76,6 +76,15 @@ pub(crate) struct Config {
     /// Where downloads are saved (`:downloads dir`); unset is the Windows Downloads folder.
     #[serde(default)]
     pub(crate) download_dir: Option<PathBuf>,
+    /// Plain link clicks open in a glance instead of following the link
+    /// (`:glance clicks on`), like Zen browser. Off: only `q` hints and the
+    /// right-click menu open one.
+    #[serde(default)]
+    pub(crate) glance_clicks: bool,
+    /// The clickable buttons on the tab strip / sidebar (`:button`), in order. Unset
+    /// is [`default_buttons`]; an empty list hides them (`:buttons off`).
+    #[serde(default)]
+    pub(crate) buttons: Option<Vec<Button>>,
 }
 
 /// Appearance overrides for the shell chrome — the command/status bar height and the
@@ -105,6 +114,25 @@ pub(crate) struct ThemeConfig {
     /// unset (or `"top"`) keeps the strip along the top.
     #[serde(default)]
     pub(crate) tabs: Option<String>,
+}
+
+/// One clickable button on the tab strip or sidebar: its `label` and the command line
+/// it runs (`run`, without the leading `:`) — anything the command bar takes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Button {
+    pub(crate) label: String,
+    pub(crate) run: String,
+}
+
+/// The buttons a fresh config shows: back, forward and reload.
+pub(crate) fn default_buttons() -> Vec<Button> {
+    [("←", "back"), ("→", "forward"), ("↻", "reload")]
+        .into_iter()
+        .map(|(label, run)| Button {
+            label: label.into(),
+            run: run.into(),
+        })
+        .collect()
 }
 
 /// Appearance overrides for `:te` terminal tabs. Like [`ThemeConfig`], every field is

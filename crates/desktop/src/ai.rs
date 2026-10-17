@@ -1447,10 +1447,14 @@ impl App {
             }
             ai.follow = true;
         }
+        // A failed turn goes in `:err` whether or not the chat is on screen.
+        if let Some(m) = msg.as_ref().filter(|m| m.role == AiRole::Err) {
+            self.record(crate::pages::Level::Err, &format!("ai: {}", m.text));
+        }
         if !watching {
             match msg {
                 Some(m) if m.role == AiRole::Err => {
-                    self.warn_status("the ai hit an error — see the :ai tab")
+                    self.alert_status("the ai hit an error — see the :ai tab (or :err)")
                 }
                 // The answer is markdown, like in the :ai tab: render it (one line).
                 Some(m) if m.role == AiRole::Ai => {

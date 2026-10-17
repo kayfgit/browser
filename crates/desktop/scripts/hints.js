@@ -15,8 +15,11 @@
   // Copy mode (`yf`) has nothing to say about buttons and text fields, so it labels
   // real links only — far fewer badges, hence shorter labels to type.
   var copyMode = window.__hintMode === 'copy';
+  // Glance mode (`q`) opens the link in a glance: links only, like copy mode.
+  var glanceMode = window.__hintMode === 'glance';
+  var linksOnly = copyMode || glanceMode;
   var scrollMode = window.__hintMode === 'scroll';
-  var sel = copyMode ? "a[href]"
+  var sel = linksOnly ? "a[href]"
           : "a[href], button, input:not([type=hidden]):not([disabled]), textarea, " +
             "select, [onclick], [role='button'], [role='link'], [tabindex]:not([tabindex='-1'])";
   function onScreen(el) {
@@ -38,8 +41,8 @@
   }
   var els = scrollMode ? window.__scrollCandidates() : deepQuery(document, sel, []).filter(function (el) {
     if (!onScreen(el)) return false;
-    // A `javascript:` link has no address worth copying.
-    return !copyMode || (el.href && !/^javascript:/i.test(el.href));
+    // A `javascript:` link has no address worth copying or glancing at.
+    return !linksOnly || (el.href && !/^javascript:/i.test(el.href));
   });
   // Captcha checkboxes live in a cross-origin frame (and Cloudflare's behind a closed
   // shadow root), out of reach of the query above. Label the widget itself and aim
@@ -47,7 +50,7 @@
   // Only checkbox-sized widgets: an image-grid challenge can't be solved by one click,
   // and the invisible reCAPTCHA badge does nothing when clicked.
   var points = new Map();
-  if (!copyMode && !scrollMode) {
+  if (!linksOnly && !scrollMode) {
     var captcha = /recaptcha|hcaptcha|turnstile|challenges\.cloudflare\.com|captcha/i;
     var widgets = Array.prototype.slice.call(document.querySelectorAll('iframe')).filter(function (f) {
       var src = f.src || '';
@@ -93,7 +96,8 @@
     // New-tab mode (`F`) shows labels uppercase as a cue; matching stays lowercase.
     b.textContent = window.__hintMode === 'newtab' ? labels[i].toUpperCase() : labels[i];
     b.style.cssText = 'position:fixed;left:' + Math.max(0, r.left) + 'px;top:' + Math.max(0, r.top) +
-      'px;z-index:2147483647;background:' + (copyMode || scrollMode ? '#00e5ff' : '#ffd400') +
+      'px;z-index:2147483647;background:' +
+      (glanceMode ? '#c69cf6' : copyMode || scrollMode ? '#00e5ff' : '#ffd400') +
       ';color:#000;font:bold 11px monospace;padding:0 3px;' +
       'border:1px solid #000;border-radius:3px;line-height:14px;pointer-events:none;';
     box.appendChild(b);
@@ -242,7 +246,7 @@
         window.__scrollSelect(el);
         return;
       }
-      var edit = mode !== 'copy' && editable(el);
+      var edit = mode !== 'copy' && mode !== 'glance' && editable(el);
       // For new-tab and copy modes, resolve the link href before clearing badges.
       var a = !edit && el.closest ? el.closest('a[href]') : (el.tagName === 'A' ? el : null);
       var href = (a && a.href && !/^javascript:/i.test(a.href)) ? a.href : null;
@@ -252,6 +256,9 @@
         // field (not the document body) ends up focused; then enter passthrough.
         window.__hintTarget = el;
         window.__post('hint-edit');
+      } else if (mode === 'glance') {
+        // Glance mode only labels links; open the picked one in a glance.
+        window.__post(href ? 'hint-glance:' + href : 'hint-exit');
       } else if (mode === 'copy') {
         // Copy mode only ever labels links, so `href` is set — but if a page mutated
         // the element out from under us, leave the clipboard alone and just exit.

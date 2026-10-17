@@ -20,6 +20,8 @@ pub(crate) enum HintAct {
     Copy,
     /// `s` — select an overflowing container for keyboard scrolling.
     Scroll,
+    /// `q` — open the link in a glance over this page. Only links are labelled.
+    Glance,
 }
 
 impl HintAct {
@@ -31,6 +33,8 @@ impl HintAct {
     pub(crate) fn badge_rgb(self) -> crate::draw::Rgb {
         if self == HintAct::Copy {
             (0x00, 0xe5, 0xff)
+        } else if self == HintAct::Glance {
+            crate::draw::AI
         } else {
             (0xff, 0xd4, 0x00)
         }
@@ -42,6 +46,7 @@ impl HintAct {
             HintAct::NewTab => "newtab",
             HintAct::Copy => "copy",
             HintAct::Scroll => "scroll",
+            HintAct::Glance => "glance",
         }
     }
 }
@@ -171,7 +176,10 @@ impl App {
                     // even if hint mode was entered with plain `f`. Copy and scroll
                     // modes are deliberate choices, so Shift doesn't hijack them.
                     if c.chars().any(|ch| ch.is_ascii_uppercase())
-                        && !matches!(self.hint_act, HintAct::Copy | HintAct::Scroll)
+                        && !matches!(
+                            self.hint_act,
+                            HintAct::Copy | HintAct::Scroll | HintAct::Glance
+                        )
                     {
                         self.hint_act = HintAct::NewTab;
                     }
@@ -192,7 +200,12 @@ impl App {
     /// actual open then follows whatever Shift state is held when a label completes.
     /// Copy (`yf`) and scroll (`s`) opt out so Shift cannot turn them into navigation.
     pub(crate) fn on_modifiers_changed(&mut self) {
-        if self.mode != ModeKind::Hint || matches!(self.hint_act, HintAct::Copy | HintAct::Scroll) {
+        if self.mode != ModeKind::Hint
+            || matches!(
+                self.hint_act,
+                HintAct::Copy | HintAct::Scroll | HintAct::Glance
+            )
+        {
             return;
         }
         let shift = self.modifiers.shift_key();
@@ -245,6 +258,7 @@ impl App {
                 // New-tab mode opens a fresh read tab; otherwise follow in place.
                 HintAct::NewTab => self.start_read(&url, false, true),
                 HintAct::Follow => self.start_read(&url, true, true),
+                HintAct::Glance => self.open_glance(&url),
                 HintAct::Scroll => {}
             }
             return;

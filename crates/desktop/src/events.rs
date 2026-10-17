@@ -38,6 +38,8 @@ pub(crate) fn handle(app: &mut App, event: Event<'_, UserEvent>, control_flow: &
         }
         _ => {}
     }
+    // A glance lives only while it has focus; close it once this event is done.
+    app.settle_glance();
     // Publish the key mode, so keys pressed in a focused page are routed for the
     // shell's current state (see `shellkeys`).
     #[cfg(all(windows, feature = "servo-engine"))]
@@ -128,6 +130,12 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             // Hovering the command bar reveals the full (vs. shortened) URL.
             let (_, h) = app.inner();
             let over_bar = app.bar_h() > 0 && position.y >= (h as f64 - app.bar_h() as f64);
+            // Highlight the button under the pointer.
+            let over_button = app.button_at(position.x, position.y);
+            if over_button != app.button_hover {
+                app.button_hover = over_button;
+                app.window.request_redraw();
+            }
             if over_bar != app.bar_hover {
                 app.bar_hover = over_bar;
                 if app.mode == ModeKind::Normal {
@@ -147,6 +155,9 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             // HWND) isn't a release, and shouldn't clobber the clipboard. What
             // was selected stays highlighted and yankable.
             app.term_drag = None;
+            if app.button_hover.take().is_some() {
+                app.window.request_redraw();
+            }
             if app.bar_hover {
                 app.bar_hover = false;
                 if app.mode == ModeKind::Normal {
@@ -184,6 +195,9 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             if app.bar_h() > 0 && app.cursor_pos.1 >= bar_top {
                 // Click the command/status bar: edit the URL or place the caret.
                 app.bar_click(app.cursor_pos.0);
+            } else if let Some(i) = app.button_at(app.cursor_pos.0, app.cursor_pos.1) {
+                // A clickable button (back / forward / reload, or the user's own).
+                app.press_button(i);
             } else if app.sidebar_w() > 0 && app.cursor_pos.0 < app.sidebar_w() as f64 {
                 // The vertical tab sidebar: a row switches to that tab, the empty
                 // space below the tabs moves the (borderless) window.
@@ -247,6 +261,7 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
         // Only a page sends these, and `route_engine_event` handles them for that page.
         UserEvent::HintClick(..)
         | UserEvent::EngineCrashed(_)
+        | UserEvent::EngineWarning(_)
         | UserEvent::Inspect
         | UserEvent::ViewSource => {}
         UserEvent::UpdateChecked { release, manual } => app.on_update_checked(release, manual),
@@ -466,17 +481,28 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
             // Show the destination we refused, truncated so a long tracking URL
             // doesn't blow out the status bar.
             let short: String = url.chars().take(80).collect();
-            app.set_status(format!("blocked redirect → {short}"));
+            app.set_warning(format!("blocked redirect → {short}"));
             app.window.request_redraw();
         }
         UserEvent::PopupBlocked(url) => {
             let short: String = url.chars().take(80).collect();
-            app.set_status(format!("blocked pop-up → {short}  (:ads off to allow)"));
+            app.set_warning(format!("blocked pop-up → {short}  (:ads off to allow)"));
             app.window.request_redraw();
         }
         UserEvent::PopupPane => app.adopt_popups(),
         // Only meaningful from its pop-up's view, which `route_engine_event` handles.
         UserEvent::PopupClosed => {}
+        UserEvent::DroppedLink(url) => app.open_tab(&url, app.nojs, true),
+        UserEvent::GlanceOpen(url) => {
+            // From a `q` hint, the page already cleared its badges.
+            if app.mode == ModeKind::Hint {
+                app.hint_input.clear();
+                app.hint_act = HintAct::Follow;
+                app.mode = ModeKind::Normal;
+            }
+            app.open_glance(&url);
+        }
+        UserEvent::GlanceClose => app.close_glance(),
         UserEvent::OpenPopupTab(url) => {
             // A real new-tab click the popup guard cleared: re-open it as a managed
             // tab (new tabs here live in our tab strip, not as OS popups).

@@ -701,6 +701,12 @@ impl App {
         let bar_h = self.bar_h() as usize;
         let tab_h = self.tab_bar_h() as usize;
         let side_w = self.sidebar_w() as usize;
+        // The clickable buttons, and what's left of the strip / sidebar for the tabs.
+        let buttons = self.button_cells();
+        let button_labels: Vec<String> = self.buttons().into_iter().map(|b| b.label).collect();
+        let button_hover = self.button_at(self.cursor_pos.0, self.cursor_pos.1);
+        let strip_w = self.tab_strip_w() as usize;
+        let rows_top = self.sidebar_rows_top();
         // Minimized / degenerate size: skip the frame. The tab + command bars are a
         // FIXED height; in a window shorter than they are (e.g. during Show Desktop /
         // minimize, where the client area collapses) drawing them writes past the
@@ -927,16 +933,27 @@ impl App {
                 }
             }
             draw::fill_band(&mut buf, wz, hz, 0, tab_h, theme.bar_bg);
-            draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels, theme.accent);
+            draw_tab_bar(p, &mut buf, wz, tab_h, strip_w, &tab_labels, theme.accent);
             draw_sidebar(
                 p,
                 &mut buf,
                 wz,
                 side_w,
+                rows_top,
                 bar_top,
                 &tab_labels,
                 theme.bar_bg,
                 theme.accent,
+            );
+            draw_buttons(
+                p,
+                &mut buf,
+                wz,
+                hz,
+                &buttons,
+                &button_labels,
+                button_hover,
+                theme.bar_fg,
             );
             draw_bar(&mut buf);
             // GDI's full-window copy can overwrite an OpenGL child surface until
@@ -962,16 +979,27 @@ impl App {
             // repaint the bars and present just those rects — never over the page.
             draw_bar(&mut buf);
             draw::fill_band(&mut buf, wz, hz, 0, tab_h, theme.bar_bg);
-            draw_tab_bar(p, &mut buf, wz, tab_h, &tab_labels, theme.accent);
+            draw_tab_bar(p, &mut buf, wz, tab_h, strip_w, &tab_labels, theme.accent);
             draw_sidebar(
                 p,
                 &mut buf,
                 wz,
                 side_w,
+                rows_top,
                 bar_top,
                 &tab_labels,
                 theme.bar_bg,
                 theme.accent,
+            );
+            draw_buttons(
+                p,
+                &mut buf,
+                wz,
+                hz,
+                &buttons,
+                &button_labels,
+                button_hover,
+                theme.bar_fg,
             );
             let mut damage = Vec::new();
             if side_w > 0 && bar_top > 0 {
@@ -1145,6 +1173,7 @@ impl App {
                         HintAct::Copy => "[HINT y]",
                         HintAct::Follow => "[HINT]",
                         HintAct::Scroll => "[SCROLL HINT]",
+                        HintAct::Glance => "[HINT glance]",
                     }
                     .into(),
                     accent,
@@ -1155,6 +1184,9 @@ impl App {
                         HintAct::NewTab => "   label opens a new tab · Esc cancel".into(),
                         HintAct::Copy => "   label copies the link address · Esc cancel".into(),
                         HintAct::Scroll => "   label selects a scrollable box · Esc cancel".into(),
+                        HintAct::Glance => {
+                            "   label opens the link in a glance · Esc cancel".into()
+                        }
                         HintAct::Follow => {
                             "   type a label (UPPERCASE = new tab) · Esc cancel".into()
                         }
@@ -1300,6 +1332,12 @@ impl App {
                 }
                 // Terminal: a hint only when it isn't in copy mode. Normal mode on a
                 // terminal IS copy mode, and its key list was just noise in the bar.
+                if self.active_is_glance() {
+                    segs.push((
+                        "   [glance]  t: keep as a tab · x / Esc: close".into(),
+                        draw::AI,
+                    ));
+                }
                 if self.active_is_term() && !self.active_term_vi() {
                     segs.push(("   [term]  i: type · Ctrl+S: copy-mode".into(), draw::TERM));
                 }
@@ -1314,6 +1352,9 @@ impl App {
                                 "   [error]  v select · y yank · yi( inner ()".into(),
                                 draw::ERR,
                             )),
+                            None if t.url == "browser://warn" => {
+                                segs.push(("   [warning]  v select · y yank".into(), draw::WARN))
+                            }
                             None => segs.push(("   v select · y yank".into(), draw::DIM)),
                         }
                     }
@@ -1653,11 +1694,13 @@ mod tab_cell_tests {
     }
 }
 
+/// `strip_w` is how much of the bar the tabs may use: the buttons take the rest.
 pub(crate) fn draw_tab_bar(
     p: &Painter,
     buf: &mut [u32],
     w: usize,
     h: usize,
+    strip_w: usize,
     entries: &[TabEntry],
     accent: draw::Rgb,
 ) {
@@ -1668,7 +1711,7 @@ pub(crate) fn draw_tab_bar(
     }
     let baseline = h * 2 / 3;
     let ic = icon_px(p);
-    let cells = tab_cells(p, w, entries);
+    let cells = tab_cells(p, strip_w, entries);
     for (c, e) in cells.iter().zip(entries.iter()) {
         p.text(buf, w, h, c.x, baseline, &c.prefix, e.color);
         p.text(buf, w, h, c.label_x, baseline, &c.label, e.color);
@@ -1740,19 +1783,20 @@ pub(crate) struct SideRow {
 /// Lay out the sidebar: one row per tab-strip entry, top to bottom, inside a column
 /// `sw` px wide that ends at `bottom` (the command bar). The numbers share one width
 /// so the labels line up; rows past the bottom are dropped (marked with `…`). Shared
-/// by [`draw_sidebar`] and [`App::sidebar_tab_at`] so clicks match the pixels.
+/// by [`draw_sidebar`] and [`App::sidebar_tab_at`] so clicks match the pixels. The
+/// first row starts at `top` (below the button row, when there is one).
 pub(crate) fn side_rows(
     p: &Painter,
     sw: usize,
+    top: usize,
     bottom: usize,
     entries: &[TabEntry],
 ) -> Vec<SideRow> {
-    let lh = p.line_height();
-    let row_h = lh + lh / 2;
+    let row_h = side_row_h(p);
     let ic = icon_px(p);
     let num_w = p.measure(&format!("{}:", entries.len())) + p.measure(" ");
     let mut out = Vec::new();
-    let mut y = lh / 3;
+    let mut y = top;
     for (i, e) in entries.iter().enumerate() {
         if y + row_h > bottom {
             break;
@@ -1781,6 +1825,7 @@ pub(crate) fn draw_sidebar(
     buf: &mut [u32],
     w: usize,
     sw: usize,
+    top: usize,
     bottom: usize,
     entries: &[TabEntry],
     bar_bg: draw::Rgb,
@@ -1792,7 +1837,7 @@ pub(crate) fn draw_sidebar(
     draw::fill_rect(buf, w, bottom, 0, 0, sw, bottom, bar_bg);
     draw::fill_rect(buf, w, bottom, sw - 1, 0, sw, bottom, draw::SEL);
     let ic = icon_px(p);
-    let rows = side_rows(p, sw, bottom, entries);
+    let rows = side_rows(p, sw, top, bottom, entries);
     for (r, e) in rows.iter().zip(entries.iter()) {
         if e.active {
             draw::fill_rect(buf, w, bottom, 3, r.y, sw - 4, r.y + r.h, draw::SEL);
@@ -1813,6 +1858,81 @@ pub(crate) fn draw_sidebar(
     if rows.len() < entries.len() {
         let y = rows.last().map(|r| r.y + r.h).unwrap_or(0);
         p.text(buf, w, bottom, 8, y + p.line_height(), "…", draw::DIM);
+    }
+}
+
+/// Height of one sidebar row (a tab, or the button row above them).
+pub(crate) fn side_row_h(p: &Painter) -> usize {
+    let lh = p.line_height();
+    lh + lh / 2
+}
+
+/// Where one clickable shell button (`:button`) sits, in window pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ButtonCell {
+    pub(crate) x: usize,
+    pub(crate) y: usize,
+    pub(crate) w: usize,
+    pub(crate) h: usize,
+}
+
+/// Lay `labels` out as a row of buttons from `x`, in a band `h` tall from `y`: each
+/// as wide as its label plus a space either side, a small gap between them. Shared by
+/// the painter and [`App::button_at`] so clicks match the pixels.
+pub(crate) fn button_row(
+    p: &Painter,
+    labels: &[String],
+    x: usize,
+    y: usize,
+    h: usize,
+) -> Vec<ButtonCell> {
+    let pad = p.measure(" ");
+    let mut x = x;
+    labels
+        .iter()
+        .map(|l| {
+            let w = p.measure(l) + 2 * pad;
+            let cell = ButtonCell { x, y, w, h };
+            x += w + 2;
+            cell
+        })
+        .collect()
+}
+
+/// The width [`button_row`] takes for `labels`.
+pub(crate) fn button_row_w(p: &Painter, labels: &[String]) -> usize {
+    button_row(p, labels, 0, 0, 0)
+        .last()
+        .map_or(0, |c| c.x + c.w)
+}
+
+/// Paint the buttons: their labels, and a highlight behind the one under the pointer.
+#[allow(clippy::too_many_arguments)]
+fn draw_buttons(
+    p: &Painter,
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    cells: &[ButtonCell],
+    labels: &[String],
+    hover: Option<usize>,
+    color: draw::Rgb,
+) {
+    let pad = p.measure(" ");
+    for (i, (c, label)) in cells.iter().zip(labels).enumerate() {
+        if hover == Some(i) {
+            draw::fill_rect(
+                buf,
+                w,
+                h,
+                c.x,
+                c.y + 2,
+                c.x + c.w,
+                (c.y + c.h).saturating_sub(2),
+                draw::SEL,
+            );
+        }
+        p.text(buf, w, h, c.x + pad, c.y + c.h * 2 / 3, label, color);
     }
 }
 

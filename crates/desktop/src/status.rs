@@ -15,7 +15,9 @@ pub(crate) enum Tone {
     /// Ordinary information, dim.
     #[default]
     Info,
-    /// A failure or warning, red.
+    /// A warning, amber.
+    Warn,
+    /// A failure, red.
     Error,
 }
 
@@ -65,6 +67,7 @@ impl Status {
     pub(crate) fn color(&self) -> Rgb {
         match self.tone {
             Tone::Info => draw::DIM,
+            Tone::Warn => draw::WARN,
             Tone::Error => draw::ERR,
         }
     }

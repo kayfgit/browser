@@ -390,6 +390,34 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         }],
     },
     ActionSpec {
+        name: "button",
+        summary: "Change the clickable buttons on the tab strip (or the sidebar's top row) \
+                  — by default back, forward and reload. A button has a short label and \
+                  runs any browser command when clicked. Use for 'add a button that opens \
+                  my mail', 'remove the reload button', 'hide the buttons'.",
+        params: &[
+            ParamSpec {
+                name: "do",
+                values: &["add", "remove", "off", "reset"],
+                required: true,
+                desc: "add = add or replace the button with this label; remove = drop \
+                       it; off = hide all buttons; reset = back, forward and reload again.",
+            },
+            ParamSpec {
+                name: "label",
+                values: &[],
+                required: false,
+                desc: "The button's text: a symbol or a short word, no spaces (e.g. ✉).",
+            },
+            ParamSpec {
+                name: "command",
+                values: &[],
+                required: false,
+                desc: "For add: the command it runs, without ':' (e.g. 'open -t mail.google.com').",
+            },
+        ],
+    },
+    ActionSpec {
         name: "docs",
         summary: "Read the browser's own documentation on a feature before answering a \
                   question about it. terminal_cwd: how :w saves and restores each \
@@ -694,6 +722,7 @@ impl App {
                     "split the layout {how} and opened {target} in the new pane"
                 ))
             }
+            "button" => self.change_button(str_arg("do"), str_arg("label"), str_arg("command")),
             "docs" => crate::ai::docs(str_arg("topic"))
                 .map(str::to_string)
                 .ok_or_else(|| "no docs on that topic — answer from what you know".into()),
@@ -750,6 +779,87 @@ impl App {
             .insert(name.to_string(), expansion.to_string());
         crate::config::save(&self.config);
         Ok(format!("alias :{name} → {expansion}"))
+    }
+
+    /// The buttons shown on the tab strip / sidebar (see [`crate::config::Button`]).
+    pub(crate) fn buttons(&self) -> Vec<crate::config::Button> {
+        self.config
+            .buttons
+            .clone()
+            .unwrap_or_else(crate::config::default_buttons)
+    }
+
+    /// The `button` action: `add` (or replace) the button `label` running `command`,
+    /// `remove` it, turn them all `off`, or `reset` to back/forward/reload. Persisted.
+    /// The assistant can't make a button that runs a program, as with aliases.
+    pub(crate) fn change_button(
+        &mut self,
+        verb: &str,
+        label: &str,
+        command: &str,
+    ) -> Result<String, String> {
+        let mut buttons = self.buttons();
+        let done = match verb {
+            "add" => {
+                let command = command.trim_start_matches(':').trim();
+                if label.is_empty() || command.is_empty() {
+                    return Err("usage: :button <label> <command>  (e.g. :button ✉ open -t mail.google.com)".into());
+                }
+                if label.split_whitespace().count() != 1 {
+                    return Err("a button label is one word or symbol, no spaces".into());
+                }
+                if self.acting_ai.is_some() {
+                    let resolved = expand_alias_in(&self.config.aliases, command)
+                        .unwrap_or_else(|| command.into());
+                    let verb = resolved.split_whitespace().next().unwrap_or("");
+                    if AI_FORBIDDEN_VERBS.contains(&verb) {
+                        return Err(format!(
+                            "the assistant can't make buttons that run programs (:{verb}); \
+                             add it yourself with :button {label} {command}"
+                        ));
+                    }
+                }
+                let button = crate::config::Button {
+                    label: label.into(),
+                    run: command.into(),
+                };
+                match buttons.iter_mut().find(|b| b.label == label) {
+                    Some(b) => *b = button,
+                    None => buttons.push(button),
+                }
+                format!("button {label} runs :{command}")
+            }
+            "remove" => {
+                let before = buttons.len();
+                buttons.retain(|b| b.label != label);
+                if buttons.len() == before {
+                    return Err(format!("no button {label}"));
+                }
+                format!("removed button {label}")
+            }
+            "off" => {
+                buttons.clear();
+                "buttons hidden — :buttons reset brings back the defaults".into()
+            }
+            "reset" => {
+                self.config.buttons = None;
+                crate::config::save(&self.config);
+                self.refresh_visibility();
+                self.window.request_redraw();
+                return Ok("buttons back to back, forward and reload".into());
+            }
+            other => {
+                return Err(format!(
+                    "can't '{other}' a button — try add, remove, off or reset"
+                ))
+            }
+        };
+        self.config.buttons = Some(buttons);
+        crate::config::save(&self.config);
+        // The sidebar's button row moves its tabs; the strip's narrows the tabs.
+        self.refresh_visibility();
+        self.window.request_redraw();
+        Ok(done)
     }
 
     /// Remove a command alias, persisting the change. Errors if it didn't exist.

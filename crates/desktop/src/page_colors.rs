@@ -18,7 +18,7 @@ pub(crate) fn line_colors(url: &str, row: usize, line: &[char]) -> Switches {
     }
     let page = url.strip_prefix("browser://").unwrap_or(url);
     match page {
-        "error" => error_line(&s),
+        "error" | "warn" | "msg" => log_line(&s),
         "res" => res_line(row, &s),
         "history" if row > 0 => url_line(&s, 0),
         "saved" if row > 0 => saved_line(&s),
@@ -56,16 +56,25 @@ fn header(s: &str) -> Switches {
     }
 }
 
-/// `:error(s)`: `[time] command — error N` headers, then the message in red.
-fn error_line(s: &str) -> Switches {
+/// The log pages' headers (`:err`, `:warn`, `:msg`): `[time] command — error N`, the
+/// level word in its colour. The message lines below are tinted by the page itself
+/// (`pages::log_tints`): a line alone can't tell which entry it belongs to.
+fn log_line(s: &str) -> Switches {
     if s.starts_with('[') && s.len() > 10 && s.as_bytes().get(9) == Some(&b']') {
         let mut out = vec![(0, draw::DIM), (11, draw::ACCENT)];
-        if let Some(at) = col(s, " — error ") {
-            out.push((at, draw::DIM));
+        for (word, color) in [
+            (" — error ", draw::ERR),
+            (" — warning ", draw::WARN),
+            (" — message ", draw::DIM),
+        ] {
+            if let Some(at) = col(s, word) {
+                out.push((at, draw::DIM));
+                out.push((at + 3, color));
+            }
         }
         return out;
     }
-    vec![(0, draw::ERR)]
+    Vec::new()
 }
 
 /// `:res`: the title, totals, then `MEM CPU DISK PROCESS PID` rows with the CPU
@@ -269,14 +278,14 @@ mod tests {
     }
 
     #[test]
-    fn errors_show_the_message_in_red() {
-        assert_eq!(
-            colors("browser://error", 1, "WebView2 error"),
-            vec![(0, draw::ERR)]
-        );
+    fn log_headers_show_the_level_in_its_colour() {
         let head = colors("browser://error", 0, "[12:34:56] :open x — error 1");
-        assert_eq!(head[0], (0, draw::DIM));
-        assert_eq!(head[1], (11, draw::ACCENT));
+        assert_eq!(head[..2], [(0, draw::DIM), (11, draw::ACCENT)]);
+        assert_eq!(head[3], (21, draw::ERR));
+        let warn = colors("browser://msg", 3, "[12:34:56] :open x — warning 2");
+        assert_eq!(warn[3], (21, draw::WARN));
+        // Message lines are tinted by the page itself (`pages::log_tints`).
+        assert!(colors("browser://error", 1, "WebView2 error").is_empty());
     }
 
     #[test]

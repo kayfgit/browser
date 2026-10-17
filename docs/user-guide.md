@@ -29,6 +29,13 @@ window; `:resize` and `:move` enter modes where `h`/`j`/`k`/`l` size or move it
 fullscreen. Fullscreen keeps the bars; `;` (below) hides them. A page going fullscreen
 by itself (YouTube's fullscreen button) does hide them while it lasts.
 
+The tab bar (or the top of the sidebar) has buttons for back `←`, forward `→` and reload
+`↻`, so the browser works with the mouse too. They're yours to change: `:button <label>
+<command>` adds a button that runs any command (`:button ✉ open -t mail.google.com`),
+or replaces the one with that label; `:unbutton <label>` removes one; `:buttons` lists
+them, `:buttons off` hides them all and `:buttons reset` brings the defaults back. They
+live in `config.toml` too (`:theme` opens it), and `:ai` can change them.
+
 `:sidebar` moves the tabs into a vertical sidebar on the left (like Zen browser) and
 back; the choice is saved. Click a tab there to switch to it, or drag the empty part
 below the tabs to move the window. `;` hides the tabs and the command bar so the page
@@ -105,6 +112,17 @@ right-click copies the current selection.
 - `:nojs` toggles JavaScript off for new tabs; `:nojs <url>` opens one page without it.
 - `browser <url>` from a terminal or another app opens the page as a new tab: in the
   browser that's already running if there is one, otherwise after restoring your session.
+- Glance (as in Zen browser) opens a link in a card floating over the page you're on,
+  which stays in view, dimmed, behind it: a quick look without leaving the page. `q`
+  labels the links like `f` does (in purple), and the right-click menu has "Open in
+  glance"; `:glance <url>` opens any address. The glance is an ordinary page, so hints,
+  find and the rest work in it, and its own links open inside it. `t` keeps it as a
+  tab; `x`, Esc or a click on the dimmed page closes it. `:glance clicks on` makes every
+  plain link click open a glance, like Zen (Ctrl+click still opens normally);
+  `:glance clicks off` goes back to `q` and the menu only.
+- Drag a link into the browser (from another app, or from a page) and it opens in a new
+  tab on your default engine. A page that takes dropped links itself, like an upload
+  area or a text field, still gets them.
 - `:default` registers the browser with Windows and opens Settings → Default apps, where
   you can pick it as your web browser (Windows doesn't let programs set that themselves).
   Links from other apps then open as new tabs. `:default remove` unregisters it.
@@ -283,14 +301,25 @@ every WebView2 process and every terminal): total and per-process memory, CPU an
 I/O, refreshed about once a second. Selecting text pauses the refresh so rows don't move
 while you copy.
 
+Copies of `browser.exe` that run another engine's pages are labelled with it:
+`(servo)` for Servo's content processes and `(trident)` for Trident's sandboxed helpers.
+Servo's core runs inside the browser process itself, which reads `browser.exe (+servo)`
+while Servo is loaded.
+
 Task Manager files WebView2's processes under a separate "WebView2 Manager" group, so
 `:res` is the easiest place to see the true total.
 
-## Errors
+## Errors, warnings and messages
 
-Failures show in red in the status bar and are kept for the session with the command
-that caused them and a timestamp. `:error` opens the latest in a pager, `:errors` all of
-them.
+Everything the status bar says is kept for the session, with the command that caused it
+and a timestamp:
+
+- `:err` opens the latest error in a pager, `:errors` all of them. Errors show in red:
+  a page that couldn't load, a crashed engine, an extension or download that failed.
+- `:warn` opens the latest warning, `:warns` all of them. Warnings show in amber:
+  a blocked pop-up or redirect, a page that stopped responding, an engine helper process
+  that restarted, a background update check that failed.
+- `:msg` (`:messages`) shows everything: messages, warnings and errors, in order.
 
 ## The `:ai` assistant
 

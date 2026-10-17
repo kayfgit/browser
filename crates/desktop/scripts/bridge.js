@@ -206,6 +206,77 @@
     window.addEventListener('keydown', strayTab, true);
     window.addEventListener('keydown', shellKey, true);
   }
+  // Glance (see the shell's glance.rs). Behind an open glance the page is dimmed; a
+  // click on the dimmed page closes the glance.
+  window.__glanceDim = function (on) {
+    var dim = document.getElementById('__glance_dim');
+    if (!on) { if (dim) dim.remove(); return; }
+    if (dim) return;
+    dim = document.createElement('div');
+    dim.id = '__glance_dim';
+    dim.style.cssText = 'position:fixed;inset:0;z-index:2147483646;background:rgba(0,0,0,.55);';
+    dim.addEventListener('click', function (e) {
+      e.stopPropagation();
+      post('glance-close');
+    }, true);
+    (document.fullscreenElement || document.documentElement).appendChild(dim);
+  };
+  // With glance-on-click on (`:glance clicks on`, set by the shell on each document as
+  // `__glanceClicks`), a plain click on a link opens it in a glance instead of here.
+  // Captured before the page's own handlers so its router doesn't navigate too. Never
+  // inside a glance (links there follow normally), never with a modifier held (a
+  // Ctrl+click keeps its usual meaning), and not in passthrough, where the page owns
+  // everything.
+  function glanceClick(e) {
+    if (!window.__glanceClicks || window.__glanceInGlance) return;
+    if (!e.isTrusted || e.button !== 0 || e.defaultPrevented) return;
+    if (e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return;
+    if (window.__mode === 'passthrough') return;
+    var t = origin(e);
+    var a = t && t.closest ? t.closest('a[href]') : null;
+    if (!a || a.hasAttribute('download') || !/^https?:/i.test(a.href)) return;
+    // A same-page jump (#section) scrolls as usual.
+    if (a.href.split('#')[0] === location.href.split('#')[0] && a.href.indexOf('#') !== -1) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    post('glance-open:' + a.href);
+  }
+  document.addEventListener('click', glanceClick, true);
+  // A link dragged onto the page — from another app, or from this page — opens in a
+  // new tab instead of replacing the page (the browser's default). Only once the page
+  // has passed on it: listeners on `window` in the bubble phase run after the page's
+  // own, so an upload zone or a list that takes dropped links keeps them, and a text
+  // field still gets the link typed in. The `dragover` cancel is what makes the drop
+  // event fire at all; during a drag only the data's types are readable.
+  function linkDrag(e) {
+    var dt = e.dataTransfer;
+    var types = dt && dt.types ? Array.prototype.slice.call(dt.types) : [];
+    return types.indexOf('text/uri-list') !== -1 && types.indexOf('Files') === -1 &&
+      !editable(origin(e));
+  }
+  function droppedLink(dt) {
+    var list = (dt.getData('text/uri-list') || '').split(/\r?\n/);
+    for (var i = 0; i < list.length; i++) {
+      var u = list[i].trim();
+      if (u && u.charAt(0) !== '#' && /^(https?|file):/i.test(u)) return u;
+    }
+    return '';
+  }
+  if (firstRun) {
+    window.addEventListener('dragover', function (e) {
+      if (!e.defaultPrevented && linkDrag(e)) {
+        e.preventDefault();
+        try { e.dataTransfer.dropEffect = 'link'; } catch (_) {}
+      }
+    });
+    window.addEventListener('drop', function (e) {
+      if (e.defaultPrevented || !linkDrag(e)) return;
+      var url = droppedLink(e.dataTransfer);
+      if (!url) return;
+      e.preventDefault();
+      post('drop-link:' + url);
+    });
+  }
   // Link-hover readout: report the href under the pointer so the shell can show it
   // on the right of the command bar (like a browser status bar). Posted only when
   // the target link CHANGES (mouseover bubbles, so this is event-delegated and
@@ -274,6 +345,7 @@
     var href = (a && a.href && !/^javascript:/i.test(a.href)) ? a.href : null;
     if (href) {
       items.push(['Open in new tab', 'hint-open:' + href]);
+      items.push(['Open in glance', 'glance-open:' + href]);
       items.push(['Copy link address', 'clip:' + href]);
     }
     var img = e.target && e.target.closest ? e.target.closest('img[src]') : null;

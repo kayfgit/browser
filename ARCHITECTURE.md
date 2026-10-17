@@ -160,6 +160,8 @@ Pages and engines:
 - [extensions.rs](crates/desktop/src/extensions.rs), [bundled_extensions.rs](crates/desktop/src/bundled_extensions.rs): the extension picker and the bundled uBlock Origin Lite.
 - [favicon.rs](crates/desktop/src/favicon.rs), [freeze.rs](crates/desktop/src/freeze.rs), [data.rs](crates/desktop/src/data.rs): tab icons, `:freeze`, clearing browsing data.
 - [devtools.rs](crates/desktop/src/devtools.rs): `:inspect` (developer tools) and `:source` (view source).
+- [glance.rs](crates/desktop/src/glance.rs): glance, a link opened in a floating card over the page it came from (`q` hints, the right-click menu, `:glance`). The card is a windowless tab drawn over its opener's window; it closes once focus leaves it.
+- [droplink.rs](crates/desktop/src/droplink.rs): links dragged into the browser open in a new tab. This is the OLE drop target on the main window (tab strip, sidebar, native panes); drops on a web page are handled by `bridge.js`.
 - [external.rs](crates/desktop/src/external.rs): links from other apps — a later launch hands its URL to the running browser over a named pipe — and `:default`, which registers the browser with Windows.
 - [page_colors.rs](crates/desktop/src/page_colors.rs): the colours of the engine-free `browser://` pages, applied per page and line as they're drawn.
 - [prompts.rs](crates/desktop/src/prompts.rs): the yes/no questions the bar asks for the engine, a site's permission request or saving a download, replacing Edge's keyboard-unreachable bubbles. The WebView2 side is [engines/webview2/permissions.rs](crates/desktop/src/engines/webview2/permissions.rs).
@@ -168,7 +170,7 @@ Pages and engines:
 Tabs the shell draws itself:
 
 - [read_view.rs](crates/desktop/src/read_view.rs): lays out a `:read` document.
-- [pages.rs](crates/desktop/src/pages.rs): internal pages (`:errors`, `:res`, `:history`, …) and the `:commands` help (`CMD_ROWS`).
+- [pages.rs](crates/desktop/src/pages.rs): internal pages (`:msg` / `:warn` / `:err` and their session log, `:res`, `:history`, …) and the `:commands` help (`CMD_ROWS`).
 - [vim.rs](crates/desktop/src/vim.rs): the read-only vim pager those pages use.
 - [term.rs](crates/desktop/src/term.rs), [pty_term.rs](crates/desktop/src/pty_term.rs), [proc_cwd.rs](crates/desktop/src/proc_cwd.rs): terminal tabs. The shell runs in a separate process, [bin/browser-pty-host.rs](crates/desktop/src/bin/browser-pty-host.rs).
 - [schemes.rs](crates/desktop/src/schemes.rs): installing terminal colour schemes.
