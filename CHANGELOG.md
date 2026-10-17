@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.12.0](https://github.com/kayfgit/browser/compare/v0.11.0...v0.12.0) (2026-10-17)
+
+
+### Features
+
+* :msg, :warn and :err keep every status message, warning and error ([97a63a7](https://github.com/kayfgit/browser/commit/97a63a7707e5834b53a532554ea7269b8279fec1))
+* :res labels Servo's processes like Trident's ([97a63a7](https://github.com/kayfgit/browser/commit/97a63a7707e5834b53a532554ea7269b8279fec1))
+* clickable back, forward and reload buttons on the tab strip and sidebar ([97a63a7](https://github.com/kayfgit/browser/commit/97a63a7707e5834b53a532554ea7269b8279fec1))
+* glance opens a link in a floating card over the page ([97a63a7](https://github.com/kayfgit/browser/commit/97a63a7707e5834b53a532554ea7269b8279fec1))
+* links dragged into the browser open in a new tab on the default engine ([97a63a7](https://github.com/kayfgit/browser/commit/97a63a7707e5834b53a532554ea7269b8279fec1))
+
+
+### Bug Fixes
+
+* a terminal's saved folder and :res ignore processes that only reuse a parent's ID ([7428112](https://github.com/kayfgit/browser/commit/7428112f1a6cd18f1fd42a2f5d4ea76b0a992db0))
+* history completion works after `:open -t` and `-n` ([97a63a7](https://github.com/kayfgit/browser/commit/97a63a7707e5834b53a532554ea7269b8279fec1))
+
 ## [0.11.0](https://github.com/kayfgit/browser/compare/v0.10.0...v0.11.0) (2026-10-15)
 
 
