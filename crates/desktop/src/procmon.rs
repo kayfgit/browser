@@ -33,6 +33,42 @@ pub fn cpu_count() -> u64 {
         .unwrap_or(1)
 }
 
+/// Whether a process started at `child` can really be the child of one started at
+/// `parent` (creation times, any monotonic unit): it must have started no earlier.
+///
+/// Windows reuses process IDs, and a process keeps its parent's ID after the parent
+/// exits — so processes started long before one of ours can name it as their parent
+/// (a terminal's `nu.exe` "parenting" `csrss.exe` and `winlogon.exe` has been seen
+/// live). Every walk down the process tree must skip those, or it adopts strangers.
+/// An unknown time (a process we can't query) gives it the benefit of the doubt.
+pub(crate) fn real_child(parent: Option<u64>, child: Option<u64>) -> bool {
+    match (parent, child) {
+        (Some(parent), Some(child)) => child >= parent,
+        _ => true,
+    }
+}
+
+/// When process `pid` started (a FILETIME, 100 ns since 1601), if it can be queried.
+#[cfg(windows)]
+pub(crate) fn created(pid: u32) -> Option<u64> {
+    use windows::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let (mut create, mut exit, mut kernel, mut user) = (
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+        );
+        let ok = GetProcessTimes(handle, &mut create, &mut exit, &mut kernel, &mut user).is_ok();
+        let _ = CloseHandle(handle);
+        ok.then(|| (u64::from(create.dwHighDateTime) << 32) | u64::from(create.dwLowDateTime))
+    }
+}
+
 /// Sample every process in this process's tree (self + all descendants), sorted
 /// by memory (largest first). Empty if the snapshot fails.
 #[cfg(windows)]
@@ -80,8 +116,9 @@ pub fn tree_sample() -> Vec<ProcSample> {
         name_of.insert(*pid, name.as_str());
     }
 
-    // Walk descendants from our own pid (inclusive). A visited set guards against
-    // any parent-pid cycle from PID reuse.
+    // Walk descendants from our own pid (inclusive). Processes that only name one of
+    // ours as parent because its ID was reused are skipped ([`real_child`]); a
+    // visited set guards against any parent-pid cycle on top.
     let root = std::process::id();
     let mut seen = std::collections::HashSet::new();
     let mut stack = vec![root];
@@ -101,7 +138,12 @@ pub fn tree_sample() -> Vec<ProcSample> {
             });
         }
         if let Some(kids) = children.get(&pid) {
-            stack.extend(kids.iter().copied());
+            let born = created(pid);
+            stack.extend(
+                kids.iter()
+                    .copied()
+                    .filter(|&kid| real_child(born, created(kid))),
+            );
         }
     }
     out.sort_by_key(|p| std::cmp::Reverse(p.working_set));
@@ -204,6 +246,18 @@ mod tests {
         assert_eq!(fmt_bytes(0), "0.0 MB");
         assert_eq!(fmt_bytes(15 * 1024 * 1024), "15.0 MB");
         assert_eq!(fmt_bytes(2 * 1024 * 1024 * 1024), "2.00 GB");
+    }
+
+    #[test]
+    fn a_process_older_than_its_parent_is_not_its_child() {
+        // A real child starts after (or with) its parent.
+        assert!(real_child(Some(100), Some(150)));
+        assert!(real_child(Some(100), Some(100)));
+        // An older process naming a reused parent ID is someone else's orphan.
+        assert!(!real_child(Some(100), Some(50)));
+        // Unknown times can't rule it out.
+        assert!(real_child(None, Some(50)));
+        assert!(real_child(Some(100), None));
     }
 
     #[test]

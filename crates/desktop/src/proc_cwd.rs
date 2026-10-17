@@ -13,8 +13,15 @@
 /// conhost is skipped (its cwd is frozen at spawn). Candidates are tried
 /// deepest-first, so a transient child that died between snapshot and read just
 /// falls back to its parent. `None` when nothing readable is left.
+///
+/// Windows reuses process IDs, and a process keeps its parent's ID after the parent
+/// exits — so processes started long before one of ours can name it as their
+/// parent (a terminal's `nu.exe` "parenting" `csrss.exe` and `winlogon.exe` has been
+/// seen live). Only a process started after its parent is really its child; the
+/// others are skipped ([`real_child`](crate::procmon::real_child)), or their directory would win as "deepest".
 #[cfg(all(windows, target_pointer_width = "64"))]
 pub(crate) fn shell_cwd(host_pid: u32) -> Option<String> {
+    use crate::procmon::{created, real_child};
     use std::collections::HashMap;
 
     // Snapshot all processes → (pid, parent, exe), then index children.
@@ -36,7 +43,11 @@ pub(crate) fn shell_cwd(host_pid: u32) -> Option<String> {
         if !seen.insert(pid) {
             continue;
         }
+        let born = created(pid);
         for (kid, name) in children.get(&pid).map(|v| v.as_slice()).unwrap_or(&[]) {
+            if !real_child(born, created(*kid)) {
+                continue;
+            }
             stack.push((*kid, depth + 1));
             let n = name.to_ascii_lowercase();
             if n != "conhost.exe" && n != "openconsole.exe" {
@@ -201,26 +212,36 @@ fn process_cwd(pid: u32) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// End-to-end over a real child: spawn cmd in a known directory and read it
-    /// back through the snapshot walk + PEB machinery (cmd keeps its process cwd
-    /// in sync, like nushell — the shells this fallback exists for).
+    /// End-to-end over a real process tree: a cmd (standing in for the pty-host)
+    /// runs a second cmd in a known directory, and the snapshot walk + PEB
+    /// machinery reads it back (cmd keeps its process cwd in sync, like nushell —
+    /// the shells this fallback exists for). The walk starts at the outer cmd, not
+    /// at this test process, so processes other tests start can't be mistaken for
+    /// the shell; and it polls rather than sleeping a fixed time, since the inner
+    /// cmd appears only once the outer one has started it.
     #[test]
     fn reads_a_live_child_shells_working_directory() {
         let dir = "C:\\Windows";
-        let mut child = std::process::Command::new("cmd")
-            .arg("/k")
-            .arg("echo ready")
+        let mut host = std::process::Command::new("cmd")
+            .args(["/d", "/k", "cmd /d /k echo ready"])
             .current_dir(dir)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
             .expect("spawn cmd");
-        std::thread::sleep(std::time::Duration::from_millis(800));
-        // The walk starts at OUR pid: cmd is our (non-conhost) descendant.
-        let got = shell_cwd(std::process::id());
-        let _ = child.kill();
-        let _ = child.wait();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut got = None;
+        while std::time::Instant::now() < deadline {
+            got = shell_cwd(host.id());
+            if got.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        // Closing their shared stdin ends both shells (each reads end-of-input).
+        drop(host.stdin.take());
+        let _ = host.wait();
         assert_eq!(
             got.as_deref().map(str::to_ascii_lowercase),
             Some(dir.to_ascii_lowercase())
