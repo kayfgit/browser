@@ -285,14 +285,19 @@ impl App {
             "engines" => self.list_engines(),
             // `:open`/`:o` open in THIS tab (replacing it); a leading `-t` opens a new
             // tab instead and `-n` a private (InPrivate, no-trace) one — combinable as
-            // `-tn`. `:tabopen`/`:t` always open a new tab (that's their meaning).
+            // `-tn`. `:tabopen`/`:t` always open a new tab (that's their meaning); bare,
+            // they ask for the address like `O` (what the `+` button runs).
             "open" | "o" => {
                 let (new_tab, private, rest) = parse_open_flags(rest);
                 self.open_tab_private(rest, self.nojs, new_tab, private);
             }
             "tabopen" | "t" => {
                 let (_, private, rest) = parse_open_flags(rest);
-                self.open_tab_private(rest, self.nojs, true, private);
+                if rest.is_empty() {
+                    self.enter_command(if private { "open -tn " } else { "open -t " });
+                } else {
+                    self.open_tab_private(rest, self.nojs, true, private);
+                }
             }
             // Edit the current URL: drop into the command bar pre-filled with
             // `<verb> <current url>` so you can tweak and re-open it — `<verb>` is the
@@ -683,8 +688,9 @@ impl App {
             // Same as `;`: hide/show the tab strip/sidebar and the command bar.
             "hud" => self.toggle_hud(),
             // Clickable buttons: `:button <label> <command…>` adds or replaces one,
-            // `:unbutton <label>` removes it, `:buttons` lists them, `:buttons off` hides
-            // them all and `:buttons reset` brings back back/forward/reload.
+            // `:unbutton <label>` removes it, `:buttons` opens the page that lists,
+            // runs, reorders and adds them, `:buttons off` hides them all and
+            // `:buttons reset` brings back the defaults.
             "button" => {
                 let (label, command) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
                 self.run_action(
@@ -698,18 +704,7 @@ impl App {
             ),
             "buttons" => match rest {
                 "off" | "reset" => self.run_action("button", serde_json::json!({ "do": rest })),
-                _ => {
-                    let list: Vec<String> = self
-                        .buttons()
-                        .iter()
-                        .map(|b| format!("{} :{}", b.label, b.run))
-                        .collect();
-                    self.set_status(if list.is_empty() {
-                        "no buttons — :button <label> <command> adds one, :buttons reset the defaults".into()
-                    } else {
-                        format!("buttons: {}", list.join("   "))
-                    });
-                }
+                _ => self.open_buttons_page(),
             },
             // `:help` opens the full page; `:help <topic>` jumps straight to that
             // command/action/section (e.g. :help theme, :help caret, :help bangs).

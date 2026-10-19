@@ -124,15 +124,20 @@ pub(crate) struct Button {
     pub(crate) run: String,
 }
 
-/// The buttons a fresh config shows: back, forward and reload.
+/// The buttons a fresh config shows: back, forward, reload and new tab.
 pub(crate) fn default_buttons() -> Vec<Button> {
-    [("←", "back"), ("→", "forward"), ("↻", "reload")]
-        .into_iter()
-        .map(|(label, run)| Button {
-            label: label.into(),
-            run: run.into(),
-        })
-        .collect()
+    [
+        ("←", "back"),
+        ("→", "forward"),
+        ("↻", "reload"),
+        ("+", "tabopen"),
+    ]
+    .into_iter()
+    .map(|(label, run)| Button {
+        label: label.into(),
+        run: run.into(),
+    })
+    .collect()
 }
 
 /// Appearance overrides for `:te` terminal tabs. Like [`ThemeConfig`], every field is

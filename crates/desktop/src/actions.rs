@@ -404,7 +404,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "button",
         summary: "Change the clickable buttons on the tab strip (or the sidebar's top row) \
-                  — by default back, forward and reload. A button has a short label and \
+                  — by default back, forward, reload and + (new tab). A button has a short label and \
                   runs any browser command when clicked. Use for 'add a button that opens \
                   my mail', 'remove the reload button', 'hide the buttons'.",
         params: &[
@@ -413,7 +413,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
                 values: &["add", "remove", "off", "reset"],
                 required: true,
                 desc: "add = add or replace the button with this label; remove = drop \
-                       it; off = hide all buttons; reset = back, forward and reload again.",
+                       it; off = hide all buttons; reset = the defaults again.",
             },
             ParamSpec {
                 name: "label",
@@ -843,8 +843,9 @@ impl App {
                 self.config.buttons = None;
                 crate::config::save(&self.config);
                 self.refresh_visibility();
+                self.refresh_buttons_page();
                 self.window.request_redraw();
-                return Ok("buttons back to back, forward and reload".into());
+                return Ok("buttons back to back, forward, reload and new tab".into());
             }
             other => {
                 return Err(format!(
@@ -856,6 +857,7 @@ impl App {
         crate::config::save(&self.config);
         // The sidebar's button row moves its tabs; the strip's narrows the tabs.
         self.refresh_visibility();
+        self.refresh_buttons_page();
         self.window.request_redraw();
         Ok(done)
     }

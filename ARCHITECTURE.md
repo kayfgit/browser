@@ -178,6 +178,7 @@ Tabs the shell draws itself:
 - [news.rs](crates/desktop/src/news.rs): `:news`, from the changelog.
 - [update.rs](crates/desktop/src/update.rs): `:update`, checking GitHub for a newer release and installing it.
 - [bookmarks.rs](crates/desktop/src/bookmarks.rs): `:save` / `:saved`.
+- [buttons.rs](crates/desktop/src/buttons.rs): the `:buttons` page and its catalog of ready-made buttons.
 - [bangs.rs](crates/desktop/src/bangs.rs): your own bangs (`:bang`) and the `:bangs` search page.
 - [procmon.rs](crates/desktop/src/procmon.rs): the resource numbers behind `:res`.
 

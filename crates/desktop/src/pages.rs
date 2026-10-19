@@ -621,7 +621,7 @@ pub(crate) fn now_stamp() -> String {
 /// signature matches too, so `:help t` finds ":tabopen · :t").
 const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("open", ":open <url|query> · :o", "open in THIS tab (non-URL → search engine); -t = new tab, -n = private, combinable (-tn)"),
-    ("tabopen", ":tabopen · :t", "open in a new tab (same as :open -t); -n = private"),
+    ("tabopen", ":tabopen · :t", "open in a new tab (same as :open -t); -n = private; bare, it asks for the address"),
     ("reopen", ":reopen", "reopen the last closed tab (also u / Ctrl+Shift+T)"),
     ("undo", ":undo · :redo", "undo / redo the last layout change — closing a tab or pane, a split, moving, swapping or breaking out a pane, flipping or resizing a split, moving a tab (also U / R); an undone close reopens the page where it was"),
     ("research", ":research <url|query> · :rs", "lighter browse: JS on, images kept, media/embeds stripped (-t = new tab, -n = private)"),
@@ -657,7 +657,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("sidebar", ":sidebar [on|off] · :vtabs", "tabs in a vertical sidebar on the left instead of the top strip (toggles; saved like :theme — it's `:theme tabs side|top`). Click a tab to switch, drag the empty part to move the window"),
     ("hud", ":hud", "hide / show the tab strip (or sidebar) and command bar — same as `;`"),
     ("glance", ":glance <url> · :glance clicks [on|off]", "open a page in a glance: a card floating over this page, which stays dimmed behind it (`t` keeps it as a tab, `x` / Esc / a click on the page closes it). `clicks on` makes every plain link click open a glance, like Zen; off, it's `q` hints and the right-click menu"),
-    ("button", ":button <label> <command> · :unbutton <label> · :buttons [off|reset]", "the clickable buttons on the tab strip (or the sidebar's top row): back, forward and reload by default. Add one that runs any command (`:button ✉ open -t mail.google.com`), remove one, list them, hide them, or bring the defaults back"),
+    ("button", ":button <label> <command> · :unbutton <label> · :buttons [off|reset]", "the clickable buttons on the tab strip (or the sidebar's top row): back, forward, reload and + (new tab) by default. Add one that runs any command (`:button ✉ open -t mail.google.com`), remove one, hide them, or bring the defaults back. :buttons opens a page of them: Enter runs one, d removes, K/J reorder, and a list of ready-made ones (close, reopen, save, history, terminal…) to add with Enter"),
     ("resize", ":resize · :move", "window-control modes (then hjkl, Esc)"),
     ("error", ":error · :err", "latest error in a read-only vim tab (v/y to select & copy)"),
     ("errors", ":errors · :errs", "every error this session (newest last), same vim tab"),
