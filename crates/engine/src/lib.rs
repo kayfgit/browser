@@ -232,6 +232,20 @@ pub trait Extensions {
 pub trait BrowsingData {
     /// Range is Unix seconds; None means all time. Only `done` confirms erasure.
     fn clear(&self, kind: DataKind, range: Option<(f64, f64)>, done: Completion) -> EngineResult;
+    /// Erase only `site`'s data: `site` is a bare lowercase host (`reddit.com`) and
+    /// covers its subdomains too. `origins` (`https://old.reddit.com`) are ones the
+    /// shell has seen there (its history, open tabs), since an engine can't always
+    /// list every origin that stored something. `History` is the shell's to clear, so engines may treat it as a no-op.
+    /// `done` reports how many cookies were removed.
+    fn clear_site(
+        &self,
+        _kind: DataKind,
+        _site: &str,
+        _origins: Vec<String>,
+        _done: Completion<usize>,
+    ) -> EngineResult {
+        Err("this engine can't clear a single site's data".into())
+    }
 }
 
 pub trait Suspension {

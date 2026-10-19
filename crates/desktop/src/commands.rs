@@ -570,7 +570,7 @@ impl App {
                 self.clear_status();
             }
             // `:history` opens the visited list as a vim buffer; `:history clear
-            // [period]` wipes it (a shortcut for `:clear history [period]`).
+            // [period] [site]` wipes it (a shortcut for `:clear history …`).
             "history" | "hist" => {
                 let r = rest.trim();
                 if r == "clear" || r.starts_with("clear ") {
@@ -580,24 +580,18 @@ impl App {
                     } else {
                         format!("history {period}")
                     };
-                    self.run_action(
-                        "clear",
-                        crate::actions::positional(&["what", "period"], &line),
-                    );
+                    self.run_action("clear", crate::actions::clear_line_args(&line));
                 } else {
                     self.open_history_page();
                 }
             }
             // `:aihist` — the saved `:ai` conversation picker (Enter on a row opens it).
             "aihist" | "aihistory" => self.open_ai_history_page(),
-            // `:clear <what> [period]` — the privacy/data actions (e.g. `:clear cache
-            // 15m`, `:clear cookies`, `:clear all`). A single verb (not one per kind)
-            // keeps the command surface small; the same actions are what the AI
-            // assistant drives. See `actions.rs`.
-            "clear" => self.run_action(
-                "clear",
-                crate::actions::positional(&["what", "period"], rest),
-            ),
+            // `:clear <what> [period] [site]` — the privacy/data actions (e.g. `:clear
+            // cache 15m`, `:clear cookies reddit.com`, `:clear all`). A single verb (not
+            // one per kind) keeps the command surface small; the same actions are what
+            // the AI assistant drives. See `actions.rs`.
+            "clear" => self.run_action("clear", crate::actions::clear_line_args(rest)),
             // Customization: `:alias` (list / set), `:unalias`, and the brick-proof
             // `:restore`. These run through the same action layer the AI drives.
             "alias" => {
