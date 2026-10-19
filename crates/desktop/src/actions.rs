@@ -44,9 +44,13 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "clear",
         summary:
-            "Erase stored browsing data, optionally only from a recent time window. \
-                  Use when the user asks to clear/delete/wipe history, cookies, cache, or \
-                  everything (e.g. \"clear the last 24h history\", \"wipe the last 15 min cache\").",
+            "Erase stored browsing data, optionally only one site's or only from a recent \
+                  time window. Use when the user asks to clear/delete/wipe history, cookies, \
+                  cache, or everything (e.g. \"clear the last 24h history\", \"wipe the last \
+                  15 min cache\", \"remove reddit.com's cookies\"). When the user names a \
+                  site, ALWAYS pass `site` — leaving it out wipes that data for every site. \
+                  For several kinds of one site's data (e.g. cookies and cache), make one \
+                  call per kind.",
         params: &[
             ParamSpec {
                 name: "what",
@@ -60,7 +64,15 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
                 values: &["15m", "1h", "24h", "7d", "all"],
                 required: false,
                 desc: "How far back to erase; defaults to all time. 15m = last 15 minutes, \
-                       1h = last hour, 24h = last day, 7d = last week, all = everything.",
+                       1h = last hour, 24h = last day, 7d = last week, all = everything. \
+                       With `site`, only history can be limited to a window.",
+            },
+            ParamSpec {
+                name: "site",
+                values: &[],
+                required: false,
+                desc: "Only erase this site's data, e.g. 'reddit.com' (its subdomains too). \
+                       Omit to erase it for every site.",
             },
         ],
     },
@@ -486,23 +498,6 @@ pub(crate) fn targets_content(name: &str) -> bool {
     )
 }
 
-/// Build an args object by zipping whitespace tokens in `rest` onto `names`, so a
-/// command line like `:clear cache 15m` (`names = ["what","period"]`) becomes
-/// `{"what":"cache","period":"15m"}` — the same shape the assistant's tool-calls use.
-pub(crate) fn positional(names: &[&str], rest: &str) -> Value {
-    let mut map = serde_json::Map::new();
-    let mut toks = rest.split_whitespace();
-    for n in names {
-        match toks.next() {
-            Some(t) => {
-                map.insert((*n).to_string(), Value::String(t.to_string()));
-            }
-            None => break,
-        }
-    }
-    Value::Object(map)
-}
-
 /// Verbs an alias created by the assistant may not reach: they run programs on this
 /// machine (`:te <cmd>` runs a shell command, `:shell` picks the program `:te` starts).
 /// A page the assistant reads could otherwise talk it into planting one.
@@ -593,7 +588,10 @@ impl App {
                     .get("period")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.trim().is_empty());
-                self.action_clear(str_arg("what"), period)
+                match str_arg("site") {
+                    "" => self.action_clear(str_arg("what"), period),
+                    site => self.action_clear_site(str_arg("what"), &normalize_site(site)?, period),
+                }
             }
             "alias" => self.set_alias(str_arg("name"), str_arg("expansion")),
             // Profiles. `do` is a keyword in Rust but a natural name for the model;
@@ -1325,6 +1323,154 @@ impl App {
         )?;
         Ok(format!("clearing {label}…"))
     }
+
+    /// `clear <what> [period] <site>` — like [`Self::action_clear`] for one site and
+    /// its subdomains. History can still be windowed; engine data can't (cookies and
+    /// storage carry no time WebView2 can filter on), so a period there is refused
+    /// rather than quietly widened to all time. Chromium's HTTP disk cache has no
+    /// per-site clear, so `cache` here means the caches the site's scripts keep.
+    fn action_clear_site(
+        &mut self,
+        what: &str,
+        site: &str,
+        period: Option<&str>,
+    ) -> Result<String, String> {
+        let (secs, disp) = resolve_period(period)?;
+        let cutoff = secs.map(|s| now_epoch().saturating_sub(s));
+        let windowed = |kind: &str| -> Result<String, String> {
+            Err(format!(
+                "can't limit {site}'s {kind} to a time window — drop the period to clear all of it"
+            ))
+        };
+        match what {
+            "history" | "hist" => {
+                let removed = self.clear_site_history(site, cutoff);
+                let plural = if removed == 1 { "entry" } else { "entries" };
+                Ok(format!(
+                    "cleared {removed} {site} history {plural} ({disp})"
+                ))
+            }
+            "cookies" if secs.is_some() => windowed("cookies"),
+            "cache" if secs.is_some() => windowed("cache"),
+            "all" | "everything" if secs.is_some() => windowed("data"),
+            "cookies" => {
+                self.clear_site_engine(DataKind::Cookies, site, &format!("cookies for {site}"))
+            }
+            "cache" => self.clear_site_engine(
+                DataKind::Cache,
+                site,
+                &format!("{site}'s site caches (the shared HTTP cache can't be split by site)"),
+            ),
+            "all" | "everything" => {
+                let removed = self.clear_site_history(site, None);
+                match self.clear_site_engine(DataKind::All, site, &format!("all data for {site}")) {
+                    Ok(msg) => Ok(msg),
+                    Err(_) => Ok(format!(
+                        "cleared {removed} {site} history entries; open a page to also wipe its cookies & storage"
+                    )),
+                }
+            }
+            "" => Err(format!(
+                "clear what for {site}? — history, cookies, cache, or all"
+            )),
+            other => Err(format!(
+                "can't clear '{other}' — try history, cookies, cache, or all"
+            )),
+        }
+    }
+
+    /// Drop `site`'s visits (from `cutoff` on, if given) and, for an all-time clear,
+    /// its entries in the reopen stack. Returns the visits removed.
+    fn clear_site_history(&mut self, site: &str, cutoff: Option<u64>) -> usize {
+        if cutoff.is_none() {
+            self.closed_tabs
+                .retain(|t| !crate::visited::url_in_site(&t.url, site));
+        }
+        let removed = self.visited.clear_site(site, cutoff);
+        self.window.request_redraw();
+        removed
+    }
+
+    /// Fire a one-site engine clear; needs a live web tab like
+    /// [`Self::clear_engine_required`]. The site's origins from the shell's history
+    /// and open tabs ride along so ones the engine can't enumerate (or that use a
+    /// non-default port) still get cleared.
+    fn clear_site_engine(&self, kind: DataKind, site: &str, label: &str) -> Result<String, String> {
+        let Some(wv) = self.any_webview() else {
+            return Err(format!("open a page first, then clear {label}"));
+        };
+        let mut origins = self.visited.origins_in_site(site);
+        origins.extend(
+            self.tabs
+                .iter()
+                .filter_map(|t| t.webview())
+                .filter_map(|v| v.url().ok())
+                .filter(|u| crate::visited::url_in_site(u, site))
+                .map(|u| crate::tabs::origin_of(&u)),
+        );
+        crate::data::clear_site(
+            wv,
+            kind,
+            site,
+            origins,
+            label.to_string(),
+            self.acting_ai,
+            self.proxy.clone(),
+        )?;
+        Ok(format!("clearing {label}…"))
+    }
+}
+
+/// Reduce what a person or the model calls a site — `reddit.com`, `www.reddit.com`,
+/// `https://www.reddit.com/r/rust`, `Reddit.com:443` — to the bare host whose data a
+/// one-site clear targets (`reddit.com`; subdomains are covered by matching). Only a
+/// leading `www.` is dropped: `old.reddit.com` stays as given, so a clear never
+/// widens past what was named. `Err` for anything that isn't a hostname.
+pub(crate) fn normalize_site(raw: &str) -> Result<String, String> {
+    let mut s = raw.trim().to_ascii_lowercase();
+    if let Some((_, rest)) = s.split_once("://") {
+        s = rest.to_string();
+    }
+    let s = s.split(['/', '?', '#']).next().unwrap_or("");
+    let s = s.rsplit_once('@').map_or(s, |(_, host)| host);
+    let s = s.split(':').next().unwrap_or("");
+    let s = s.trim_start_matches("*.").trim_matches('.');
+    let s = s.strip_prefix("www.").unwrap_or(s);
+    let valid = !s.is_empty()
+        && (s.contains('.') || s == "localhost")
+        && !s.contains("..")
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.');
+    if valid {
+        Ok(s.to_string())
+    } else {
+        Err(format!(
+            "'{}' isn't a site — give one like reddit.com",
+            raw.trim()
+        ))
+    }
+}
+
+/// Parse a `:clear` command line — `<what> [period] [site]`, the last two in either
+/// order — into the action's args. A token that reads as a period is the period;
+/// anything else is the site (so `:clear cookies reddit.com` and `:clear history
+/// 24h reddit.com` both work, and a mistyped period is reported as a bad site
+/// instead of silently clearing all time).
+pub(crate) fn clear_line_args(rest: &str) -> Value {
+    let mut map = serde_json::Map::new();
+    let mut toks = rest.split_whitespace();
+    if let Some(what) = toks.next() {
+        map.insert("what".into(), Value::String(what.into()));
+    }
+    for t in toks {
+        let key = if resolve_period(Some(t)).is_ok() && !map.contains_key("period") {
+            "period"
+        } else {
+            "site"
+        };
+        map.insert(key.into(), Value::String(t.into()));
+    }
+    Value::Object(map)
 }
 
 /// Resolve a `period` argument into `(duration_secs, display)`: `None`/`all`/empty
@@ -1431,6 +1577,8 @@ mod tests {
                 && clear.params[0].values == ["history", "cookies", "cache", "all"]
         );
         assert!(!clear.params[1].required);
+        assert!(clear.params[2].name == "site" && !clear.params[2].required);
+        assert!(clear.params[2].values.is_empty());
         // Free-text params have no fixed values; their NAME is the placeholder.
         assert!(spec("alias")
             .params
@@ -1489,13 +1637,44 @@ mod tests {
     }
 
     #[test]
-    fn positional_zips_tokens_onto_names() {
-        let v = positional(&["what", "period"], "cache 15m");
-        assert_eq!(v["what"], "cache");
-        assert_eq!(v["period"], "15m");
-        // Missing trailing tokens are simply absent (period defaults to all time).
-        let v = positional(&["what", "period"], "cookies");
+    fn sites_normalize_to_a_bare_host() {
+        for raw in [
+            "reddit.com",
+            "Reddit.COM",
+            "www.reddit.com",
+            "https://www.reddit.com/r/rust?x=1",
+            "reddit.com:443",
+            ".reddit.com",
+            "*.reddit.com",
+        ] {
+            assert_eq!(normalize_site(raw).as_deref(), Ok("reddit.com"), "{raw}");
+        }
+        // A named subdomain is kept, so the clear never widens past it.
+        assert_eq!(
+            normalize_site("old.reddit.com").as_deref(),
+            Ok("old.reddit.com")
+        );
+        assert_eq!(normalize_site("localhost:8080").as_deref(), Ok("localhost"));
+        for bad in ["", "reddit", "15x", "red dit.com", "a..b", "https://"] {
+            assert!(normalize_site(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn clear_lines_take_period_and_site_in_either_order() {
+        let v = clear_line_args("cookies reddit.com");
         assert_eq!(v["what"], "cookies");
+        assert_eq!(v["site"], "reddit.com");
         assert!(v.get("period").is_none());
+        for line in ["history 24h reddit.com", "history reddit.com 24h"] {
+            let v = clear_line_args(line);
+            assert_eq!(v["period"], "24h", "{line}");
+            assert_eq!(v["site"], "reddit.com", "{line}");
+        }
+        let v = clear_line_args("cache 15m");
+        assert_eq!(v["period"], "15m");
+        assert!(v.get("site").is_none());
+        // A mistyped period lands in `site`, which then refuses it.
+        assert_eq!(clear_line_args("cache 15x")["site"], "15x");
     }
 }

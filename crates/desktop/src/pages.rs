@@ -669,7 +669,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("saved", ":saved · :favorites", "the saved pages in a vim tab (Enter opens, ⇧Enter new tab, d deletes the line/selection); kept in their own file, so profiles and :restore never touch them"),
     ("unsave", ":unsave <name|url>", "remove a saved page (same as d on its row in :saved)"),
     ("history", ":history · :hist", "visited URLs in a vim tab (Enter opens, ⇧Enter new tab, v/y select, d deletes the line/selection); :history clear wipes it"),
-    ("clear", ":clear <what> [period]", "erase data: history/cookies/cache/all, optionally a window (15m/1h/24h/7d); cookies/cache need a page open"),
+    ("clear", ":clear <what> [period] [site]", "erase data: history/cookies/cache/all, optionally a window (15m/1h/24h/7d) or only one site (e.g. :clear cookies reddit.com); cookies/cache need a page open"),
     ("alias", ":alias [name] [cmd] · :unalias", "list / set / remove command aliases (e.g. :alias gh open github.com → :gh)"),
     ("restore", ":restore", "reset all customization to defaults — also Ctrl+Alt+Shift+R, which works in any mode"),
     ("help", ":commands · :help [topic]", "this page; a topic jumps to its section (e.g. :help theme, :help selection)"),

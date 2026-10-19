@@ -69,6 +69,29 @@ impl Visited {
         before - self.entries.len()
     }
 
+    /// Drop the entries whose host is `site` or under it (see [`in_site`]), and only
+    /// those visited at or after `cutoff` when given; returns how many.
+    pub(crate) fn clear_site(&mut self, site: &str, cutoff: Option<u64>) -> usize {
+        let before = self.entries.len();
+        self.entries
+            .retain(|v| !(url_in_site(&v.url, site) && cutoff.is_none_or(|c| v.at >= c)));
+        before - self.entries.len()
+    }
+
+    /// The distinct origins under `site` in the list (`https://old.reddit.com`, …),
+    /// so a one-site clear can reach origins the engine can't enumerate.
+    pub(crate) fn origins_in_site(&self, site: &str) -> Vec<String> {
+        let mut origins: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|v| url_in_site(&v.url, site))
+            .map(|v| crate::tabs::origin_of(&v.url))
+            .collect();
+        origins.sort();
+        origins.dedup();
+        origins
+    }
+
     /// Remove the entries at positions `start..=end` (most recent first), clamped to
     /// the list; returns how many were removed.
     pub(crate) fn remove_range(&mut self, start: usize, end: usize) -> usize {
@@ -92,9 +115,72 @@ impl Visited {
     }
 }
 
+/// The lowercase host of an http(s) `url`.
+fn host_of(url: &str) -> Option<String> {
+    let u = url::Url::parse(url).ok()?;
+    matches!(u.scheme(), "http" | "https")
+        .then(|| u.host_str().map(str::to_ascii_lowercase))
+        .flatten()
+}
+
+/// Whether `host` is `site` or one of its subdomains (`old.reddit.com` is in
+/// `reddit.com`; `notreddit.com` isn't).
+pub(crate) fn in_site(host: &str, site: &str) -> bool {
+    host == site
+        || host
+            .strip_suffix(site)
+            .is_some_and(|rest| rest.ends_with('.'))
+}
+
+/// Whether an http(s) `url`'s host is in `site`.
+pub(crate) fn url_in_site(url: &str, site: &str) -> bool {
+    host_of(url).is_some_and(|h| in_site(&h, site))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_site_covers_its_subdomains_only() {
+        assert!(in_site("reddit.com", "reddit.com"));
+        assert!(in_site("old.reddit.com", "reddit.com"));
+        assert!(!in_site("notreddit.com", "reddit.com"));
+        assert!(!in_site("reddit.com.evil.test", "reddit.com"));
+        assert!(!in_site("com", "reddit.com"));
+    }
+
+    #[test]
+    fn clear_site_drops_that_site_and_its_subdomains_only() {
+        let mut v = Visited::from_saved(
+            vec![
+                "https://www.reddit.com/r/rust".into(),
+                "https://old.reddit.com/".into(),
+                "https://notreddit.com/".into(),
+                "https://example.com/?u=reddit.com".into(),
+                "https://reddit.com/".into(),
+            ],
+            vec![300, 50, 300, 300, 0],
+        );
+        assert_eq!(
+            v.origins_in_site("reddit.com"),
+            [
+                "https://old.reddit.com",
+                "https://reddit.com",
+                "https://www.reddit.com"
+            ]
+        );
+        // A window keeps that site's older and unknown-time visits.
+        assert_eq!(v.clear_site("reddit.com", Some(100)), 1);
+        assert_eq!(v.clear_site("reddit.com", None), 2);
+        assert_eq!(
+            urls(&v),
+            [
+                "https://notreddit.com/",
+                "https://example.com/?u=reddit.com"
+            ]
+        );
+    }
 
     fn urls(v: &Visited) -> Vec<&str> {
         v.urls().collect()

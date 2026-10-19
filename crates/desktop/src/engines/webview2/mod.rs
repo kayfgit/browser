@@ -759,6 +759,15 @@ impl BrowsingData for WebView2View {
     fn clear(&self, kind: DataKind, range: Option<(f64, f64)>, done: Completion) -> EngineResult {
         data::clear(&self.inner, kind, range, done)
     }
+    fn clear_site(
+        &self,
+        kind: DataKind,
+        site: &str,
+        origins: Vec<String>,
+        done: Completion<usize>,
+    ) -> EngineResult {
+        data::clear_site(&self.inner, kind, site, origins, done)
+    }
 }
 impl Suspension for WebView2View {
     fn suspend(&self) -> EngineResult {
