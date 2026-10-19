@@ -214,6 +214,17 @@ impl App {
             let is_aihist = self.active_url() == Some("browser://aihist");
             let is_profiles = self.active_url() == Some("browser://profiles");
             let is_saved = self.active_url() == Some("browser://saved");
+            if self.active_url() == Some("browser://buttons") {
+                if let Key::Character(s) = &key.logical_key {
+                    match *s {
+                        "d" => return self.buttons_page_delete(),
+                        "K" => return self.buttons_page_move(-1),
+                        "J" => return self.buttons_page_move(1),
+                        "u" => return,
+                        _ => {}
+                    }
+                }
+            }
             if is_hist || is_aihist || is_profiles || is_saved {
                 if let Key::Character(s) = &key.logical_key {
                     match *s {
@@ -411,6 +422,7 @@ impl App {
                 Some("browser://extensions") => self.toggle_extension_entry(),
                 Some("browser://profiles") => self.switch_to_profile_entry(),
                 Some("browser://saved") => self.open_saved_entry(self.modifiers.shift_key()),
+                Some("browser://buttons") => self.buttons_page_enter(),
                 _ => self.open_history_entry(self.modifiers.shift_key()),
             },
             _ => {}

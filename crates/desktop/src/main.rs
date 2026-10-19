@@ -37,6 +37,7 @@ mod bangs;
 mod blocklist;
 mod bookmarks;
 mod bundled_extensions;
+mod buttons;
 mod chrome;
 mod cmdline;
 mod commands;
