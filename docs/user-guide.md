@@ -156,7 +156,9 @@ be any tab type.
   `Esc` to finish).
 - `Ctrl+W` then `c` closes the focused pane; `Ctrl+W` then `m` grabs it so `h`/`j`/`k`/`l`
   swap it with its neighbours (`Enter` keeps, `Esc` reverts). `Ctrl+W` then a tab number
-  pulls that tab into the split.
+  pulls that tab into the split, and `Ctrl+W` then `b` (or vim's `T`) does the reverse:
+  the focused pane leaves the split and becomes a tab of its own. `Ctrl+W` then `r` flips
+  a split between side by side and stacked.
 - Clicking a pane focuses it. Splits are saved with the session.
 - `U` undoes the last layout change and `R` redoes it (also `:undo` / `:redo`): closing a
   tab or pane, a split, moving, swapping or breaking out a pane, flipping or resizing a

@@ -133,9 +133,10 @@ impl App {
                 KeyCode::KeyV => self.split_pane(SplitDir::Row),
                 KeyCode::KeyC | KeyCode::KeyQ => self.close_active(),
                 // Grab a pane to move it: `m` grabs the focused pane, a digit pulls
-                // that tab-bar entry into the split. `b` breaks the focused pane out.
+                // that tab-bar entry into the split. `b` (or vim's `T`) breaks the
+                // focused pane out into a tab of its own.
                 KeyCode::KeyM => self.grab_focused_pane_move(),
-                KeyCode::KeyB => self.break_pane(),
+                KeyCode::KeyB | KeyCode::KeyT => self.break_pane(),
                 // Flip the focused pane's split between side-by-side and stacked.
                 KeyCode::KeyR => self.toggle_pane_orientation(),
                 _ => {
