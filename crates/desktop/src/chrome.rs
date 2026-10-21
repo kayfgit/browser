@@ -1174,6 +1174,7 @@ impl App {
                         HintAct::Follow => "[HINT]",
                         HintAct::Scroll => "[SCROLL HINT]",
                         HintAct::Glance => "[HINT glance]",
+                        HintAct::Zap => "[ZAP]",
                     }
                     .into(),
                     accent,
@@ -1189,6 +1190,9 @@ impl App {
                         }
                         HintAct::Follow => {
                             "   type a label (UPPERCASE = new tab) · Esc cancel".into()
+                        }
+                        HintAct::Zap => {
+                            "   label hides that part · u brings the last back · Esc done".into()
                         }
                     },
                     draw::DIM,

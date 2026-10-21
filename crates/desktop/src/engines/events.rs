@@ -90,6 +90,13 @@ pub(crate) fn decode_page_message(body: &str) -> Option<UserEvent> {
                 }
                 // A hint in copy mode (`yf`) resolved to a link.
                 "hint-copy" => UserEvent::HintCopy(arg.into()),
+                // A zap hint (`z`) hid a box: `hint-zapped:<hidden now>`.
+                "hint-zapped" => UserEvent::HintZapped(arg.parse().ok()?),
+                // Zapped boxes came back: `zap-undone:<brought back>,<still hidden>`.
+                "zap-undone" => {
+                    let (back, left) = arg.split_once(',')?;
+                    UserEvent::ZapUndone(back.parse().ok()?, left.parse().ok()?)
+                }
                 // The page blocker neutered a scripted pop-up.
                 "popup-blocked" => UserEvent::PopupBlocked(arg.into()),
                 // The pointer moved onto/off a link (empty = off).
@@ -125,6 +132,8 @@ fn active_ui_event(event: UserEvent, source: usize, active: Option<usize>) -> Op
         | UserEvent::ScrollSelected
         | UserEvent::ScrollExit
         | UserEvent::HintCopy(_)
+        | UserEvent::HintZapped(_)
+        | UserEvent::ZapUndone(..)
         | UserEvent::CaretYank(_)
         | UserEvent::ClipCopy(_)
         | UserEvent::CaretExit
@@ -324,7 +333,17 @@ mod tests {
             decode_page_message("link-hover:"),
             Some(UserEvent::LinkHover(u)) if u.is_empty()
         ));
+        assert!(matches!(
+            decode_page_message("hint-zapped:3"),
+            Some(UserEvent::HintZapped(3))
+        ));
+        assert!(matches!(
+            decode_page_message("zap-undone:1,2"),
+            Some(UserEvent::ZapUndone(1, 2))
+        ));
         for bad in [
+            "hint-zapped:x",
+            "zap-undone:1",
             "hint-click:NaN,1",
             "hint-click:1",
             "shell-key:0,0,0",

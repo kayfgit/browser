@@ -441,6 +441,8 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
             app.window.set_focus();
             app.open_tab(&url, app.nojs, true);
         }
+        UserEvent::HintZapped(zapped) => app.on_zapped(zapped),
+        UserEvent::ZapUndone(back, left) => app.on_zap_undone(back, left),
         UserEvent::HintCopy(url) => {
             // Copy mode (`yf`): the page already cleared its badges — reset the
             // shell's hint state, take the keyboard back, and yank the address.

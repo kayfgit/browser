@@ -83,6 +83,11 @@ The browser is modal, like vim or qutebrowser. The mode decides where your keys 
 - **Scroll**: `s` labels scrollable boxes inside the page (a chat log, a code panel).
   Pick one and `h`/`j`/`k`/`l`, `gg`/`G`, `Ctrl+D`/`Ctrl+U` or `PgUp`/`PgDn` scroll only
   that box, which gets a cyan outline. `Esc` releases it.
+- **Zap**: `z` labels the visible parts of the page (a sidebar, a banner, a header) in
+  red; type a label to hide that part. While you type, the parts the label could still
+  pick get a dashed outline. It stays in zap mode for the next one; `u` brings back the
+  last, `Esc` finishes. Back in Normal mode `Z` brings back the last hidden part and
+  `:unzap` all of them. Hidden parts come back on reload.
 - **Selection**: `v` or `V` puts a cursor in the middle of the view. Move it with vim
   motions (`h`/`j`/`k`/`l`, `w`/`b`/`e`, `0`/`$`, `gg`/`G`), press `v` for a character
   selection or `V` for whole lines, and `y` to copy. `Esc` leaves. It works on web tabs,

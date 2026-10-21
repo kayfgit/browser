@@ -19,6 +19,8 @@
   var glanceMode = window.__hintMode === 'glance';
   var linksOnly = copyMode || glanceMode;
   var scrollMode = window.__hintMode === 'scroll';
+  // Zap mode (`z`) labels the page's visible boxes; picking one hides it.
+  var zapMode = window.__hintMode === 'zap';
   var sel = linksOnly ? "a[href]"
           : "a[href], button, input:not([type=hidden]):not([disabled]), textarea, " +
             "select, [onclick], [role='button'], [role='link'], [tabindex]:not([tabindex='-1'])";
@@ -39,7 +41,30 @@
     });
     return out;
   }
-  var els = scrollMode ? window.__scrollCandidates() : deepQuery(document, sel, []).filter(function (el) {
+  // Zap candidates: every visible box big enough to matter — blocks, flex/grid
+  // items, images, video, frames. Inline text runs are skipped (their block is
+  // the thing to hide), and so is a box exactly the size of its parent, which
+  // keeps the outer one, so a column of nested divs gets one label, not five. A box
+  // that covers the whole viewport would blank the page, so it gets none either.
+  function zapCandidates() {
+    var media = /^(IMG|VIDEO|IFRAME|CANVAS|SVG|PICTURE|EMBED|OBJECT)$/i;
+    function same(a, b) {
+      return Math.abs(a.left - b.left) < 2 && Math.abs(a.top - b.top) < 2 &&
+             Math.abs(a.right - b.right) < 2 && Math.abs(a.bottom - b.bottom) < 2;
+    }
+    return deepQuery(document, 'body *', []).filter(function (el) {
+      var r = el.getBoundingClientRect();
+      if (r.width < 40 || r.height < 16) return false;
+      if (r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) return false;
+      if (r.left <= 0 && r.top <= 0 && r.right >= innerWidth && r.bottom >= innerHeight) return false;
+      var st = getComputedStyle(el);
+      if (st.display === 'none' || st.display === 'contents' || st.visibility === 'hidden') return false;
+      if (st.display === 'inline' && !media.test(el.tagName)) return false;
+      var up = el.parentElement;
+      return !(up && up !== document.body && same(up.getBoundingClientRect(), r));
+    });
+  }
+  var els = zapMode ? zapCandidates() : scrollMode ? window.__scrollCandidates() : deepQuery(document, sel, []).filter(function (el) {
     if (!onScreen(el)) return false;
     // A `javascript:` link has no address worth copying or glancing at.
     return !linksOnly || (el.href && !/^javascript:/i.test(el.href));
@@ -50,7 +75,7 @@
   // Only checkbox-sized widgets: an image-grid challenge can't be solved by one click,
   // and the invisible reCAPTCHA badge does nothing when clicked.
   var points = new Map();
-  if (!linksOnly && !scrollMode) {
+  if (!linksOnly && !scrollMode && !zapMode) {
     var captcha = /recaptcha|hcaptcha|turnstile|challenges\.cloudflare\.com|captcha/i;
     var widgets = Array.prototype.slice.call(document.querySelectorAll('iframe')).filter(function (f) {
       var src = f.src || '';
@@ -90,14 +115,28 @@
   var box = document.createElement('div');
   box.id = '__hint_box';
   var map = {};
+  // Nested zap boxes often share a corner; nudge a badge right until it clears
+  // the ones already placed, so every label stays readable.
+  var placed = [];
+  function spot(x, y) {
+    for (var tries = 0; tries < 20; tries++) {
+      var hit = placed.some(function (p) { return Math.abs(p.y - y) < 15 && Math.abs(p.x - x) < 26; });
+      if (!hit) break;
+      x += 26;
+    }
+    placed.push({ x: x, y: y });
+    return { x: x, y: y };
+  }
   for (var i = 0; i < els.length; i++) {
     var r = scrollMode ? window.__scrollRect(els[i]) : els[i].getBoundingClientRect();
+    var at = zapMode ? spot(Math.max(0, r.left), Math.max(0, r.top))
+                     : { x: Math.max(0, r.left), y: Math.max(0, r.top) };
     var b = document.createElement('span');
     // New-tab mode (`F`) shows labels uppercase as a cue; matching stays lowercase.
     b.textContent = window.__hintMode === 'newtab' ? labels[i].toUpperCase() : labels[i];
-    b.style.cssText = 'position:fixed;left:' + Math.max(0, r.left) + 'px;top:' + Math.max(0, r.top) +
+    b.style.cssText = 'position:fixed;left:' + at.x + 'px;top:' + at.y +
       'px;z-index:2147483647;background:' +
-      (glanceMode ? '#c69cf6' : copyMode || scrollMode ? '#00e5ff' : '#ffd400') +
+      (zapMode ? '#ff6b6b' : glanceMode ? '#c69cf6' : copyMode || scrollMode ? '#00e5ff' : '#ffd400') +
       ';color:#000;font:bold 11px monospace;padding:0 3px;' +
       'border:1px solid #000;border-radius:3px;line-height:14px;pointer-events:none;';
     box.appendChild(b);
@@ -218,6 +257,25 @@
     restore();
     return null;
   }
+  // Hide a picked box, remembering its own inline `display` so it can come back.
+  // The list lives on the window: it outlasts this hint pass, and goes away with
+  // the document (a reload brings everything back anyway).
+  window.__zapped = window.__zapped || [];
+  window.__zap = function (el) {
+    window.__zapped.push([el, el.style.getPropertyValue('display'), el.style.getPropertyPriority('display')]);
+    el.style.setProperty('display', 'none', 'important');
+    window.__post('hint-zapped:' + window.__zapped.length);
+  };
+  // Bring back the last hidden box, or all of them; reports `<brought back>,<still hidden>`.
+  window.__zapUndo = function (all) {
+    var z = window.__zapped, n = 0;
+    while (z.length && (all || n === 0)) {
+      var e = z.pop();
+      e[0].style.setProperty('display', e[1], e[2]);
+      n++;
+    }
+    window.__post('zap-undone:' + n + ',' + z.length);
+  };
   // The shell couldn't inject the trusted click: fall back to the synthetic one.
   window.__hintFallback = function () {
     var el = window.__hintClickEl;
@@ -226,21 +284,48 @@
   };
   // `mode` is 'follow' | 'newtab' | 'copy' | 'scroll' — the shell re-sends it on every
   // keystroke, since holding Shift flips follow↔newtab mid-pick.
+  // Outline the boxes whose labels still match what's been typed, so you can see
+  // what a zap would take before finishing the label. Only once few are left.
+  function outline(boxes) {
+    var old = document.getElementById('__zap_outlines');
+    if (old) old.remove();
+    if (!boxes.length || boxes.length > 12) return;
+    var layer = document.createElement('div');
+    layer.id = '__zap_outlines';
+    boxes.forEach(function (el) {
+      var r = el.getBoundingClientRect();
+      var o = document.createElement('div');
+      o.style.cssText = 'position:fixed;left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width +
+        'px;height:' + r.height + 'px;outline:2px dashed #ff6b6b;outline-offset:-2px;' +
+        'background:rgba(255,107,107,.08);pointer-events:none;z-index:2147483646;';
+      layer.appendChild(o);
+    });
+    box.appendChild(layer);
+  }
   window.__hintInput = function (s, mode) {
     var m = window.__hintMap; if (!m) return;
     window.__hintMode = mode;
     var nt = mode === 'newtab';
     s = (s || '').toLowerCase();
-    var exact = null;
+    var exact = null, live = [];
     for (var k in m) {
       // Keep the badge text in sync with the mode (UPPERCASE once new-tab is set),
       // so a plain-`f` hint that flips to new-tab mid-typing repaints its labels.
       m[k].badge.textContent = nt ? k.toUpperCase() : k;
-      if (k.indexOf(s) === 0) { m[k].badge.style.display = ''; if (k === s) exact = m[k]; }
-      else { m[k].badge.style.display = 'none'; }
+      if (k.indexOf(s) === 0) {
+        m[k].badge.style.display = '';
+        live.push(m[k].el);
+        if (k === s) exact = m[k];
+      } else { m[k].badge.style.display = 'none'; }
     }
+    if (zapMode && !exact) outline(s ? live : []);
     if (exact) {
       var el = exact.el;
+      if (zapMode) {
+        window.__hintClear();
+        window.__zap(el);
+        return;
+      }
       if (scrollMode) {
         window.__hintClear();
         window.__scrollSelect(el);
