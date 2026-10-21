@@ -1,4 +1,4 @@
-//! Hint mode (`f`/`F`/`yf`/`s`): label targets and act on the picked one.
+//! Hint mode (`f`/`F`/`yf`/`s`/`q`/`z`): label targets and act on the picked one.
 //! Web tabs inject HINT_JS and filter in-page; native read tabs place labels
 //! over visible links and match them shell-side.
 
@@ -22,6 +22,9 @@ pub(crate) enum HintAct {
     Scroll,
     /// `q` — open the link in a glance over this page. Only links are labelled.
     Glance,
+    /// `z` — hide the picked box (a sidebar, a banner, …) from the page, then label
+    /// what's left for the next one. `u` brings the last one back.
+    Zap,
 }
 
 impl HintAct {
@@ -35,6 +38,8 @@ impl HintAct {
             (0x00, 0xe5, 0xff)
         } else if self == HintAct::Glance {
             crate::draw::AI
+        } else if self == HintAct::Zap {
+            (0xff, 0x6b, 0x6b)
         } else {
             (0xff, 0xd4, 0x00)
         }
@@ -47,6 +52,7 @@ impl HintAct {
             HintAct::Copy => "copy",
             HintAct::Scroll => "scroll",
             HintAct::Glance => "glance",
+            HintAct::Zap => "zap",
         }
     }
 }
@@ -95,6 +101,10 @@ impl App {
         };
         if act == HintAct::Scroll && self.tabs[idx].webview().is_none() {
             self.set_status("scroll hints need a web page");
+            return;
+        }
+        if act == HintAct::Zap && self.tabs[idx].webview().is_none() {
+            self.set_status("zapping needs a web page");
             return;
         }
         self.hint_act = act;
@@ -169,6 +179,11 @@ impl App {
                     self.hint_send();
                 }
             }
+            // Zap mode: `u` isn't a label letter, so it can bring back the last box.
+            Key::Character("u") if self.hint_act == HintAct::Zap => {
+                self.hint_input.clear();
+                self.zap_undo(false);
+            }
             Key::Character(s) => {
                 let c = *s;
                 if !c.is_empty() && c.chars().all(|ch| ch.is_ascii_alphabetic()) {
@@ -178,7 +193,7 @@ impl App {
                     if c.chars().any(|ch| ch.is_ascii_uppercase())
                         && !matches!(
                             self.hint_act,
-                            HintAct::Copy | HintAct::Scroll | HintAct::Glance
+                            HintAct::Copy | HintAct::Scroll | HintAct::Glance | HintAct::Zap
                         )
                     {
                         self.hint_act = HintAct::NewTab;
@@ -203,7 +218,7 @@ impl App {
         if self.mode != ModeKind::Hint
             || matches!(
                 self.hint_act,
-                HintAct::Copy | HintAct::Scroll | HintAct::Glance
+                HintAct::Copy | HintAct::Scroll | HintAct::Glance | HintAct::Zap
             )
         {
             return;
@@ -230,7 +245,7 @@ impl App {
             // Following a hint may navigate this tab cross-site via a synthetic click the
             // native guard would otherwise read as a forced redirect — stamp intent so it
             // passes. (Harmless when the hint resolves to a button/in-page action.)
-            if self.hint_act != HintAct::Scroll {
+            if !matches!(self.hint_act, HintAct::Scroll | HintAct::Zap) {
                 wv.authorize_navigation();
             }
             let _ = wv.evaluate_script(&format!(
@@ -259,7 +274,7 @@ impl App {
                 HintAct::NewTab => self.start_read(&url, false, true),
                 HintAct::Follow => self.start_read(&url, true, true),
                 HintAct::Glance => self.open_glance(&url),
-                HintAct::Scroll => {}
+                HintAct::Scroll | HintAct::Zap => {}
             }
             return;
         }
@@ -282,6 +297,48 @@ impl App {
         self.hint_input.clear();
         self.hint_act = HintAct::Follow;
         self.mode = ModeKind::Normal;
+        self.window.request_redraw();
+    }
+
+    /// Bring back the last box zapped on this page (`Z`, or `u` while zapping), or
+    /// every one of them (`:unzap`). The page answers with `zap-undone`.
+    pub(crate) fn zap_undo(&mut self, all: bool) {
+        let Some(wv) = self.active_webview() else {
+            self.set_status("nothing hidden here");
+            return;
+        };
+        let _ = wv.evaluate_script(&format!(
+            "window.__zapUndo?window.__zapUndo({all}):window.__post('zap-undone:0,0')"
+        ));
+    }
+
+    /// The page hid a zapped box (`zapped` = how many are hidden now): label the
+    /// rest for the next pick, staying in zap mode until Esc.
+    pub(crate) fn on_zapped(&mut self, zapped: usize) {
+        if self.mode != ModeKind::Hint || self.hint_act != HintAct::Zap {
+            return;
+        }
+        self.enter_hint(HintAct::Zap);
+        self.set_status(format!(
+            "hid it — {zapped} hidden on this page · u brings it back · Esc when done"
+        ));
+        // The page, not a key, ended this pick: nothing else repaints the bar.
+        self.window.request_redraw();
+    }
+
+    /// The page brought zapped boxes back: say so, and relabel if still zapping
+    /// (the returned box needs a label again).
+    pub(crate) fn on_zap_undone(&mut self, back: usize, left: usize) {
+        if self.mode == ModeKind::Hint && self.hint_act == HintAct::Zap {
+            self.enter_hint(HintAct::Zap);
+        }
+        self.set_status(match (back, left) {
+            (0, _) => "nothing hidden on this page".to_string(),
+            (n, 0) => format!("brought back {n} — nothing hidden now"),
+            (n, left) => {
+                format!("brought back {n} — {left} still hidden (Z for the next, :unzap for all)")
+            }
+        });
         self.window.request_redraw();
     }
 

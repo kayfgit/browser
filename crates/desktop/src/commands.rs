@@ -120,6 +120,7 @@ pub(crate) const BUILTIN_VERBS: &[&str] = &[
     "vtabs",
     "hud",
     "glance",
+    "unzap",
     "button",
     "unbutton",
     "buttons",
@@ -230,6 +231,7 @@ pub(crate) const COMMANDS: &[&str] = &[
     "vtabs",
     "hud",
     "glance",
+    "unzap",
     "button",
     "unbutton",
     "buttons",
@@ -685,6 +687,8 @@ impl App {
             // A link in a floating card over this page (see `glance`); `:glance clicks
             // on|off` makes plain link clicks open one.
             "glance" => self.glance_command(rest),
+            // Bring back everything `z` hid on this page.
+            "unzap" => self.zap_undo(true),
             // Same as `;`: hide/show the tab strip/sidebar and the command bar.
             "hud" => self.toggle_hud(),
             // Clickable buttons: `:button <label> <command…>` adds or replaces one,

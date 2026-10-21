@@ -349,6 +349,9 @@ impl App {
                 "s" => self.enter_hint(HintAct::Scroll),
                 // `q` hints open the picked link in a glance over this page.
                 "q" if !self.active_is_term() => self.enter_hint(HintAct::Glance),
+                // `z` hints hide the picked part of the page; `Z` brings back the last.
+                "z" if !self.active_is_term() => self.enter_hint(HintAct::Zap),
+                "Z" if !self.active_is_term() => self.zap_undo(false),
                 // In a glance, `t` keeps it as a tab of its own.
                 "t" if self.active_is_glance() => self.keep_glance(),
                 // Shift+F: hints open the picked link in a NEW tab (like `:open -t`).
