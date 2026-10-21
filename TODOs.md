@@ -28,6 +28,7 @@ issues:
 [?/-] - rare "not responding" that i cant replicate
 [?/-] - rare cases where the mouse goes behind the browser? and i have to alt tab to make it go in front? no idea
 [] - fix :read, clickable text with hintmode needs space around it, for example "I recommend MDN’sLearn Web Developmentseries, especially theGetting Startedguide", with "Learn Web Development" and "Getting Started" being the buttons
+[] - mouse doesnt hide while watching a youtube video in fullscreen and in normal mode
 
 feats:
 [*] - make an actual tab for :buttons, and also add more buttons like the + button for a new tab
