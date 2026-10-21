@@ -27,10 +27,12 @@ general:
 issues:
 [?/-] - rare "not responding" that i cant replicate
 [?/-] - rare cases where the mouse goes behind the browser? and i have to alt tab to make it go in front? no idea
+[] - fix :read, clickable text with hintmode needs space around it, for example "I recommend MDN’sLearn Web Developmentseries, especially theGetting Startedguide", with "Learn Web Development" and "Getting Started" being the buttons
 
 feats:
 [*] - make an actual tab for :buttons, and also add more buttons like the + button for a new tab
 [] - add a way for users to freely install extensions
+[] - HOLY SHIT HEAR ME OUT: a hint mode to delete stuff from pages just like when people goes to inspect element and deletes/rewrites a specific line
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
