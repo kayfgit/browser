@@ -196,22 +196,18 @@ fn collect_inline(
         return;
     }
     match name {
-        "a" => {
-            let text = collapse(&inner_text(node));
-            if text.is_empty() {
-                return;
+        "a" => match el.attr("href").map(|h| resolve(base, h)) {
+            Some(url) if !url.starts_with("javascript:") => {
+                push_spaced(spans, &inner_text(node), |text| {
+                    let link_id = builder.add_link(url, text.clone());
+                    Span::Link { text, link_id }
+                });
             }
-            match el.attr("href").map(|h| resolve(base, h)) {
-                Some(url) if !url.starts_with("javascript:") => {
-                    let id = builder.add_link(url, text.clone());
-                    spans.push(Span::Link { text, link_id: id });
-                }
-                _ => spans.push(Span::Text(text)),
-            }
-        }
-        "strong" | "b" => push_styled(spans, &inner_text(node), Span::Strong),
-        "em" | "i" => push_styled(spans, &inner_text(node), Span::Emphasis),
-        "code" => push_styled(spans, &inner_text(node), Span::Code),
+            _ => push_spaced(spans, &inner_text(node), Span::Text),
+        },
+        "strong" | "b" => push_spaced(spans, &inner_text(node), Span::Strong),
+        "em" | "i" => push_spaced(spans, &inner_text(node), Span::Emphasis),
+        "code" => push_spaced(spans, &inner_text(node), Span::Code),
         // Other inline wrappers: recurse so nested links/styles are preserved.
         _ => {
             for child in node.children() {
@@ -225,20 +221,38 @@ fn collect_inline(
     }
 }
 
-fn push_styled(spans: &mut Vec<Span>, text: &str, make: fn(String) -> Span) {
-    let t = collapse(text);
+/// Push `raw` collapsed into a span built by `make`, keeping a single space on
+/// either side where the HTML had whitespace there. The renderers glue a span
+/// onto the previous one unless a space separates them, so trimming the edges
+/// would turn `MDN's <a>Learn</a> series` into "MDN'sLearnseries".
+fn push_spaced(spans: &mut Vec<Span>, raw: &str, make: impl FnOnce(String) -> Span) {
+    if raw.starts_with(char::is_whitespace) {
+        push_space(spans);
+    }
+    let t = collapse(raw);
     if !t.is_empty() {
         spans.push(make(t));
     }
+    if raw.ends_with(char::is_whitespace) {
+        push_space(spans);
+    }
 }
 
-/// Push collapsed text as a span, merging with a previous text span's spacing.
+/// Push collapsed text as a span, keeping its edge spacing (see [`push_spaced`]).
 fn push_text(spans: &mut Vec<Span>, raw: &str) {
-    let collapsed = collapse(raw);
-    if collapsed.is_empty() {
-        return;
+    push_spaced(spans, raw, Span::Text);
+}
+
+/// End the run with a word boundary: extend a trailing text span with one space,
+/// or add a lone space span after a styled one. Never doubles a space, and a run
+/// never starts with one.
+fn push_space(spans: &mut Vec<Span>) {
+    match spans.last_mut() {
+        None => {}
+        Some(Span::Text(s)) if s.ends_with(' ') => {}
+        Some(Span::Text(s)) => s.push(' '),
+        _ => spans.push(Span::Text(" ".into())),
     }
-    spans.push(Span::Text(collapsed));
 }
 
 /// All descendant text concatenated, with original whitespace (caller collapses).
