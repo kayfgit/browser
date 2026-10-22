@@ -60,7 +60,12 @@ impl Backend for TextBackend {
 /// Run readability on `html` and walk the cleaned content into a `Document`.
 /// Exposed (and tested) independently of the network fetch.
 pub fn extract(url: &str, html: &str) -> Result<Document> {
-    let mut readability = Readability::new(html, Some(url), Some(ReadabilityConfig::default()))
+    // Keep classes: the walker reads them to spot side notes.
+    let config = ReadabilityConfig {
+        keep_classes: true,
+        ..ReadabilityConfig::default()
+    };
+    let mut readability = Readability::new(html, Some(url), Some(config))
         .map_err(|e| anyhow!("readability init failed: {e}"))?;
     let article = readability
         .parse()
@@ -189,6 +194,65 @@ mod tests {
             text,
             "I recommend MDN's Learn Web Development series, especially the Getting Started guide."
         );
+    }
+
+    /// Each block's plain text, notes labelled, for side-note checks.
+    fn block_texts(html: &str) -> Vec<String> {
+        let mut builder = DocumentBuilder::new("https://example.com/");
+        walk::build_blocks(html, "https://example.com/", &mut builder);
+        builder
+            .build()
+            .blocks
+            .iter()
+            .map(|block| match block {
+                Block::Paragraph { spans } => spans.iter().map(Span::plain).collect(),
+                Block::Note { label, spans } => {
+                    let text: String = spans.iter().map(Span::plain).collect();
+                    format!("{label} {text}")
+                }
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn side_notes_follow_their_paragraph() {
+        // browser.engineering: the note sits inside the sentence and CSS floats it
+        // into the margin, drawing the `[1]` itself.
+        let blocks = block_texts(
+            r##"<p>I have known the web<span class="note-container"><span class="note">Broadly
+            defined, the web is <a href="/w">web pages</a>.</span></span> for all of my life.</p>
+            <p>Tufte<label class="margin-toggle sidenote-number"></label><span
+            class="sidenote">A margin remark.</span> style, and a pandoc
+            ref<a class="footnote-ref" href="#fn1"><sup>1</sup></a>.</p>"##,
+        );
+        assert_eq!(
+            blocks,
+            [
+                "I have known the web[1] for all of my life.",
+                "[1] Broadly defined, the web is web pages.",
+                "Tufte[2] style, and a pandoc ref1.",
+                "[2] A margin remark.",
+            ]
+        );
+    }
+
+    #[test]
+    fn records_anchors_at_their_blocks() {
+        let mut builder = DocumentBuilder::new("https://example.com/");
+        walk::build_blocks(
+            r#"<h2 id="intro">Intro</h2><p>first</p>
+            <h2><span id="history">History</span></h2>
+            <p>text <a name="fn1"></a>note</p><ul><li id="item">one</li></ul>"#,
+            "https://example.com/",
+            &mut builder,
+        );
+        let doc = builder.build();
+        assert_eq!(doc.anchor_block("intro"), Some(0));
+        assert_eq!(doc.anchor_block("history"), Some(2));
+        assert_eq!(doc.anchor_block("fn1"), Some(3));
+        assert_eq!(doc.anchor_block("item"), Some(4));
+        assert_eq!(doc.anchor_block("missing"), None);
     }
 
     #[test]

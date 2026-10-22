@@ -272,7 +272,11 @@ impl App {
                 HintAct::Copy => self.copy_text(&url),
                 // New-tab mode opens a fresh read tab; otherwise follow in place.
                 HintAct::NewTab => self.start_read(&url, false, true),
-                HintAct::Follow => self.start_read(&url, true, true),
+                HintAct::Follow => {
+                    if !self.jump_in_read(&url) {
+                        self.start_read(&url, true, true);
+                    }
+                }
                 HintAct::Glance => self.open_glance(&url),
                 HintAct::Scroll | HintAct::Zap => {}
             }

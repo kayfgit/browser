@@ -265,15 +265,18 @@ impl CwdScan {
     }
 }
 
-/// Decode `%XX` percent-escapes (an OSC 7 `file://` URI is percent-encoded).
-fn percent_decode(s: &str) -> String {
+/// Decode `%XX` percent-escapes (an OSC 7 `file://` URI, a URL `#fragment`).
+pub(crate) fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
+        // Parsed from the bytes: slicing the str would panic on a `%` followed by a
+        // multi-byte character.
         let decoded = (bytes[i] == b'%' && i + 2 < bytes.len())
-            .then(|| u8::from_str_radix(&s[i + 1..i + 3], 16).ok())
-            .flatten();
+            .then(|| std::str::from_utf8(&bytes[i + 1..i + 3]).ok())
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
         match decoded {
             Some(b) => {
                 out.push(b);

@@ -293,6 +293,7 @@ fn main() -> Result<()> {
         bar_dragging: false,
         bar_cmd_scroll: 0,
         page_focus_yielded: false,
+        read_request: None,
         page_gesture_at: None,
         acting_ai: None,
         config: cfg,

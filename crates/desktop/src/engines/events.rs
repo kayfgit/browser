@@ -101,6 +101,8 @@ pub(crate) fn decode_page_message(body: &str) -> Option<UserEvent> {
                 "popup-blocked" => UserEvent::PopupBlocked(arg.into()),
                 // The pointer moved onto/off a link (empty = off).
                 "link-hover" => UserEvent::LinkHover(arg.into()),
+                // The page's live HTML, asked for by a plain `:read`.
+                "read-html" => UserEvent::ReadHtml(arg.into()),
                 // The page hid (`1`) or showed (`0`) the cursor under a still pointer.
                 "cursor" => UserEvent::PageCursor(arg == "1"),
                 _ => return None,
@@ -245,6 +247,14 @@ impl App {
             }
             UserEvent::Inspect => {
                 self.inspect_tab(index);
+                None
+            }
+            UserEvent::ReadHtml(html) => {
+                if self.read_request == Some(view) && self.active == Some(index) {
+                    self.read_request = None;
+                    let url = self.tabs[index].url.clone();
+                    self.read_live_page(url, html);
+                }
                 None
             }
             // Any visible pane may be under the pointer, not just the focused one.

@@ -152,6 +152,17 @@ pub(crate) struct NavEntry {
     pub(crate) url: String,
     pub(crate) kind: NavKind,
     pub(crate) private: bool,
+    /// A read page's document and where it was scrolled, so `H`/`L` bring it back
+    /// at once, at the same spot, instead of downloading it again. `None` for web
+    /// pages (their engine keeps its own) and for entries made before it was read.
+    pub(crate) read: Option<Arc<ReadSnapshot>>,
+}
+
+/// What a back/forward step needs to show a read page again without a fetch.
+#[derive(Clone)]
+pub(crate) struct ReadSnapshot {
+    pub(crate) doc: browser_core::Document,
+    pub(crate) scroll: i32,
 }
 
 /// A tab slot's back/forward stacks (`H` pops `back`, `L` pops `fwd`).
@@ -196,6 +207,12 @@ pub(crate) fn nav_entry(tab: &Tab) -> Option<NavEntry> {
         url: tab.url.clone(),
         kind,
         private: tab.private,
+        read: tab.native().map(|nr| {
+            Arc::new(ReadSnapshot {
+                doc: nr.doc.clone(),
+                scroll: nr.scroll,
+            })
+        }),
     })
 }
 
@@ -369,6 +386,20 @@ pub(crate) struct NativeRead {
     /// Text to scroll to once the page is laid out (`:help <topic>`): the first visual
     /// line containing it goes to the top. Taken when used.
     pub(crate) jump: Option<String>,
+    /// An in-page target (a URL `#fragment`, decoded) to scroll to once the page is
+    /// laid out. Taken when used.
+    pub(crate) anchor: Option<String>,
+}
+
+/// The decoded `#fragment` of `url`, if it has a non-empty one.
+pub(crate) fn url_fragment(url: &str) -> Option<String> {
+    let (_, fragment) = url.split_once('#')?;
+    (!fragment.is_empty()).then(|| crate::pty_term::percent_decode(fragment))
+}
+
+/// `url` without its `#fragment`.
+pub(crate) fn without_fragment(url: &str) -> &str {
+    url.split_once('#').map_or(url, |(base, _)| base)
 }
 
 /// Strip a leading `-t` / `--tab` flag from a command argument, returning
@@ -426,16 +457,15 @@ pub(crate) fn native_read_tab(doc: browser_core::Document, url: String, read: bo
             doc,
             scroll: 0,
             layout: read_view::Layout {
-                lines: Vec::new(),
                 line_h: 1,
-                height: 0,
-                text: Vec::new(),
+                ..Default::default()
             },
             layout_w: -1,
             layout_px: 0.0,
             dirty: true,
             caret: None,
             jump: None,
+            anchor: None,
         }),
     }
 }
@@ -717,17 +747,77 @@ impl App {
             self.set_status(format!("reading {url} …"));
             std::thread::spawn(move || {
                 let event = match browser_backend_text::fetch_document_blocking(&url) {
-                    Ok(doc) => UserEvent::ReadReady {
-                        doc: Box::new(doc),
-                        replace,
-                        record,
-                    },
+                    Ok(mut doc) => {
+                        // The request drops the `#fragment`; keep it on the page's
+                        // address so the view can scroll to it.
+                        if let Some((_, fragment)) = url.split_once('#') {
+                            if !doc.url.contains('#') {
+                                doc.url = format!("{}#{fragment}", doc.url);
+                            }
+                        }
+                        UserEvent::ReadReady {
+                            doc: Box::new(doc),
+                            replace,
+                            record,
+                        }
+                    }
                     Err(e) => UserEvent::ReadFailed(format!("{e:#}")),
                 };
                 let _ = proxy.send_event(event);
             });
         }
         self.window.request_redraw();
+    }
+
+    /// `:read` with no address: read the page in this tab, or on a read tab go back
+    /// to the full page. A web page is read from what's loaded in the tab (after its
+    /// scripts ran, signed in) by asking it for its live HTML; a no-JS tab, which
+    /// can't answer, has its address fetched instead.
+    pub(crate) fn read_toggle(&mut self) {
+        let Some(i) = self.active else {
+            self.set_status("usage: :read [-t] <url>");
+            return;
+        };
+        let tab = &self.tabs[i];
+        let url = tab.url.clone();
+        if !url.starts_with("http") {
+            self.set_status("usage: :read [-t] <url> (or :read on a web page to read it)");
+            return;
+        }
+        if tab.native().is_some() {
+            // Back to the full page; `H` returns to the read view.
+            if tab.read {
+                self.open_tab(&url, false, false);
+            }
+            return;
+        }
+        match tab.webview().filter(|_| !tab.nojs) {
+            Some(view) => {
+                self.read_request = Some(view.identity().id);
+                let _ = view.evaluate_script(
+                    "window.__post&&window.__post('read-html:'+document.documentElement.outerHTML)",
+                );
+                self.set_status("reading this page …");
+            }
+            None => self.start_read(&url, true, true),
+        }
+    }
+
+    /// Extract a page's live HTML (from [`read_toggle`](Self::read_toggle)) on a
+    /// worker thread and show it in place of the web tab, as a back/forward step.
+    pub(crate) fn read_live_page(&mut self, url: String, html: String) {
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let event = match browser_backend_text::extract(&url, &html) {
+                Ok(doc) => UserEvent::ReadReady {
+                    doc: Box::new(doc),
+                    replace: true,
+                    record: true,
+                },
+                Err(e) => UserEvent::ReadFailed(format!("{e:#}")),
+            };
+            let _ = proxy.send_event(event);
+        });
     }
 
     /// Render an extracted Document in an engine-free read tab (no WebView2).
@@ -743,6 +833,8 @@ impl App {
         record: bool,
     ) {
         let url = doc.url.clone();
+        // A `#fragment` link scrolls the new page to that spot once it's laid out.
+        let anchor = url_fragment(&url);
         if replace {
             if let Some(i) = self.active {
                 // Fast path: active is already a read tab → swap its doc, keep the tab.
@@ -759,6 +851,7 @@ impl App {
                     nr.scroll = 0;
                     nr.dirty = true;
                     nr.caret = None; // the text changed; drop any caret/selection
+                    nr.anchor = anchor;
                     self.tabs[i].url = url;
                     self.clear_status();
                     self.window.request_redraw();
@@ -766,7 +859,10 @@ impl App {
                 }
                 // Active is a web/terminal tab → replace it in place with a read tab.
                 // `place_tab` records the page being left, gated by `nav_replaying`.
-                let tab = native_read_tab(doc, url, true);
+                let mut tab = native_read_tab(doc, url, true);
+                if let Some(nr) = tab.native_mut() {
+                    nr.anchor = anchor;
+                }
                 let prev = self.nav_replaying;
                 self.nav_replaying = !record;
                 self.place_tab(tab, false);
@@ -777,6 +873,41 @@ impl App {
             }
         }
         self.push_native_tab(doc, url, true);
+        if let Some(nr) = self.active.and_then(|i| self.tabs[i].native_mut()) {
+            nr.anchor = anchor;
+        }
+    }
+
+    /// Follow a `#fragment` link that points into the read page already shown: scroll
+    /// there without fetching it again, as a back/forward step (`H` returns). False
+    /// when `url` is another page (or has no fragment), for the caller to load it.
+    pub(crate) fn jump_in_read(&mut self, url: &str) -> bool {
+        let Some(i) = self.active else { return false };
+        let Some(fragment) = url_fragment(url) else {
+            return false;
+        };
+        let tab = &self.tabs[i];
+        if tab.native().is_none() || without_fragment(&tab.url) != without_fragment(url) {
+            return false;
+        }
+        if let Some(entry) = nav_entry(tab) {
+            let tab = &mut self.tabs[i];
+            nav_push(&mut tab.nav.back, entry);
+            tab.nav.fwd.clear();
+        }
+        let tab = &mut self.tabs[i];
+        tab.url = url.to_string();
+        if let Some(nr) = tab.native_mut() {
+            if nr.doc.anchor_block(&fragment).is_none() {
+                self.set_status(format!("no #{fragment} on this page"));
+                return true;
+            }
+            nr.anchor = Some(fragment);
+            // The anchor is applied by the next layout pass.
+            nr.dirty = true;
+        }
+        self.window.request_redraw();
+        true
     }
 
     /// Open a new engine-free native tab rendering `doc` (no WebView2 process). Used
@@ -1322,7 +1453,21 @@ impl App {
     /// threaded through the asynchronous read path).
     fn open_entry(&mut self, entry: NavEntry) -> bool {
         if entry.kind == NavKind::Read {
-            self.start_read(&entry.url, true, false);
+            match entry.read {
+                Some(snapshot) => {
+                    let ReadSnapshot { doc, scroll } = Arc::unwrap_or_clone(snapshot);
+                    self.show_read_document(doc, true, false);
+                    if let Some(i) = self.active {
+                        self.tabs[i].url = entry.url;
+                        if let Some(nr) = self.tabs[i].native_mut() {
+                            // Back where it was, not at its anchor.
+                            nr.anchor = None;
+                            nr.scroll = scroll;
+                        }
+                    }
+                }
+                None => self.start_read(&entry.url, true, false),
+            }
             return true;
         }
         if self.frozen {
@@ -1766,6 +1911,7 @@ mod tests {
                     url: format!("https://e/{i}"),
                     kind: NavKind::Web,
                     private: false,
+                    read: None,
                 },
             );
         }

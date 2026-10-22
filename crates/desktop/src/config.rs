@@ -85,6 +85,23 @@ pub(crate) struct Config {
     /// is [`default_buttons`]; an empty list hides them (`:buttons off`).
     #[serde(default)]
     pub(crate) buttons: Option<Vec<Button>>,
+    /// How wide read mode's text column is, in characters (`:readwidth`). Unset is
+    /// [`DEFAULT_READ_WIDTH`]; `0` uses the whole pane.
+    #[serde(default)]
+    pub(crate) read_width: Option<u32>,
+}
+
+/// Read mode's default text column: lines past ~90 characters get hard to follow.
+pub(crate) const DEFAULT_READ_WIDTH: u32 = 90;
+
+impl Config {
+    /// The read view's column width in characters, or `None` for the whole pane.
+    pub(crate) fn read_max_chars(&self) -> Option<u32> {
+        match self.read_width.unwrap_or(DEFAULT_READ_WIDTH) {
+            0 => None,
+            n => Some(n),
+        }
+    }
 }
 
 /// Appearance overrides for the shell chrome — the command/status bar height and the

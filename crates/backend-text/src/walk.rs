@@ -3,7 +3,8 @@
 //! We walk the DOM once. At each container level we accumulate inline content
 //! (text, `<a>`, `<em>`, …) into a run that is flushed as a paragraph whenever a
 //! block element (`<p>`, `<h1>`, `<pre>`, …) interrupts it. Links are registered
-//! with the [`DocumentBuilder`] so they get stable `[n]` numbers.
+//! with the [`DocumentBuilder`] so they get stable `[n]` numbers, and element ids
+//! as anchors, so a `#fragment` link can jump to its block.
 
 use browser_core::content::{Block, DocumentBuilder, Span};
 use ego_tree::NodeRef;
@@ -15,10 +16,18 @@ use url::Url;
 pub fn build_blocks(html: &str, base_url: &str, builder: &mut DocumentBuilder) {
     let doc = Html::parse_document(html);
     let base = Url::parse(base_url).ok();
-    let mut out: Vec<Block> = Vec::new();
-    walk(doc.tree.root(), &base, builder, &mut out);
-    for block in out {
-        builder.push(block);
+    walk(doc.tree.root(), &base, builder);
+}
+
+/// Register `el`'s id (or an old-style `<a name>`) as an in-page target.
+fn note_anchor(el: &scraper::node::Element, builder: &mut DocumentBuilder) {
+    if let Some(id) = el.attr("id") {
+        builder.anchor(id);
+    }
+    if el.name() == "a" {
+        if let Some(name) = el.attr("name") {
+            builder.anchor(name);
+        }
     }
 }
 
@@ -67,12 +76,7 @@ fn is_inline(name: &str) -> bool {
     )
 }
 
-fn walk(
-    node: NodeRef<Node>,
-    base: &Option<Url>,
-    builder: &mut DocumentBuilder,
-    out: &mut Vec<Block>,
-) {
+fn walk(node: NodeRef<Node>, base: &Option<Url>, builder: &mut DocumentBuilder) {
     let mut inline: Vec<Span> = Vec::new();
 
     for child in node.children() {
@@ -88,19 +92,20 @@ fn walk(
                     continue;
                 }
                 // A block element ends any in-progress inline run.
-                flush_inline(&mut inline, out);
+                flush_inline(&mut inline, builder);
+                note_anchor(el, builder);
                 match name {
                     "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                         let level = name[1..].parse().unwrap_or(1);
                         let spans = collect_spans(child, base, builder);
                         if !is_blank(&spans) {
-                            out.push(Block::Heading { level, spans });
+                            builder.push(Block::Heading { level, spans });
                         }
                     }
                     "p" => {
                         let spans = collect_spans(child, base, builder);
                         if !is_blank(&spans) {
-                            out.push(Block::Paragraph { spans });
+                            builder.push(Block::Paragraph { spans });
                         }
                     }
                     "pre" => {
@@ -111,26 +116,28 @@ fn walk(
                             .map(str::to_string)
                             .collect();
                         if !lines.iter().all(|l| l.trim().is_empty()) {
-                            out.push(Block::Code { lines });
+                            builder.push(Block::Code { lines });
                         }
                     }
                     "blockquote" => {
                         let spans = collect_spans(child, base, builder);
                         if !is_blank(&spans) {
-                            out.push(Block::Quote { spans });
+                            builder.push(Block::Quote { spans });
                         }
                     }
-                    "ul" | "ol" => emit_list(child, name == "ol", base, builder, out),
-                    "hr" => out.push(Block::Rule),
+                    "ul" | "ol" => emit_list(child, name == "ol", base, builder),
+                    "hr" => {
+                        builder.push(Block::Rule);
+                    }
                     "br" => {}
                     // Generic containers: descend for more blocks.
-                    _ => walk(child, base, builder, out),
+                    _ => walk(child, base, builder),
                 }
             }
             _ => {}
         }
     }
-    flush_inline(&mut inline, out);
+    flush_inline(&mut inline, builder);
 }
 
 fn emit_list(
@@ -138,13 +145,13 @@ fn emit_list(
     ordered: bool,
     base: &Option<Url>,
     builder: &mut DocumentBuilder,
-    out: &mut Vec<Block>,
 ) {
     let mut index = 0usize;
     for item in list.children() {
         if let Node::Element(el) = item.value() {
             if el.name() == "li" {
                 index += 1;
+                note_anchor(el, builder);
                 let spans = collect_spans(item, base, builder);
                 if is_blank(&spans) {
                     continue;
@@ -154,7 +161,7 @@ fn emit_list(
                 } else {
                     "•".to_string()
                 };
-                out.push(Block::ListItem {
+                builder.push(Block::ListItem {
                     ordered,
                     marker,
                     spans,
@@ -195,6 +202,15 @@ fn collect_inline(
     if is_skipped(name) {
         return;
     }
+    note_anchor(el, builder);
+    if is_side_note(el) {
+        let note = collect_spans(note_body(node), base, builder);
+        if !is_blank(&note) {
+            let label = builder.note(note);
+            spans.push(Span::NoteRef(label));
+        }
+        return;
+    }
     match name {
         "a" => match el.attr("href").map(|h| resolve(base, h)) {
             Some(url) if !url.starts_with("javascript:") => {
@@ -217,6 +233,64 @@ fn collect_inline(
                     _ => {}
                 }
             }
+        }
+    }
+}
+
+/// Whether an inline element is a side note: text a page's CSS floats into the
+/// margin or folds away behind a number (`<span class="sidenote">`, an inline
+/// `<aside>`). Without the CSS it would read as part of the sentence, so it's
+/// taken out and shown after the paragraph. The numbered references pointing at
+/// notes (`footnote-ref`, `sidenote-number`, back links) stay in the text.
+fn is_side_note(el: &scraper::node::Element) -> bool {
+    const NOTE: &[&str] = &[
+        "note",
+        "notes",
+        "sidenote",
+        "marginnote",
+        "footnote",
+        "aside",
+    ];
+    const NOT: &[&str] = &[
+        "ref",
+        "reference",
+        "number",
+        "num",
+        "marker",
+        "toggle",
+        "label",
+        "link",
+        "anchor",
+        "call",
+        "back",
+        "backref",
+        "return",
+    ];
+    if el.name() == "aside" || el.attr("role") == Some("note") {
+        return true;
+    }
+    el.classes().any(|class| {
+        let class = class.to_ascii_lowercase();
+        let parts: Vec<&str> = class.split(['-', '_']).collect();
+        parts.iter().any(|p| NOTE.contains(p)) && !parts.iter().any(|p| NOT.contains(p))
+    })
+}
+
+/// The content of a side note, past wrappers that are notes too (browser.engineering
+/// puts `<span class="note">` inside `<span class="note-container">`), so it isn't
+/// turned into a note that only points at another one.
+fn note_body(mut node: NodeRef<Node>) -> NodeRef<Node> {
+    loop {
+        let mut children = node.children().filter(|c| match c.value() {
+            Node::Text(t) => !t.trim().is_empty(),
+            Node::Element(_) => true,
+            _ => false,
+        });
+        match (children.next(), children.next()) {
+            (Some(only), None) if only.value().as_element().is_some_and(is_side_note) => {
+                node = only;
+            }
+            _ => return node,
         }
     }
 }
@@ -308,13 +382,13 @@ fn resolve(base: &Option<Url>, href: &str) -> String {
 }
 
 /// Emit any accumulated inline content as a paragraph and reset the run.
-fn flush_inline(inline: &mut Vec<Span>, out: &mut Vec<Block>) {
+fn flush_inline(inline: &mut Vec<Span>, builder: &mut DocumentBuilder) {
     if inline.is_empty() {
         return;
     }
     let spans = std::mem::take(inline);
     if !is_blank(&spans) {
-        out.push(Block::Paragraph { spans });
+        builder.push(Block::Paragraph { spans });
     }
 }
 

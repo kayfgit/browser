@@ -20,6 +20,7 @@ pub(crate) const BUILTIN_VERBS: &[&str] = &[
     "y",
     "yank",
     "read",
+    "readwidth",
     "error",
     "err",
     "errors",
@@ -170,6 +171,7 @@ pub(crate) const COMMANDS: &[&str] = &[
     "edit",
     "yank",
     "read",
+    "readwidth",
     "research",
     "reload",
     "resize",
@@ -318,12 +320,13 @@ impl App {
             "read" => {
                 let (new_tab, rest) = parse_tab_flag(rest);
                 if rest.is_empty() {
-                    self.set_status("usage: :read [-t] <url>");
+                    self.read_toggle();
                 } else {
                     // `replace` (open in this tab) is the default; `-t` opens a new tab.
                     self.start_read(rest, !new_tab, true);
                 }
             }
+            "readwidth" => self.read_width_command(rest),
             // This session's log in an engine-free, scrollable tab. `:err` / `:warn`
             // show the most recent error / warning, `:errors` / `:warns` all of them,
             // and `:msg` everything the bar has said: messages, warnings and errors.
@@ -736,6 +739,43 @@ impl App {
         self.current_command = None;
     }
 
+    /// `:readwidth [n|full|reset]`: how many characters wide read mode's text column
+    /// is (centred in the pane). Saved; open read tabs re-wrap at once.
+    pub(crate) fn read_width_command(&mut self, rest: &str) {
+        let width = match rest.trim() {
+            "" => {
+                self.set_status(match self.config.read_max_chars() {
+                    Some(n) => {
+                        format!("read text is {n} characters wide (:readwidth <n> | full | reset)")
+                    }
+                    None => "read text uses the whole pane (:readwidth <n> | reset)".to_string(),
+                });
+                return;
+            }
+            "full" | "off" | "0" => Some(0),
+            "reset" | "default" => None,
+            n => match n.parse::<u32>() {
+                Ok(n) if n >= 20 => Some(n),
+                _ => {
+                    self.set_error("usage: :readwidth <characters, 20 or more> | full | reset");
+                    return;
+                }
+            },
+        };
+        self.config.read_width = width;
+        crate::config::save(&self.config);
+        for tab in &mut self.tabs {
+            if let Some(nr) = tab.native_mut() {
+                nr.dirty = true;
+            }
+        }
+        self.set_status(match self.config.read_max_chars() {
+            Some(n) => format!("read text is now {n} characters wide"),
+            None => "read text now uses the whole pane".to_string(),
+        });
+        self.window.request_redraw();
+    }
+
     /// `:video <url>`: hand the URL to an external media player so it plays without
     /// the browser engine (lighter, and seekable). Prefers `mpv` (which streams
     /// YouTube & friends via yt-dlp), then `vlc`; reports if neither is installed.
@@ -815,6 +855,7 @@ pub(crate) fn arg_candidates(app: &App, verb: &str, prior: &[&str]) -> Option<Ve
         ]),
         // `:search` takes any bang key; offer the common search engines.
         ("search", []) => own(SEARCH_ENGINES),
+        ("readwidth", []) => own(&["full", "reset"]),
         ("help" | "commands", []) => crate::pages::help_topics(),
         // Saved profile names (plus the two always-there targets), so `:profile <Tab>`
         // cycles what you can actually switch to.
