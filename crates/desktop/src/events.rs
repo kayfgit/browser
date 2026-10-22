@@ -264,7 +264,8 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
         | UserEvent::EngineWarning(_)
         | UserEvent::Inspect
         | UserEvent::ViewSource
-        | UserEvent::PageCursor(_) => {}
+        | UserEvent::PageCursor(_)
+        | UserEvent::ReadHtml(_) => {}
         UserEvent::UpdateChecked { release, manual } => app.on_update_checked(release, manual),
         UserEvent::UpdateDownloaded { result, now } => app.on_update_downloaded(result, now),
         UserEvent::UpdateCheckDue => app.on_update_check_due(),

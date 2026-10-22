@@ -170,6 +170,8 @@ pub(crate) fn paint_pane(
 
     if let Some(nr) = t.native() {
         let line_h = nr.layout.line_h;
+        // The text column (centred when narrower than the pane).
+        let left = left + nr.layout.left;
         for (li, line) in nr.layout.lines.iter().enumerate() {
             let y_top = top - nr.scroll + li as i32 * line_h;
             if y_top + line_h < top || y_top > bottom {
@@ -177,7 +179,7 @@ pub(crate) fn paint_pane(
             }
             if line.rule {
                 let ry = y_top + line_h / 2;
-                fill(buf, left, ry, right - MARGIN, ry + 1, draw::DIM);
+                fill(buf, left, ry, left + nr.layout.width, ry + 1, draw::DIM);
                 continue;
             }
             let baseline = y_top + line_h * 3 / 4;
@@ -186,7 +188,7 @@ pub(crate) fn paint_pane(
             if focused && nr.caret.as_ref().is_some_and(|c| c.cy == li) {
                 fill(
                     buf,
-                    left,
+                    rect.x + MARGIN,
                     y_top,
                     right - MARGIN,
                     y_top + line_h,

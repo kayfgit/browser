@@ -13,7 +13,7 @@ that works for it:
 |---|---|---|
 | **Web** (`:open`) | Microsoft Edge WebView2 (Chromium), started when the first page opens | a normal browser tab |
 | **Research** (`:research`) | WebView2 with video, audio and embeds stripped out | lighter than a web tab |
-| **Read** (`:read`) | Article text extracted and drawn natively, no engine at all | a few MB |
+| **Read** (`:read <url>`, or `:read` on an open page) | Article text extracted and drawn natively, no engine at all | a few MB |
 | **Terminal** (`:te`) | A native terminal (Alacritty's VT engine) with your shell | a few MB |
 
 With no pages open, the browser sits at about 30 MB with zero engine processes.

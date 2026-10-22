@@ -66,6 +66,18 @@ pub fn render_document(doc: &Document, width: usize) -> Vec<Line<'static>> {
                 words.extend(spans_to_words(spans, Style::default()));
                 out.extend(wrap_words(words, width, 2));
             }
+            Block::Note { label, spans } => {
+                let mut words = vec![Word {
+                    frags: vec![(label.clone(), Style::default().fg(Color::Yellow))],
+                }];
+                words.extend(spans_to_words(
+                    spans,
+                    Style::default()
+                        .fg(Color::Gray)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+                out.extend(wrap_words(words, width, 2));
+            }
             Block::Code { lines } => {
                 for src in lines {
                     out.push(Line::from(vec![
@@ -115,6 +127,13 @@ fn spans_to_words(spans: &[Span], base: Style) -> Vec<Word> {
             Span::Emphasis(t) => push_words(&mut words, t, base.add_modifier(Modifier::ITALIC)),
             Span::Strong(t) => push_words(&mut words, t, base.add_modifier(Modifier::BOLD)),
             Span::Code(t) => push_words(&mut words, t, base.patch(code_style())),
+            // Attached to the word it follows, like a link's `[n]`.
+            Span::NoteRef(label) => match words.last_mut() {
+                Some(last) => last.frags.push((label.clone(), marker_style())),
+                None => words.push(Word {
+                    frags: vec![(label.clone(), marker_style())],
+                }),
+            },
             Span::Link { text, link_id } => {
                 push_words(&mut words, text, base.patch(link_style()));
                 let marker = format!("[{link_id}]");

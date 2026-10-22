@@ -172,6 +172,8 @@ pub(crate) enum UserEvent {
     },
     /// A `:read` extraction failed.
     ReadFailed(String),
+    /// A page sent its live HTML for a plain `:read` (see [`App::read_toggle`]).
+    ReadHtml(String),
     /// Redirect the active tab to this URL (e.g. de-proxying a `translate.goog`
     /// navigation back to the original site).
     Navigate(String),
@@ -509,6 +511,9 @@ pub(crate) struct App {
     /// Tab) still reach the page, and Esc or any other key takes the keyboard back
     /// (see [`crate::shellkeys`]). Cleared the moment the shell next holds the keyboard.
     pub(crate) page_focus_yielded: bool,
+    /// The view a plain `:read` asked for its live HTML; its answer is only taken
+    /// while this is set, so a page can't turn itself into a read view.
+    pub(crate) read_request: Option<browser_engine::ViewId>,
     /// When the page last reported a pointer press. For a short grace after it the
     /// focus-reclaim poll stands down — see [`reclaim_focus_tick`](Self::reclaim_focus_tick).
     pub(crate) page_gesture_at: Option<Instant>,
@@ -861,6 +866,7 @@ impl App {
     /// Cheap no-op when the cache is still valid (called every frame).
     pub(crate) fn refresh_read_layout(&mut self) {
         let px = self.painter.px();
+        let max_chars = self.config.read_max_chars();
         // Lay out every visible read pane to ITS pane width (so a split read tab
         // wraps to its column); with no split this is just the active read tab.
         let (panes, _) = self.pane_layout();
@@ -878,7 +884,7 @@ impl App {
                 continue;
             }
             // Leave an 8px margin on each side (matches the draw offset).
-            nr.layout = read_view::layout(&nr.doc, cw - 16, painter);
+            nr.layout = read_view::layout(&nr.doc, cw - 16, max_chars, painter);
             nr.layout_w = cw;
             nr.layout_px = px;
             nr.dirty = false;
@@ -895,6 +901,12 @@ impl App {
                     .position(|l| l.contains(&text))
                 {
                     nr.scroll = row as i32 * nr.layout.line_h;
+                }
+            }
+            if let Some(fragment) = nr.anchor.take() {
+                let line = nr.doc.anchor_block(&fragment);
+                if let Some(&line) = line.and_then(|b| nr.layout.block_lines.get(b)) {
+                    nr.scroll = line as i32 * nr.layout.line_h;
                 }
             }
             let max = (nr.layout.height - view).max(0);

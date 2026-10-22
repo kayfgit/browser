@@ -41,10 +41,18 @@ pub struct VLine {
 }
 
 /// A laid-out document: the lines, the per-line height, and total content height.
+#[derive(Default)]
 pub struct Layout {
     pub lines: Vec<VLine>,
     pub line_h: i32,
     pub height: i32,
+    /// Offset (px) of the text column from the content area's left edge, centring a
+    /// column narrower than the pane, and that column's width.
+    pub left: i32,
+    pub width: i32,
+    /// The first visual line of each `Document.blocks` entry, so an in-page anchor
+    /// can scroll to its block.
+    pub block_lines: Vec<usize>,
     /// The plain text of each visual line (run texts concatenated, indent excluded),
     /// built once per layout — the grid find and the read-mode caret operate on.
     /// Indices line up 1:1 with `lines`, so a caret row maps straight to a `VLine`.
@@ -66,13 +74,21 @@ struct Word {
     width: i32,
 }
 
-/// Lay `doc` out for a content area `width` px wide.
-pub fn layout(doc: &Document, width: i32, p: &Painter) -> Layout {
-    let width = width.max(40);
+/// Lay `doc` out for a content area `area` px wide. With `max_chars`, the text
+/// wraps at that many character widths (a comfortable reading measure) and the
+/// column is centred in the area.
+pub fn layout(doc: &Document, area: i32, max_chars: Option<u32>, p: &Painter) -> Layout {
+    let area = area.max(40);
+    let width = match max_chars {
+        Some(n) => area.min(n as i32 * p.measure("0") as i32).max(40),
+        None => area,
+    };
+    let left = (area - width) / 2;
     let line_h = p.line_height() as i32;
     let space_w = p.measure(" ") as i32;
     let indent = p.measure("    ") as i32;
     let mut lines: Vec<VLine> = Vec::new();
+    let mut block_lines = Vec::with_capacity(doc.blocks.len());
 
     // Title as a top heading, then a blank line.
     if !doc.title.is_empty() {
@@ -86,12 +102,15 @@ pub fn layout(doc: &Document, width: i32, p: &Painter) -> Layout {
     }
 
     for block in &doc.blocks {
+        block_lines.push(lines.len());
         match block {
             Block::Heading { level, spans } => {
                 let color = heading_color(*level);
                 // Space above a heading, unless the previous block left some.
                 if lines.last().is_some_and(|l| !l.runs.is_empty() || l.rule) {
                     lines.push(blank());
+                    // The heading itself is where an anchor lands, not the gap.
+                    *block_lines.last_mut().unwrap() = lines.len();
                 }
                 wrap_into(
                     &mut lines,
@@ -128,6 +147,12 @@ pub fn layout(doc: &Document, width: i32, p: &Painter) -> Layout {
                 words.extend(spans_to_words(spans, FG, p));
                 wrap_into(&mut lines, words, width - indent, indent, space_w);
             }
+            Block::Note { label, spans } => {
+                let mut words = vec![vec![word(label, MARKER, None, p)]];
+                words.extend(spans_to_words(spans, MUTED, p));
+                wrap_into(&mut lines, words, width - indent, indent, space_w);
+                lines.push(blank());
+            }
             Block::Code { lines: code } => {
                 for src in code {
                     lines.push(VLine {
@@ -160,6 +185,9 @@ pub fn layout(doc: &Document, width: i32, p: &Painter) -> Layout {
         lines,
         line_h,
         height,
+        left,
+        width,
+        block_lines,
         text,
     }
 }
@@ -180,7 +208,7 @@ pub fn visible_links(
         if baseline < top || baseline > bottom + layout.line_h {
             continue;
         }
-        let mut x = line.indent;
+        let mut x = layout.left + line.indent;
         for run in &line.runs {
             if let Some(id) = run.link_id {
                 if !seen.contains(&id) {
@@ -234,6 +262,7 @@ fn spans_to_words(spans: &[Span], base: Rgb, p: &Painter) -> Vec<Vec<Word>> {
             Span::Text(_) | Span::Emphasis(_) => (base, None),
             Span::Strong(_) => (STRONG, None),
             Span::Code(_) => (CODE, None),
+            Span::NoteRef(_) => (MARKER, None),
             Span::Link { link_id, .. } => (LINK, Some(*link_id)),
         };
         let text = span.plain();
