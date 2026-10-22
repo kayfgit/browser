@@ -309,6 +309,27 @@
   function fsPost() { __fsChangeAt = Date.now(); post(document.fullscreenElement ? 'fs-enter' : 'fs-exit'); }
   document.addEventListener('fullscreenchange', fsPost);
   document.addEventListener('webkitfullscreenchange', fsPost);
+  // A cursor the page hides once the pointer goes still (YouTube's player, `cursor:
+  // none` as its controls fade) stayed visible while the shell held the keyboard:
+  // Chromium only applies a cursor change while it handles mouse input or has focus.
+  // For a while after the pointer stops, check what the page wants under it and tell
+  // the shell, which can hide it (`cursor:1`, `cursor:0` if the page shows it again).
+  // The next real move hands the cursor back to Chromium, so the state resets there.
+  var __curX = -1, __curY = -1, __curHidden = false, __curTimer = 0, __curChecks = 0;
+  function cursorCheck() {
+    __curTimer = 0;
+    var m = window.__mode;
+    if (__curX < 0 || m === 'insert' || m === 'passthrough') return;
+    var el = document.elementFromPoint(__curX, __curY), hidden = false;
+    try { hidden = !!el && getComputedStyle(el).cursor === 'none'; } catch (_) {}
+    if (hidden !== __curHidden) { __curHidden = hidden; post('cursor:' + (hidden ? 1 : 0)); }
+    if (++__curChecks < 20) __curTimer = setTimeout(cursorCheck, 500);
+  }
+  document.addEventListener('mousemove', function (e) {
+    __curX = e.clientX; __curY = e.clientY; __curHidden = false; __curChecks = 0;
+    if (!__curTimer) __curTimer = setTimeout(cursorCheck, 500);
+  }, { capture: true, passive: true });
+  document.addEventListener('mouseout', function (e) { if (!e.relatedTarget) __curX = -1; }, true);
   // Right-click menu: WebView2's default menu is full of options that don't work
   // here (and flickered shut). Replace it with our own, built from what is actually
   // under (or selected by) the pointer: Copy for a text selection, and for a link

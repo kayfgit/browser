@@ -258,6 +258,9 @@ pub(crate) enum UserEvent {
     /// The page entered (`true`) or left (`false`) HTML fullscreen (e.g. YouTube's
     /// fullscreen button) → match the window's fullscreen so the page fills the screen.
     PageFullscreen(bool),
+    /// The page hid (`true`) or showed the cursor under a pointer that isn't moving
+    /// (see [`App::sync_page_cursor`]).
+    PageCursor(bool),
     /// One Groq round finished for the `:ai` tab with this id: a final answer or
     /// tool-calls to run ([`crate::ai::AiStep`]) — or an error. `convo`/`round` carry
     /// the running conversation so [`ai_reply`](App::ai_reply) can continue the
@@ -1025,6 +1028,42 @@ impl App {
 
     #[cfg(not(windows))]
     pub(crate) fn reclaim_focus_tick(&self) {}
+
+    /// Apply the cursor a page asked for under a still pointer. WebView2 sets the
+    /// cursor itself on mouse input, but a change it makes while the pointer rests
+    /// (YouTube hiding it in fullscreen) only shows while the page has keyboard focus,
+    /// which in Normal mode is the shell. The shell's own thread can set it, so do it
+    /// here; the next mouse move hands the cursor back to the page.
+    #[cfg(windows)]
+    pub(crate) fn sync_page_cursor(&self, hidden: bool) {
+        use tao::platform::windows::WindowExtWindows;
+        use windows::Win32::Foundation::{HWND, POINT};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetAncestor, GetCursorPos, GetForegroundWindow, LoadCursorW, SetCursor,
+            WindowFromPoint, GA_ROOT, IDC_ARROW,
+        };
+        let hwnd = HWND(self.window.hwnd() as *mut core::ffi::c_void);
+        unsafe {
+            let mut pt = POINT::default();
+            if GetForegroundWindow() != hwnd || GetCursorPos(&mut pt).is_err() {
+                return;
+            }
+            // Only over a page: a child window of ours, not the shell's own bars.
+            let under = WindowFromPoint(pt);
+            if under == hwnd || GetAncestor(under, GA_ROOT) != hwnd {
+                return;
+            }
+            let cursor = if hidden {
+                None
+            } else {
+                LoadCursorW(None, IDC_ARROW).ok()
+            };
+            SetCursor(cursor);
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn sync_page_cursor(&self, _hidden: bool) {}
 
     /// The key mode published for keys that arrive while a web page has focus (see
     /// [`crate::shellkeys`]). Terminal/AI passthrough keep the shell focused, and

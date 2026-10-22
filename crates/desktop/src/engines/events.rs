@@ -101,6 +101,8 @@ pub(crate) fn decode_page_message(body: &str) -> Option<UserEvent> {
                 "popup-blocked" => UserEvent::PopupBlocked(arg.into()),
                 // The pointer moved onto/off a link (empty = off).
                 "link-hover" => UserEvent::LinkHover(arg.into()),
+                // The page hid (`1`) or showed (`0`) the cursor under a still pointer.
+                "cursor" => UserEvent::PageCursor(arg == "1"),
                 _ => return None,
             }
         }
@@ -243,6 +245,11 @@ impl App {
             }
             UserEvent::Inspect => {
                 self.inspect_tab(index);
+                None
+            }
+            // Any visible pane may be under the pointer, not just the focused one.
+            UserEvent::PageCursor(hidden) => {
+                self.sync_page_cursor(hidden);
                 None
             }
             UserEvent::ViewSource => {
