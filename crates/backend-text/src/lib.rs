@@ -167,4 +167,36 @@ mod tests {
         assert!(doc.links.iter().any(|l| l.url.contains("example.com/more")));
         assert!(doc.blocks.iter().any(|b| matches!(b, Block::Code { .. })));
     }
+
+    /// The paragraph text as the spans spell it, for spacing checks.
+    fn paragraph_text(html: &str) -> String {
+        let mut builder = DocumentBuilder::new("https://example.com/");
+        walk::build_blocks(html, "https://example.com/", &mut builder);
+        let doc = builder.build();
+        let Some(Block::Paragraph { spans }) = doc.blocks.first() else {
+            panic!("no paragraph in {:?}", doc.blocks);
+        };
+        spans.iter().map(Span::plain).collect()
+    }
+
+    #[test]
+    fn keeps_spaces_around_links() {
+        let text = paragraph_text(
+            r#"<p>I recommend MDN's <a href="/learn">Learn Web Development</a> series,
+            especially the <a href="/start"> Getting Started </a>guide.</p>"#,
+        );
+        assert_eq!(
+            text,
+            "I recommend MDN's Learn Web Development series, especially the Getting Started guide."
+        );
+    }
+
+    #[test]
+    fn keeps_spans_glued_without_whitespace() {
+        let text = paragraph_text(
+            r#"<p>Fixed in (<a href="/c">abc1234</a>), see <code>main</code>.
+            <strong>Bold</strong><em>italic</em></p>"#,
+        );
+        assert_eq!(text, "Fixed in (abc1234), see main. Bolditalic");
+    }
 }
