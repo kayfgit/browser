@@ -309,6 +309,7 @@ fn main() -> Result<()> {
         layout_history: layout::LayoutHistory::default(),
         update_available: None,
         staged_update: None,
+        staged_note_until: None,
         cli_scratch,
         pane_resize_at: Instant::now(),
         pane_move_orig: None,

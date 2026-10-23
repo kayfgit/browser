@@ -12,6 +12,7 @@
 //! copy. The web engine itself, WebView2, is kept up to date by Windows.
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use sha2::{Digest, Sha256};
 
@@ -547,6 +548,7 @@ impl App {
         };
         if !now {
             self.staged_update = Some(staged);
+            self.staged_note_until = Some(Instant::now() + crate::status::STATUS_TIMEOUT);
             self.window.request_redraw();
             return;
         }
@@ -568,6 +570,24 @@ impl App {
         self.quit = true;
     }
 
+    /// Stop saying the staged update installs when you quit once that note's time is
+    /// up. Called on the event-loop timer wake.
+    pub(crate) fn expire_staged_note(&mut self) {
+        if self.staged_note_until.is_some_and(|t| Instant::now() >= t) {
+            self.staged_note_until = None;
+            self.window.request_redraw();
+        }
+    }
+
+    /// The bar's note about a newer version, if it shows one now.
+    pub(crate) fn update_note(&self) -> Option<String> {
+        update_note(
+            self.staged_update.as_ref().map(|s| s.version.as_str()),
+            self.staged_note_until.is_some(),
+            self.update_available.as_ref().map(|r| r.version.as_str()),
+        )
+    }
+
     /// On quit: install a staged update, silently, once the browser has exited.
     pub(crate) fn install_staged_update(&mut self) {
         if let Some(staged) = self.staged_update.take() {
@@ -577,9 +597,36 @@ impl App {
     }
 }
 
+/// The bar's note about a newer version: that a `staged` one installs when you quit,
+/// while that note is `shown` (it clears itself like a status message: nothing to do,
+/// so it needn't stay), else that one is `available`, which stays until it's
+/// installed, as that does need you.
+fn update_note(staged: Option<&str>, shown: bool, available: Option<&str>) -> Option<String> {
+    match (staged, available) {
+        (Some(v), _) => shown.then(|| format!("[{v} installs when you quit]")),
+        (None, Some(v)) => Some(format!("[{v} available · :update]")),
+        (None, None) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_staged_update_note_clears_but_an_available_one_stays() {
+        assert_eq!(
+            update_note(Some("1.2.0"), true, Some("1.2.0")).as_deref(),
+            Some("[1.2.0 installs when you quit]")
+        );
+        // Once it has timed out, it doesn't fall back to "available".
+        assert_eq!(update_note(Some("1.2.0"), false, Some("1.2.0")), None);
+        assert_eq!(
+            update_note(None, false, Some("1.2.0")).as_deref(),
+            Some("[1.2.0 available · :update]")
+        );
+        assert_eq!(update_note(None, true, None), None);
+    }
 
     #[test]
     fn versions_compare_numerically() {

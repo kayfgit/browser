@@ -1293,16 +1293,8 @@ impl App {
                 if let Some(note) = self.downloads.status() {
                     segs.push((format!("   {note}"), accent));
                 }
-                if let Some(s) = &self.staged_update {
-                    segs.push((
-                        format!("   [{} installs when you quit]", s.version),
-                        draw::READ,
-                    ));
-                } else if let Some(r) = &self.update_available {
-                    segs.push((
-                        format!("   [{} available · :update]", r.version),
-                        draw::READ,
-                    ));
+                if let Some(note) = self.update_note() {
+                    segs.push((format!("   {note}"), draw::READ));
                 }
                 if self.active_is_read() {
                     segs.push(("   [read]".into(), draw::READ));
