@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.13.1](https://github.com/kayfgit/browser/compare/v0.13.0...v0.13.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* :news opens in a new tab instead of replacing the page ([e6eed65](https://github.com/kayfgit/browser/commit/e6eed6589fd1bb7ea0bcc1f6c048721b74271cef))
+* hints follow links with a real click and label ARIA widgets ([7d1a13d](https://github.com/kayfgit/browser/commit/7d1a13d03bfab511280bb35fe02b0181291d78a1))
+* the staged-update note clears itself after a few seconds ([eaf2736](https://github.com/kayfgit/browser/commit/eaf273691f8db59c65b49d4f24ae10a74079facc))
+* u reopens a closed tab where it was, not at the end ([cd2d48f](https://github.com/kayfgit/browser/commit/cd2d48feedbca205ad808d4e525fb14d1cd5f1b4))
+
 ## [0.13.0](https://github.com/kayfgit/browser/compare/v0.12.0...v0.13.0) (2026-10-23)
 
 
