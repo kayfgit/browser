@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.13.0](https://github.com/kayfgit/browser/compare/v0.12.0...v0.13.0) (2026-10-23)
+
+
+### Features
+
+* a :buttons tab, a + new-tab button and a catalog of ready-made buttons ([23b662f](https://github.com/kayfgit/browser/commit/23b662f36b4fcad1f5ea6d7835bd936e6a1db54a))
+* clear one site's cookies, cache or history ([2a23957](https://github.com/kayfgit/browser/commit/2a2395705463b1408efa5e783a5862ab2826dfd9))
+* Ctrl+W T moves a pane into a tab of its own, and the pane keys are documented ([a24d44e](https://github.com/kayfgit/browser/commit/a24d44e902da2ebba0e64702b24bb6e43ca6edab))
+* read mode reads the open page, keeps a reading width, and remembers where you were ([1bff087](https://github.com/kayfgit/browser/commit/1bff0873de673da464ce97cd2d5f84d8ef57d418))
+* zap mode hides parts of a page from the keyboard ([ea270cd](https://github.com/kayfgit/browser/commit/ea270cd080e7509cc7b9fee94f86ee6381193fd1))
+
+
+### Bug Fixes
+
+* hide the mouse cursor when a page hides it in Normal mode ([a5ce136](https://github.com/kayfgit/browser/commit/a5ce13632610a21048de8e9250dd28f2c8a0438f))
+* keep the spaces around links in read mode ([3ecb9df](https://github.com/kayfgit/browser/commit/3ecb9df91de3b8d2c8ecd6f855f8d6801b3eb6d6))
+* update uBlock Origin Lite to 2026.1018.2229 ([d71467d](https://github.com/kayfgit/browser/commit/d71467d810f815119bac1c90be010c82972a20c4))
+
 ## [0.12.0](https://github.com/kayfgit/browser/compare/v0.11.0...v0.12.0) (2026-10-17)
 
 
