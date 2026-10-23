@@ -24,6 +24,13 @@
   var sel = linksOnly ? "a[href]"
           : "a[href], button, input:not([type=hidden]):not([disabled]), textarea, " +
             "select, [onclick], [role='button'], [role='link'], [tabindex]:not([tabindex='-1'])";
+  // Widgets that take a click but are often plain divs, reachable only by arrow keys
+  // (tabindex -1): Discord's server icons are `role=treeitem`. Many wrap a link or
+  // button already labelled, so these count only when they hold none.
+  var roles = linksOnly ? null
+            : "[role='treeitem'], [role='tab'], [role='option'], [role='menuitem'], " +
+              "[role='menuitemcheckbox'], [role='menuitemradio'], [role='checkbox'], " +
+              "[role='radio'], [role='switch']";
   function onScreen(el) {
     var r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return false;
@@ -64,11 +71,18 @@
       return !(up && up !== document.body && same(up.getBoundingClientRect(), r));
     });
   }
-  var els = zapMode ? zapCandidates() : scrollMode ? window.__scrollCandidates() : deepQuery(document, sel, []).filter(function (el) {
-    if (!onScreen(el)) return false;
-    // A `javascript:` link has no address worth copying or glancing at.
-    return !linksOnly || (el.href && !/^javascript:/i.test(el.href));
-  });
+  function hintable() {
+    var found = deepQuery(document, sel, []);
+    if (roles) deepQuery(document, roles, []).forEach(function (el) {
+      if (found.indexOf(el) === -1 && !el.querySelector(sel)) found.push(el);
+    });
+    return found.filter(function (el) {
+      if (!onScreen(el)) return false;
+      // A `javascript:` link has no address worth copying or glancing at.
+      return !linksOnly || (el.href && !/^javascript:/i.test(el.href));
+    });
+  }
+  var els = zapMode ? zapCandidates() : scrollMode ? window.__scrollCandidates() : hintable();
   // Captcha checkboxes live in a cross-origin frame (and Cloudflare's behind a closed
   // shadow root), out of reach of the query above. Label the widget itself and aim
   // the click at its checkbox, which all of them draw ~28px in from the left edge.
@@ -174,23 +188,32 @@
       try { el.dispatchEvent(new C(t, o)); } catch (e) {}
     });
   }
-  // Activate a hinted target. Real links are followed by NAVIGATING to their href —
-  // reliable across SPA routers (YouTube thumbnails intercept clicks and a synthetic
-  // one often does nothing). Everything else gets the full click sequence.
-  function activate(el) {
+  // The real link a hinted element is (or sits in), or null.
+  function linkOf(el) {
     var a = el.closest ? el.closest('a[href]') : (el.tagName === 'A' ? el : null);
-    if (a && a.href && !/^javascript:/i.test(a.href)) {
-      var here = location.href.split('#')[0];
-      // A same-page hash link: let the click scroll instead of reloading.
-      if (a.href.indexOf('#') !== -1 && a.href.split('#')[0] === here) { fireClick(el); return; }
-      location.href = a.href;
-      return;
-    }
+    return a && a.href && !/^javascript:/i.test(a.href) ? a : null;
+  }
+  // Follow a link without clicking it: by NAVIGATING to its href, which a synthetic
+  // click can't be relied on for (YouTube's thumbnails ignore one). A full page load,
+  // though, so it's only the fallback for when the shell can't click.
+  function follow(el, a) {
+    var here = location.href.split('#')[0];
+    // A same-page hash link: let the click scroll instead of reloading.
+    if (a.href.indexOf('#') !== -1 && a.href.split('#')[0] === here) { fireClick(el); return; }
+    location.href = a.href;
+  }
+  // Activate a hinted target the way a mouse click would.
+  function activate(el) {
+    var a = linkOf(el);
+    // A link meant for another window would open a pop-up; `f` follows it here.
+    if (a && a.target && !/^_(self|top|parent)$/i.test(a.target)) { follow(el, a); return; }
     try { el.focus(); } catch (e) {}
     // Prefer a trusted click from the shell: a click dispatched from script isn't a
     // user gesture, so the page refuses it things like a clipboard write (a "copy"
     // button would do nothing), and some controls ignore it outright (YouTube's
-    // skip-ad button). The shell clicks a POINT, so find one that lands on the element.
+    // skip-ad button). Links get one too, so a single-page app's router takes it and
+    // switches in place (Discord reloads the whole app on a plain navigation).
+    // The shell clicks a POINT, so find one that lands on the element.
     var pt = window.top === window && clickPoint(el);
     if (pt) {
       window.__hintClickEl = el;
@@ -198,7 +221,7 @@
       window.__post('hint-click:' + pt.x + ',' + pt.y);
       return;
     }
-    fireClick(el);
+    if (a) follow(el, a); else fireClick(el);
   }
   // The element at a point, descending into shadow roots (the document only reports
   // the outermost shadow host).
@@ -280,7 +303,9 @@
   window.__hintFallback = function () {
     var el = window.__hintClickEl;
     window.__hintClickEl = null;
-    if (el) fireClick(el);
+    if (!el) return;
+    var a = linkOf(el);
+    if (a) follow(el, a); else fireClick(el);
   };
   // `mode` is 'follow' | 'newtab' | 'copy' | 'scroll' — the shell re-sends it on every
   // keystroke, since holding Shift flips follow↔newtab mid-pick.
@@ -333,8 +358,8 @@
       }
       var edit = mode !== 'copy' && mode !== 'glance' && editable(el);
       // For new-tab and copy modes, resolve the link href before clearing badges.
-      var a = !edit && el.closest ? el.closest('a[href]') : (el.tagName === 'A' ? el : null);
-      var href = (a && a.href && !/^javascript:/i.test(a.href)) ? a.href : null;
+      var a = edit ? null : linkOf(el);
+      var href = a ? a.href : null;
       window.__hintClear();
       if (edit) {
         // Defer focusing until the shell has handed the webview OS focus, so the
