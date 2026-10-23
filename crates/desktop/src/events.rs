@@ -60,6 +60,7 @@ pub(crate) fn handle(app: &mut App, event: Event<'_, UserEvent>, control_flow: &
 fn on_timer(app: &mut App) {
     // A transient status flash (e.g. a finished background `:ai`) times out.
     app.expire_status_flash();
+    app.expire_staged_note();
     // Advance the tab strip's loading sweep. Mode-independent: a page can
     // load while you're typing a command or in passthrough.
     if app.any_tab_loading() {
@@ -679,6 +680,14 @@ fn schedule_wakeup(app: &App, control_flow: &mut ControlFlow, servo_smoke: bool)
         // A pending status-flash auto-clear: wake at its deadline (or sooner, if
         // another timer above already wins).
         if let Some(clear_at) = app.status.clear_at() {
+            let next = match *control_flow {
+                ControlFlow::WaitUntil(t) => t.min(clear_at),
+                _ => clear_at,
+            };
+            *control_flow = ControlFlow::WaitUntil(next);
+        }
+        // The staged-update note's auto-clear, the same way.
+        if let Some(clear_at) = app.staged_note_until {
             let next = match *control_flow {
                 ControlFlow::WaitUntil(t) => t.min(clear_at),
                 _ => clear_at,

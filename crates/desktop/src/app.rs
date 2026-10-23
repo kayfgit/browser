@@ -577,6 +577,10 @@ pub(crate) struct App {
     /// An update downloaded in the background (`auto` mode), installed when the
     /// browser quits.
     pub(crate) staged_update: Option<crate::update::Staged>,
+    /// Until when the bar says the staged update installs when you quit; it clears
+    /// itself like a status message (the event loop wakes then and calls
+    /// [`expire_staged_note`](Self::expire_staged_note)).
+    pub(crate) staged_note_until: Option<Instant>,
     /// This process was launched with `--scratch`: a throwaway slate for poking at a
     /// dev build. Run-scoped and never persisted — it redirects
     /// [`current_session_path`](Self::current_session_path) to its own file, so

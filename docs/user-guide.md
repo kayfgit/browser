@@ -351,8 +351,8 @@ through saved chats.
 The browser updates itself. It checks at launch and every few hours; a newer version is
 downloaded in the background, checked against the checksum published with the release,
 and installed when you quit, so the next launch is the new version. The status bar shows
-`[0.4.0 installs when you quit]` meanwhile. Nothing asks for permission: the installer
-is per-user.
+`[0.4.0 installs when you quit]` for a few seconds once it's downloaded. Nothing asks
+for permission: the installer is per-user.
 
 `:update` checks now and shows what's in the new version; `:update install` installs it
 right away and restarts the browser with your tabs. `:update notify` only announces new
