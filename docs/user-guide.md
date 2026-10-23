@@ -365,8 +365,9 @@ only works for a copy installed with the installer; a copy built from source upd
 
 ## What's new
 
-`:news` (or `:changelog`) shows what changed in each release, newest first; `f`
-follows a commit link. The first launch after an update says so in the status bar.
+`:news` (or `:changelog`) opens a new tab showing what changed in each release, newest
+first; `f` follows a commit link. The first launch after an update says so in the
+status bar.
 
 ## Engines: WebView2, Servo and Trident
 

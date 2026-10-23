@@ -724,8 +724,8 @@ impl App {
                 }
             }
             "version" => self.open_version_page(),
-            // What changed in each release (`-t`: in a new tab).
-            "news" | "changelog" | "whatsnew" => self.open_news(parse_tab_flag(rest).0),
+            // What changed in each release, in a new tab (`-t` is still accepted).
+            "news" | "changelog" | "whatsnew" => self.open_news(),
             // Total the browser's real footprint across its whole process tree
             // (browser.exe + WebView2 engine procs + pty-hosts), which Task Manager
             // scatters under a separate "WebView2 Manager" group.

@@ -37,9 +37,10 @@ pub(crate) fn note_launch(seen: &mut Option<String>) -> Option<String> {
 }
 
 impl App {
-    /// `:news` — open the changelog in this tab (a new one with `-t`).
-    pub(crate) fn open_news(&mut self, new_tab: bool) {
-        self.show_read_document(document(), !new_tab, true);
+    /// `:news` — open the changelog in a new tab, like the other built-in pages:
+    /// it's never where you were going, so it doesn't take over the page you're on.
+    pub(crate) fn open_news(&mut self) {
+        self.show_read_document(document(), false, true);
     }
 }
 
