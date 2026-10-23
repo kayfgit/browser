@@ -444,6 +444,20 @@ pub(crate) fn parse_open_flags(rest: &str) -> (bool, bool, &str) {
 
 /// Build an engine-free native tab rendering `doc` (read mode when `read`). The
 /// layout is left empty/dirty so it's laid out on the next draw at the live width.
+/// Fetch `url` and extract it for a read tab (blocking: run it on a worker thread).
+fn fetch_read(url: &str) -> Result<browser_core::Document, String> {
+    let mut doc =
+        browser_backend_text::fetch_document_blocking(url).map_err(|e| format!("{e:#}"))?;
+    // The request drops the `#fragment`; keep it on the page's address so the view
+    // can scroll to it.
+    if let Some((_, fragment)) = url.split_once('#') {
+        if !doc.url.contains('#') {
+            doc.url = format!("{}#{fragment}", doc.url);
+        }
+    }
+    Ok(doc)
+}
+
 pub(crate) fn native_read_tab(doc: browser_core::Document, url: String, read: bool) -> Tab {
     Tab {
         id: crate::layout::TabId::new(),
@@ -587,10 +601,10 @@ impl App {
     /// error/res vim pagers are session-specific and skipped — and so are private
     /// tabs, which must leave no reopenable trace once closed.
     pub(crate) fn record_closed(&mut self, i: usize) {
-        let Some(saved) = self.saved_tab(i) else {
+        let Some(closed) = self.closed_tab(i) else {
             return;
         };
-        self.closed_tabs.push(saved);
+        self.closed_tabs.push(closed);
         if self.closed_tabs.len() > CLOSED_CAP {
             self.closed_tabs.remove(0);
         }
@@ -626,17 +640,26 @@ impl App {
         })
     }
 
-    /// Reopen the most recently closed tab (`U` / Ctrl+Shift+T), as a new tab. Read
-    /// tabs are re-fetched and terminals reopened fresh, matching session restore.
+    /// Reopen the most recently closed tab (`u` / Ctrl+Shift+T) where it was: the same
+    /// place in the tab strip, or back in its split (see [`crate::layout`]). Read tabs
+    /// are re-fetched and terminals reopened fresh, matching session restore.
     pub(crate) fn reopen_closed(&mut self) {
         let Some(c) = self.closed_tabs.pop() else {
             self.set_status("no closed tab to reopen");
             return;
         };
-        match c.kind.as_str() {
-            "term" => self.open_terminal_at((!c.cwd.is_empty()).then_some(&c.cwd)),
-            "read" => self.start_read(&c.url, false, true),
-            _ => self.restore_web_tab(&c),
+        let prev = self.active;
+        // Under its old id, so a later `U` of the same close finds it already back.
+        let id = if self.tabs.iter().any(|t| t.id == c.id) {
+            crate::layout::TabId::new()
+        } else {
+            c.id
+        };
+        if self.reopen_saved(&c.saved, id) {
+            self.put_back_closed(&c, id);
+        } else {
+            self.active = prev;
+            self.refresh_visibility();
         }
     }
 
@@ -746,25 +769,59 @@ impl App {
                 .unwrap_or_else(|| target.to_string());
             self.set_status(format!("reading {url} …"));
             std::thread::spawn(move || {
-                let event = match browser_backend_text::fetch_document_blocking(&url) {
-                    Ok(mut doc) => {
-                        // The request drops the `#fragment`; keep it on the page's
-                        // address so the view can scroll to it.
-                        if let Some((_, fragment)) = url.split_once('#') {
-                            if !doc.url.contains('#') {
-                                doc.url = format!("{}#{fragment}", doc.url);
-                            }
-                        }
-                        UserEvent::ReadReady {
-                            doc: Box::new(doc),
-                            replace,
-                            record,
-                        }
-                    }
-                    Err(e) => UserEvent::ReadFailed(format!("{e:#}")),
+                let event = match fetch_read(&url) {
+                    Ok(doc) => UserEvent::ReadReady {
+                        doc: Box::new(doc),
+                        replace,
+                        record,
+                    },
+                    Err(e) => UserEvent::ReadFailed(e),
                 };
                 let _ = proxy.send_event(event);
             });
+        }
+        self.window.request_redraw();
+    }
+
+    /// Bring a closed read tab back as tab `id`, in a window of its own: at once, with
+    /// a placeholder page, so it can be put back where it was before its page arrives
+    /// ([`UserEvent::ReadReopened`] fills it in).
+    pub(crate) fn reopen_read(&mut self, url: &str, id: crate::layout::TabId) {
+        let mut doc = crate::markdown::to_document(&format!("reading {url} …"), url);
+        doc.title = url.to_string();
+        let mut tab = native_read_tab(doc, url.to_string(), true);
+        tab.id = id;
+        self.place_tab_escaping_split(tab, true);
+        let proxy = self.proxy.clone();
+        let url = url.to_string();
+        std::thread::spawn(move || {
+            let doc = fetch_read(&url).map(Box::new);
+            let _ = proxy.send_event(UserEvent::ReadReopened { id, url, doc });
+        });
+    }
+
+    /// A reopened read tab's page arrived (or couldn't be read): show it in tab `id`,
+    /// wherever that is now. Nothing to do if the tab was closed meanwhile.
+    pub(crate) fn fill_reopened_read(
+        &mut self,
+        id: crate::layout::TabId,
+        url: &str,
+        doc: Result<browser_core::Document, String>,
+    ) {
+        let doc = doc.unwrap_or_else(|e| {
+            self.set_error(format!("read failed: {e}"));
+            crate::markdown::to_document(&format!("couldn't read {url}: {e}"), url)
+        });
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
+        tab.url = doc.url.clone();
+        if let Some(nr) = tab.native_mut() {
+            nr.anchor = url_fragment(&doc.url);
+            nr.doc = doc;
+            nr.scroll = 0;
+            nr.dirty = true;
+            nr.caret = None;
         }
         self.window.request_redraw();
     }

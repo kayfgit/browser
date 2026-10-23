@@ -61,8 +61,9 @@ The browser is modal, like vim or qutebrowser. The mode decides where your keys 
   `Ctrl+D`/`Ctrl+U` move half a page, `gg`/`G` jump to top/bottom, `H`/`L` go
   back/forward, `r` reloads. `n`/`p` switch tabs, `1`–`9` jump to a tab
   (`Shift+1`–`9` for tabs 11–19), `<`/`>` move the current tab, `x` closes it and
-  `u` (or `Ctrl+Shift+T`) reopens the last closed one. `U` undoes the last layout change
-  and `R` redoes it (see [Splits](#splits)). `yy` copies the page address.
+  `u` (or `Ctrl+Shift+T`) reopens the last closed one where it was, in its place in the
+  tab strip or its split. `U` undoes the last layout change and `R` redoes it (see
+  [Splits](#splits)). `yy` copies the page address.
   Clicking a button, link or menu on a page lets the page keep the keyboard so its
   menu stays usable: arrow keys, Enter, Space and Tab operate it. Any other key hands
   the keyboard back to the browser and still counts, so `:` opens the command bar

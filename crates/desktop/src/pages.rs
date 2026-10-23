@@ -622,7 +622,7 @@ pub(crate) fn now_stamp() -> String {
 const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("open", ":open <url|query> · :o", "open in THIS tab (non-URL → search engine); -t = new tab, -n = private, combinable (-tn)"),
     ("tabopen", ":tabopen · :t", "open in a new tab (same as :open -t); -n = private; bare, it asks for the address"),
-    ("reopen", ":reopen", "reopen the last closed tab (also u / Ctrl+Shift+T)"),
+    ("reopen", ":reopen", "reopen the last closed tab where it was (also u / Ctrl+Shift+T)"),
     ("undo", ":undo · :redo", "undo / redo the last layout change — closing a tab or pane, a split, moving, swapping or breaking out a pane, flipping or resizing a split, moving a tab (also U / R); an undone close reopens the page where it was"),
     ("research", ":research <url|query> · :rs", "lighter browse: JS on, images kept, media/embeds stripped (-t = new tab, -n = private)"),
     ("edit", ":edit · :e", "edit the current URL (re-opens in the tab's own mode)"),
