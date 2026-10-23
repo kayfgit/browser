@@ -462,6 +462,9 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
         } => {
             app.show_read_document(*doc, replace, record);
         }
+        UserEvent::ReadReopened { id, url, doc } => {
+            app.fill_reopened_read(id, &url, doc.map(|d| *d));
+        }
         UserEvent::ReadFailed(e) => {
             app.set_error(format!("read failed: {e}"));
             app.window.request_redraw();

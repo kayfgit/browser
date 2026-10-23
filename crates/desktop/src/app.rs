@@ -172,6 +172,13 @@ pub(crate) enum UserEvent {
     },
     /// A `:read` extraction failed.
     ReadFailed(String),
+    /// A reopened read tab's page, for tab `id`'s placeholder (see
+    /// [`App::reopen_read`]); `Err` says why `url` couldn't be read.
+    ReadReopened {
+        id: crate::layout::TabId,
+        url: String,
+        doc: Result<Box<browser_core::Document>, String>,
+    },
     /// A page sent its live HTML for a plain `:read` (see [`App::read_toggle`]).
     ReadHtml(String),
     /// Redirect the active tab to this URL (e.g. de-proxying a `translate.goog`
@@ -542,7 +549,7 @@ pub(crate) struct App {
     /// Recently-closed restorable tabs (kind + url), newest last. `U` /
     /// Ctrl+Shift+T pops the most recent and reopens it. Internal pages (the error/
     /// res/version vim tabs, `browser://…`) are never recorded.
-    pub(crate) closed_tabs: Vec<session::SavedTab>,
+    pub(crate) closed_tabs: Vec<crate::layout::ClosedTab>,
     /// True when the window's fullscreen was triggered by the page entering HTML
     /// fullscreen (YouTube's button), so leaving page fullscreen exits it again —
     /// without disturbing a fullscreen the user set manually with `:f`.

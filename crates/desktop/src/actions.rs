@@ -1386,7 +1386,7 @@ impl App {
     fn clear_site_history(&mut self, site: &str, cutoff: Option<u64>) -> usize {
         if cutoff.is_none() {
             self.closed_tabs
-                .retain(|t| !crate::visited::url_in_site(&t.url, site));
+                .retain(|t| !crate::visited::url_in_site(&t.saved.url, site));
         }
         let removed = self.visited.clear_site(site, cutoff);
         self.window.request_redraw();
