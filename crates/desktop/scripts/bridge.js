@@ -179,7 +179,8 @@
     ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1
   };
   var MODIFIERS = { Shift: 1, Control: 1, Alt: 1, Meta: 1, AltGraph: 1, CapsLock: 1, NumLock: 1, ScrollLock: 1 };
-  var EDIT_CHORDS = { a: 1, c: 1, x: 1, z: 1, y: 1 };
+  // Ctrl+Insert is the other copy chord (what clipboard tools send to grab a selection).
+  var EDIT_CHORDS = { a: 1, c: 1, x: 1, z: 1, y: 1, insert: 1 };
   function shellKey(e) {
     if ((window.__mode || 'normal') !== 'normal' || !e.isTrusted) return;
     if (e.altKey || e.metaKey || MODIFIERS[e.key]) return;
@@ -337,6 +338,24 @@
   // text to the SHELL over IPC (`clip:`) — the page can't reach the real clipboard
   // in Normal mode, and the shell owns it anyway (`y`, caret yank, terminal select).
   // "View page source" and "Inspect" are always offered.
+  // Ctrl+C / Ctrl+Insert while the SHELL holds the keyboard (Normal mode, the `v`
+  // caret): the shell asks for the page's selection and copies it. Same-origin
+  // frames and a text field's own selection count; a collapsed caret copies nothing.
+  window.__copySelection = function () {
+    var doc = document, a = deepActive(), text = '';
+    try {
+      while (a && a.tagName === 'IFRAME' && a.contentDocument) {
+        doc = a.contentDocument;
+        a = doc.activeElement;
+      }
+      if (a && typeof a.selectionStart === 'number' && a.selectionEnd > a.selectionStart) {
+        text = a.value.slice(a.selectionStart, a.selectionEnd);
+      } else {
+        text = String(doc.getSelection ? doc.getSelection() : '');
+      }
+    } catch (err) {}
+    if (text.trim()) post('clip:' + text);
+  };
   var __ctxMenu = null;
   function ctxClose() { if (__ctxMenu) { __ctxMenu.remove(); __ctxMenu = null; } }
   document.addEventListener('contextmenu', function (e) {
