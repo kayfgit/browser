@@ -277,6 +277,10 @@ impl App {
         if self.modifiers.control_key() {
             match key.physical_key {
                 KeyCode::KeyV => self.enter_passthrough(),
+                // Copy what's selected in the content: a page's mouse selection, a
+                // terminal's or pager's. Clipboard tools that grab "the selection" from
+                // any app send these (e.g. a translator's hotkey sends Ctrl+Insert).
+                KeyCode::KeyC | KeyCode::Insert => self.copy_selection(),
                 // Ctrl+W: arm the window/pane prefix (next key picks the action), with a
                 // timestamp so a dangling prefix expires instead of eating a later key.
                 KeyCode::KeyW => {
@@ -871,6 +875,13 @@ impl App {
             self.mode = ModeKind::Normal;
             return;
         };
+        // Ctrl+C / Ctrl+Insert copy the visual selection and stay in caret mode.
+        if self.modifiers.control_key()
+            && matches!(key.physical_key, KeyCode::KeyC | KeyCode::Insert)
+        {
+            let _ = wv.evaluate_script("window.__copySelection&&window.__copySelection()");
+            return;
+        }
         match &key.logical_key {
             Key::Escape => {
                 let _ = wv.evaluate_script("window.__caretEsc&&window.__caretEsc()");
@@ -1094,9 +1105,31 @@ impl App {
         let Some((tab, _)) = self.pane_at_pixel(x, y) else {
             return;
         };
-        let Some(t) = self.tabs.get(tab) else { return };
-        let text = t
-            .term()
+        if let Some(text) = self.native_selection(tab) {
+            self.copy_text(&text);
+            self.window.request_redraw();
+        }
+    }
+
+    /// Ctrl+C / Ctrl+Insert in Normal mode: copy the active content's selection. A
+    /// web page answers over IPC (`clip:`); natively drawn tabs are read directly.
+    /// With nothing selected the clipboard is left alone.
+    pub(crate) fn copy_selection(&mut self) {
+        if let Some(wv) = self.active_webview() {
+            let _ = wv.evaluate_script("window.__copySelection&&window.__copySelection()");
+            return;
+        }
+        if let Some(text) = self.active.and_then(|tab| self.native_selection(tab)) {
+            self.copy_text(&text);
+            self.window.request_redraw();
+        }
+    }
+
+    /// The selection in a natively drawn tab: a terminal's mouse/copy-mode
+    /// selection, or a vim pager's or `:read` caret's visual selection.
+    fn native_selection(&self, tab: usize) -> Option<String> {
+        let t = self.tabs.get(tab)?;
+        t.term()
             .and_then(|s| s.pty.selection_text())
             .or_else(|| {
                 t.vim()
@@ -1108,11 +1141,7 @@ impl App {
                     .and_then(|n| n.caret.as_ref())
                     .filter(|b| b.has_selection())
                     .map(|b| b.selection_text())
-            });
-        if let Some(text) = text {
-            self.copy_text(&text);
-            self.window.request_redraw();
-        }
+            })
     }
 
     /// Copy the current page's address to the clipboard — `yy`, and the `:y`/`:yank`
