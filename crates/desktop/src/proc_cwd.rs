@@ -21,7 +21,7 @@
 /// others are skipped ([`real_child`](crate::procmon::real_child)), or their directory would win as "deepest".
 #[cfg(all(windows, target_pointer_width = "64"))]
 pub(crate) fn shell_cwd(host_pid: u32) -> Option<String> {
-    use crate::procmon::{created, real_child};
+    use crate::procmon::{created, real_child, snapshot};
     use std::collections::HashMap;
 
     // Snapshot all processes → (pid, parent, exe), then index children.
@@ -62,44 +62,6 @@ pub(crate) fn shell_cwd(host_pid: u32) -> Option<String> {
 #[cfg(not(all(windows, target_pointer_width = "64")))]
 pub(crate) fn shell_cwd(_host_pid: u32) -> Option<String> {
     None
-}
-
-/// Snapshot every process as `(pid, parent pid, exe name)`.
-#[cfg(all(windows, target_pointer_width = "64"))]
-fn snapshot() -> Vec<(u32, u32, String)> {
-    use std::mem::size_of;
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-        TH32CS_SNAPPROCESS,
-    };
-
-    let mut procs = Vec::new();
-    unsafe {
-        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-            return procs;
-        };
-        let mut entry = PROCESSENTRY32W {
-            dwSize: size_of::<PROCESSENTRY32W>() as u32,
-            ..Default::default()
-        };
-        if Process32FirstW(snap, &mut entry).is_ok() {
-            loop {
-                let end = entry
-                    .szExeFile
-                    .iter()
-                    .position(|&c| c == 0)
-                    .unwrap_or(entry.szExeFile.len());
-                let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
-                procs.push((entry.th32ProcessID, entry.th32ParentProcessID, name));
-                if Process32NextW(snap, &mut entry).is_err() {
-                    break;
-                }
-            }
-        }
-        let _ = CloseHandle(snap);
-    }
-    procs
 }
 
 /// `NtQueryInformationProcess(ProcessBasicInformation)` result, x64 layout (the

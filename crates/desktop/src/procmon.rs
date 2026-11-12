@@ -69,11 +69,10 @@ pub(crate) fn created(pid: u32) -> Option<u64> {
     }
 }
 
-/// Sample every process in this process's tree (self + all descendants), sorted
-/// by memory (largest first). Empty if the snapshot fails.
+/// Snapshot every running process as `(pid, parent pid, exe name)`. Empty if the
+/// snapshot fails.
 #[cfg(windows)]
-pub fn tree_sample() -> Vec<ProcSample> {
-    use std::collections::HashMap;
+pub(crate) fn snapshot() -> Vec<(u32, u32, String)> {
     use std::mem::size_of;
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -81,11 +80,10 @@ pub fn tree_sample() -> Vec<ProcSample> {
         TH32CS_SNAPPROCESS,
     };
 
-    // Snapshot all processes → (pid, parent pid, exe name).
-    let mut procs: Vec<(u32, u32, String)> = Vec::new();
+    let mut procs = Vec::new();
     unsafe {
         let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-            return Vec::new();
+            return procs;
         };
         let mut entry = PROCESSENTRY32W {
             dwSize: size_of::<PROCESSENTRY32W>() as u32,
@@ -107,6 +105,16 @@ pub fn tree_sample() -> Vec<ProcSample> {
         }
         let _ = CloseHandle(snap);
     }
+    procs
+}
+
+/// Sample every process in this process's tree (self + all descendants), sorted
+/// by memory (largest first). Empty if the snapshot fails.
+#[cfg(windows)]
+pub fn tree_sample() -> Vec<ProcSample> {
+    use std::collections::HashMap;
+
+    let procs = snapshot();
 
     // Index pids → children pids.
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
