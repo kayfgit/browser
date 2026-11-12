@@ -1094,6 +1094,25 @@ impl App {
         Some(self.pane_focus.target(&self.windows[w]))
     }
 
+    /// [`drop_tab`](Self::drop_tab) for a tab that closes on its own (its shell exited,
+    /// its pop-up finished): only disturb focus if `i` had it. Then focus moves to
+    /// the tab taking its place and the mode returns to Normal; otherwise the focused
+    /// tab stays focused, its index adjusted for the removal. Returns whether `i` had
+    /// focus.
+    pub(crate) fn drop_tab_keeping_focus(&mut self, i: usize) -> bool {
+        let was_active = self.active == Some(i);
+        let focus_after = self.drop_tab(i);
+        self.active = if was_active {
+            focus_after
+        } else {
+            self.active.map(|a| if a > i { a - 1 } else { a })
+        };
+        if was_active {
+            self.mode = ModeKind::Normal;
+        }
+        was_active
+    }
+
     /// The tab-strip entries (one per tmux-style window), each as `(rep, panes)`: the
     /// tab to LABEL the entry by — the focused pane for the active window, else the
     /// window's top-left pane — and how many panes it tiles (>1 = a split). The `:ai`
