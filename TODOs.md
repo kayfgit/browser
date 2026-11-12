@@ -30,6 +30,8 @@ issues:
 
 feats:
 [] - add a way for users to freely install extensions
+[] - should have an icon for a tab that is playing audio, anything just to show feedback.
+[] - a tab should only load when the user has it selected, currently when opening up the browser all tabs load at once.
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
