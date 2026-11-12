@@ -36,13 +36,9 @@ pub struct Session {
     /// for sessions written before it existed.
     #[serde(default)]
     pub no_scrollbar: bool,
-    /// Legacy field: whether the (native) ad blocker was on. Superseded by
-    /// [`adblock_mode`](Self::adblock_mode); still written/read for older builds.
-    #[serde(default = "default_adblock")]
-    pub adblock: bool,
     /// Whether ad blocking is on: `"ubo"` (on, the default) or `"off"`. Older sessions may
-    /// hold the retired `"native"` mode, which reads as on. (They may also carry an
-    /// `adblock_prev` key; it's ignored.)
+    /// hold the retired `"native"` mode, which reads as on. (They may also carry
+    /// `adblock` and `adblock_prev` keys; both are ignored.)
     #[serde(default = "default_adblock_mode")]
     pub adblock_mode: String,
     pub search_template: String,
@@ -108,12 +104,6 @@ pub fn default_provider() -> String {
 /// sessions written before content zoom was split from the chrome zoom.
 fn default_content_zoom() -> f64 {
     1.0
-}
-
-/// Serde default for [`Session::adblock`]: blocking is on unless a session
-/// explicitly records it off.
-fn default_adblock() -> bool {
-    true
 }
 
 /// Serde default for [`Session::adblock_mode`]: the uBlock Origin extension.
@@ -253,7 +243,6 @@ mod tests {
             content_zoom: 1.1,
             nojs: true,
             no_scrollbar: true,
-            adblock: true,
             adblock_mode: "off".into(),
             search_template: "https://example.com/?q=%s".into(),
             term_command: vec!["nu".into()],
