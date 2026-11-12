@@ -622,16 +622,7 @@ impl App {
     /// pane, and if it had focus, hand focus back to the pane beside it — usually the
     /// page that opened it.
     pub(crate) fn close_popup_pane(&mut self, i: usize) {
-        let was_active = self.active == Some(i);
-        let focus_after = self.drop_tab(i);
-        self.active = if was_active {
-            focus_after
-        } else {
-            self.active.map(|a| if a > i { a - 1 } else { a })
-        };
-        if was_active {
-            self.mode = ModeKind::Normal;
-        }
+        self.drop_tab_keeping_focus(i);
         self.refresh_visibility();
         self.window.request_redraw();
     }

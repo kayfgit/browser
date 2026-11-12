@@ -729,19 +729,10 @@ impl App {
             }
             return;
         };
-        let was_active = self.active == Some(i);
         if let Some(session) = self.tabs[i].take_term() {
             session.shutdown();
         }
-        let focus_after = self.drop_tab(i);
-        self.active = if was_active {
-            focus_after
-        } else {
-            // Keep the same focused tab, just adjusted for the index shift.
-            self.active.map(|a| if a > i { a - 1 } else { a })
-        };
-        if was_active {
-            self.mode = ModeKind::Normal;
+        if self.drop_tab_keeping_focus(i) {
             self.window.set_focus();
         }
         self.refresh_visibility();
