@@ -200,9 +200,6 @@ pub trait EngineView {
     fn browsing_data(&self) -> Option<&dyn BrowsingData> {
         None
     }
-    fn suspension(&self) -> Option<&dyn Suspension> {
-        None
-    }
 }
 
 pub trait History {
@@ -248,13 +245,6 @@ pub trait BrowsingData {
     }
 }
 
-pub trait Suspension {
-    /// Hide the view first. Acceptance does not guarantee suspension: the runtime
-    /// may decline it while page work is active.
-    fn suspend(&self) -> EngineResult;
-    fn resume(&self) -> EngineResult;
-}
-
 // Runtime polymorphism is the point of this contract: keep every service object safe.
 const _: () = {
     #[allow(dead_code)]
@@ -263,7 +253,6 @@ const _: () = {
         _: &dyn History,
         _: &dyn Extensions,
         _: &dyn BrowsingData,
-        _: &dyn Suspension,
     ) {
     }
 };
