@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use crate::tabs::{TabContent, TabNav};
+use crate::tabs::TabContent;
 use crate::{procmon, vim, App, Tab};
 
 /// How serious a logged message is, and so which page lists it: every one shows in
@@ -66,26 +66,32 @@ impl App {
             Some(Level::Warn) => "browser://warn",
             _ => "browser://msg",
         };
-        self.place_tab(
-            Tab {
-                id: crate::layout::TabId::new(),
-                url: page.into(),
-                nojs: false,
-                read: false,
-                research: false,
-                private: false,
-                nav: TabNav::default(),
-                content: TabContent::Pager({
-                    let tints = log_tints(&lines);
-                    let mut buffer = vim::TextBuffer::new(lines);
-                    buffer.tints = tints;
-                    buffer
-                }),
-            },
-            true,
-        );
+        let tints = log_tints(&lines);
+        let mut buffer = vim::TextBuffer::new(lines);
+        buffer.tints = tints;
+        self.open_pager(page, buffer);
+    }
+
+    /// Open `buffer` as a native vim pager page at `url` (a `browser://` address), in
+    /// a new tab.
+    pub(crate) fn open_pager(&mut self, url: &str, buffer: vim::TextBuffer) {
+        let mut tab = Tab::blank();
+        tab.url = url.into();
+        tab.content = TabContent::Pager(buffer);
+        self.place_tab(tab, true);
         self.window.set_focus();
         self.clear_status();
+    }
+
+    /// Swap the active pager's text in place. The cursor stays on its row, or moves to
+    /// `row` when given (clamped either way), and any visual selection is dropped: the
+    /// rows it covered may no longer exist.
+    pub(crate) fn relist_active_pager(&mut self, lines: Vec<String>, row: Option<usize>) {
+        if let Some(buf) = self.active_vim_mut() {
+            let row = row.unwrap_or(buf.cy);
+            buf.relist(lines, row);
+        }
+        self.window.request_redraw();
     }
 
     /// `:res` — the browser's whole-tree resource usage (browser.exe + WebView2
@@ -104,21 +110,7 @@ impl App {
             self.set_status("resource info unavailable");
             return;
         }
-        self.place_tab(
-            Tab {
-                id: crate::layout::TabId::new(),
-                url: "browser://res".into(),
-                nojs: false,
-                read: false,
-                research: false,
-                private: false,
-                nav: TabNav::default(),
-                content: TabContent::Pager(vim::TextBuffer::new(lines)),
-            },
-            true,
-        );
-        self.window.set_focus();
-        self.clear_status();
+        self.open_pager("browser://res", vim::TextBuffer::new(lines));
     }
 
     /// Whether the active tab is the `:res` resource monitor.
@@ -138,20 +130,11 @@ impl App {
         if !self.active_is_res() {
             return;
         }
-        let selecting = self
-            .active
-            .and_then(|i| self.tabs.get(i))
-            .and_then(|t| t.vim())
-            .is_some_and(|b| b.has_selection());
-        if selecting {
+        if self.active_vim().is_some_and(|b| b.has_selection()) {
             return;
         }
         let lines = self.sample_res_lines();
-        if let Some(buf) = self
-            .active
-            .and_then(|i| self.tabs.get_mut(i))
-            .and_then(|t| t.vim_mut())
-        {
+        if let Some(buf) = self.active_vim_mut() {
             buf.set_lines(lines);
         }
     }
@@ -263,21 +246,7 @@ impl App {
     /// `:version` — build/runtime details in an engine-free vim pager (no WebView2),
     /// so the text is navigable and yankable with the same motions as `:error`/`:res`.
     pub(crate) fn open_version_page(&mut self) {
-        self.place_tab(
-            Tab {
-                id: crate::layout::TabId::new(),
-                url: "browser://version".into(),
-                nojs: false,
-                read: false,
-                research: false,
-                private: false,
-                nav: TabNav::default(),
-                content: TabContent::Pager(vim::TextBuffer::new(version_lines())),
-            },
-            true,
-        );
-        self.window.set_focus();
-        self.clear_status();
+        self.open_pager("browser://version", vim::TextBuffer::new(version_lines()));
     }
 
     /// `:history` — the shell's own visited list (most-recent first) in an
@@ -291,21 +260,7 @@ impl App {
             return;
         }
         let lines = history_lines(&self.visited);
-        self.place_tab(
-            Tab {
-                id: crate::layout::TabId::new(),
-                url: "browser://history".into(),
-                nojs: false,
-                read: false,
-                research: false,
-                private: false,
-                nav: TabNav::default(),
-                content: TabContent::Pager(vim::TextBuffer::new(lines)),
-            },
-            true,
-        );
-        self.window.set_focus();
-        self.clear_status();
+        self.open_pager("browser://history", vim::TextBuffer::new(lines));
     }
 
     /// `:extensions` — kick off the async query of the installed browser extensions. The
@@ -349,11 +304,7 @@ impl App {
         {
             *target = view;
             *cached = items;
-            let cy = buffer.cy;
-            buffer.set_lines(lines);
-            buffer.anchor = None;
-            buffer.cy = cy.min(buffer.lines.len().saturating_sub(1));
-            buffer.cx = 0;
+            buffer.relist(lines, buffer.cy);
         } else {
             let mut tab = Tab::blank();
             tab.url = "browser://extensions".into();
@@ -394,21 +345,7 @@ impl App {
             return;
         }
         let lines = alias_lines(&self.config.aliases);
-        self.place_tab(
-            Tab {
-                id: crate::layout::TabId::new(),
-                url: "browser://aliases".into(),
-                nojs: false,
-                read: false,
-                research: false,
-                private: false,
-                nav: TabNav::default(),
-                content: TabContent::Pager(vim::TextBuffer::new(lines)),
-            },
-            true,
-        );
-        self.window.set_focus();
-        self.clear_status();
+        self.open_pager("browser://aliases", vim::TextBuffer::new(lines));
     }
 
     /// `:profiles` (and bare `:profile`) — the saved-profile picker in a vim tab:
@@ -422,39 +359,10 @@ impl App {
             self.config.scratch_return.as_deref(),
         );
         if self.active_url() == Some("browser://profiles") {
-            let cy = self
-                .active
-                .and_then(|i| self.tabs.get(i))
-                .and_then(|t| t.vim())
-                .map_or(0, |b| b.cy);
-            if let Some(buf) = self
-                .active
-                .and_then(|i| self.tabs.get_mut(i))
-                .and_then(|t| t.vim_mut())
-            {
-                buf.set_lines(lines);
-                buf.anchor = None;
-                buf.cy = cy.min(buf.lines.len().saturating_sub(1));
-                buf.cx = 0;
-            }
-            self.window.request_redraw();
+            self.relist_active_pager(lines, None);
             return;
         }
-        self.place_tab(
-            Tab {
-                id: crate::layout::TabId::new(),
-                url: "browser://profiles".into(),
-                nojs: false,
-                read: false,
-                research: false,
-                private: false,
-                nav: TabNav::default(),
-                content: TabContent::Pager(vim::TextBuffer::new(lines)),
-            },
-            true,
-        );
-        self.window.set_focus();
-        self.clear_status();
+        self.open_pager("browser://profiles", vim::TextBuffer::new(lines));
     }
 }
 

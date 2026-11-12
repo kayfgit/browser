@@ -110,6 +110,23 @@ impl TextBuffer {
         self.anchor.is_some()
     }
 
+    /// The rows a list page's delete acts on: the visual selection's, else the cursor's.
+    pub fn selected_rows(&self) -> (usize, usize) {
+        match self.anchor {
+            Some((ay, _)) => (ay.min(self.cy), ay.max(self.cy)),
+            None => (self.cy, self.cy),
+        }
+    }
+
+    /// Swap in a list page's new text, parking the cursor at the start of `row`
+    /// (clamped) and dropping any visual selection: the rows it covered may be gone.
+    pub fn relist(&mut self, lines: Vec<String>, row: usize) {
+        self.anchor = None;
+        self.set_lines(lines);
+        self.cy = row.min(self.lines.len().saturating_sub(1));
+        self.cx = 0;
+    }
+
     /// Place the cursor at `(row, col)` and scroll it into a `rows`×`cols` viewport.
     /// Used by find-in-page to jump to a match.
     pub fn place_cursor(&mut self, row: usize, col: usize, rows: usize, cols: usize) {
@@ -460,7 +477,7 @@ impl TextBuffer {
 
     // --- text extraction ------------------------------------------------------
 
-    fn line_text(&self, row: usize) -> String {
+    pub fn line_text(&self, row: usize) -> String {
         self.lines
             .get(row)
             .map(|l| l.iter().collect())
@@ -677,4 +694,37 @@ fn quote_object(line: &[char], cx: usize, q: char, around: bool) -> Option<(usiz
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn buffer(rows: usize) -> TextBuffer {
+        TextBuffer::new((0..rows).map(|r| format!("row {r}")).collect())
+    }
+
+    #[test]
+    fn selected_rows_are_the_cursor_row_or_the_ordered_selection() {
+        let mut b = buffer(6);
+        b.cy = 2;
+        assert_eq!(b.selected_rows(), (2, 2));
+        // The anchor may sit above or below the cursor.
+        b.anchor = Some((4, 0));
+        assert_eq!(b.selected_rows(), (2, 4));
+        b.anchor = Some((0, 3));
+        assert_eq!(b.selected_rows(), (0, 2));
+    }
+
+    #[test]
+    fn relist_parks_the_cursor_and_drops_the_selection() {
+        let mut b = buffer(6);
+        (b.cy, b.cx, b.anchor) = (4, 3, Some((1, 2)));
+        b.relist(vec!["a".into(), "b".into(), "c".into()], 1);
+        assert_eq!((b.cy, b.cx, b.anchor), (1, 0, None));
+        assert_eq!(b.line_text(1), "b");
+        // A row past the new end lands on the last line.
+        b.relist(vec!["only".into()], 9);
+        assert_eq!((b.cy, b.cx), (0, 0));
+    }
 }

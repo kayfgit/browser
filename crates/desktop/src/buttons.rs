@@ -6,8 +6,7 @@
 //! `button` action as `:button`/`:unbutton` and the assistant, and is saved at once.
 
 use crate::config::Button;
-use crate::tabs::{TabContent, TabNav};
-use crate::{vim, App, Tab};
+use crate::{vim, App};
 
 const URL: &str = "browser://buttons";
 
@@ -154,24 +153,10 @@ impl App {
     pub(crate) fn open_buttons_page(&mut self) {
         let (lines, _) = page(&self.buttons());
         if self.active_url() == Some(URL) {
-            self.set_buttons_lines(lines, None);
+            self.relist_active_pager(lines, None);
             return;
         }
-        self.place_tab(
-            Tab {
-                id: crate::layout::TabId::new(),
-                url: URL.into(),
-                nojs: false,
-                read: false,
-                research: false,
-                private: false,
-                nav: TabNav::default(),
-                content: TabContent::Pager(vim::TextBuffer::new(lines)),
-            },
-            true,
-        );
-        self.window.set_focus();
-        self.clear_status();
+        self.open_pager(URL, vim::TextBuffer::new(lines));
     }
 
     /// Re-render the page if it's on screen, after a change made from anywhere (the
@@ -179,24 +164,8 @@ impl App {
     pub(crate) fn refresh_buttons_page(&mut self) {
         if self.active_url() == Some(URL) {
             let (lines, _) = page(&self.buttons());
-            self.set_buttons_lines(lines, None);
+            self.relist_active_pager(lines, None);
         }
-    }
-
-    /// Swap the page's text, putting the cursor on `cy` (or keeping its row), clamped.
-    fn set_buttons_lines(&mut self, lines: Vec<String>, cy: Option<usize>) {
-        if let Some(buf) = self
-            .active
-            .and_then(|i| self.tabs.get_mut(i))
-            .and_then(|t| t.vim_mut())
-        {
-            let cy = cy.unwrap_or(buf.cy);
-            buf.set_lines(lines);
-            buf.anchor = None;
-            buf.cy = cy.min(buf.lines.len().saturating_sub(1));
-            buf.cx = 0;
-        }
-        self.window.request_redraw();
     }
 
     /// The row under the cursor, when the page is the active tab.
@@ -204,11 +173,7 @@ impl App {
         if self.active_url() != Some(URL) {
             return None;
         }
-        let cy = self
-            .active
-            .and_then(|i| self.tabs.get(i))
-            .and_then(|t| t.vim())?
-            .cy;
+        let cy = self.active_vim()?.cy;
         page(&self.buttons()).1.get(cy).copied()
     }
 
@@ -225,12 +190,8 @@ impl App {
                 // The new button's row pushed the catalog down one: step onto the
                 // preset that followed the one just added, ready for the next Enter.
                 let (lines, _) = page(&self.buttons());
-                let cy = self
-                    .active
-                    .and_then(|i| self.tabs.get(i))
-                    .and_then(|t| t.vim())
-                    .map(|b| b.cy + 1);
-                self.set_buttons_lines(lines, cy);
+                let cy = self.active_vim().map(|b| b.cy + 1);
+                self.relist_active_pager(lines, cy);
             }
             _ => {}
         }
@@ -263,7 +224,7 @@ impl App {
         self.refresh_visibility();
         let (lines, rows) = page(&self.buttons());
         let cy = rows.iter().position(|r| *r == Row::Current(j));
-        self.set_buttons_lines(lines, cy);
+        self.relist_active_pager(lines, cy);
     }
 }
 

@@ -18,8 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::now_epoch;
 use crate::pages::truncate_name;
-use crate::tabs::{TabContent, TabNav};
-use crate::{vim, App, Tab};
+use crate::{vim, App};
 
 /// One saved page.
 #[derive(Clone, Serialize, Deserialize)]
@@ -176,24 +175,10 @@ impl App {
         }
         let lines = saved_lines(&self.saved);
         if self.active_url() == Some("browser://saved") {
-            self.set_saved_lines(lines);
+            self.relist_active_pager(lines, None);
             return;
         }
-        self.place_tab(
-            Tab {
-                id: crate::layout::TabId::new(),
-                url: "browser://saved".into(),
-                nojs: false,
-                read: false,
-                research: false,
-                private: false,
-                nav: TabNav::default(),
-                content: TabContent::Pager(vim::TextBuffer::new(lines)),
-            },
-            true,
-        );
-        self.window.set_focus();
-        self.clear_status();
+        self.open_pager("browser://saved", vim::TextBuffer::new(lines));
     }
 
     /// Re-render the `:saved` picker if it happens to be on screen (after a save or
@@ -203,28 +188,7 @@ impl App {
             return;
         }
         let lines = saved_lines(&self.saved);
-        self.set_saved_lines(lines);
-    }
-
-    /// Swap the picker's text in place, keeping the cursor row (clamped) and dropping
-    /// any visual selection — the rows it covered may no longer exist.
-    fn set_saved_lines(&mut self, lines: Vec<String>) {
-        let cy = self
-            .active
-            .and_then(|i| self.tabs.get(i))
-            .and_then(|t| t.vim())
-            .map_or(0, |b| b.cy);
-        if let Some(buf) = self
-            .active
-            .and_then(|i| self.tabs.get_mut(i))
-            .and_then(|t| t.vim_mut())
-        {
-            buf.set_lines(lines);
-            buf.anchor = None;
-            buf.cy = cy.min(buf.lines.len().saturating_sub(1));
-            buf.cx = 0;
-        }
-        self.window.request_redraw();
+        self.relist_active_pager(lines, None);
     }
 
     /// Enter on a `:saved` row: open that page — in this tab, or a new one with
@@ -233,11 +197,7 @@ impl App {
         if self.active_url() != Some("browser://saved") {
             return;
         }
-        let row = self
-            .active
-            .and_then(|i| self.tabs.get(i))
-            .and_then(|t| t.vim())
-            .map(|b| b.cy);
+        let row = self.active_vim().map(|b| b.cy);
         let Some(url) = row
             .and_then(|r| index_at_row(self.saved.len(), r))
             .map(|i| self.saved[i].url.clone())
@@ -253,15 +213,8 @@ impl App {
         if self.active_url() != Some("browser://saved") {
             return;
         }
-        let Some(i) = self.active else { return };
-        let (lo, hi) = {
-            let Some(buf) = self.tabs.get(i).and_then(|t| t.vim()) else {
-                return;
-            };
-            match buf.anchor {
-                Some((ay, _)) => (ay.min(buf.cy), ay.max(buf.cy)),
-                None => (buf.cy, buf.cy),
-            }
+        let Some((lo, hi)) = self.active_vim().map(|b| b.selected_rows()) else {
+            return;
         };
         let n = self.saved.len();
         let (Some(first), Some(last)) = (
@@ -274,7 +227,7 @@ impl App {
         self.saved.drain(first..=last);
         store(&self.saved);
         let lines = saved_lines(&self.saved);
-        self.set_saved_lines(lines);
+        self.relist_active_pager(lines, None);
         self.set_status(format!(
             "removed {removed} saved page{}",
             if removed == 1 { "" } else { "s" }
