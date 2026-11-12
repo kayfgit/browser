@@ -1585,7 +1585,6 @@ impl App {
             content_zoom: self.content_zoom,
             nojs: self.nojs,
             no_scrollbar: self.no_scrollbar,
-            adblock: self.adblock.on(),
             adblock_mode: self.adblock.session_name().to_string(),
             search_template: self.search_template.clone(),
             term_command: self.term_command.clone(),
