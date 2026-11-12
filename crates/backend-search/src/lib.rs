@@ -1,20 +1,19 @@
-//! Search mode: query a configurable provider and render results as a followable
-//! list. Two providers are supported:
-//!
-//! * **SearXNG** — `GET {base_url}?q=…&format=json`, parsed from JSON.
-//! * **DuckDuckGo lite** — `POST {base_url}` with `q=…`, scraped from the HTML.
-//!
-//! Both produce a [`Document`] whose result titles are registered links, so the
-//! TUI can follow `[n]` straight into text/full mode via the normal router.
+//! Search for `:read <query>`: ask DuckDuckGo lite and render the results as a
+//! followable list, a [`Document`] whose result titles are registered links.
 
 use anyhow::{anyhow, Context, Result};
 use browser_core::content::{Block, DocumentBuilder, Span};
-use browser_core::{Backend, Document, SearchConfig, SearchProvider};
-use serde::Deserialize;
+use browser_core::Document;
 
 const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) \
      Chrome/124.0 Safari/537.36";
+
+/// DuckDuckGo's HTML-lite endpoint: it needs no instance and no key.
+const ENDPOINT: &str = "https://lite.duckduckgo.com/lite/";
+
+/// The most results to list.
+const LIMIT: usize = 15;
 
 /// One search hit.
 #[derive(Debug, Clone)]
@@ -24,112 +23,48 @@ struct SearchResult {
     snippet: String,
 }
 
-/// Search backend, configured with a provider + endpoint.
-pub struct SearchBackend {
-    client: reqwest::Client,
-    config: SearchConfig,
-}
-
-impl SearchBackend {
-    pub fn new(config: SearchConfig) -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(std::time::Duration::from_secs(20))
-            // DuckDuckGo lite serves its empty front page (not results) when the
-            // request negotiates HTTP/2 via ALPN; forcing HTTP/1.1 returns results.
-            .http1_only()
-            .build()
-            .context("building HTTP client")?;
-        Ok(SearchBackend { client, config })
+/// Search for `query` and return a results [`Document`] (titles are followable
+/// links). Blocking, for callers without an async runtime: it spins up a
+/// short-lived current-thread runtime, so run it on a worker thread.
+pub fn search_blocking(query: &str) -> Result<Document> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Err(anyhow!("empty search query"));
     }
-
-    async fn run_query(&self, query: &str) -> Result<Vec<SearchResult>> {
-        let results = match self.config.provider {
-            SearchProvider::Searxng => self.searxng(query).await?,
-            SearchProvider::Ddg => self.ddg_lite(query).await?,
-        };
-        Ok(results.into_iter().take(self.config.limit).collect())
-    }
-
-    async fn searxng(&self, query: &str) -> Result<Vec<SearchResult>> {
-        let resp = self
-            .client
-            .get(&self.config.base_url)
-            .query(&[("q", query), ("format", "json")])
-            .send()
-            .await
-            .context("querying SearXNG")?
-            .error_for_status()
-            .context("SearXNG returned an error status")?;
-        let parsed: SearxResponse = resp.json().await.context("parsing SearXNG JSON")?;
-        Ok(parsed
-            .results
-            .into_iter()
-            .map(|r| SearchResult {
-                title: r.title.unwrap_or_default(),
-                url: r.url,
-                snippet: r.content.unwrap_or_default(),
-            })
-            .collect())
-    }
-
-    async fn ddg_lite(&self, query: &str) -> Result<Vec<SearchResult>> {
-        let html = self
-            .client
-            .get(&self.config.base_url)
-            .query(&[("q", query)])
-            .send()
-            .await
-            .context("querying DuckDuckGo lite")?
-            .error_for_status()
-            .context("DuckDuckGo lite returned an error status")?
-            .text()
-            .await
-            .context("reading DuckDuckGo lite body")?;
-        Ok(parse_ddg_lite(&html))
-    }
-}
-
-impl Backend for SearchBackend {
-    async fn fetch(&self, target: &str) -> Result<Document> {
-        let query = target.trim();
-        if query.is_empty() {
-            return Err(anyhow!("empty search query"));
-        }
-        let results = self.run_query(query).await?;
-        Ok(build_document(query, &results))
-    }
-}
-
-/// Blocking search → a results [`Document`] (titles are followable links), for
-/// callers without an async runtime (e.g. the GUI shell's `:read <query>`). Spins
-/// up a short-lived current-thread runtime.
-pub fn search_blocking(query: &str, config: SearchConfig) -> Result<Document> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("building runtime")?;
-    rt.block_on(async move {
-        let backend = SearchBackend::new(config)?;
-        backend.fetch(query).await
-    })
+    let html = rt.block_on(fetch_results(query))?;
+    let results: Vec<SearchResult> = parse_ddg_lite(&html).into_iter().take(LIMIT).collect();
+    Ok(build_document(query, &results))
 }
 
-#[derive(Debug, Deserialize)]
-struct SearxResponse {
-    #[serde(default)]
-    results: Vec<SearxResult>,
+/// The DuckDuckGo lite results page for `query`, as HTML.
+async fn fetch_results(query: &str) -> Result<String> {
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(std::time::Duration::from_secs(20))
+        // DuckDuckGo lite serves its empty front page (not results) when the
+        // request negotiates HTTP/2 via ALPN; forcing HTTP/1.1 returns results.
+        .http1_only()
+        .build()
+        .context("building HTTP client")?;
+    client
+        .get(ENDPOINT)
+        .query(&[("q", query)])
+        .send()
+        .await
+        .context("querying DuckDuckGo lite")?
+        .error_for_status()
+        .context("DuckDuckGo lite returned an error status")?
+        .text()
+        .await
+        .context("reading DuckDuckGo lite body")
 }
 
-#[derive(Debug, Deserialize)]
-struct SearxResult {
-    url: String,
-    title: Option<String>,
-    content: Option<String>,
-}
-
-/// Build the results document. The `search:` scheme is irrelevant; the TUI feeds
-/// followed links back through the router, which re-routes them by domain rules.
+/// Build the results document. Its `search:` address only labels the page; each
+/// result opens at its own URL.
 fn build_document(query: &str, results: &[SearchResult]) -> Document {
     let mut b = DocumentBuilder::new(format!("search:{query}"));
     b.title(format!("Search: {query}"));
@@ -254,5 +189,22 @@ mod tests {
         let doc = build_document("test", &results);
         assert_eq!(doc.links.len(), 1);
         assert_eq!(doc.link_url(1), Some("https://example.com"));
+    }
+
+    #[test]
+    fn parses_result_links_and_snippets() {
+        let html = r#"<table>
+            <tr><td><a class="result-link" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fa.test%2F">
+                First  hit</a></td></tr>
+            <tr><td class="result-snippet">About   the first.</td></tr>
+            <tr><td><a class="result-link" href="https://b.test/">Second</a></td></tr>
+            <tr><td><a class="result-link" href="https://c.test/"> </a></td></tr>
+        </table>"#;
+        let results = parse_ddg_lite(html);
+        assert_eq!(results.len(), 2, "the untitled link is dropped");
+        assert_eq!(results[0].title, "First hit");
+        assert_eq!(results[0].url, "https://a.test/");
+        assert_eq!(results[0].snippet, "About the first.");
+        assert_eq!(results[1].url, "https://b.test/");
     }
 }

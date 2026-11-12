@@ -1,22 +1,15 @@
-//! Core types shared across the browser: configuration, the document model,
-//! command parsing / intent routing, and the backend contract.
+//! Engine-free logic shared across the browser: the document model read mode
+//! renders, bangs, quick maths, and telling a search query from an address.
 
-pub mod backend;
 pub mod bangs;
-pub mod config;
 pub mod content;
 pub mod intent;
 pub mod matheval;
 
-pub use backend::Backend;
 pub use bangs::{
     bang_search_template, expand_bang_with, find_bang, kagi_bang, normalize_custom_bang,
     search_bangs, BangInfo, BangOverrides, BangSource, KAGI_VERSION,
 };
-pub use config::{Config, KeyConfig, SearchConfig, SearchProvider};
 pub use content::{Block, Document, DocumentBuilder, Link, Span};
-pub use intent::{
-    looks_like_query, normalize_url, parse_command, route, search_url, Command, Mode,
-    DEFAULT_SEARCH_URL,
-};
+pub use intent::{looks_like_query, normalize_url, search_url, DEFAULT_SEARCH_URL};
 pub use matheval::eval as math_eval;

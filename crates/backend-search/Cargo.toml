@@ -8,8 +8,7 @@ authors.workspace = true
 [dependencies]
 browser-core.workspace = true
 anyhow.workspace = true
-reqwest = { workspace = true, features = ["json", "query", "form"] }
+reqwest = { workspace = true, features = ["query"] }
 tokio.workspace = true
 url.workspace = true
 scraper.workspace = true
-serde.workspace = true

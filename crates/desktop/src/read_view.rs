@@ -1,8 +1,8 @@
 //! Engine-free read mode: lay a [`Document`] out into wrapped, styled pixel lines
 //! the shell paints itself with the softbuffer [`Painter`] — no WebView2 process.
 //!
-//! This mirrors the TUI's `render` word-wrapper, but in pixels (proportional/mono
-//! glyph advances from `Painter::measure`) instead of a character grid. The result
+//! Words are wrapped in pixels (proportional/mono glyph advances from
+//! `Painter::measure`), not on a character grid. The result
 //! is a flat `Vec<VLine>` the app scrolls with a vertical pixel offset; runs carry
 //! an optional `link_id` so hint mode can label and follow links natively.
 

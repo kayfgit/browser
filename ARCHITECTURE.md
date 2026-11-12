@@ -104,10 +104,9 @@ in the tab strip.
 |---|---|
 | [crates/desktop](crates/desktop/Cargo.toml) | The browser (package `browser`). Almost all work happens here. |
 | [crates/engine](crates/engine/src/lib.rs) | The contract between the shell and a page engine: `EngineView`, providers, view ids. No WebView2 code. |
-| [crates/core](crates/core/src/lib.rs) | Shared, engine-free logic: the `Document` model, config types, bangs, maths, search routing. Kagi's bang list ([data](crates/core/data/kagi-bangs.json)) is compiled in by [build.rs](crates/core/build.rs). |
+| [crates/core](crates/core/src/lib.rs) | Shared, engine-free logic: the `Document` model, bangs, maths, telling a search query from an address. Kagi's bang list ([data](crates/core/data/kagi-bangs.json)) is compiled in by [build.rs](crates/core/build.rs). |
 | [crates/backend-text](crates/backend-text/src/lib.rs) | Fetches a page and extracts readable text for `:read`. |
-| [crates/backend-search](crates/backend-search/src/lib.rs) | DuckDuckGo-lite / SearXNG results for `:read <query>`. |
-| [crates/tui](crates/tui/src/lib.rs), [crates/cli](crates/cli/src/main.rs) | The original terminal-only reader. Legacy, not shipped. |
+| [crates/backend-search](crates/backend-search/src/lib.rs) | DuckDuckGo-lite results for `:read <query>`. |
 
 Also: [docs/](docs/user-guide.md) (user guide and engine design notes) and
 [vendor/servo-paint-api](vendor/servo-paint-api/PATCH.md) (our patched copy of one Servo

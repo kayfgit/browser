@@ -1,8 +1,8 @@
 //! The rendered-page model.
 //!
-//! Every backend (text, search, …) produces a [`Document`]; the TUI knows how to
-//! render a `Document` and nothing else. This is the seam that lets new modes plug
-//! in without the renderer learning about them.
+//! Every backend (text, search, …) produces a [`Document`]; the read view knows how
+//! to render a `Document` and nothing else. This is the seam that lets a new source
+//! of pages plug in without the renderer learning about it.
 
 /// A followable link, shown to the user as `[id]`.
 #[derive(Debug, Clone)]
@@ -44,7 +44,7 @@ impl Span {
     }
 }
 
-/// A block-level element. The TUI lays these out top to bottom.
+/// A block-level element. The read view lays these out top to bottom.
 #[derive(Debug, Clone)]
 pub enum Block {
     Heading {

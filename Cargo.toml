@@ -3,10 +3,8 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/engine",
-    "crates/tui",
     "crates/backend-text",
     "crates/backend-search",
-    "crates/cli",
     "crates/desktop",
 ]
 
@@ -22,7 +20,6 @@ homepage = "https://github.com/kayfgit/browser"
 # internal crates
 browser-core = { path = "crates/core" }
 browser-engine = { path = "crates/engine" }
-browser-tui = { path = "crates/tui" }
 browser-backend-text = { path = "crates/backend-text" }
 browser-backend-search = { path = "crates/backend-search" }
 
@@ -30,11 +27,9 @@ browser-backend-search = { path = "crates/backend-search" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt", "time"] }
 reqwest = { version = "0.13", features = ["gzip", "brotli"] }
 url = "2"
-ratatui = "0.30"
-crossterm = "0.29"
 dom_smoothie = "0.17"
 scraper = "0.27"
 ego-tree = "0.11"

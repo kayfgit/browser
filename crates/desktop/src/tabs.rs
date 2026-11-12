@@ -750,10 +750,9 @@ impl App {
         let bang = self.expand_bang(target);
         if bang.is_none() && browser_core::looks_like_query(target) {
             let query = target.to_string();
-            let config = browser_core::SearchConfig::default(); // DDG-lite, zero-config
             self.set_status(format!("searching {query} …"));
             std::thread::spawn(move || {
-                let event = match browser_backend_search::search_blocking(&query, config) {
+                let event = match browser_backend_search::search_blocking(&query) {
                     Ok(doc) => UserEvent::ReadReady {
                         doc: Box::new(doc),
                         replace,
