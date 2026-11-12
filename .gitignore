@@ -26,9 +26,6 @@ crates/desktop/extensions/*/_metadata/
 desktop-smoke/
 installed-smoke/
 
-# Local config overrides (sample lives at config/config.toml)
-/config/local.toml
-
 # Machine-specific coding-assistant settings and scratch state
 /.claude/
 /.codex/

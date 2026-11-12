@@ -1,9 +1,9 @@
-//! Terminal text mode: fetch a page, run it through readability extraction, and
-//! convert the cleaned HTML into a [`Document`] for the TUI.
+//! Read mode's fetcher: get a page, run it through readability extraction, and
+//! convert the cleaned HTML into a [`Document`].
 
 use anyhow::{anyhow, Context, Result};
 use browser_core::content::{Block, DocumentBuilder, Span};
-use browser_core::{intent, Backend, Document};
+use browser_core::{intent, Document};
 use dom_smoothie::{Config as ReadabilityConfig, Readability};
 
 mod walk;
@@ -12,45 +12,26 @@ const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) \
      Chrome/124.0 Safari/537.36";
 
-/// Reader-mode backend.
-pub struct TextBackend {
-    client: reqwest::Client,
-}
-
-impl TextBackend {
-    pub fn new() -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(std::time::Duration::from_secs(20))
-            .build()
-            .context("building HTTP client")?;
-        Ok(TextBackend { client })
+/// Fetch `url`: its address after redirects (for resolving relative links) and
+/// its HTML.
+async fn get_html(url: &str) -> Result<(String, String)> {
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .context("building HTTP client")?;
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("requesting {url}"))?;
+    let final_url = resp.url().to_string();
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(anyhow!("HTTP {status} for {url}"));
     }
-
-    async fn get_html(&self, url: &str) -> Result<(String, String)> {
-        let resp = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .with_context(|| format!("requesting {url}"))?;
-        let final_url = resp.url().to_string();
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status} for {url}"));
-        }
-        let html = resp.text().await.context("reading response body")?;
-        Ok((final_url, html))
-    }
-}
-
-impl Backend for TextBackend {
-    async fn fetch(&self, target: &str) -> Result<Document> {
-        let url =
-            intent::normalize_url(target).ok_or_else(|| anyhow!("not a valid URL: {target}"))?;
-        let (final_url, html) = self.get_html(&url).await?;
-        extract(&final_url, &html)
-    }
+    let html = resp.text().await.context("reading response body")?;
+    Ok((final_url, html))
 }
 
 /// Run readability on `html` and walk the cleaned content into a `Document`.
@@ -87,8 +68,9 @@ pub fn extract(url: &str, html: &str) -> Result<Document> {
 }
 
 /// Blocking fetch + readability extraction into the [`Document`] model, for the
-/// GUI shell's engine-free read mode (it renders the Document natively, with no
-/// WebView2). Spins up a short-lived current-thread runtime.
+/// shell's engine-free read mode (it renders the Document natively, with no web
+/// engine). Spins up a short-lived current-thread runtime, so run it on a worker
+/// thread.
 pub fn fetch_document_blocking(target: &str) -> Result<Document> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -97,8 +79,7 @@ pub fn fetch_document_blocking(target: &str) -> Result<Document> {
     rt.block_on(async move {
         let url =
             intent::normalize_url(target).ok_or_else(|| anyhow!("not a valid URL: {target}"))?;
-        let backend = TextBackend::new()?;
-        let (final_url, html) = backend.get_html(&url).await?;
+        let (final_url, html) = get_html(&url).await?;
         extract(&final_url, &html)
     })
 }
