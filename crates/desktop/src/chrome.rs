@@ -307,7 +307,11 @@ pub(crate) fn paint_pane(
         return;
     }
 
-    if let Some(vb) = t.vim() {
+    // The vim pager and the `:ai` pane. The AI pane IS a vim buffer (rebuilt each frame
+    // by refresh_ai_layout), so both draw the same way; the AI one adds its own
+    // per-line colours and, while typing, a caret at the end of the input (last) line.
+    let ai = t.ai();
+    if let Some(vb) = t.vim().or(ai.map(|a| &a.buf)) {
         let line_h = p.line_height() as i32;
         let cw = p.measure("M").max(1) as i32;
         let leftcol = vb.left;
@@ -323,12 +327,19 @@ pub(crate) fn paint_pane(
             }
             x
         };
+        // Typing into the AI field (passthrough) shows a caret at the end of the
+        // input line; otherwise the vim block cursor shows on the current row.
+        let typing = ai.is_some() && mode == ModeKind::Passthrough;
         for r in vb.top..vb.lines.len() {
             let y_top = top + (r - vb.top) as i32 * line_h;
             if y_top >= bottom {
                 break;
             }
             let line = &vb.lines[r];
+            let style = ai.and_then(|a| a.styles.get(r));
+            if let Some(bg) = style.and_then(|s| s.bg) {
+                fill(buf, left, y_top, right, y_top + line_h, bg);
+            }
             if let Some((s0, s1)) = vb.selection_on_row(r) {
                 fill(
                     buf,
@@ -360,7 +371,37 @@ pub(crate) fn paint_pane(
                 }
             }
             let baseline = (y_top + line_h * 3 / 4) as usize;
-            if vb.left < line.len() {
+            if ai.is_some() {
+                // Each colour run from its own column (a line with no runs, or text past
+                // the last run, is drawn in the default colour). Columns left of the
+                // horizontal scroll are skipped.
+                let runs = style.map(|s| s.runs.as_slice()).unwrap_or(&[]);
+                let covered = runs.last().map_or(0, |r| r.end).min(line.len());
+                let segments = runs
+                    .iter()
+                    .map(|r| (r.start, r.end.min(line.len()), r.color))
+                    .chain(std::iter::once((covered, line.len(), draw::FG)));
+                for (start, end, color) in segments {
+                    let start = start.max(vb.left);
+                    if start >= end {
+                        continue;
+                    }
+                    let text: String = line[start..end].iter().collect();
+                    p.text_rect(
+                        buf,
+                        wz,
+                        hz,
+                        col_x(line, start),
+                        baseline,
+                        &text,
+                        color,
+                        left,
+                        right,
+                        top,
+                        bottom,
+                    );
+                }
+            } else if vb.left < line.len() {
                 // Colour switches along the line: the page's own (`TextBuffer::tints`),
                 // else the page's default colours (`page_colors`). Text before the
                 // first switch keeps the normal colour.
@@ -398,7 +439,10 @@ pub(crate) fn paint_pane(
                     );
                 }
             }
-            if focused && r == vb.cy {
+            if focused && typing && r + 1 == vb.lines.len() {
+                let cx0 = col_x(line, line.len());
+                fill(buf, cx0, y_top, cx0 + cw, y_top + line_h, draw::ACCENT);
+            } else if focused && !typing && r == vb.cy {
                 let cx0 = col_x(line, vb.cx);
                 let cx1 = col_x(line, vb.cx + 1).max(cx0 + cw);
                 fill(buf, cx0, y_top, cx1, y_top + line_h, draw::FG);
@@ -441,128 +485,6 @@ pub(crate) fn paint_pane(
             bottom,
             term_style,
         );
-        return;
-    }
-
-    if let Some(ai) = t.ai() {
-        // The AI tab IS a vim buffer (rebuilt each frame by refresh_ai_layout),
-        // so it renders like the pager below but with per-line colour and an
-        // Insert-mode caret at the end of the input (last) line.
-        let vb = &ai.buf;
-        let line_h = p.line_height() as i32;
-        let cw = p.measure("M").max(1) as i32;
-        let leftcol = vb.left;
-        let col_x = |line: &[char], col: usize| -> i32 {
-            if col <= leftcol {
-                return left;
-            }
-            let end = col.min(line.len());
-            let slice: String = line[leftcol..end].iter().collect();
-            let mut x = left + p.measure(&slice) as i32;
-            if col > line.len() {
-                x += (col - line.len()) as i32 * cw;
-            }
-            x
-        };
-        // Typing into the AI field (passthrough) shows a caret at the end of the
-        // input line; in Normal it shows the vim block cursor instead.
-        let typing = mode == ModeKind::Passthrough;
-        for r in vb.top..vb.lines.len() {
-            let y_top = top + (r - vb.top) as i32 * line_h;
-            if y_top >= bottom {
-                break;
-            }
-            let line = &vb.lines[r];
-            let style = ai.styles.get(r);
-            if let Some(bg) = style.and_then(|s| s.bg) {
-                fill(buf, left, y_top, right, y_top + line_h, bg);
-            }
-            if let Some((s0, s1)) = vb.selection_on_row(r) {
-                fill(
-                    buf,
-                    col_x(line, s0),
-                    y_top,
-                    col_x(line, s1),
-                    y_top + line_h,
-                    draw::SEL,
-                );
-            }
-            if find_on {
-                for (mi, m) in find.matches.iter().enumerate() {
-                    if m.line != r {
-                        continue;
-                    }
-                    let c = if mi == find.current {
-                        draw::FIND_CUR
-                    } else {
-                        draw::FIND
-                    };
-                    fill(
-                        buf,
-                        col_x(line, m.start),
-                        y_top,
-                        col_x(line, m.end),
-                        y_top + line_h,
-                        c,
-                    );
-                }
-            }
-            let baseline = (y_top + line_h * 3 / 4) as usize;
-            // Each colour run from its own column (a line with no runs, or text past
-            // the last run, is drawn in the default colour). Columns left of the
-            // horizontal scroll are skipped.
-            let runs = style.map(|s| s.runs.as_slice()).unwrap_or(&[]);
-            let covered = runs.last().map_or(0, |r| r.end).min(line.len());
-            let segments = runs
-                .iter()
-                .map(|r| (r.start, r.end.min(line.len()), r.color))
-                .chain(std::iter::once((covered, line.len(), draw::FG)));
-            for (start, end, color) in segments {
-                let start = start.max(vb.left);
-                if start >= end {
-                    continue;
-                }
-                let text: String = line[start..end].iter().collect();
-                p.text_rect(
-                    buf,
-                    wz,
-                    hz,
-                    col_x(line, start),
-                    baseline,
-                    &text,
-                    color,
-                    left,
-                    right,
-                    top,
-                    bottom,
-                );
-            }
-            // Typing: a caret at the end of the input line; Normal: the vim block
-            // cursor on the current row (when this pane is focused).
-            if focused && typing && r + 1 == vb.lines.len() {
-                let cx0 = col_x(line, line.len());
-                fill(buf, cx0, y_top, cx0 + cw, y_top + line_h, draw::ACCENT);
-            } else if focused && !typing && r == vb.cy {
-                let cx0 = col_x(line, vb.cx);
-                let cx1 = col_x(line, vb.cx + 1).max(cx0 + cw);
-                fill(buf, cx0, y_top, cx1, y_top + line_h, draw::FG);
-                if let Some(ch) = line.get(vb.cx) {
-                    p.text_rect(
-                        buf,
-                        wz,
-                        hz,
-                        cx0.max(left),
-                        baseline,
-                        &ch.to_string(),
-                        draw::BG,
-                        left,
-                        right,
-                        top,
-                        bottom,
-                    );
-                }
-            }
-        }
         return;
     }
 
@@ -617,6 +539,177 @@ fn paint_frozen_pane(p: &Painter, buf: &mut [u32], wz: usize, hz: usize, rect: P
     };
     centered(buf, cy - lh, "frozen", draw::AI);
     centered(buf, cy + lh, ":unfreeze to resume this tab", draw::DIM);
+}
+
+#[cfg(test)]
+mod pane_paint_tests {
+    use super::*;
+    use crate::ai::AiState;
+    use crate::find::NativeMatch;
+    use crate::markdown::{LineStyle, Run};
+    use crate::tabs::TabContent;
+    use crate::vim::TextBuffer;
+
+    const W: usize = 400;
+    const H: usize = 120;
+    const PX: f32 = 15.0;
+
+    fn packed(color: draw::Rgb) -> u32 {
+        let mut px = [0u32];
+        draw::fill_rect(&mut px, 1, 1, 0, 0, 1, 1, color);
+        px[0]
+    }
+
+    /// Paint `tab` alone in a W×H pane over the page background.
+    fn paint(tab: &Tab, find: &FindState, mode: ModeKind, focused: bool) -> Vec<u32> {
+        let p = Painter::new(PX).unwrap();
+        let mut buf = vec![packed(draw::BG); W * H];
+        let rect = PaneRect {
+            x: 0,
+            y: 0,
+            w: W as i32,
+            h: H as i32,
+        };
+        paint_pane(
+            tab,
+            &p,
+            &p,
+            &pty_term::TermStyle::default(),
+            find,
+            mode,
+            &[],
+            "",
+            HintAct::Follow,
+            focused,
+            true,
+            rect,
+            &mut buf,
+            W,
+            H,
+        );
+        buf
+    }
+
+    /// The pixels of text row `row`.
+    fn row(buf: &[u32], row: usize) -> &[u32] {
+        let lh = Painter::new(PX).unwrap().line_height();
+        &buf[row * lh * W..(row + 1) * lh * W]
+    }
+
+    fn has(pixels: &[u32], color: draw::Rgb) -> bool {
+        pixels.contains(&packed(color))
+    }
+
+    fn pager(buffer: TextBuffer) -> Tab {
+        let mut tab = Tab::blank();
+        tab.url = "browser://test".into();
+        tab.content = TabContent::Pager(buffer);
+        tab
+    }
+
+    fn ai(buf: TextBuffer, styles: Vec<LineStyle>) -> Tab {
+        let mut tab = Tab::blank();
+        tab.content = TabContent::Ai(AiState {
+            id: 1,
+            messages: Vec::new(),
+            input: String::new(),
+            pending: false,
+            waiting: None,
+            pending_prompt: None,
+            buf,
+            styles,
+            follow: true,
+            chat_idx: None,
+        });
+        tab
+    }
+
+    fn three_lines() -> TextBuffer {
+        TextBuffer::new(vec!["alpha one".into(), "beta two".into(), "gamma".into()])
+    }
+
+    #[test]
+    fn a_pager_shows_its_selection_find_matches_and_cursor() {
+        let mut buffer = three_lines();
+        // Rows 0 and 1 selected, the cursor on row 1; a find match on row 2.
+        (buffer.cy, buffer.cx, buffer.anchor) = (1, 2, Some((0, 1)));
+        let tab = pager(buffer);
+        let find = FindState {
+            active: true,
+            matches: vec![NativeMatch {
+                line: 2,
+                start: 0,
+                end: 3,
+            }],
+            ..Default::default()
+        };
+        let focused = paint(&tab, &find, ModeKind::Normal, true);
+        assert!(has(row(&focused, 0), draw::SEL));
+        assert!(has(row(&focused, 1), draw::SEL));
+        assert!(!has(row(&focused, 2), draw::SEL));
+        assert!(has(row(&focused, 2), draw::FIND_CUR));
+        // Without focus the find highlight and the block cursor go; the selection stays.
+        let unfocused = paint(&tab, &find, ModeKind::Normal, false);
+        assert!(has(row(&unfocused, 0), draw::SEL));
+        assert!(!has(row(&unfocused, 2), draw::FIND_CUR));
+        assert_eq!(row(&focused, 0), row(&unfocused, 0));
+        assert_ne!(row(&focused, 1), row(&unfocused, 1), "the cursor row");
+    }
+
+    #[test]
+    fn a_pager_line_takes_its_tint() {
+        const TINT: draw::Rgb = (0x12, 0xf0, 0x34);
+        let mut buffer = three_lines();
+        buffer.tints = vec![Vec::new(), vec![(0, TINT)]];
+        let buf = paint(
+            &pager(buffer),
+            &FindState::default(),
+            ModeKind::Normal,
+            false,
+        );
+        assert!(!has(row(&buf, 0), TINT));
+        assert!(has(row(&buf, 1), TINT));
+    }
+
+    #[test]
+    fn the_ai_pane_draws_its_styles_and_the_typing_caret() {
+        const BAND: draw::Rgb = (0x01, 0x40, 0x02);
+        const RUN: draw::Rgb = (0xf0, 0x12, 0x34);
+        let styles = vec![
+            LineStyle {
+                runs: vec![Run {
+                    start: 0,
+                    end: 5,
+                    color: RUN,
+                }],
+                bg: Some(BAND),
+            },
+            LineStyle {
+                runs: Vec::new(),
+                bg: None,
+            },
+        ];
+        let tab = ai(
+            TextBuffer::new(vec!["hello there".into(), "> ask".into()]),
+            styles,
+        );
+        let find = FindState::default();
+        // Typing: an accent caret closes the input (last) line.
+        let typing = paint(&tab, &find, ModeKind::Passthrough, true);
+        assert!(has(row(&typing, 0), BAND));
+        assert!(has(row(&typing, 0), RUN));
+        assert!(has(row(&typing, 0), draw::FG), "text past the run");
+        assert!(!has(row(&typing, 1), BAND));
+        assert!(has(row(&typing, 1), draw::ACCENT));
+        // Normal: the block cursor instead, on the cursor row (row 0 here).
+        let normal = paint(&tab, &find, ModeKind::Normal, true);
+        assert!(!has(row(&normal, 1), draw::ACCENT));
+        assert_ne!(row(&normal, 0), row(&typing, 0));
+        // Unfocused: neither.
+        let idle = paint(&tab, &find, ModeKind::Passthrough, false);
+        assert!(!has(row(&idle, 1), draw::ACCENT));
+        assert_eq!(row(&idle, 0), row(&typing, 0));
+    }
 }
 
 /// Draw a 2px accent outline around the focused pane (only shown while split, as
@@ -870,6 +963,33 @@ impl App {
                 p.text(buf, wz, hz, x as usize, baseline, &shown, draw::DIM);
             }
         };
+        // Draw the chrome above and beside the pages: the tab strip (or sidebar) and
+        // the buttons on it.
+        let draw_top = |buf: &mut [u32]| {
+            draw::fill_band(buf, wz, hz, 0, tab_h, theme.bar_bg);
+            draw_tab_bar(p, buf, wz, tab_h, strip_w, &tab_labels, theme.accent);
+            draw_sidebar(
+                p,
+                buf,
+                wz,
+                side_w,
+                rows_top,
+                bar_top,
+                &tab_labels,
+                theme.bar_bg,
+                theme.accent,
+            );
+            draw_buttons(
+                p,
+                buf,
+                wz,
+                hz,
+                &buttons,
+                &button_labels,
+                button_hover,
+                theme.bar_fg,
+            );
+        };
 
         if welcome {
             // No engine running: paint the welcome screen, THEN the bar on top so a
@@ -934,29 +1054,7 @@ impl App {
                     draw_pane_border(*r, &mut buf, wz, hz, col);
                 }
             }
-            draw::fill_band(&mut buf, wz, hz, 0, tab_h, theme.bar_bg);
-            draw_tab_bar(p, &mut buf, wz, tab_h, strip_w, &tab_labels, theme.accent);
-            draw_sidebar(
-                p,
-                &mut buf,
-                wz,
-                side_w,
-                rows_top,
-                bar_top,
-                &tab_labels,
-                theme.bar_bg,
-                theme.accent,
-            );
-            draw_buttons(
-                p,
-                &mut buf,
-                wz,
-                hz,
-                &buttons,
-                &button_labels,
-                button_hover,
-                theme.bar_fg,
-            );
+            draw_top(&mut buf);
             draw_bar(&mut buf);
             // GDI's full-window copy can overwrite an OpenGL child surface until
             // its next frame. Present only chrome/native areas, preserving live
@@ -980,29 +1078,7 @@ impl App {
             // Single web tab: a webview covers the whole content band, so we only
             // repaint the bars and present just those rects — never over the page.
             draw_bar(&mut buf);
-            draw::fill_band(&mut buf, wz, hz, 0, tab_h, theme.bar_bg);
-            draw_tab_bar(p, &mut buf, wz, tab_h, strip_w, &tab_labels, theme.accent);
-            draw_sidebar(
-                p,
-                &mut buf,
-                wz,
-                side_w,
-                rows_top,
-                bar_top,
-                &tab_labels,
-                theme.bar_bg,
-                theme.accent,
-            );
-            draw_buttons(
-                p,
-                &mut buf,
-                wz,
-                hz,
-                &buttons,
-                &button_labels,
-                button_hover,
-                theme.bar_fg,
-            );
+            draw_top(&mut buf);
             let mut damage = Vec::new();
             if side_w > 0 && bar_top > 0 {
                 damage.push(softbuffer::Rect {
