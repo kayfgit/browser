@@ -3,6 +3,8 @@
 //! This is what keeps the shell engine-free at idle: no WebView is involved in
 //! drawing the UI.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use anyhow::{anyhow, Result};
@@ -264,6 +266,53 @@ struct Glyph {
     coverage: Vec<u8>,
 }
 
+/// What a [`Painter`] keeps about one character at its current size: the advance,
+/// and the bitmap once something draws it (measuring text never rasterizes).
+struct CachedGlyph {
+    advance: f32,
+    bitmap: Option<Glyph>,
+}
+
+/// The most bitmap bytes a painter keeps for characters outside ASCII before it starts
+/// over. Several screenfuls of CJK fit at the largest zoom; past it the painter just
+/// rasterizes again, as it did before it kept anything.
+const GLYPH_CACHE_BYTES: usize = 2 << 20;
+
+/// The most characters outside ASCII a painter remembers anything about. Advances are
+/// kept for text that is measured but never drawn, so laying out a long document fills
+/// this well before the byte budget.
+const GLYPH_CACHE_CHARS: usize = 16_384;
+
+/// A painter's glyphs at its current size, so a character is measured and rasterized
+/// once instead of on every frame. ASCII has a slot per character (ordinary text never
+/// hashes); everything else shares a map that is emptied when it outgrows its budget.
+struct GlyphCache {
+    ascii: Vec<Option<CachedGlyph>>,
+    other: HashMap<char, CachedGlyph>,
+    /// Bitmap bytes held in `other`.
+    bytes: usize,
+}
+
+impl Default for GlyphCache {
+    fn default() -> Self {
+        GlyphCache {
+            ascii: (0..128).map(|_| None).collect(),
+            other: HashMap::new(),
+            bytes: 0,
+        }
+    }
+}
+
+impl GlyphCache {
+    /// Start over outside ASCII once the budget is spent.
+    fn trim(&mut self) {
+        if self.bytes > GLYPH_CACHE_BYTES || self.other.len() > GLYPH_CACHE_CHARS {
+            self.other = HashMap::new();
+            self.bytes = 0;
+        }
+    }
+}
+
 /// The face that draws a character: a fully parsed primary one, or a lazy fallback.
 enum Face<'a> {
     Parsed(&'a Font),
@@ -324,6 +373,9 @@ pub struct Painter {
     custom: Option<Font>,
     system: &'static Font,
     px: f32,
+    /// Glyphs at `px`. Behind a `RefCell` because drawing and measuring take `&self`;
+    /// a painter belongs to the UI thread.
+    cache: RefCell<GlyphCache>,
 }
 
 impl Painter {
@@ -352,6 +404,7 @@ impl Painter {
             custom,
             system: system_font()?,
             px,
+            cache: RefCell::default(),
         })
     }
 
@@ -386,18 +439,53 @@ impl Painter {
         self.px
     }
 
-    /// Rescale the font (for global zoom). Glyphs are rasterized per-draw, so a
-    /// new size takes effect on the next paint with no cache to invalidate.
+    /// Rescale the font (for global zoom). The glyphs kept for the old size are
+    /// dropped, so the new size takes effect on the next paint.
     pub fn set_px(&mut self, px: f32) {
-        self.px = px;
+        if px != self.px {
+            self.px = px;
+            *self.cache.get_mut() = GlyphCache::default();
+        }
+    }
+
+    /// The cache's entry for `ch`, measuring the character if this is the first time
+    /// it's seen at this size.
+    fn cached<'a>(&self, cache: &'a mut GlyphCache, ch: char) -> &'a mut CachedGlyph {
+        let measure = || CachedGlyph {
+            advance: self.font_for(ch).advance(ch, self.px),
+            bitmap: None,
+        };
+        if (ch as usize) < cache.ascii.len() {
+            cache.ascii[ch as usize].get_or_insert_with(measure)
+        } else {
+            cache.other.entry(ch).or_insert_with(measure)
+        }
+    }
+
+    /// The bitmap of `ch`, rasterized the first time it's drawn at this size.
+    fn cached_glyph<'a>(&self, cache: &'a mut GlyphCache, ch: char) -> &'a Glyph {
+        cache.trim();
+        if self.cached(cache, ch).bitmap.is_none() {
+            let glyph = self.font_for(ch).rasterize(ch, self.px);
+            if ch as usize >= cache.ascii.len() {
+                cache.bytes += glyph.coverage.len();
+            }
+            self.cached(cache, ch).bitmap = Some(glyph);
+        }
+        self.cached(cache, ch)
+            .bitmap
+            .as_ref()
+            .expect("rasterized above")
     }
 
     /// Pixel width of `s` at the current size — matches what [`Painter::text`]
     /// advances, so it can position a caret at a byte offset within a string.
     pub fn measure(&self, s: &str) -> usize {
+        let mut cache = self.cache.borrow_mut();
+        cache.trim();
         let mut pen = 0f32;
         for ch in s.chars() {
-            pen += self.font_for(ch).advance(ch, self.px);
+            pen += self.cached(&mut cache, ch).advance;
         }
         pen as usize
     }
@@ -408,7 +496,29 @@ impl Painter {
     /// drifts, because each run boundary floors the pen — the drift grows with the
     /// column and the font size.
     pub fn advance(&self, ch: char) -> f32 {
-        self.font_for(ch).advance(ch, self.px)
+        let mut cache = self.cache.borrow_mut();
+        cache.trim();
+        self.cached(&mut cache, ch).advance
+    }
+
+    /// Draw one character with its baseline at `baseline` and its pen at `x`:
+    /// [`text`](Self::text) without a string to build, for callers that place every
+    /// cell themselves (the terminal grid).
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_char(
+        &self,
+        buf: &mut [u32],
+        w: usize,
+        h: usize,
+        x: usize,
+        baseline: usize,
+        ch: char,
+        color: Rgb,
+    ) {
+        let mut cache = self.cache.borrow_mut();
+        let glyph = self.cached_glyph(&mut cache, ch);
+        let (x, baseline) = (x as i32, baseline as i32);
+        blit(buf, w, glyph, x, baseline, color, 0, w as i32, 0, h as i32);
     }
 
     /// Draw a string with its baseline at `baseline`, left edge at `x`.
@@ -467,37 +577,71 @@ impl Painter {
         clip_y0: i32,
         clip_y1: i32,
     ) -> i32 {
-        let right = clip_x1.min(w as i32);
-        let bottom = clip_y1.min(h as i32);
-        let top = clip_y0.max(0);
+        let (left, right) = (clip_x0.max(0), clip_x1.min(w as i32));
+        let (top, bottom) = (clip_y0.max(0), clip_y1.min(h as i32));
+        let mut cache = self.cache.borrow_mut();
         let mut pen = x as f32;
         for ch in s.chars() {
-            let m = self.font_for(ch).rasterize(ch, self.px);
-            for row in 0..m.height {
-                for col in 0..m.width {
-                    let cov = m.coverage[row * m.width + col];
-                    if cov == 0 {
-                        continue;
-                    }
-                    let gx = pen as i32 + m.xmin + col as i32;
-                    let gy = baseline as i32 - m.ymin - m.height as i32 + row as i32;
-                    if gx < clip_x0 || gx >= right || gy < top || gy >= bottom {
-                        continue;
-                    }
-                    // Defensive: callers pass chrome metrics (tab/command-bar height)
-                    // that can momentarily exceed the buffer during minimize/resize.
-                    // The `gy >= h` check above normally covers this, but guard the
-                    // raw index too so a geometry mismatch can never panic the render.
-                    let idx = gy as usize * w + gx as usize;
-                    if idx >= buf.len() {
-                        continue;
-                    }
-                    buf[idx] = blend(buf[idx], color, cov);
-                }
-            }
-            pen += m.advance;
+            let glyph = self.cached_glyph(&mut cache, ch);
+            blit(
+                buf,
+                w,
+                glyph,
+                pen as i32,
+                baseline as i32,
+                color,
+                left,
+                right,
+                top,
+                bottom,
+            );
+            pen += glyph.advance;
         }
         pen as i32
+    }
+}
+
+/// Blend `glyph` into `buf` (rows of `w` pixels) with its pen at `pen_x` on
+/// `baseline`, keeping to `[x0, x1)` × `[y0, y1)`, which the caller has already
+/// confined to the buffer's own width and height.
+#[allow(clippy::too_many_arguments)]
+fn blit(
+    buf: &mut [u32],
+    w: usize,
+    glyph: &Glyph,
+    pen_x: i32,
+    baseline: i32,
+    color: Rgb,
+    x0: i32,
+    x1: i32,
+    y0: i32,
+    y1: i32,
+) {
+    // Where the bitmap's top-left pixel lands, then the part of it inside the clip.
+    let gx = pen_x + glyph.xmin;
+    let gy = baseline - glyph.ymin - glyph.height as i32;
+    let cols = (x0 - gx).max(0)..(x1 - gx).min(glyph.width as i32);
+    let rows = (y0 - gy).max(0)..(y1 - gy).min(glyph.height as i32);
+    if cols.is_empty() {
+        return;
+    }
+    for row in rows {
+        let coverage =
+            &glyph.coverage[row as usize * glyph.width..][cols.start as usize..cols.end as usize];
+        // Defensive: callers pass chrome metrics (tab/command-bar height) that can
+        // momentarily exceed the buffer during minimize/resize. The clip normally
+        // covers this, but bound the raw span too so a geometry mismatch can never
+        // panic the render.
+        let start = (gy + row) as usize * w + (gx + cols.start) as usize;
+        let end = (start + coverage.len()).min(buf.len());
+        let Some(pixels) = buf.get_mut(start..end) else {
+            continue;
+        };
+        for (pixel, &cov) in pixels.iter_mut().zip(coverage) {
+            if cov != 0 {
+                *pixel = blend(*pixel, color, cov);
+            }
+        }
     }
 }
 
@@ -662,7 +806,107 @@ pub fn find_font(query: &str) -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_cjk, parse_color, Face, LazyFace, Painter};
+    use super::{is_cjk, parse_color, Face, LazyFace, Painter, GLYPH_CACHE_BYTES};
+
+    /// A small frame with `text` drawn into it by `p`.
+    fn frame(p: &Painter, text: &str) -> Vec<u32> {
+        let (w, h) = (360, 48);
+        let mut buf = vec![0u32; w * h];
+        p.text(&mut buf, w, h, 3, 30, text, (0xd0, 0xd0, 0xd0));
+        buf
+    }
+
+    #[test]
+    fn kept_glyphs_draw_the_same_pixels() {
+        let text = "Glyphs, kept: 漢字 ⠿ gjpqy";
+        let p = Painter::new(15.0).unwrap();
+        let first = frame(&p, text);
+        assert!(first.iter().any(|&px| px != 0));
+        assert_eq!(frame(&p, text), first, "the second draw reuses the glyphs");
+        assert_eq!(frame(&Painter::new(15.0).unwrap(), text), first);
+    }
+
+    #[test]
+    fn a_new_size_drops_the_old_glyphs() {
+        let text = "Resize 漢字";
+        let mut p = Painter::new(15.0).unwrap();
+        let small = frame(&p, text);
+        p.set_px(24.0);
+        let fresh = Painter::new(24.0).unwrap();
+        assert_eq!(frame(&p, text), frame(&fresh, text));
+        assert_eq!(p.measure(text), fresh.measure(text));
+        p.set_px(15.0);
+        assert_eq!(frame(&p, text), small);
+    }
+
+    #[test]
+    fn measuring_never_rasterizes() {
+        let p = Painter::new(15.0).unwrap();
+        assert!(p.measure("measure 漢") > 0);
+        let cache = p.cache.borrow();
+        let m = cache.ascii[b'm' as usize].as_ref().expect("measured");
+        assert!(m.advance > 0.0 && m.bitmap.is_none());
+        assert!(cache.other[&'漢'].bitmap.is_none());
+        assert_eq!(cache.bytes, 0);
+    }
+
+    #[test]
+    fn the_cache_starts_over_past_its_budget() {
+        let p = Painter::new(15.0).unwrap();
+        frame(&p, "a漢");
+        {
+            let mut cache = p.cache.borrow_mut();
+            assert!(cache.bytes > 0 && cache.other.contains_key(&'漢'));
+            cache.bytes = GLYPH_CACHE_BYTES + 1;
+        }
+        // The next draw empties everything outside ASCII, then keeps what it draws.
+        let again = frame(&p, "a字");
+        {
+            let cache = p.cache.borrow();
+            assert!(!cache.other.contains_key(&'漢') && cache.other.contains_key(&'字'));
+            assert!(cache.bytes > 0 && cache.bytes < GLYPH_CACHE_BYTES);
+            let a = cache.ascii[b'a' as usize].as_ref().expect("drawn");
+            assert!(a.bitmap.is_some(), "ASCII is always kept");
+        }
+        assert_eq!(again, frame(&Painter::new(15.0).unwrap(), "a字"));
+    }
+
+    #[test]
+    fn put_char_draws_what_text_draws() {
+        let p = Painter::new(15.0).unwrap();
+        let (w, h) = (40, 40);
+        for ch in ['g', '漢', ' '] {
+            let (mut a, mut b) = (vec![0u32; w * h], vec![0u32; w * h]);
+            p.text(&mut a, w, h, 5, 28, &ch.to_string(), (255, 255, 255));
+            p.put_char(&mut b, w, h, 5, 28, ch, (255, 255, 255));
+            assert_eq!(a, b, "{ch:?}");
+        }
+    }
+
+    #[test]
+    fn text_past_the_edges_stays_in_bounds() {
+        // The buffer is shorter than the height the caller claims, as it can be
+        // for a moment during a minimize: drawing must clip, not panic.
+        let p = Painter::new(15.0).unwrap();
+        let (w, h) = (30, 20);
+        let mut buf = vec![0u32; w * (h - 4)];
+        p.text(&mut buf, w, h, 20, 19, "gjpqy|", (255, 255, 255));
+        p.text_rect(
+            &mut buf,
+            w,
+            h,
+            -8,
+            6,
+            "gjpqy|",
+            (255, 255, 255),
+            -20,
+            90,
+            -20,
+            90,
+        );
+        p.put_char(&mut buf, w, h, 29, 19, 'g', (255, 255, 255));
+        assert!(buf.iter().any(|&px| px != 0));
+    }
 
     #[test]
     fn a_lazy_face_draws_the_same_glyph_as_fontdue() {

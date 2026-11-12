@@ -917,13 +917,13 @@ pub fn render(
             && cell.c != '\0'
             && !draw_special(buf, w, h, cx, cy, cell_w, cell_h, cell.c, fg, bg)
         {
-            p.text(
+            p.put_char(
                 buf,
                 w,
                 h,
                 cx.max(0) as usize,
                 (cy + baseline_off) as usize,
-                &cell.c.to_string(),
+                cell.c,
                 fg,
             );
         }
@@ -949,13 +949,13 @@ pub fn render(
                 && cursor_char != '\0'
                 && !draw_special(buf, w, h, cx, cy, cell_w, cell_h, cursor_char, st.bg, st.fg)
             {
-                p.text(
+                p.put_char(
                     buf,
                     w,
                     h,
                     cx.max(0) as usize,
                     (cy + baseline_off) as usize,
-                    &cursor_char.to_string(),
+                    cursor_char,
                     st.bg,
                 );
             }
