@@ -106,7 +106,6 @@ fn shell_tab_owns_an_independent_engine_and_releases_it_on_replacement() {
     assert!(view.history().is_none());
     assert!(view.extensions().is_none());
     assert!(view.browsing_data().is_none());
-    assert!(view.suspension().is_none());
     assert!(!dropped.get());
 
     tab.content = TabContent::Blank;

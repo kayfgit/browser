@@ -22,7 +22,7 @@ use crate::{UserEvent, BRIDGE_JS, CARET_JS, FEATURES_JS, FIND_JS, IPC_PRELUDE, N
 use anyhow::Result;
 use browser_engine::{
     BrowsingData, Completion, DataKind, EngineResult, EngineView, ExtensionInfo, Extensions,
-    History, RectPx, Source, Suspension,
+    History, RectPx, Source,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -724,9 +724,6 @@ impl EngineView for WebView2View {
     fn browsing_data(&self) -> Option<&dyn BrowsingData> {
         Some(self)
     }
-    fn suspension(&self) -> Option<&dyn Suspension> {
-        Some(self)
-    }
 }
 
 impl History for WebView2View {
@@ -769,15 +766,6 @@ impl BrowsingData for WebView2View {
         data::clear_site(&self.inner, kind, site, origins, done)
     }
 }
-impl Suspension for WebView2View {
-    fn suspend(&self) -> EngineResult {
-        suspension::suspend(&self.inner)
-    }
-    fn resume(&self) -> EngineResult {
-        suspension::resume(&self.inner)
-    }
-}
-
 #[cfg(test)]
 mod runtime_tests {
     use super::*;

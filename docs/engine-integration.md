@@ -23,7 +23,7 @@ Commands available now:
 The desktop owns `Box<dyn browser_engine::EngineView>` for web tabs and the temporary
 profile-switch keepalive. All Wry/WebView2 objects stay under `engines/webview2/`.
 Navigation, scripts, focus, bounds, visibility and zoom cross the contract; history,
-extensions, data clearing and suspension are optional services. The contract has no
+extensions and data clearing are optional services. The contract has no
 platform dependency, native-handle escape hatch or downcast.
 
 Each view receives a process-unique, monotonically allocated ID for that incarnation.
