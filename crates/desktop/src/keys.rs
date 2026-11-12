@@ -444,13 +444,9 @@ impl App {
         if self.active_url() != Some("browser://history") {
             return;
         }
-        let line = self
-            .active
-            .and_then(|i| self.tabs.get(i))
-            .and_then(|t| t.vim())
-            .and_then(|b| b.lines.get(b.cy))
-            .map(|chars| chars.iter().collect::<String>());
-        let Some(line) = line else { return };
+        let Some(line) = self.active_vim().map(|b| b.line_text(b.cy)) else {
+            return;
+        };
         let url = line.trim();
         if url.starts_with("http") {
             self.open_tab(url, self.nojs, new_tab);
@@ -494,10 +490,7 @@ impl App {
         if self.active_url() != Some("browser://profiles") {
             return None;
         }
-        let buf = self
-            .active
-            .and_then(|i| self.tabs.get(i))
-            .and_then(|t| t.vim())?;
+        let buf = self.active_vim()?;
         let lines: Vec<String> = buf
             .lines
             .iter()
@@ -513,13 +506,9 @@ impl App {
         if self.active_url() != Some("browser://extensions") {
             return;
         }
-        let line = self
-            .active
-            .and_then(|i| self.tabs.get(i))
-            .and_then(|t| t.vim())
-            .and_then(|b| b.lines.get(b.cy))
-            .map(|chars| chars.iter().collect::<String>());
-        let Some(line) = line else { return };
+        let Some(line) = self.active_vim().map(|b| b.line_text(b.cy)) else {
+            return;
+        };
         // Row form: "[on ]  Name    <id>" — the id is the last whitespace-delimited token.
         let Some(id) = line.split_whitespace().last().map(str::to_string) else {
             return;
@@ -569,16 +558,9 @@ impl App {
         if self.active_url() != Some("browser://history") {
             return;
         }
-        let Some(i) = self.active else { return };
         // The row span to delete: the visual selection if any, else the cursor line.
-        let (lo, hi) = {
-            let Some(buf) = self.tabs.get(i).and_then(|t| t.vim()) else {
-                return;
-            };
-            match buf.anchor {
-                Some((ay, _)) => (ay.min(buf.cy), ay.max(buf.cy)),
-                None => (buf.cy, buf.cy),
-            }
+        let Some((lo, hi)) = self.active_vim().map(|b| b.selected_rows()) else {
+            return;
         };
         // The page is a 2-line header (title + blank) followed by the URLs in the
         // same order as `history`, so row r maps to history index r - HEADER.
@@ -594,15 +576,9 @@ impl App {
         }
         // Rebuild and park the cursor on whatever slid up into the deleted row.
         let lines = crate::pages::history_lines(&self.visited);
-        if let Some(buf) = self.tabs.get_mut(i).and_then(|t| t.vim_mut()) {
-            buf.set_lines(lines);
-            buf.anchor = None;
-            buf.cy = lo.min(buf.lines.len().saturating_sub(1));
-            buf.cx = 0;
-        }
+        self.relist_active_pager(lines, Some(lo));
         let plural = if removed == 1 { "entry" } else { "entries" };
         self.set_status(format!("deleted {removed} history {plural}"));
-        self.window.request_redraw();
     }
 
     /// `d` on the `:aihist` picker: delete the saved chat under the cursor — or every
@@ -616,17 +592,10 @@ impl App {
         if self.active_url() != Some("browser://aihist") {
             return;
         }
-        let Some(i) = self.active else { return };
         let n = self.ai_chats.len();
         // The buffer row span to delete: the visual selection if any, else the cursor.
-        let (lo, hi) = {
-            let Some(buf) = self.tabs.get(i).and_then(|t| t.vim()) else {
-                return;
-            };
-            match buf.anchor {
-                Some((ay, _)) => (ay.min(buf.cy), ay.max(buf.cy)),
-                None => (buf.cy, buf.cy),
-            }
+        let Some((lo, hi)) = self.active_vim().map(|b| b.selected_rows()) else {
+            return;
         };
         // Invert the newest-first rows to the contiguous chat-index range they cover.
         let Some((start, end)) = crate::pages::aihist_rows_to_chat_range(n, lo, hi) else {
@@ -646,15 +615,9 @@ impl App {
         crate::ai::save_chats(&self.ai_chats);
         // Rebuild and park the cursor on whatever slid up into the deleted span.
         let lines = crate::pages::ai_history_lines(&self.ai_chats);
-        if let Some(buf) = self.tabs.get_mut(i).and_then(|t| t.vim_mut()) {
-            buf.set_lines(lines);
-            buf.anchor = None;
-            buf.cy = lo.min(buf.lines.len().saturating_sub(1));
-            buf.cx = 0;
-        }
+        self.relist_active_pager(lines, Some(lo));
         let plural = if removed == 1 { "chat" } else { "chats" };
         self.set_status(format!("deleted {removed} {plural}"));
-        self.window.request_redraw();
     }
 
     /// Translate a raw key event into a vim-pager [`vim::Key`], or `None` if it
@@ -694,17 +657,9 @@ impl App {
         let Some(vk) = self.map_vim_key(key) else {
             return false;
         };
-        // Viewport in cells (monospace), matching the draw geometry below.
-        let w = self.focused_pane_rect().w.max(1);
-        let cw = self.painter.measure("M").max(1);
-        let line_h = self.painter.line_height().max(1);
-        let cols = ((w as usize).saturating_sub(2 * 8)) / cw;
-        let rows = (self.content_view_h() as usize) / line_h;
-        let Some(buf) = self
-            .active
-            .and_then(|i| self.tabs.get_mut(i))
-            .and_then(|t| t.vim_mut())
-        else {
+        // Viewport in cells (monospace), matching the draw geometry.
+        let (cols, rows) = self.focused_text_grid();
+        let Some(buf) = self.active_vim_mut() else {
             return false;
         };
         let res = buf.key(vk, rows, cols);
@@ -740,12 +695,7 @@ impl App {
     /// visual selection.
     pub(crate) fn enter_read_caret(&mut self) {
         // Geometry first (immutable borrows of painter), before borrowing the tab.
-        let w = self.focused_pane_rect().w.max(1);
-        let cw = self.painter.measure("M").max(1);
-        let line_h = self.painter.line_height().max(1);
-        let cols = (((w as usize).saturating_sub(16)) / cw).max(1);
-        let view = self.content_view_h();
-        let rows = (view as usize / line_h).max(1);
+        let (cols, rows) = self.focused_text_grid();
         let Some(nr) = self.active_native_mut() else {
             return;
         };
@@ -775,11 +725,7 @@ impl App {
     /// a specific word (e.g. a find match) and `hjkl` move relative to it instead of
     /// scrolling the page. Keeps the current scroll context.
     pub(crate) fn place_read_caret_at(&mut self, line: usize, col: usize) {
-        let w = self.focused_pane_rect().w.max(1);
-        let cw = self.painter.measure("M").max(1);
-        let line_h = self.painter.line_height().max(1);
-        let cols = (((w as usize).saturating_sub(16)) / cw).max(1);
-        let rows = (self.content_view_h() as usize / line_h).max(1);
+        let (cols, rows) = self.focused_text_grid();
         let Some(nr) = self.active_native_mut() else {
             return;
         };
@@ -803,11 +749,7 @@ impl App {
         let Some(vk) = self.map_vim_key(key) else {
             return false;
         };
-        let w = self.focused_pane_rect().w.max(1);
-        let cw = self.painter.measure("M").max(1);
-        let line_h = self.painter.line_height().max(1);
-        let cols = (((w as usize).saturating_sub(16)) / cw).max(1);
-        let rows = (self.content_view_h() as usize / line_h).max(1);
+        let (cols, rows) = self.focused_text_grid();
 
         let mut yanked: Option<String> = None;
         let mut consumed = true;

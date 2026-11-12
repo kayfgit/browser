@@ -396,11 +396,7 @@ impl crate::App {
         let (lines, tints) = page_lines(&self.downloads.list, &self.download_dir())
             .into_iter()
             .unzip();
-        if let Some(buf) = self
-            .active
-            .and_then(|i| self.tabs.get_mut(i))
-            .and_then(|t| t.vim_mut())
-        {
+        if let Some(buf) = self.active_vim_mut() {
             buf.set_lines(lines);
             buf.tints = tints;
         }
@@ -412,11 +408,7 @@ impl crate::App {
         if self.active_url() != Some("browser://downloads") {
             return None;
         }
-        let row = self
-            .active
-            .and_then(|i| self.tabs.get(i))
-            .and_then(|t| t.vim())?
-            .cy;
+        let row = self.active_vim()?.cy;
         at_row(&self.downloads.list, row).cloned()
     }
 

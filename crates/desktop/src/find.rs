@@ -202,11 +202,7 @@ impl App {
             nr.scroll = (line as i32 * line_h - view / 2).clamp(0, max);
             return;
         }
-        let w = self.focused_pane_rect().w.max(1);
-        let cw = self.painter.measure("M").max(1);
-        let line_h = self.painter.line_height().max(1);
-        let cols = (w as usize).saturating_sub(16) / cw;
-        let rows = (view as usize) / line_h;
+        let (cols, rows) = self.focused_text_grid();
         if let Some(vb) = self.tabs.get_mut(i).and_then(|t| t.vim_mut()) {
             vb.place_cursor(line, start, rows, cols);
         } else if let Some(ai) = self.tabs.get_mut(i).and_then(|t| t.ai_mut()) {

@@ -4,7 +4,6 @@
 
 use browser_core::{BangInfo, BangSource};
 
-use crate::tabs::{Tab, TabContent, TabNav};
 use crate::{vim, App};
 
 /// The most rows `:bangs <word>` lists.
@@ -122,21 +121,7 @@ impl App {
             .map(String::as_str)
             .collect();
         let lines = bang_lines(word, &found, &disabled);
-        self.place_tab(
-            Tab {
-                id: crate::layout::TabId::new(),
-                url: "browser://bangs".into(),
-                nojs: false,
-                read: false,
-                research: false,
-                private: false,
-                nav: TabNav::default(),
-                content: TabContent::Pager(vim::TextBuffer::new(lines)),
-            },
-            true,
-        );
-        self.window.set_focus();
-        self.clear_status();
+        self.open_pager("browser://bangs", vim::TextBuffer::new(lines));
     }
 }
 

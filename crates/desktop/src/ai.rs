@@ -1001,11 +1001,7 @@ impl App {
         let Some(vk) = self.map_vim_key(key) else {
             return false;
         };
-        let w = self.focused_pane_rect().w.max(1);
-        let cw = self.painter.measure("M").max(1);
-        let line_h = self.painter.line_height().max(1);
-        let cols = (((w as usize).saturating_sub(16)) / cw).max(1);
-        let rows = (self.content_view_h() as usize / line_h).max(1);
+        let (cols, rows) = self.focused_text_grid();
 
         let mut yanked = None;
         let consumed;
@@ -1258,21 +1254,7 @@ impl App {
             return;
         }
         let lines = crate::pages::ai_history_lines(&self.ai_chats);
-        self.place_tab(
-            Tab {
-                id: crate::layout::TabId::new(),
-                url: "browser://aihist".into(),
-                nojs: false,
-                read: false,
-                research: false,
-                private: false,
-                nav: TabNav::default(),
-                content: TabContent::Pager(vim::TextBuffer::new(lines)),
-            },
-            true,
-        );
-        self.window.set_focus();
-        self.clear_status();
+        self.open_pager("browser://aihist", vim::TextBuffer::new(lines));
     }
 
     /// `Enter` on a `:aihist` row: map the cursor line to its chat and open it. The
@@ -1283,13 +1265,8 @@ impl App {
             return;
         }
         let n = self.ai_chats.len();
-        let cy = match self
-            .active
-            .and_then(|i| self.tabs.get(i))
-            .and_then(|t| t.vim())
-        {
-            Some(b) => b.cy,
-            None => return,
+        let Some(cy) = self.active_vim().map(|b| b.cy) else {
+            return;
         };
         const HEADER: usize = 2;
         if cy < HEADER {

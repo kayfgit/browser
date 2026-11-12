@@ -872,6 +872,18 @@ impl App {
         (bottom - top).max(1)
     }
 
+    /// How many text `(columns, rows)` fit in the focused pane, at least 1×1: the
+    /// viewport a vim buffer or the read caret scrolls within (monospace cells,
+    /// matching the 8px side margins the panes are painted with).
+    pub(crate) fn focused_text_grid(&self) -> (usize, usize) {
+        let w = self.focused_pane_rect().w.max(1);
+        let cw = self.painter.measure("M").max(1);
+        let line_h = self.painter.line_height().max(1);
+        let cols = (((w as usize).saturating_sub(16)) / cw).max(1);
+        let rows = (self.content_view_h() as usize / line_h).max(1);
+        (cols, rows)
+    }
+
     /// (Re)build the active read tab's native layout when the width, zoom, or the
     /// document itself changed; then clamp the scroll to the new content height.
     /// Cheap no-op when the cache is still valid (called every frame).
@@ -1173,11 +1185,18 @@ impl App {
             .and_then(|t| t.native_mut())
     }
 
+    /// The active tab's vim text buffer, when it's a native pager page.
+    pub(crate) fn active_vim(&self) -> Option<&crate::vim::TextBuffer> {
+        self.tabs.get(self.active?)?.vim()
+    }
+
+    pub(crate) fn active_vim_mut(&mut self) -> Option<&mut crate::vim::TextBuffer> {
+        self.tabs.get_mut(self.active?)?.vim_mut()
+    }
+
     /// Whether the active tab is an engine-free `:error`/`:errors` vim tab.
     pub(crate) fn active_is_vim(&self) -> bool {
-        self.active
-            .and_then(|i| self.tabs.get(i))
-            .is_some_and(|t| t.vim().is_some())
+        self.active_vim().is_some()
     }
 
     pub(crate) fn active_url(&self) -> Option<&str> {
