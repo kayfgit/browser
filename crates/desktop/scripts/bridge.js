@@ -25,7 +25,6 @@
     }
     return !!el.isContentEditable;
   }
-  window.__shellEditable = editable;
   // The focused element, looking inside shadow roots: for a field in a web component
   // (Reddit's search box) `document.activeElement` is only the outermost host, which
   // isn't editable, so Insert would end the moment the field took focus.
