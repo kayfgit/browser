@@ -61,10 +61,6 @@ mod kagi {
         text(at, len)
     }
 
-    pub(super) fn count() -> usize {
-        TRIGGERS.len()
-    }
-
     /// Every trigger with its bang, in trigger order.
     pub(super) fn triggers() -> impl Iterator<Item = (&'static str, usize)> {
         TRIGGERS
@@ -102,11 +98,6 @@ mod kagi {
 }
 
 pub use kagi::KAGI_VERSION;
-
-/// How many triggers the bundled Kagi list has.
-pub fn kagi_bang_count() -> usize {
-    kagi::count()
-}
 
 /// `scheme://host` of a URL template.
 fn origin(url: &str) -> String {
@@ -164,15 +155,10 @@ impl Found<'_> {
     }
 }
 
-/// If `input` contains a `!key` token for a known bang, expand it into a URL: the
-/// remaining words become the query (→ the bang's search URL), or — when no words
-/// remain — the bang's home page. Returns `None` if no known bang token is present,
-/// so callers fall back to the normal open/search routing.
-pub fn expand_bang(input: &str) -> Option<String> {
-    expand_bang_with(input, &BangOverrides::default())
-}
-
-/// [`expand_bang`] with the user's changes applied.
+/// If `input` contains a `!key` token for a known bang (with the user's changes
+/// applied), expand it into a URL: the remaining words become the query (→ the bang's
+/// search URL), or — when no words remain — the bang's home page. Returns `None` if no
+/// known bang token is present, so callers fall back to the normal open/search routing.
 pub fn expand_bang_with(input: &str, user: &BangOverrides) -> Option<String> {
     let mut found = None;
     let mut rest: Vec<&str> = Vec::new();
@@ -313,6 +299,11 @@ pub fn bang_search_template(key: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// Expansion against Kagi's list as shipped, with nothing changed by the user.
+    fn expand_bang(input: &str) -> Option<String> {
+        expand_bang_with(input, &BangOverrides::default())
+    }
+
     fn user(custom: &[(&str, &str)], disabled: &[&str]) -> BangOverrides {
         BangOverrides {
             custom: custom
@@ -366,7 +357,6 @@ mod tests {
 
     #[test]
     fn the_whole_kagi_list_is_there() {
-        assert!(kagi_bang_count() > 10_000);
         let mdn = expand_bang("!mdn array map").unwrap();
         assert!(mdn.starts_with("https://developer.mozilla.org/"), "{mdn}");
         assert!(mdn.contains("array+map"), "{mdn}");

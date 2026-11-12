@@ -91,10 +91,6 @@ impl SearchBackend {
 }
 
 impl Backend for SearchBackend {
-    fn name(&self) -> &'static str {
-        "search"
-    }
-
     async fn fetch(&self, target: &str) -> Result<Document> {
         let query = target.trim();
         if query.is_empty() {
