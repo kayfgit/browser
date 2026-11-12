@@ -28,7 +28,6 @@ browser-backend-search = { path = "crates/backend-search" }
 
 # shared third-party
 anyhow = "1"
-thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
@@ -46,7 +45,6 @@ tao = "0.35"
 wry = { version = "0.55", features = ["devtools"] }
 softbuffer = "0.4"
 fontdue = "0.9"
-raw-window-handle = "0.6"
 
 [profile.release]
 opt-level = 3
