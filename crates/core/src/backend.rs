@@ -15,9 +15,6 @@ use crate::content::Document;
 /// is exactly the right tool here.
 #[allow(async_fn_in_trait)]
 pub trait Backend {
-    /// A short human-readable name, e.g. `"text"`, for status display.
-    fn name(&self) -> &'static str;
-
     /// Resolve `target` (a URL or query) into a renderable document.
     async fn fetch(&self, target: &str) -> Result<Document>;
 }
