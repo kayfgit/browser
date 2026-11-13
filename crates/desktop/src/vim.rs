@@ -524,9 +524,9 @@ impl TextBuffer {
         let mut out = String::new();
         let first = &self.lines[sy];
         out.extend(&first[sx.min(first.len())..]);
-        for row in (sy + 1)..ey {
+        for line in &self.lines[sy + 1..ey] {
             out.push('\n');
-            out.extend(&self.lines[row]);
+            out.extend(line);
         }
         out.push('\n');
         let last = &self.lines[ey];
@@ -714,6 +714,19 @@ mod tests {
         assert_eq!(b.selected_rows(), (2, 4));
         b.anchor = Some((0, 3));
         assert_eq!(b.selected_rows(), (0, 2));
+    }
+
+    #[test]
+    fn a_selection_across_lines_yanks_every_line_between() {
+        let mut b = buffer(5);
+        // From "w 1" on row 1 to "row" on row 3, anchored either way round.
+        (b.cy, b.cx, b.anchor) = (3, 2, Some((1, 2)));
+        assert_eq!(b.selection_text(), "w 1\nrow 2\nrow");
+        (b.cy, b.cx, b.anchor) = (1, 2, Some((3, 2)));
+        assert_eq!(b.selection_text(), "w 1\nrow 2\nrow");
+        // Neighbouring rows have nothing in between.
+        (b.cy, b.cx, b.anchor) = (2, 0, Some((1, 4)));
+        assert_eq!(b.selection_text(), "1\nr");
     }
 
     #[test]
