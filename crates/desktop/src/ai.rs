@@ -216,9 +216,12 @@ pub(crate) struct AiState {
     pub(crate) pending_prompt: Option<String>,
     /// The rendered conversation as a navigable read-only vim buffer.
     pub(crate) buf: vim::TextBuffer,
-    /// Per-line colour runs and background, parallel to `buf.lines` (rebuilt with it
-    /// each draw).
+    /// Per-line colour runs and background, parallel to `buf.lines` (rebuilt with
+    /// it).
     pub(crate) styles: Vec<LineStyle>,
+    /// What `buf` and `styles` were last rendered from (see [`render_key`]), so a
+    /// draw with nothing new to show doesn't render the conversation again.
+    pub(crate) rendered: Option<u64>,
     /// Chat-style "stick to the bottom" on new content; cleared when the cursor
     /// leaves the last line, re-armed when it returns there (or on a new message).
     pub(crate) follow: bool,
@@ -238,6 +241,7 @@ impl AiState {
             pending_prompt,
             buf: vim::TextBuffer::new(Vec::new()),
             styles: Vec::new(),
+            rendered: None,
             follow: true,
             chat_idx: None,
         }
@@ -703,10 +707,25 @@ fn push_line(
     }
 }
 
+/// A hash of everything [`render`] reads. Equal keys mean equal output, so a pane
+/// whose key hasn't changed keeps the lines it has.
+fn render_key(ai: &AiState, model: &str, has_key: bool, cols: usize) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (model, has_key, cols, ai.pending, ai.waiting, &ai.input).hash(&mut h);
+    ai.messages.len().hash(&mut h);
+    for m in &ai.messages {
+        (m.role as u8, &m.text).hash(&mut h);
+    }
+    h.finish()
+}
+
 /// Build the wrapped lines and their styles for a `:ai` tab at `cols` columns: a
 /// header, then the key-entry prompt (no key yet) or the conversation, with the
 /// assistant's replies rendered as markdown. The LAST line is always the live input
 /// field (or the "thinking" indicator), so the caret renderer can find it.
+///
+/// Keep [`render_key`] in step with what this reads.
 fn render(ai: &AiState, model: &str, has_key: bool, cols: usize) -> (Vec<String>, Vec<LineStyle>) {
     let mut lines = Vec::new();
     let mut styles = Vec::new();
@@ -1521,10 +1540,11 @@ impl App {
         active
     }
 
-    /// Rebuild each visible AI pane's vim buffer (wrapped to its current width) and
-    /// snap it to the bottom while following. Called at the top of `draw` — cheap,
-    /// the text is small, and `set_lines` preserves the cursor/selection so a
-    /// rebuild never disturbs an in-progress navigation. Mirrors
+    /// Bring each visible AI pane's vim buffer up to date (wrapped to its current
+    /// width) and snap it to the bottom while following. Called at the top of `draw`:
+    /// the conversation is only rendered again when something it shows has changed,
+    /// and `set_lines` preserves the cursor/selection so a rebuild never disturbs an
+    /// in-progress navigation. Mirrors
     /// [`refresh_read_layout`](App::refresh_read_layout).
     pub(crate) fn refresh_ai_layout(&mut self) {
         let cw = self.painter.measure("M").max(1);
@@ -1538,10 +1558,14 @@ impl App {
             }
             let cols = (((rect.w as usize).saturating_sub(16)) / cw).max(1);
             let rows = ((rect.h as usize) / line_h).max(1);
-            let (lines, styles) = render(self.tabs[tab].ai().unwrap(), &model, has_key, cols);
             let ai = self.tabs[tab].ai_mut().unwrap();
-            ai.buf.set_lines(lines);
-            ai.styles = styles;
+            let key = render_key(ai, &model, has_key, cols);
+            if ai.rendered != Some(key) {
+                let (lines, styles) = render(ai, &model, has_key, cols);
+                ai.buf.set_lines(lines);
+                ai.styles = styles;
+                ai.rendered = Some(key);
+            }
             // Follow the bottom (chat-style) unless the user is mid-selection.
             if ai.follow && ai.buf.anchor.is_none() {
                 let n = ai.buf.lines.len();
@@ -1557,6 +1581,57 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_render_key_follows_everything_the_pane_shows() {
+        let chat = || {
+            let mut ai = AiState::new(1, None);
+            for (role, text) in [(AiRole::You, "hi"), (AiRole::Ai, "**hello** there")] {
+                ai.messages.push(AiMessage {
+                    role,
+                    text: text.into(),
+                });
+            }
+            ai.input = "next".into();
+            ai
+        };
+        let key = |ai: &AiState| render_key(ai, "model", true, 80);
+        let lines = |ai: &AiState| render(ai, "model", true, 80).0;
+        let unchanged = key(&chat());
+        assert_eq!(key(&chat()), unchanged);
+
+        // Each of these changes what's rendered, so each gets a key of its own.
+        let changes: [fn(&mut AiState); 6] = [
+            |ai| ai.input.push('!'),
+            |ai| ai.pending = true,
+            |ai| (ai.pending, ai.waiting) = (true, Some(3)),
+            |ai| ai.messages[1].text.push('?'),
+            |ai| ai.messages[1].role = AiRole::Err,
+            |ai| ai.messages.truncate(1),
+        ];
+        let mut seen = vec![unchanged];
+        for change in changes {
+            let mut ai = chat();
+            change(&mut ai);
+            assert_ne!(lines(&ai), lines(&chat()));
+            assert!(!seen.contains(&key(&ai)));
+            seen.push(key(&ai));
+        }
+        // So do the model, a missing API key and the pane's width.
+        for other in [
+            render_key(&chat(), "other", true, 80),
+            render_key(&chat(), "model", false, 80),
+            render_key(&chat(), "model", true, 81),
+        ] {
+            assert!(!seen.contains(&other));
+            seen.push(other);
+        }
+
+        // Where the cursor is and which saved chat this is aren't rendered.
+        let mut ai = chat();
+        (ai.follow, ai.chat_idx, ai.buf.cy) = (false, Some(4), 1);
+        assert_eq!(key(&ai), unchanged);
+    }
 
     #[test]
     fn wrap_breaks_on_words_and_hard_breaks_long_tokens() {
