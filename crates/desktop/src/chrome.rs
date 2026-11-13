@@ -618,6 +618,7 @@ mod pane_paint_tests {
             pending_prompt: None,
             buf,
             styles,
+            rendered: None,
             follow: true,
             chat_idx: None,
         });
