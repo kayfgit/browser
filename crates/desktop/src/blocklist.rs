@@ -142,8 +142,7 @@ pub(crate) fn spawn_build(blocker: SharedBlocker, proxy: EventLoopProxy<UserEven
     std::thread::spawn(move || {
         let mut set = FilterSet::new(false);
         for text in [SUPPLEMENT, EASYLIST, EASYPRIVACY, YOYO, UBLOCK] {
-            let rules: Vec<String> = text.lines().map(str::to_string).collect();
-            set.add_filters(&rules, ParseOptions::default());
+            set.add_filters(text.lines(), ParseOptions::default());
         }
         let mut engine = Engine::from_filter_set(set, true);
         // Load the surrogate library so `$redirect` rules resolve to a neutered stub body.
