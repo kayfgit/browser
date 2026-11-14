@@ -113,6 +113,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). To find your way around the code, start 
 
 ## License
 
-MIT. See [LICENSE](LICENSE). Bundled third-party components, including uBlock
-Origin Lite (GPLv3) and the filter lists, keep their own licenses; see
+Copyright (C) 2026 Kayf
+
+browser is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See [LICENSE](LICENSE).
+
+Bundled third-party components, including uBlock Origin Lite (GPLv3) and the
+filter lists, keep their own licenses; see
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

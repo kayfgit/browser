@@ -1,6 +1,6 @@
 # Third-party notices
 
-browser's own source code is MIT-licensed (see [LICENSE](LICENSE)). The release
+browser's own source code is licensed GPL-3.0-or-later (see [LICENSE](LICENSE)). The release
 build also bundles the third-party components below, which keep their own
 licenses. They are distributed unmodified (except the one Servo file noted below),
 alongside browser rather than as part of it.
@@ -27,7 +27,7 @@ rules were stripped.
 | `ublock-filters.txt` | [uBlock Origin filters (uAssets)](https://github.com/uBlockOrigin/uAssets) | GPLv3 |
 | `adblock-resources.json` | uBlock Origin's redirect resources, in [adblock-rust](https://github.com/brave/adblock-rust)'s format | GPLv3 |
 | `yoyo.txt` | [Peter Lowe's Ad and tracking server list](https://pgl.yoyo.org/adservers/) | No formal license. The maintainer permits combining and redistributing it; contact pgl@yoyo.org for anything beyond that. |
-| `blocklist-extra.txt` | This project | MIT |
+| `blocklist-extra.txt` | This project | GPL-3.0-or-later |
 
 ## Bangs
 
