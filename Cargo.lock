@@ -683,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "browser"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "ab_glyph_rasterizer",
  "adblock",
@@ -732,7 +732,7 @@ dependencies = [
 
 [[package]]
 name = "browser-backend-search"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "browser-core",
@@ -744,7 +744,7 @@ dependencies = [
 
 [[package]]
 name = "browser-backend-text"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "anyhow",
  "browser-core",
@@ -758,7 +758,7 @@ dependencies = [
 
 [[package]]
 name = "browser-core"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -767,7 +767,7 @@ dependencies = [
 
 [[package]]
 name = "browser-engine"
-version = "0.13.1"
+version = "0.14.0"
 
 [[package]]
 name = "buf-read-ext"
