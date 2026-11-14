@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.14.0](https://github.com/kayfgit/browser/compare/v0.13.1...v0.14.0) (2026-11-14)
+
+
+### Features
+
+* browser is now licensed GPL-3.0-or-later ([2b00114](https://github.com/kayfgit/browser/commit/2b001147045c225ba4b54d64a7dd8e09787f4c04))
+
+
+### Performance
+
+* build the ad-block engine without copying each rule ([dad43ce](https://github.com/kayfgit/browser/commit/dad43ce410deda7547346536134842e00e2673ad))
+* keep rasterized glyphs instead of redrawing them every frame ([574923c](https://github.com/kayfgit/browser/commit/574923ca4e391951f226691f8f5242496f7f074a))
+* render the :ai conversation only when it changes ([5d3012d](https://github.com/kayfgit/browser/commit/5d3012da7cc2e130d02abe3de9150dbe1ca1a351))
+
 ## [0.13.1](https://github.com/kayfgit/browser/compare/v0.13.0...v0.13.1) (2026-10-25)
 
 
