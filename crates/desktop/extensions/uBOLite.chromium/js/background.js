@@ -211,28 +211,35 @@ async function onPermissionsAdded(permissions) {
     const details = pendingPermissionRequest;
     pendingPermissionRequest = undefined;
     const { origins = [] } = permissions;
-    return details !== undefined
-        ? onPermissionGrantedThruExtension(details, origins)
-        : onPermissionGrantedThruBrowser(origins);
+    if ( details !== undefined ) {
+        const hostnames = hostnamesFromMatches(origins);
+        if ( hostnames.includes(details.hostname) ) {
+            return onPermissionGrantedThruExtension(details, origins);
+        }
+    }
+    return onPermissionGrantedThruBrowser(origins);
 }
 
 async function onPermissionsRemoved() {
     const modified = await syncWithBrowserPermissions();
     if ( modified === false ) { return false; }
-    registerContentScripts();
+    await registerContentScripts();
     return true;
 }
 
 async function onPermissionsChanged(op, permissions) {
     await isFullyInitialized;
-    const { pending } = onPermissionsChanged;
-    await Promise.all(pending);
-    const promise = op === 'removed'
-        ? onPermissionsRemoved()
-        : onPermissionsAdded(permissions);
-    pending.push(promise);
+    const promise = onPermissionsChanged.pending.then(( ) =>
+        op === 'removed'
+            ? onPermissionsRemoved()
+            : onPermissionsAdded(permissions)
+    );
+    onPermissionsChanged.pending = promise.catch(reason => {
+        ubolErr(`onPermissionsChanged/${reason}`);
+    });
+    return promise;
 }
-onPermissionsChanged.pending = [];
+onPermissionsChanged.pending = Promise.resolve();
 
 /******************************************************************************/
 
@@ -310,7 +317,7 @@ async function onMessage(request, sender) {
             origin: 'USER',
             target: { tabId, frameIds: [ frameId ] },
         }).catch(reason => {
-            ubolErr(`insertCSS/${reason}`);
+            ubolLog(`insertCSS/${reason}`);
         });
 
     case 'removeCSS':
@@ -322,7 +329,7 @@ async function onMessage(request, sender) {
             origin: 'USER',
             target: { tabId, frameIds: [ frameId ] },
         }).catch(reason => {
-            ubolErr(`removeCSS/${reason}`);
+            ubolLog(`removeCSS/${reason}`);
         });
 
     case 'injectCSSProceduralAPI':
@@ -331,7 +338,7 @@ async function onMessage(request, sender) {
             target: { tabId, frameIds: [ frameId ] },
             injectImmediately: true,
         }).catch(reason => {
-            ubolErr(`executeScript/${reason}`);
+            ubolLog(`executeScript/${reason}`);
         });
 
     default:
@@ -364,6 +371,12 @@ async function onMessage(request, sender) {
     case 'injectCustomFilters':
         if ( frameId === false ) { return; }
         return injectCustomFilters(tabId, frameId, request.hostname);
+
+    case 'getToolOverlaySecret':
+        if ( onMessage.toolOverlaySecret === undefined ) {
+            onMessage.toolOverlaySecret = self.crypto.randomUUID();
+        }
+        return onMessage.toolOverlaySecret;
 
     default:
         break;
@@ -750,9 +763,10 @@ async function startSession() {
 
     // Toggling "user scripts" permission doesn't cause a permissions change
     // event.
-    const userScriptsChanged = supportsUserScripts() !== rulesetConfig.userScripts;
+    const userScripts = supportsUserScripts();
+    const userScriptsChanged = userScripts !== rulesetConfig.userScripts;
     if ( userScriptsChanged ) {
-        rulesetConfig.userScripts = !rulesetConfig.userScripts;
+        rulesetConfig.userScripts = userScripts;
         saveRulesetConfig();
     }
 

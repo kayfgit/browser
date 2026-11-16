@@ -468,12 +468,13 @@ class JSONPath {
                     path: this.path.slice(),
                 };
                 const v = this.value.obj[this.value.key];
-                if ( recursive ) {
+                if ( recursive && typeof v === 'object' && v !== null && this.seen.has(v) === false ) {
                     if ( Array.isArray(v) ) {
                         this.stack.push({ obj: v, keys: v.keys() });
-                    } else if ( typeof v === 'object' && v !== null ) {
+                    } else {
                         this.stack.push({ obj: v, keys: JSONPath.keys(v).values() });
                     }
+                    this.seen.add(v);
                 }
                 return this;
             },
@@ -481,6 +482,7 @@ class JSONPath {
             value: undefined,
             done: false,
             stack: [],
+            seen: new WeakSet(),
             [Symbol.iterator]() { return this; },
         };
         if ( Array.isArray(v) ) {
@@ -640,7 +642,12 @@ class JSONPath {
             if ( rval instanceof Object === false ) { return; }
             const lval = obj[key];
             if ( lval instanceof Object === false ) { return; }
-            if ( Array.isArray(lval) ) { return; }
+            if ( Array.isArray(lval) ) {
+                if ( Array.isArray(rval) ) {
+                    lval.push(...rval); break;
+                }
+                lval.push(rval); break;
+            }
             for ( const [ k, v ] of JSONPath.entries(rval) ) {
                 lval[k] = v;
             }
@@ -1056,7 +1063,7 @@ function editInboundObjectFn(
     const editObj = obj => {
         let clone;
         try {
-            clone = safe.JSON_parse(safe.JSON_stringify(obj));
+            clone = safe.structuredClone(obj);
         } catch {
         }
         if ( typeof clone !== 'object' || clone === null ) { return; }
@@ -1071,9 +1078,12 @@ function editInboundObjectFn(
     proxyApplyFn(propChain, function(context) {
         const i = getArgPos(context.callArgs);
         if ( i !== undefined ) {
-            const obj = editObj(context.callArgs[i]);
-            if ( obj ) {
-                context.callArgs[i] = obj;
+            const objBefore = context.callArgs[i];
+            if ( typeof objBefore === 'object' ) {
+                const objAfter = editObj(objBefore);
+                if ( objAfter ) {
+                    context.callArgs[i] = objAfter;
+                }
             }
         }
         return context.reflect();
@@ -1223,23 +1233,8 @@ function generateContentFn(trusted, directive) {
         return randomize(len | 0);
     }
     if ( directive.startsWith('war:') ) {
-        if ( scriptletGlobals.warOrigin === undefined ) { return ''; }
-        return new Promise(resolve => {
-            const warOrigin = scriptletGlobals.warOrigin;
-            const warName = directive.slice(4);
-            const fullpath = [ warOrigin, '/', warName ];
-            const warSecret = scriptletGlobals.warSecret;
-            if ( warSecret !== undefined ) {
-                fullpath.push('?secret=', warSecret);
-            }
-            const warXHR = new safe.XMLHttpRequest();
-            warXHR.responseType = 'text';
-            warXHR.onloadend = ev => {
-                resolve(ev.target.responseText || '');
-            };
-            warXHR.open('GET', fullpath.join(''));
-            warXHR.send();
-        }).catch(( ) => '');
+        // TODO: resources should be fetched by messaging ISOLATED world
+        return '';
     }
     if ( directive.startsWith('join:') ) {
         const parts = directive.slice(7)
@@ -1404,7 +1399,9 @@ function jsonEditFn(trusted = false, jsonq = '', ...varargs) {
     proxyApplyFn('JSON.parse', function(context) {
         const json = context.callArgs[0];
         const obj = context.reflect();
-        if ( pattern && safe.testPattern(pattern, json) === false ) { return obj; }
+        if ( pattern && typeof json === 'string' ) {
+            if ( safe.testPattern(pattern, json) === false ) { return obj; }
+        }
         const objAfter = jsonp.apply(obj);
         if ( objAfter === undefined ) { return obj; }
         safe.uboLog(logPrefix, 'Edited');
@@ -1476,6 +1473,172 @@ function jsonEditXhrResponseFn(trusted, jsonq = '', ...varargs) {
             const outerResponse = typeof innerResponse === 'string'
                 ? JSONPath.toJSON(objAfter, safe.JSON_stringify)
                 : objAfter;
+            return (xhrDetails.response = outerResponse);
+        }
+        get responseText() {
+            const response = this.response;
+            return typeof response !== 'string'
+                ? super.responseText
+                : response;
+        }
+    };
+}
+
+function jsonlEditFetchResponse(jsonq = '', ...args) {
+    jsonlEditFetchResponseFn(false, jsonq, ...args);
+}
+
+function jsonlEditFetchResponseFn(trusted, jsonq = '', ...varargs) {
+    const safe = safeSelf();
+    const logPrefix = safe.makeLogPrefix(
+        `${trusted ? 'trusted-' : ''}jsonl-edit-fetch-response`,
+        jsonq
+    );
+    const jsonp = JSONPath.create(jsonq);
+    if ( jsonp.valid === false || jsonp.value !== undefined && trusted !== true ) {
+        return safe.uboLog(logPrefix, 'Bad JSONPath query');
+    }
+    const extraArgs = safe.parseVarargs(varargs);
+    const propNeedles = parsePropertiesToMatchFn(extraArgs.propsToMatch, 'url');
+    const jsonExtract = extraArgs.jsonExtract
+        ? new RegExp(extraArgs.jsonExtract)
+        : /^(.*)$/;
+    const logall = jsonq === '';
+    proxyApplyFn('fetch', function(context) {
+        const args = context.callArgs;
+        const fetchPromise = context.reflect();
+        if ( propNeedles.size !== 0 ) {
+            const props = collateFetchArgumentsFn(...args);
+            const matched = matchObjectPropertiesFn(propNeedles, props);
+            if ( matched === undefined ) { return fetchPromise; }
+            if ( safe.logLevel > 1 ) {
+                safe.uboLog(logPrefix, `Matched "propsToMatch":\n\t${matched.join('\n\t')}`);
+            }
+        }
+        return fetchPromise.then(responseBefore => {
+            const response = responseBefore.clone();
+            return response.text().then(textBefore => {
+                if ( typeof textBefore !== 'string' ) { return textBefore; }
+                if ( logall ) {
+                    safe.uboLog(logPrefix, textBefore);
+                    return responseBefore;
+                }
+                const textAfter = jsonlEditFn(jsonp, textBefore, jsonExtract);
+                if ( textAfter === textBefore ) { return responseBefore; }
+                safe.uboLog(logPrefix, 'Pruned');
+                const responseAfter = new Response(textAfter, {
+                    status: responseBefore.status,
+                    statusText: responseBefore.statusText,
+                    headers: responseBefore.headers,
+                });
+                Object.defineProperties(responseAfter, {
+                    ok: { value: responseBefore.ok },
+                    redirected: { value: responseBefore.redirected },
+                    type: { value: responseBefore.type },
+                    url: { value: responseBefore.url },
+                });
+                return responseAfter;
+            }).catch(reason => {
+                safe.uboErr(logPrefix, 'Error:', reason);
+                return responseBefore;
+            });
+        }).catch(reason => {
+            safe.uboErr(logPrefix, 'Error:', reason);
+            return fetchPromise;
+        });
+    });
+}
+
+function jsonlEditFn(jsonp, text = '', jsonExtract) {
+    const safe = safeSelf();
+    const lineSeparator = /\r?\n/.exec(text)?.[0] || '\n';
+    const linesBefore = text.split('\n');
+    const linesAfter = [];
+    for ( const lineBefore of linesBefore ) {
+        const match = jsonExtract.exec(lineBefore);
+        if ( match === null ) {
+            linesAfter.push(lineBefore);
+            continue;
+        }
+        const jsonBefore = match[1];
+        let obj;
+        try { obj = safe.JSON_parse(jsonBefore); } catch { }
+        if ( typeof obj !== 'object' || obj === null ) {
+            linesAfter.push(lineBefore);
+            continue;
+        }
+        const objAfter = jsonp.apply(obj);
+        if ( objAfter === undefined ) {
+            linesAfter.push(lineBefore);
+            continue;
+        }
+        const jsonAfter = safe.JSON_stringify(objAfter);
+        const lineAfter = [
+            lineBefore.slice(0, match.index),
+            jsonAfter,
+            lineBefore.slice(match.index + jsonBefore.length),
+        ].join('');
+        linesAfter.push(lineAfter);
+    }
+    return linesAfter.join(lineSeparator);
+}
+
+function jsonlEditXhrResponse(jsonq = '', ...args) {
+    jsonlEditXhrResponseFn(false, jsonq, ...args);
+}
+
+function jsonlEditXhrResponseFn(trusted, jsonq = '', ...varargs) {
+    const safe = safeSelf();
+    const logPrefix = safe.makeLogPrefix(
+        `${trusted ? 'trusted-' : ''}jsonl-edit-xhr-response`,
+        jsonq
+    );
+    const xhrInstances = new WeakMap();
+    const jsonp = JSONPath.create(jsonq);
+    if ( jsonp.valid === false || jsonp.value !== undefined && trusted !== true ) {
+        return safe.uboLog(logPrefix, 'Bad JSONPath query');
+    }
+    const extraArgs = safe.parseVarargs(varargs);
+    const propNeedles = parsePropertiesToMatchFn(extraArgs.propsToMatch, 'url');
+    const jsonExtract = extraArgs.jsonExtract
+        ? new RegExp(extraArgs.jsonExtract)
+        : /^(.*)$/;
+    self.XMLHttpRequest = class extends self.XMLHttpRequest {
+        open(method, url, ...args) {
+            const xhrDetails = { method, url };
+            const matched = propNeedles.size === 0 ||
+                matchObjectPropertiesFn(propNeedles, xhrDetails);
+            if ( matched ) {
+                if ( safe.logLevel > 1 && Array.isArray(matched) ) {
+                    safe.uboLog(logPrefix, `Matched "propsToMatch":\n\t${matched.join('\n\t')}`);
+                }
+                xhrInstances.set(this, xhrDetails);
+            }
+            return super.open(method, url, ...args);
+        }
+        get response() {
+            const innerResponse = super.response;
+            const xhrDetails = xhrInstances.get(this);
+            if ( xhrDetails === undefined ) {
+                return innerResponse;
+            }
+            const responseLength = typeof innerResponse === 'string'
+                ? innerResponse.length
+                : undefined;
+            if ( xhrDetails.lastResponseLength !== responseLength ) {
+                xhrDetails.response = undefined;
+                xhrDetails.lastResponseLength = responseLength;
+            }
+            if ( xhrDetails.response !== undefined ) {
+                return xhrDetails.response;
+            }
+            if ( typeof innerResponse !== 'string' ) {
+                return (xhrDetails.response = innerResponse);
+            }
+            const outerResponse = jsonlEditFn(jsonp, innerResponse, jsonExtract);
+            if ( outerResponse !== innerResponse ) {
+                safe.uboLog(logPrefix, 'Pruned');
+            }
             return (xhrDetails.response = outerResponse);
         }
         get responseText() {
@@ -1665,172 +1828,6 @@ function jsonPruneXhrResponse(
     };
 }
 
-function jsonlEditFetchResponse(jsonq = '', ...args) {
-    jsonlEditFetchResponseFn(false, jsonq, ...args);
-}
-
-function jsonlEditFetchResponseFn(trusted, jsonq = '', ...varargs) {
-    const safe = safeSelf();
-    const logPrefix = safe.makeLogPrefix(
-        `${trusted ? 'trusted-' : ''}jsonl-edit-fetch-response`,
-        jsonq
-    );
-    const jsonp = JSONPath.create(jsonq);
-    if ( jsonp.valid === false || jsonp.value !== undefined && trusted !== true ) {
-        return safe.uboLog(logPrefix, 'Bad JSONPath query');
-    }
-    const extraArgs = safe.parseVarargs(varargs);
-    const propNeedles = parsePropertiesToMatchFn(extraArgs.propsToMatch, 'url');
-    const jsonExtract = extraArgs.jsonExtract
-        ? new RegExp(extraArgs.jsonExtract)
-        : /^(.*)$/;
-    const logall = jsonq === '';
-    proxyApplyFn('fetch', function(context) {
-        const args = context.callArgs;
-        const fetchPromise = context.reflect();
-        if ( propNeedles.size !== 0 ) {
-            const props = collateFetchArgumentsFn(...args);
-            const matched = matchObjectPropertiesFn(propNeedles, props);
-            if ( matched === undefined ) { return fetchPromise; }
-            if ( safe.logLevel > 1 ) {
-                safe.uboLog(logPrefix, `Matched "propsToMatch":\n\t${matched.join('\n\t')}`);
-            }
-        }
-        return fetchPromise.then(responseBefore => {
-            const response = responseBefore.clone();
-            return response.text().then(textBefore => {
-                if ( typeof textBefore !== 'string' ) { return textBefore; }
-                if ( logall ) {
-                    safe.uboLog(logPrefix, textBefore);
-                    return responseBefore;
-                }
-                const textAfter = jsonlEditFn(jsonp, textBefore, jsonExtract);
-                if ( textAfter === textBefore ) { return responseBefore; }
-                safe.uboLog(logPrefix, 'Pruned');
-                const responseAfter = new Response(textAfter, {
-                    status: responseBefore.status,
-                    statusText: responseBefore.statusText,
-                    headers: responseBefore.headers,
-                });
-                Object.defineProperties(responseAfter, {
-                    ok: { value: responseBefore.ok },
-                    redirected: { value: responseBefore.redirected },
-                    type: { value: responseBefore.type },
-                    url: { value: responseBefore.url },
-                });
-                return responseAfter;
-            }).catch(reason => {
-                safe.uboErr(logPrefix, 'Error:', reason);
-                return responseBefore;
-            });
-        }).catch(reason => {
-            safe.uboErr(logPrefix, 'Error:', reason);
-            return fetchPromise;
-        });
-    });
-}
-
-function jsonlEditFn(jsonp, text = '', jsonExtract) {
-    const safe = safeSelf();
-    const lineSeparator = /\r?\n/.exec(text)?.[0] || '\n';
-    const linesBefore = text.split('\n');
-    const linesAfter = [];
-    for ( const lineBefore of linesBefore ) {
-        const match = jsonExtract.exec(lineBefore);
-        if ( match === null ) {
-            linesAfter.push(lineBefore);
-            continue;
-        }
-        const jsonBefore = match[1];
-        let obj;
-        try { obj = safe.JSON_parse(jsonBefore); } catch { }
-        if ( typeof obj !== 'object' || obj === null ) {
-            linesAfter.push(lineBefore);
-            continue;
-        }
-        const objAfter = jsonp.apply(obj);
-        if ( objAfter === undefined ) {
-            linesAfter.push(lineBefore);
-            continue;
-        }
-        const jsonAfter = safe.JSON_stringify(objAfter);
-        const lineAfter = [
-            lineBefore.slice(0, match.index),
-            jsonAfter,
-            lineBefore.slice(match.index + jsonBefore.length),
-        ].join('');
-        linesAfter.push(lineAfter);
-    }
-    return linesAfter.join(lineSeparator);
-}
-
-function jsonlEditXhrResponse(jsonq = '', ...args) {
-    jsonlEditXhrResponseFn(false, jsonq, ...args);
-}
-
-function jsonlEditXhrResponseFn(trusted, jsonq = '', ...varargs) {
-    const safe = safeSelf();
-    const logPrefix = safe.makeLogPrefix(
-        `${trusted ? 'trusted-' : ''}jsonl-edit-xhr-response`,
-        jsonq
-    );
-    const xhrInstances = new WeakMap();
-    const jsonp = JSONPath.create(jsonq);
-    if ( jsonp.valid === false || jsonp.value !== undefined && trusted !== true ) {
-        return safe.uboLog(logPrefix, 'Bad JSONPath query');
-    }
-    const extraArgs = safe.parseVarargs(varargs);
-    const propNeedles = parsePropertiesToMatchFn(extraArgs.propsToMatch, 'url');
-    const jsonExtract = extraArgs.jsonExtract
-        ? new RegExp(extraArgs.jsonExtract)
-        : /^(.*)$/;
-    self.XMLHttpRequest = class extends self.XMLHttpRequest {
-        open(method, url, ...args) {
-            const xhrDetails = { method, url };
-            const matched = propNeedles.size === 0 ||
-                matchObjectPropertiesFn(propNeedles, xhrDetails);
-            if ( matched ) {
-                if ( safe.logLevel > 1 && Array.isArray(matched) ) {
-                    safe.uboLog(logPrefix, `Matched "propsToMatch":\n\t${matched.join('\n\t')}`);
-                }
-                xhrInstances.set(this, xhrDetails);
-            }
-            return super.open(method, url, ...args);
-        }
-        get response() {
-            const innerResponse = super.response;
-            const xhrDetails = xhrInstances.get(this);
-            if ( xhrDetails === undefined ) {
-                return innerResponse;
-            }
-            const responseLength = typeof innerResponse === 'string'
-                ? innerResponse.length
-                : undefined;
-            if ( xhrDetails.lastResponseLength !== responseLength ) {
-                xhrDetails.response = undefined;
-                xhrDetails.lastResponseLength = responseLength;
-            }
-            if ( xhrDetails.response !== undefined ) {
-                return xhrDetails.response;
-            }
-            if ( typeof innerResponse !== 'string' ) {
-                return (xhrDetails.response = innerResponse);
-            }
-            const outerResponse = jsonlEditFn(jsonp, innerResponse, jsonExtract);
-            if ( outerResponse !== innerResponse ) {
-                safe.uboLog(logPrefix, 'Pruned');
-            }
-            return (xhrDetails.response = outerResponse);
-        }
-        get responseText() {
-            const response = this.response;
-            return typeof response !== 'string'
-                ? super.responseText
-                : response;
-        }
-    };
-}
-
 function m3uPrune(
     m3uPattern = '',
     urlPattern = ''
@@ -1990,26 +1987,6 @@ function m3uPrune(
     });
 }
 
-function matchObjectPropertiesFn(propNeedles, ...objs) {
-    const safe = safeSelf();
-    const matched = [];
-    for ( const obj of objs ) {
-        if ( obj instanceof Object === false ) { continue; }
-        for ( const [ prop, details ] of propNeedles ) {
-            let value = obj[prop];
-            if ( value === undefined ) { continue; }
-            if ( typeof value !== 'string' ) {
-                try { value = safe.JSON_stringify(value); }
-                catch { }
-                if ( typeof value !== 'string' ) { continue; }
-            }
-            if ( safe.testPattern(details, value) === false ) { return; }
-            matched.push(`${prop}: ${value}`);
-        }
-    }
-    return matched;
-}
-
 function matchesStackTraceFn(
     needleDetails,
     logLevel = ''
@@ -2053,6 +2030,26 @@ function matchesStackTraceFn(
         safe.uboLog(stack.replace(/\t/g, '\n'));
     }
     return r;
+}
+
+function matchObjectPropertiesFn(propNeedles, ...objs) {
+    const safe = safeSelf();
+    const matched = [];
+    for ( const obj of objs ) {
+        if ( obj instanceof Object === false ) { continue; }
+        for ( const [ prop, details ] of propNeedles ) {
+            let value = obj[prop];
+            if ( value === undefined ) { continue; }
+            if ( typeof value !== 'string' ) {
+                try { value = safe.JSON_stringify(value); }
+                catch { }
+                if ( typeof value !== 'string' ) { continue; }
+            }
+            if ( safe.testPattern(details, value) === false ) { return; }
+            matched.push(`${prop}: ${value}`);
+        }
+    }
+    return matched;
 }
 
 function modifyXhrResponseFn(
@@ -3507,14 +3504,18 @@ function safeSelf() {
         'Request_clone': self.Request.prototype.clone,
         'String': self.String,
         'String_fromCharCode': String.fromCharCode,
+        'String_includes': String.prototype.includes,
         'String_split': String.prototype.split,
         'XMLHttpRequest': self.XMLHttpRequest,
+        'XMLHttpRequest_open': Function.prototype.call.bind(self.XMLHttpRequest.prototype.open),
+        'XMLHttpRequest_send': Function.prototype.call.bind(self.XMLHttpRequest.prototype.send),
         'addEventListener': self.EventTarget.prototype.addEventListener,
         'removeEventListener': self.EventTarget.prototype.removeEventListener,
         'fetch': self.fetch,
         'JSON': self.JSON,
         'JSON_parse': Function.prototype.call.bind(self.JSON.parse, self.JSON),
         'JSON_stringify': Function.prototype.call.bind(self.JSON.stringify, self.JSON),
+        'structuredClone': Function.prototype.call.bind(self.structuredClone, self),
         'log': console.log.bind(console),
         // Properties
         logLevel: 0,
@@ -3569,7 +3570,7 @@ function safeSelf() {
             if ( details.re ) {
                 return this.RegExp_test(details.re, haystack) === details.expect;
             }
-            return haystack.includes(details.pattern) === details.expect;
+            return this.String_includes.call(`${haystack}`, details.pattern) === details.expect;
         },
         patternToRegex(pattern, flags = undefined, verbatim = false) {
             if ( pattern === '' ) { return /^/; }
@@ -4074,16 +4075,18 @@ function trustedPreventDomBypass(
                     }
                 }
                 if ( targetProp !== '' ) {
+                    const chains = targetProp.split(/\s+/);
                     let me = self, it = elem.contentWindow;
-                    let chain = targetProp;
-                    for (;;) {
-                        const pos = chain.indexOf('.');
-                        if ( pos === -1 ) { break; }
-                        const prop = chain.slice(0, pos);
-                        me = me[prop]; it = it[prop];
-                        chain = chain.slice(pos+1);
+                    for ( let chain of chains ) {
+                        for (;;) {
+                            const pos = chain.indexOf('.');
+                            if ( pos === -1 ) { break; }
+                            const prop = chain.slice(0, pos);
+                            me = me[prop]; it = it[prop];
+                            chain = chain.slice(pos+1);
+                        }
+                        it[chain] = me[chain];
                     }
-                    it[chain] = me[chain];
                 } else {
                     Object.defineProperty(elem, 'contentWindow', { value: self });
                 }
@@ -4524,7 +4527,44 @@ function xmlPrune(
     });
 }
 
-function zeta_0726caff1b4542a194f1d15c2cadaae7() { // google-ima.js
+function zeta_581517b0591349ada9381bc6b2b2d5a2() { // fingerprint2.js
+// Reference:
+// https://github.com/fingerprintjs/fingerprintjs/tree/v2
+
+(function() {
+    'use strict';
+    const hex32 = len => {
+        return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)
+            .toString(16)
+            .slice(-len)
+            .padStart(len, '0');
+    };
+    const browserId = `${hex32(8)}${hex32(8)}${hex32(8)}${hex32(8)}`;
+    const fp2 = function(){};
+    fp2.get = function(opts, cb) {
+        if ( !cb  ) { cb = opts; }
+        setTimeout(( ) => { cb([]); }, 1);
+    };
+    fp2.getPromise = function() {
+        return Promise.resolve([]);
+    };
+    fp2.getV18 = function() {
+        return browserId;
+    };
+    fp2.x64hash128 = function() {
+        return browserId;
+    };
+    fp2.prototype = {
+        get: function(opts, cb) {
+            if ( !cb  ) { cb = opts; }
+            setTimeout(( ) => { cb(browserId, []); }, 1);
+        },
+    };
+    self.Fingerprint2 = self.Fingerprint = fp2;
+})();
+}
+
+function zeta_4a8ac0757d764d059a57276ea4599ad1() { // google-ima.js
 'use strict';
 
 
@@ -5153,19 +5193,43 @@ if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
 }
 }
 
-function zeta_1a2d72eea1e04151b58d846767b1a319() { // popads-dummy.js
+function zeta_02c096ce627444eaad3da997996f7875() { // nobab2.js
 (function() {
     'use strict';
-    delete window.PopAds;
-    delete window.popns;
-    Object.defineProperties(window, {
-        PopAds: { value: {} },
-        popns: { value: {} }
+    const script = document.currentScript;
+    if ( script === null ) { return; }
+    const src = script.src;
+    if ( typeof src !== 'string' ) { return; }
+    // The scriplet is meant to act ONLY when it's being used as a redirection
+    // for specific domains.
+    const re = new RegExp(
+        '^https?://[\\w-]+\\.(' +
+        [
+            'adclixx\\.net',
+            'adnetasia\\.com',
+            'adtrackers\\.net',
+            'bannertrack\\.net',
+        ].join('|') +
+        ')/.'
+    );
+    if ( re.test(src) === false ) { return; }
+    window.nH7eXzOsG = 858;
+})();
+}
+
+function zeta_ea8514673e554c5c866a57afb86728f8() { // noeval.js
+(function() {
+    'use strict';
+    const log = console.log.bind(console);
+    window.eval = new Proxy(window.eval, {          // jshint ignore: line
+        apply: function(target, thisArg, args) {
+            log(`Document tried to eval... ${args[0]}\n`);
+        }
     });
 })();
 }
 
-function zeta_44a04fd809524252b297af2499376989() { // nofab.js
+function zeta_3a8fe7e4325949348464d43fff4072c0() { // nofab.js
 (function() {
     'use strict';
     const noopfn = function() {
@@ -5214,76 +5278,15 @@ function zeta_44a04fd809524252b297af2499376989() { // nofab.js
 })();
 }
 
-function zeta_9bb3e0f119fd46e7864cb910bf1be57b() { // noeval.js
+function zeta_06aa865c7fda4c4e918b6cebddc3c5b5() { // popads-dummy.js
 (function() {
     'use strict';
-    const log = console.log.bind(console);
-    window.eval = new Proxy(window.eval, {          // jshint ignore: line
-        apply: function(target, thisArg, args) {
-            log(`Document tried to eval... ${args[0]}\n`);
-        }
+    delete window.PopAds;
+    delete window.popns;
+    Object.defineProperties(window, {
+        PopAds: { value: {} },
+        popns: { value: {} }
     });
-})();
-}
-
-function zeta_a2a5eb4f84c845caaeea69cc87b8bab1() { // nobab2.js
-(function() {
-    'use strict';
-    const script = document.currentScript;
-    if ( script === null ) { return; }
-    const src = script.src;
-    if ( typeof src !== 'string' ) { return; }
-    // The scriplet is meant to act ONLY when it's being used as a redirection
-    // for specific domains.
-    const re = new RegExp(
-        '^https?://[\\w-]+\\.(' +
-        [
-            'adclixx\\.net',
-            'adnetasia\\.com',
-            'adtrackers\\.net',
-            'bannertrack\\.net',
-        ].join('|') +
-        ')/.'
-    );
-    if ( re.test(src) === false ) { return; }
-    window.nH7eXzOsG = 858;
-})();
-}
-
-function zeta_f99f996762c5478fa9d4339059929664() { // fingerprint2.js
-// Reference:
-// https://github.com/fingerprintjs/fingerprintjs/tree/v2
-
-(function() {
-    'use strict';
-    const hex32 = len => {
-        return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)
-            .toString(16)
-            .slice(-len)
-            .padStart(len, '0');
-    };
-    const browserId = `${hex32(8)}${hex32(8)}${hex32(8)}${hex32(8)}`;
-    const fp2 = function(){};
-    fp2.get = function(opts, cb) {
-        if ( !cb  ) { cb = opts; }
-        setTimeout(( ) => { cb([]); }, 1);
-    };
-    fp2.getPromise = function() {
-        return Promise.resolve([]);
-    };
-    fp2.getV18 = function() {
-        return browserId;
-    };
-    fp2.x64hash128 = function() {
-        return browserId;
-    };
-    fp2.prototype = {
-        get: function(opts, cb) {
-            if ( !cb  ) { cb = opts; }
-            setTimeout(( ) => { cb(browserId, []); }, 1);
-        },
-    };
-    self.Fingerprint2 = self.Fingerprint = fp2;
 })();
 }
 
@@ -5292,8 +5295,13 @@ function zeta_f99f996762c5478fa9d4339059929664() { // fingerprint2.js
 scriptletGlobals.origins = (( ) => {
     const docloc = document.location;
     const origins = [ docloc.origin ];
-    if ( docloc.ancestorOrigins ) {
-        origins.push(...docloc.ancestorOrigins);
+    if ( docloc.ancestorOrigins?.length ) {
+        const topOrigin = docloc.ancestorOrigins[docloc.ancestorOrigins.length-1];
+        if ( topOrigin !== 'null' ) {
+            origins.push(topOrigin);
+        } else if ( scriptletGlobals.topOrigin ) {
+            origins.push(scriptletGlobals.topOrigin);
+        }
     }
     const out = [];
     for ( let i = 0; i < origins.length; i++ ) {
@@ -5329,11 +5337,11 @@ scriptletGlobals.origins = (( ) => {
     return out;
 })();
 
-scriptletGlobals.functionRefs = /* 59 */ [trustedEditInboundObject,adjustSetTimeout,jsonPruneFetchResponse,jsonPruneXhrResponse,trustedReplaceXhrResponse,trustedReplaceFetchResponse,trustedPreventDomBypass,jsonPrune,jsonEdit,jsonlEditXhrResponse,noWindowOpenIf,setConstant,abortCurrentScript,preventXhr,preventSetTimeout,preventFetch,trustedReplaceArgument,removeAttr,trustedOverrideElementMethod,abortOnPropertyRead,trustedReplaceOutboundText,trustedSuppressNativeMethod,preventAddEventListener,abortOnStackTrace,preventSetInterval,preventInnerHTML,adjustSetInterval,zeta_f99f996762c5478fa9d4339059929664,trustedSetConstant,jsonEditFetchResponse,zeta_9bb3e0f119fd46e7864cb910bf1be57b,abortOnPropertyWrite,noWebrtc,zeta_44a04fd809524252b297af2499376989,zeta_1a2d72eea1e04151b58d846767b1a319,preventRequestAnimationFrame,noEvalIf,preventBab,trustedPreventFetch,disableNewtabLinks,trustedJsonEditFetchResponse,editObjectOnSetter,trustedJsonEdit,trustedJsonEditXhrResponse,preventClipboardWrite,jsonEditXhrResponse,xmlPrune,m3uPrune,trustedPreventXhr,spoofCSS,zeta_0726caff1b4542a194f1d15c2cadaae7,alertBuster,preventCanvas,mpegdashPrune,jsonEditFetchRequest,proxyApplyConfig,jsonlEditFetchResponse,evaldataPrune,zeta_a2a5eb4f84c845caaeea69cc87b8bab1];
+scriptletGlobals.functionRefs = /* 59 */ [trustedEditInboundObject,adjustSetTimeout,jsonPruneFetchResponse,jsonPruneXhrResponse,trustedReplaceXhrResponse,trustedReplaceFetchResponse,trustedPreventDomBypass,jsonPrune,jsonEdit,jsonlEditXhrResponse,noWindowOpenIf,setConstant,abortCurrentScript,preventXhr,preventSetTimeout,preventFetch,trustedReplaceArgument,abortOnPropertyRead,removeAttr,trustedOverrideElementMethod,trustedReplaceOutboundText,trustedSuppressNativeMethod,preventAddEventListener,abortOnStackTrace,trustedPreventFetch,trustedPreventXhr,adjustSetInterval,preventSetInterval,zeta_581517b0591349ada9381bc6b2b2d5a2,trustedSetConstant,jsonEditFetchResponse,zeta_ea8514673e554c5c866a57afb86728f8,abortOnPropertyWrite,noWebrtc,zeta_3a8fe7e4325949348464d43fff4072c0,zeta_06aa865c7fda4c4e918b6cebddc3c5b5,preventRequestAnimationFrame,noEvalIf,preventBab,disableNewtabLinks,trustedJsonEditFetchResponse,preventInnerHTML,editObjectOnSetter,trustedJsonEdit,trustedJsonEditXhrResponse,preventClipboardWrite,jsonEditXhrResponse,xmlPrune,m3uPrune,spoofCSS,zeta_4a8ac0757d764d059a57276ea4599ad1,alertBuster,preventCanvas,mpegdashPrune,jsonEditFetchRequest,proxyApplyConfig,jsonlEditFetchResponse,evaldataPrune,zeta_02c096ce627444eaad3da997996f7875];
 
 /******************************************************************************/
 
 // End of local scope
-})("74f9600a-13a3-47bc-b856-40c6da158b89");
+})("05723a46-3114-4ba9-ac80-1c775003e606");
 
 void 0;
