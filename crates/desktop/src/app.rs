@@ -509,6 +509,9 @@ pub(crate) struct App {
     /// True while a left-drag is selecting text in the command/find line (mouse
     /// highlight). Set on a press inside the bar, cleared on release.
     pub(crate) bar_dragging: bool,
+    /// A tab being dragged along the tab strip (or the sidebar) to reorder it. Set on
+    /// a press on a tab, cleared on release.
+    pub(crate) tab_drag: Option<crate::tabs::TabDrag>,
     /// Horizontal scroll (px) applied to the command line on the last frame, so a
     /// mouse click in the bar can map a pixel x back to a caret byte offset.
     pub(crate) bar_cmd_scroll: i32,

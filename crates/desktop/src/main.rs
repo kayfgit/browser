@@ -291,6 +291,7 @@ fn main() -> Result<()> {
         bar_hover: false,
         hover_link: None,
         bar_dragging: false,
+        tab_drag: None,
         bar_cmd_scroll: 0,
         page_focus_yielded: false,
         read_request: None,
