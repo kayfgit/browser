@@ -38,6 +38,26 @@ impl App {
             self.run_action("restore", serde_json::json!({}));
             return;
         }
+        // The diagnostic log gets the browser's own keys, never text typed into a page,
+        // a terminal, a prompt, or the command line (whose finished line is logged as
+        // the command it runs).
+        if key_is_loggable(
+            self.mode,
+            matches!(key.logical_key, Key::Character(_) | Key::Space),
+        ) {
+            let m = self.modifiers;
+            crate::journal::log(
+                "key",
+                format!(
+                    "{:?}{}{}{} in {:?}",
+                    key.logical_key,
+                    if m.control_key() { " +ctrl" } else { "" },
+                    if m.alt_key() { " +alt" } else { "" },
+                    if m.shift_key() { " +shift" } else { "" },
+                    self.mode
+                ),
+            );
+        }
         // Receiving a key here means the shell holds the keyboard, so any prior
         // page-focus yield is over.
         self.page_focus_yielded = false;
@@ -1515,9 +1535,23 @@ fn click_closes_command_bar(mode: ModeKind, on_bar: bool) -> bool {
     mode == ModeKind::Command && !on_bar
 }
 
+/// Whether a key pressed in `mode` may go in the diagnostic log. Insert and
+/// Passthrough are typing into a page or terminal (passwords included) and are never
+/// logged; in the command line and prompts only the editing keys are (Enter, Esc,
+/// arrows), not the characters typed.
+fn key_is_loggable(mode: ModeKind, is_char: bool) -> bool {
+    match mode {
+        ModeKind::Insert | ModeKind::Passthrough => false,
+        ModeKind::Command | ModeKind::Find | ModeKind::Ask => !is_char,
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{click_closes_command_bar, complete_from_history, completion_parts};
+    use super::{
+        click_closes_command_bar, complete_from_history, completion_parts, key_is_loggable,
+    };
     use crate::ModeKind;
 
     #[test]
@@ -1528,6 +1562,18 @@ mod tests {
         // Nothing to close in other modes, and find keeps its highlights.
         assert!(!click_closes_command_bar(ModeKind::Normal, false));
         assert!(!click_closes_command_bar(ModeKind::Find, false));
+    }
+
+    #[test]
+    fn typing_into_pages_terminals_and_prompts_is_never_logged() {
+        assert!(!key_is_loggable(ModeKind::Insert, true));
+        assert!(!key_is_loggable(ModeKind::Passthrough, false));
+        assert!(!key_is_loggable(ModeKind::Command, true));
+        assert!(!key_is_loggable(ModeKind::Ask, true));
+        // Editing keys in the command line, and every browser binding, are.
+        assert!(key_is_loggable(ModeKind::Command, false));
+        assert!(key_is_loggable(ModeKind::Normal, true));
+        assert!(key_is_loggable(ModeKind::Hint, true));
     }
 
     #[test]

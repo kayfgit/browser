@@ -33,7 +33,7 @@ pub(crate) fn handle(app: &mut App, event: Event<'_, UserEvent>, control_flow: &
         Event::LoopDestroyed => app.teardown(),
         Event::RedrawRequested(_) => {
             if let Err(e) = app.draw() {
-                eprintln!("draw error: {e}");
+                crate::journal::log("error", format!("draw error: {e}"));
             }
         }
         _ => {}
@@ -45,6 +45,7 @@ pub(crate) fn handle(app: &mut App, event: Event<'_, UserEvent>, control_flow: &
     #[cfg(all(windows, feature = "servo-engine"))]
     let servo_smoke = engines::servo::smoke::tick(app);
     shellkeys::set_mode(app.key_mode());
+    log_state_change(app);
     if app.quit {
         app.teardown();
         *control_flow = ControlFlow::Exit;
@@ -53,6 +54,36 @@ pub(crate) fn handle(app: &mut App, event: Event<'_, UserEvent>, control_flow: &
     #[cfg(not(all(windows, feature = "servo-engine")))]
     let servo_smoke = false;
     schedule_wakeup(app, control_flow, servo_smoke);
+}
+
+/// Write mode, active-tab and tab-count changes to the diagnostic log — checked
+/// after every event, so each change is logged once whatever caused it.
+fn log_state_change(app: &mut App) {
+    let now = (app.mode, app.active, app.tabs.len());
+    // After shutdown the tabs are dropped on purpose; `[exit] shutdown complete` must
+    // stay the last line, since a log without it means the launch crashed.
+    if now == app.logged_state || app.torn_down {
+        return;
+    }
+    let (mode, active, count) = app.logged_state;
+    if now.0 != mode {
+        crate::journal::log("mode", format!("{mode:?} -> {:?}", now.0));
+    }
+    if now.2 != count {
+        crate::journal::log("tabs", format!("{count} -> {} tabs open", now.2));
+    }
+    if now.1 != active || now.2 != count {
+        let tab = now.1.and_then(|i| app.tabs.get(i));
+        let what = tab.map_or(String::new(), |t| {
+            if t.private {
+                " (private)".to_string()
+            } else {
+                format!(" {}", t.url)
+            }
+        });
+        crate::journal::log("tabs", format!("active tab {:?}{what}", now.1));
+    }
+    app.logged_state = now;
 }
 
 /// A `WaitUntil` deadline set by [`schedule_wakeup`] passed: blink cursors, advance the
@@ -107,10 +138,18 @@ fn on_timer(app: &mut App) {
 fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut ControlFlow) {
     match event {
         WindowEvent::CloseRequested => {
+            crate::journal::log(
+                "window",
+                "close requested (window closed / Alt+F4 / Windows)",
+            );
             app.teardown();
             *control_flow = ControlFlow::Exit;
         }
         WindowEvent::Resized(size) => {
+            crate::journal::log(
+                "window",
+                format!("resized to {}x{}", size.width, size.height),
+            );
             app.on_resize(size.width, size.height);
         }
         WindowEvent::ModifiersChanged(state) => {
@@ -118,6 +157,14 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             app.on_modifiers_changed();
         }
         WindowEvent::Focused(focused) => {
+            crate::journal::log(
+                "window",
+                if focused {
+                    "focus gained"
+                } else {
+                    "focus lost"
+                },
+            );
             if focused {
                 app.last_focus_gain = Instant::now();
             }
@@ -191,12 +238,16 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             state: ElementState::Pressed,
             button: MouseButton::Right,
             ..
-        } => app.right_click_copy(app.cursor_pos.0, app.cursor_pos.1),
+        } => {
+            crate::journal::log("mouse", format!("right press at {:?}", app.cursor_pos));
+            app.right_click_copy(app.cursor_pos.0, app.cursor_pos.1)
+        }
         WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
         } => {
+            crate::journal::log("mouse", format!("left press at {:?}", app.cursor_pos));
             let (_, h) = app.inner();
             let bar_top = h as f64 - app.bar_h() as f64;
             let on_bar = app.bar_h() > 0 && app.cursor_pos.1 >= bar_top;
@@ -633,8 +684,12 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
             app.window.request_redraw();
         }
         UserEvent::Redraw => app.window.request_redraw(),
-        UserEvent::TermClosed { id } => app.close_term_tab(id),
+        UserEvent::TermClosed { id } => {
+            crate::journal::log("term", format!("terminal {id} exited (its shell ended)"));
+            app.close_term_tab(id)
+        }
         UserEvent::Quit => {
+            crate::journal::log("exit", "quit requested by an event");
             app.teardown();
             *control_flow = ControlFlow::Exit;
         }

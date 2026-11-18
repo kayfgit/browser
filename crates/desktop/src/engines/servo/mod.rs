@@ -211,6 +211,12 @@ impl servo::WebViewDelegate for Delegate {
         let _ = self.scoped.send_event(UserEvent::Redraw);
     }
     fn show_console_message(&self, _: WebView, level: servo::ConsoleLogLevel, message: String) {
+        // Page warnings and errors go to the diagnostic log; plain console chatter
+        // would flood it.
+        let lvl = format!("{level:?}");
+        if lvl.contains("Warn") || lvl.contains("Error") {
+            crate::journal::log("console", format!("[{lvl}] {message}"));
+        }
         // Diagnostics only: BROWSER_SERVO_CONSOLE_LOG names a file for page console output.
         if let Some(path) = std::env::var_os("BROWSER_SERVO_CONSOLE_LOG") {
             use std::io::Write;

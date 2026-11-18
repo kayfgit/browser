@@ -104,6 +104,7 @@ pub(crate) fn tick(app: &mut App) -> bool {
     })
 }
 pub(super) fn log(text: &str) {
+    crate::journal::log("servo", text);
     if let Some(path) = std::env::var_os("BROWSER_SERVO_SMOKE_LOG") {
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)

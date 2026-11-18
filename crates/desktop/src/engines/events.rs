@@ -163,6 +163,7 @@ impl App {
         let index = event_target(&self.tabs, view)?;
         match event {
             UserEvent::PaneClick => {
+                crate::journal::log("mouse", format!("press inside the page of tab {index}"));
                 let visible = self.pane_layout().0.iter().any(|(tab, _)| *tab == index);
                 if visible && !self.frozen {
                     self.page_gesture_at = Some(std::time::Instant::now());

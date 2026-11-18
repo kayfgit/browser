@@ -150,7 +150,10 @@ pub(crate) fn spawn_build(blocker: SharedBlocker, proxy: EventLoopProxy<UserEven
         // to plain blocking (a 403), so this never fails the engine build.
         match serde_json::from_str::<Vec<Resource>>(RESOURCES) {
             Ok(resources) => engine.use_resources(resources),
-            Err(e) => eprintln!("adblock: failed to parse redirect resources: {e}"),
+            Err(e) => crate::journal::log(
+                "adblock",
+                format!("failed to parse redirect resources: {e}"),
+            ),
         }
         if let Ok(mut guard) = blocker.write() {
             *guard = Some(engine);

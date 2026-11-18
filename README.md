@@ -72,6 +72,17 @@ Trident were added.
 > it before publishing. I release it and install the update like everybody else. If
 > something is broken, [open an issue](../../issues) and I'll fix it asap.
 
+> [!IMPORTANT]
+> **During early development the browser keeps very detailed logs.** So that a sudden
+> crash or a lost session can be traced exactly, every launch writes a log of nearly
+> everything it does: the commands you run, the addresses your tabs open and navigate
+> to, session saves and loads, mode changes, clicks, the browser's own keys, every
+> message and error, update steps, and crash details (with a memory dump on a native
+> crash). It does **not** record what you type into pages, terminals or prompts, or the
+> addresses of private tabs. Logs stay on your PC, in `%LOCALAPPDATA%\browser\data\logs`,
+> and are deleted after 14 days (the folder is kept under 200 MB). `:logs` shows the
+> current one. This will be cut back once the browser matures.
+
 Download `browser-x86_64-pc-windows-msvc.msi` from the
 [latest release](../../releases/latest) and run it. It installs just for you, without
 admin rights, into `%LOCALAPPDATA%\Programs\browser`, adds a Start Menu shortcut and a

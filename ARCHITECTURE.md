@@ -125,6 +125,7 @@ The core, in reading order:
 - [main.rs](crates/desktop/src/main.rs): startup.
 - [app.rs](crates/desktop/src/app.rs): `App`, `UserEvent`, `ModeKind`; window size and zoom, focus reclaim, status and error reporting, session save/restore.
 - [events.rs](crates/desktop/src/events.rs): the event loop.
+- [journal.rs](crates/desktop/src/journal.rs): the diagnostic log, one file per launch in `%LOCALAPPDATA%\browser\data\logs` (`:logs`); also catches panics and native crashes (minidump) into it. Detailed on purpose during early development.
 - [keys.rs](crates/desktop/src/keys.rs): key dispatch per mode, autocomplete, the caret modes.
 - [commands.rs](crates/desktop/src/commands.rs): `:command` parsing and dispatch, `BUILTIN_VERBS`, `COMMANDS` (autocomplete), argument completion.
 - [actions.rs](crates/desktop/src/actions.rs): the action registry used by commands and the `:ai` assistant, plus aliases.

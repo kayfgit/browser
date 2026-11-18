@@ -331,6 +331,29 @@ and a timestamp:
   that restarted, a background update check that failed.
 - `:msg` (`:messages`) shows everything: messages, warnings and errors, in order.
 
+### The diagnostic log (early development)
+
+While the browser is in early development it keeps a **very detailed log** of every
+launch, so a crash, a freeze or a lost session can be traced afterwards, by you or by an
+AI reading the file. It records nearly everything: the launch (version, arguments,
+profile), every command, the addresses tabs open and navigate to, every session save and
+load (with the file and the number of tabs), profile switches, mode changes, clicks, the
+browser's own keys, every message, warning and error, update steps, engine failures, and
+crashes: a Rust panic with its backtrace, or a native crash with a minidump (`.dmp`)
+beside the log.
+
+It never records what you type into pages, terminals, prompts or the command line (the
+finished command is logged when it runs), or the addresses of private tabs.
+
+- `:logs` opens this launch's log in a vim tab, on the newest line.
+- `:logs folder` opens the folder (`%LOCALAPPDATA%\browser\data\logs`): one
+  `browser-<date>_<time>-pid<pid>.log` per launch.
+- Logs older than 14 days are deleted at launch, and the folder is kept under 200 MB.
+- A log that doesn't end with `[exit] shutdown complete` belongs to a launch that
+  crashed or was killed.
+
+This level of detail is temporary. It will be cut back once the browser matures.
+
 ## The `:ai` assistant
 
 `:ai` opens an assistant that can act on the browser for you: "open github and gmail side

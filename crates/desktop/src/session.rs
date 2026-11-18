@@ -228,17 +228,64 @@ pub fn save_to(path: &std::path::Path, session: &Session) {
     }
     // Keep the version being replaced as `<file>.bak` — but only when it HAD tabs, so
     // a run of empty saves can't push the last real layout out of the backup.
-    if load_from(path).is_some_and(|old| !old.tabs.is_empty()) {
-        let _ = std::fs::copy(path, backup_path(path));
-    }
-    if let Ok(text) = toml::to_string(session) {
-        let _ = std::fs::write(path, text);
-    }
+    let old_tabs = load_from(path).map(|old| old.tabs.len());
+    let backed_up =
+        old_tabs.is_some_and(|n| n > 0) && std::fs::copy(path, backup_path(path)).is_ok();
+    let result = toml::to_string(session)
+        .map_err(|e| e.to_string())
+        .and_then(|text| std::fs::write(path, text).map_err(|e| e.to_string()));
+    crate::journal::log(
+        "session",
+        match result {
+            Ok(()) => format!(
+                "wrote {} tabs ({} windows) to {} (replaced {} tabs{})",
+                session.tabs.len(),
+                session.windows.len(),
+                path.display(),
+                old_tabs.map_or("no file".into(), |n| n.to_string()),
+                if backed_up {
+                    ", previous kept as .bak"
+                } else {
+                    ""
+                }
+            ),
+            Err(e) => format!("FAILED to write {}: {e}", path.display()),
+        },
+    );
 }
 
 /// Read a session from an explicit path, or `None` if it isn't there / won't parse.
+/// A file that exists but won't parse is logged: that's a lost session otherwise.
 pub fn load_from(path: &std::path::Path) -> Option<Session> {
-    toml::from_str(&std::fs::read_to_string(path).ok()?).ok()
+    let text = std::fs::read_to_string(path).ok()?;
+    match toml::from_str::<Session>(&text) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            crate::journal::log(
+                "session",
+                format!("could not parse {}: {e}", path.display()),
+            );
+            None
+        }
+    }
+}
+
+/// Log that a session was loaded from `path` to be applied (`why`: launch, profile
+/// switch, …), with its size.
+pub fn log_load(why: &str, path: Option<&std::path::Path>, s: Option<&Session>) {
+    let path = path.map(|p| p.display().to_string()).unwrap_or_default();
+    crate::journal::log(
+        "session",
+        match s {
+            Some(s) => format!(
+                "{why}: loaded {} tabs ({} windows, active {}) from {path}",
+                s.tabs.len(),
+                s.windows.len(),
+                s.active
+            ),
+            None => format!("{why}: nothing loaded from {path} (missing or unreadable)"),
+        },
+    );
 }
 
 #[cfg(test)]

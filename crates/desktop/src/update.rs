@@ -324,6 +324,14 @@ fn migrate_script(pid: u32, msi: &Path, old_exe: &Path) -> String {
 /// Write `script` next to the installer and run it, hidden. It outlives the browser.
 fn spawn_helper(script: &str, msi: &Path) -> Result<(), String> {
     let path = msi.with_file_name("install.ps1");
+    crate::journal::log(
+        "update",
+        format!(
+            "starting the install helper {}:
+{script}",
+            path.display()
+        ),
+    );
     std::fs::write(&path, script).map_err(|e| e.to_string())?;
     let mut helper = std::process::Command::new("powershell.exe");
     helper.args([
@@ -397,6 +405,7 @@ impl App {
         if manual {
             self.set_status("checking for updates…");
         }
+        crate::journal::log("update", format!("checking for updates (manual: {manual})"));
         self.config.update_checked_at = Some(crate::app::now_epoch());
         // A throwaway --scratch run must not write the real config.
         if !self.cli_scratch {
@@ -430,6 +439,13 @@ impl App {
 
     pub(crate) fn on_update_checked(&mut self, release: Result<Release, String>, manual: bool) {
         let current = current_version();
+        crate::journal::log(
+            "update",
+            match &release {
+                Ok(r) => format!("latest release is {} (running {current})", r.version),
+                Err(e) => format!("update check failed: {e}"),
+            },
+        );
         match release {
             Ok(r) if is_newer(&r.version, &current) => {
                 let staged = self
@@ -486,6 +502,13 @@ impl App {
 
     /// Download `release` in the background: to install it now, or to stage it for quit.
     fn download_update(&mut self, release: Release, now: bool) {
+        crate::journal::log(
+            "update",
+            format!(
+                "downloading {} in the background (install now: {now})",
+                release.version
+            ),
+        );
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
             let result = download(&release);
@@ -541,6 +564,19 @@ impl App {
     /// A release was downloaded and verified. To install `now`: start the helper,
     /// save the session and quit. Otherwise keep it for when the browser quits.
     pub(crate) fn on_update_downloaded(&mut self, result: Result<Staged, String>, now: bool) {
+        crate::journal::log(
+            "update",
+            match &result {
+                Ok(s) => format!(
+                    "downloaded {} to {} (install now: {now}, already shutting down: {}) -> {:?}",
+                    s.version,
+                    s.msi.display(),
+                    self.torn_down,
+                    after_download(now, self.torn_down)
+                ),
+                Err(e) => format!("download failed: {e}"),
+            },
+        );
         if now {
             self.update_installing = false;
         }

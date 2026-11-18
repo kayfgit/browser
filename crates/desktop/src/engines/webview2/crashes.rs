@@ -21,6 +21,14 @@ pub(crate) fn install(webview: &WebView, proxy: PageEventProxy) {
         let Some(args) = args else { return Ok(()) };
         let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
         unsafe { args.ProcessFailedKind(&mut kind) }?;
+        crate::journal::log(
+            "engine",
+            format!(
+                "WebView2 process failed (kind {}): {:?}",
+                kind.0,
+                describe(kind)
+            ),
+        );
         let _ = proxy.send_event(match describe(kind) {
             Some(reason) => UserEvent::EngineCrashed(reason.into()),
             None => UserEvent::EngineWarning(warning(kind).into()),

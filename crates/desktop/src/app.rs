@@ -333,7 +333,7 @@ pub(crate) enum UserEvent {
     Quit,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum ModeKind {
     Normal,
     Command,
@@ -583,6 +583,9 @@ pub(crate) struct App {
     /// `:update install` is downloading the update right now, so running it again
     /// says so instead of starting a second download.
     pub(crate) update_installing: bool,
+    /// Mode, active tab and tab count as last written to the diagnostic log, so the
+    /// event loop can log each change once, wherever it came from.
+    pub(crate) logged_state: (ModeKind, Option<usize>, usize),
     /// Until when the bar says the staged update installs when you quit; it clears
     /// itself like a status message (the event loop wakes then and calls
     /// [`expire_staged_note`](Self::expire_staged_note)).
@@ -1262,6 +1265,15 @@ impl App {
                     // the back stack so `H` returns to it — unless this is the open's
                     // own landing (`settling`), which would record a phantom entry.
                     if u != tab.url {
+                        // Private tabs promise no trace, so their addresses stay out.
+                        crate::journal::log(
+                            "nav",
+                            if tab.private {
+                                format!("tab {index} (private) navigated")
+                            } else {
+                                format!("tab {index}: {} -> {u}", tab.url)
+                            },
+                        );
                         if tab.nav.settling {
                             tab.nav.settling = false;
                         } else if record {
@@ -1378,7 +1390,9 @@ impl App {
     /// detail the caller logs itself (a background `:ai` error: the bar says "see the
     /// :ai tab", `:err` gets the actual error).
     pub(crate) fn alert_status(&mut self, msg: impl Into<String>) {
-        self.status.show(msg.into(), Tone::Error, Instant::now());
+        let msg = msg.into();
+        crate::journal::log("status", format!("alert: {msg}"));
+        self.status.show(msg, Tone::Error, Instant::now());
     }
 
     /// Add a message to the session log (`:msg`, and `:warn` / `:err` by level)
@@ -1387,6 +1401,14 @@ impl App {
         if msg.trim().is_empty() {
             return;
         }
+        // Every message goes to the diagnostic log, repeats included (they're timing
+        // information there).
+        let area = match level {
+            Level::Msg => "msg",
+            Level::Warn => "warn",
+            Level::Err => "error",
+        };
+        crate::journal::log(area, msg);
         if self
             .log
             .last()
@@ -1498,6 +1520,10 @@ impl App {
             return;
         }
         self.torn_down = true;
+        crate::journal::log(
+            "exit",
+            format!("shutting down with {} tabs open", self.tabs.len()),
+        );
         // A downloaded update installs once this process has exited.
         self.install_staged_update();
         // Vanish NOW: dropping the webviews and joining PTY readers below can take
@@ -1520,6 +1546,7 @@ impl App {
         // redraw can't index the now-empty tab list through a stale window.
         self.windows.clear();
         self.active = None;
+        crate::journal::log("exit", "shutdown complete");
     }
 
     /// Write the open tabs + UI state to the current session file so the next launch
@@ -1532,6 +1559,14 @@ impl App {
         // download finishing mid-quit did exactly this) would write an EMPTY layout
         // over the session you saved.
         if self.torn_down || std::env::var("BROWSER_TEST_QUIT_MS").is_ok() {
+            crate::journal::log(
+                "session",
+                if self.torn_down {
+                    "save refused: the browser is already shutting down (its tabs are gone)"
+                } else {
+                    "save skipped: headless test run"
+                },
+            );
             return;
         }
         let Some(path) = self.current_session_path() else {

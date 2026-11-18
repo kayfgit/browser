@@ -245,6 +245,33 @@ impl App {
 
     /// `:version` — build/runtime details in an engine-free vim pager (no WebView2),
     /// so the text is navigable and yankable with the same motions as `:error`/`:res`.
+    /// `:logs` — this launch's diagnostic log (see `journal`) in a vim tab, cursor on
+    /// the newest line. `:logs folder` opens the logs folder in Explorer instead, with
+    /// this launch's file selected.
+    pub(crate) fn open_logs(&mut self, arg: &str) {
+        let Some(path) = crate::journal::current_path() else {
+            self.set_error("no diagnostic log is open for this launch");
+            return;
+        };
+        if matches!(arg, "folder" | "dir" | "open") {
+            let mut select = std::ffi::OsString::from("/select,");
+            select.push(path.as_os_str());
+            let _ = std::process::Command::new("explorer.exe")
+                .arg(select)
+                .spawn();
+            return;
+        }
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let lines: Vec<String> = text.lines().map(str::to_string).collect();
+        let last = lines.len().saturating_sub(1);
+        self.open_pager("browser://logs", vim::TextBuffer::new(lines.clone()));
+        self.relist_active_pager(lines, Some(last));
+        self.set_status(format!(
+            "{} — :logs folder shows every launch's log",
+            path.display()
+        ));
+    }
+
     pub(crate) fn open_version_page(&mut self) {
         self.open_pager("browser://version", vim::TextBuffer::new(version_lines()));
     }
@@ -578,6 +605,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("save", ":save [name] · :favorite · :bookmark", "keep the current page for later, optionally under a short name (re-saving the same page renames it instead of duplicating)"),
     ("saved", ":saved · :favorites", "the saved pages in a vim tab (Enter opens, ⇧Enter new tab, d deletes the line/selection); kept in their own file, so profiles and :restore never touch them"),
     ("unsave", ":unsave <name|url>", "remove a saved page (same as d on its row in :saved)"),
+    ("logs", ":logs · :logs folder", "this launch's diagnostic log (every command, page, save, mode change, click and error, with times) in a vim tab; :logs folder opens all logs and crash dumps. Early development: it records nearly everything except what you type into pages — see the README"),
     ("history", ":history · :hist", "visited URLs in a vim tab (Enter opens, ⇧Enter new tab, v/y select, d deletes the line/selection); :history clear wipes it"),
     ("clear", ":clear <what> [period] [site]", "erase data: history/cookies/cache/all, optionally a window (15m/1h/24h/7d) or only one site (e.g. :clear cookies reddit.com); cookies/cache need a page open"),
     ("alias", ":alias [name] [cmd] · :unalias", "list / set / remove command aliases (e.g. :alias gh open github.com → :gh)"),

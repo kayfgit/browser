@@ -143,6 +143,7 @@ pub(crate) const BUILTIN_VERBS: &[&str] = &[
     "move",
     "history",
     "hist",
+    "logs",
     "aihist",
     "aihistory",
     "clear",
@@ -206,6 +207,7 @@ pub(crate) const COMMANDS: &[&str] = &[
     "scrollbar",
     "model",
     "history",
+    "logs",
     "aihist",
     "aihistory",
     "clear",
@@ -270,6 +272,7 @@ pub(crate) const COMMANDS: &[&str] = &[
 impl App {
     pub(crate) fn run_command(&mut self, line: &str) {
         let line = line.trim();
+        crate::journal::log("cmd", format!(":{line}"));
         // Attribute any failure raised below to this command in the error log (keep the
         // line the user actually typed, before alias expansion).
         self.current_command = if line.is_empty() {
@@ -601,6 +604,9 @@ impl App {
                     self.open_history_page();
                 }
             }
+            // `:logs` — this launch's diagnostic log in a vim tab; `:logs folder` shows
+            // the logs folder (older launches, crash dumps) in Explorer.
+            "logs" => self.open_logs(rest.trim()),
             // `:aihist` — the saved `:ai` conversation picker (Enter on a row opens it).
             "aihist" | "aihistory" => self.open_ai_history_page(),
             // `:clear <what> [period] [site]` — the privacy/data actions (e.g. `:clear
