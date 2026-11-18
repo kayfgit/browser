@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.15.0](https://github.com/kayfgit/browser/compare/v0.14.0...v0.15.0) (2026-11-18)
+
+
+### Features
+
+* :wl saves the session, then quits ([5d7fa98](https://github.com/kayfgit/browser/commit/5d7fa9831efab40b434d0927086eee728151c82f))
+* a detailed diagnostic log for every launch ([5af6a59](https://github.com/kayfgit/browser/commit/5af6a59080b85a20ee640b2ceea279a65f9e37f9))
+* clicking outside the command bar closes it ([14f49d6](https://github.com/kayfgit/browser/commit/14f49d6dc6dd42e642166ff16c164ad8b03b56da))
+* drag tabs with the mouse to reorder them ([ff230ee](https://github.com/kayfgit/browser/commit/ff230ee688d2580a76e49342a2b18dbee7e6e540))
+* keep a backup of the last saved session that had tabs ([ff6ec0d](https://github.com/kayfgit/browser/commit/ff6ec0daf1d197c51c864e284691798945e1728e))
+
+
+### Bug Fixes
+
+* an update finishing as you quit no longer wipes the saved tabs ([2dd053b](https://github.com/kayfgit/browser/commit/2dd053b8077b35dbe059f5e6f8c7cae0aa853156))
+
 ## [0.14.0](https://github.com/kayfgit/browser/compare/v0.13.1...v0.14.0) (2026-11-17)
 
 
