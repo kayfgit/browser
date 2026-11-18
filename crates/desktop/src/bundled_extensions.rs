@@ -43,7 +43,7 @@ pub(crate) fn dir() -> Option<PathBuf> {
         match unpack(&root) {
             Ok(()) => Some(root),
             Err(e) => {
-                eprintln!("bundled extensions: {e}");
+                crate::journal::log("extensions", format!("preparing bundled extensions: {e}"));
                 // An older unpacked copy still beats no ad blocking at all.
                 root.is_dir().then_some(root)
             }

@@ -57,6 +57,7 @@ mod find;
 mod freeze;
 mod glance;
 mod hints;
+mod journal;
 mod keys;
 mod layout;
 mod markdown;
@@ -141,6 +142,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // The diagnostic log, before anything that could crash (see `journal`).
+    journal::init();
+
     // Give this process a single explicit AppUserModelID *before* anything is
     // spawned. Child processes inherit it at creation time, so every descendant —
     // the on-demand WebView2 engine and its renderer/GPU/utility processes, the
@@ -187,7 +191,22 @@ fn main() -> Result<()> {
     // A browser is already running (a link from another app, or a second launch): give
     // it the address and stop here, so links land in the one window. `--scratch` runs
     // only meet other scratch runs; test runs always start their own.
+    journal::log(
+        "launch",
+        format!(
+            "browser {} ({} build) pid {} exe {} args {:?} --scratch={cli_scratch} test-run={is_test}",
+            env!("CARGO_PKG_VERSION"),
+            if cfg!(debug_assertions) { "debug" } else { "release" },
+            std::process::id(),
+            std::env::current_exe().unwrap_or_default().display(),
+            std::env::args().skip(1).collect::<Vec<_>>(),
+        ),
+    );
     if !is_test && external::hand_off(cli_arg.as_deref(), cli_scratch) {
+        journal::log(
+            "launch",
+            "a browser is already running: handed it the launch, exiting",
+        );
         return Ok(());
     }
     let mut cfg = config::load();
@@ -209,8 +228,25 @@ fn main() -> Result<()> {
         } else {
             session::session_path()
         };
-        path.as_deref().and_then(session::load_from)
+        journal::log(
+            "launch",
+            format!(
+                "profile {:?}, scratch {}, restoring from {}",
+                cfg.profile,
+                cfg.scratch,
+                path.as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            ),
+        );
+        let loaded = path.as_deref().and_then(session::load_from);
+        session::log_load("launch", path.as_deref(), loaded.as_ref());
+        loaded
     } else {
+        journal::log(
+            "launch",
+            "not restoring a session (a :command argument or a test run)",
+        );
         None
     };
 
@@ -311,6 +347,7 @@ fn main() -> Result<()> {
         update_available: None,
         staged_update: None,
         update_installing: false,
+        logged_state: (ModeKind::Normal, None, 0),
         staged_note_until: None,
         cli_scratch,
         pane_resize_at: Instant::now(),
@@ -373,6 +410,14 @@ fn main() -> Result<()> {
         if let Some(note) = news::note_launch(&mut app.config.seen_version) {
             config::save(&app.config);
             app.set_status(note);
+        }
+        // Once: say that this early build logs nearly everything (README has the list).
+        if !app.config.logging_notice_seen {
+            app.config.logging_notice_seen = true;
+            config::save(&app.config);
+            app.set_warning(
+                "early development: browser keeps a detailed diagnostic log of what it does                  (never what you type into pages) — :logs shows it, the README says what's in it",
+            );
         }
         app.check_for_update_at_launch();
         update::start_periodic_checks(app.proxy.clone());

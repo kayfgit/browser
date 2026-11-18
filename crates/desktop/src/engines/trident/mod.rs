@@ -288,6 +288,7 @@ fn read_events(stdout: std::fs::File, proxy: EventLoopProxy<UserEvent>, id: View
             if let Some(log) = log.as_mut() {
                 let _ = writeln!(log, "[{id:?}] {line}");
             }
+            crate::journal::log("trident", format!("[{id:?}] {line}"));
             if let Some(event) = protocol::decode::<protocol::Event>(&line) {
                 if proxy
                     .send_event(UserEvent::Trident(Event::Helper(id, event)))

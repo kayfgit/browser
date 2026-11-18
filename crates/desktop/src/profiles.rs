@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use crate::{session, App};
 
 /// What a switch is heading for.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Target {
     /// The live session (`session.toml`) — where `:w` writes and where the layout
     /// parked on the way into `:scratch` waits.
@@ -214,6 +214,15 @@ impl App {
     /// target's tabs/layout/state. The visited history is global, so it survives the
     /// swap untouched.
     pub(crate) fn switch_to(&mut self, target: Target) {
+        crate::journal::log(
+            "profile",
+            format!(
+                "switching to {target:?} from profile {:?} (scratch {}) with {} tabs open",
+                self.config.profile,
+                self.config.scratch,
+                self.tabs.len()
+            ),
+        );
         // 0. Pin the engine open BEFORE the tabs go, while its browser process is still
         //    running, so the tabs we rebuild in a moment attach to the SAME process
         //    instead of cold-starting one: that keeps even session cookies and a warm
@@ -262,8 +271,12 @@ impl App {
         };
         if target == Target::Scratch {
             self.save_session();
-        } else if let Some(s) = source.as_deref().and_then(session::load_from) {
-            self.apply_session(s);
+        } else {
+            let loaded = source.as_deref().and_then(session::load_from);
+            session::log_load("profile switch", source.as_deref(), loaded.as_ref());
+            if let Some(s) = loaded {
+                self.apply_session(s);
+            }
         }
         // 5. Hand the engine over to the rebuilt tabs (`refresh_visibility` usually does
         //    this the moment the first one exists) and drop the pin. With no web tabs to

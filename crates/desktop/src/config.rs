@@ -62,6 +62,10 @@ pub(crate) struct Config {
     /// point at `:news`. State, not customization: [`restore_defaults`](crate::App::restore_defaults) keeps it.
     #[serde(default)]
     pub(crate) seen_version: Option<String>,
+    /// Whether the one-time notice about the detailed diagnostic log (early
+    /// development, see `journal`) has been shown. State, like `seen_version`.
+    #[serde(default)]
+    pub(crate) logging_notice_seen: bool,
     /// What the browser does about updates: `notify` or `off`; unset is `auto`
     /// (download in the background, install on quit). See `:update`.
     #[serde(default)]
