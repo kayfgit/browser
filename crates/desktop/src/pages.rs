@@ -594,6 +594,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("source", ":source · :viewsource · :src", "view this page's source in a new tab (also Ctrl+Shift+U, or right-click → View page source)"),
     ("update", ":update · :update install · :update auto|notify|off", "check for a newer version and show what's in it; install installs it now and restarts the browser with your tabs. auto (the default): updates download in the background and install when you quit; notify: only announce them; off: no checks"),
     ("write", ":w · :write", "save the current session (open tabs + UI state) to disk"),
+    ("wl", ":wl", "save the session, then quit (:w then :leave)"),
     ("quit", ":quit · :leave · :l", "quit WITHOUT saving (the last :w'd session is kept; :w first to save). :q, :wq and :x don't quit, so a vim habit can't close the browser"),
 ];
 

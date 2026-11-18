@@ -187,7 +187,7 @@ must stay connected to their page still open as their own window.
 **Sessions** are saved explicitly, vim-style: `:w` saves the open tabs (including splits
 and terminal working directories), window position and size, zoom, ad blocking and search
 settings. `:quit` (or `:leave`, `:l`) quits, and like closing the window it does *not*
-save, so the last written session stays as it was. Vim's `:q`, `:wq` and `:x` don't
+save, so the last written session stays as it was. `:wl` saves and then quits. Vim's `:q`, `:wq` and `:x` don't
 quit the browser, so a habit from a terminal can't close it. The next launch without a URL argument
 restores it.
 

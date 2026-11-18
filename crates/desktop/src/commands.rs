@@ -85,6 +85,7 @@ pub(crate) const BUILTIN_VERBS: &[&str] = &[
     "sp",
     "write",
     "w",
+    "wl",
     "wq",
     "x",
     "quit",
@@ -522,10 +523,15 @@ impl App {
                 self.set_status("session written");
             }
             "quit" | "leave" | "l" => self.quit = true,
+            // Write, then leave: the `:wq` of the browser's own quit verb.
+            "wl" => {
+                self.save_session();
+                self.quit = true;
+            }
             // Vim's quit commands don't quit the browser: reaching for them in a
             // terminal that turned out to be in Normal mode closed everything.
             "q" | "q!" | "wq" | "x" => self.set_status(
-                ":q doesn't quit the browser — use :quit or :leave (:l); :w saves first",
+                ":q doesn't quit the browser — use :quit or :leave (:l), or :wl to save first",
             ),
             // Profiles: named snapshots of the workspace (tabs + splits + window + UI
             // state). `:saveprofile` is the ONLY writer — `:w` records the live session
