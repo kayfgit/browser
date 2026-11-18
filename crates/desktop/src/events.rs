@@ -128,6 +128,8 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             app.bar_drag(position.x);
             // Left-drag inside a terminal pane extends ITS selection.
             app.term_select_drag(position.x, position.y);
+            // Left-drag on a tab slides it along the strip.
+            app.tab_drag_move(position.x, position.y);
             // Hovering the command bar reveals the full (vs. shortened) URL.
             let (_, h) = app.inner();
             let over_bar = app.bar_h() > 0 && position.y >= (h as f64 - app.bar_h() as f64);
@@ -156,6 +158,8 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             // HWND) isn't a release, and shouldn't clobber the clipboard. What
             // was selected stays highlighted and yankable.
             app.term_drag = None;
+            // A tab drag keeps wherever the tab got to.
+            app.end_tab_drag();
             if app.button_hover.take().is_some() {
                 app.window.request_redraw();
             }
@@ -177,6 +181,8 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             app.bar_dragging = false;
             // Ends a terminal drag-select and copies what it covered.
             app.term_select_end();
+            // Drops a dragged tab where it is.
+            app.end_tab_drag();
         }
         // Right-press on a natively-drawn surface (terminal, :read, a vim
         // pager, the command line): copy that surface's selection. Web panes
@@ -200,17 +206,21 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
                 // A clickable button (back / forward / reload, or the user's own).
                 app.press_button(i);
             } else if app.sidebar_w() > 0 && app.cursor_pos.0 < app.sidebar_w() as f64 {
-                // The vertical tab sidebar: a row switches to that tab, the empty
-                // space below the tabs moves the (borderless) window.
+                // The vertical tab sidebar: a row switches to that tab (and can be
+                // dragged up or down), the empty space below the tabs moves the
+                // (borderless) window.
                 if let Some(i) = app.sidebar_tab_at(app.cursor_pos.1) {
                     app.jump_to(i);
+                    app.start_tab_drag(i, app.cursor_pos.1);
                     app.window.request_redraw();
                 } else {
                     let _ = app.window.drag_window();
                 }
             } else if !app.tabs.is_empty() && app.cursor_pos.1 < app.tab_bar_h() as f64 {
                 if let Some(i) = app.tab_at_pixel(app.cursor_pos.0) {
+                    // Switch to the tab, and arm a drag to reorder it.
                     app.jump_to(i);
+                    app.start_tab_drag(i, app.cursor_pos.0);
                     app.window.request_redraw();
                 } else {
                     let _ = app.window.drag_window();

@@ -1293,6 +1293,63 @@ impl App {
         );
     }
 
+    /// A press landed on the tab at strip position `pos`, at `at` (x on the top strip,
+    /// y in the sidebar): arm a drag, so moving the mouse with the button held slides
+    /// that tab along the strip.
+    pub(crate) fn start_tab_drag(&mut self, pos: usize, at: f64) {
+        self.tab_drag = Some(TabDrag {
+            pos,
+            last: at,
+            before: self.layout_now(),
+        });
+    }
+
+    /// The pointer moved to `(x, y)`: if a tab is being dragged and the pointer has
+    /// moved INTO another tab in the direction of travel, move the dragged tab there.
+    /// The direction check stops a narrow tab dragged over a wide one from swapping
+    /// back and forth, since after the swap the pointer is still over the wide tab.
+    pub(crate) fn tab_drag_move(&mut self, x: f64, y: f64) {
+        let Some(drag) = self.tab_drag.as_ref() else {
+            return;
+        };
+        let (pos, last) = (drag.pos, drag.last);
+        let sidebar = self.sidebar_w() > 0;
+        let at = if sidebar { y } else { x };
+        let over = if sidebar {
+            self.sidebar_tab_at(y)
+        } else {
+            self.tab_at_pixel(x)
+        };
+        let target = over.and_then(|over| drag_step(pos, over, at - last));
+        if let Some(drag) = self.tab_drag.as_mut() {
+            drag.last = at;
+            if let Some(to) = target {
+                drag.pos = to;
+            }
+        }
+        if let Some(to) = target {
+            if pos < self.windows.len() && to < self.windows.len() {
+                let moved = self.windows.remove(pos);
+                self.windows.insert(to, moved);
+                self.refresh_visibility();
+                self.window.request_redraw();
+            }
+        }
+    }
+
+    /// The button was released (or the pointer left the window): end the drag, and
+    /// record the whole move as ONE layout change, so a single `U` puts it back.
+    pub(crate) fn end_tab_drag(&mut self) {
+        if let Some(drag) = self.tab_drag.take() {
+            self.record_layout(
+                crate::layout::ChangeKind::Reorder,
+                drag.before,
+                Vec::new(),
+                Vec::new(),
+            );
+        }
+    }
+
     pub(crate) fn refresh_visibility(&mut self) {
         // Every pane focus/layout change comes through here, including clicks,
         // keyboard pane movement, new splits and session restoration.
@@ -1967,13 +2024,45 @@ pub(crate) fn engine_rect(r: PaneRect) -> RectPx {
     }
 }
 
+/// A tab being dragged to a new place in the strip (see [`App::start_tab_drag`]).
+pub(crate) struct TabDrag {
+    /// The dragged tab's current strip position.
+    pos: usize,
+    /// The pointer's last coordinate along the strip (x on top, y in the sidebar).
+    last: f64,
+    /// The layout when the drag began, so the whole drag is one undo step.
+    before: crate::layout::Layout,
+}
+
+/// Where a tab dragged from strip position `pos` should go, given the tab `over`
+/// under the pointer and the pointer's last movement `delta` along the strip: onto
+/// `over` when the pointer is moving toward it, else nowhere.
+fn drag_step(pos: usize, over: usize, delta: f64) -> Option<usize> {
+    let toward = (over > pos && delta > 0.0) || (over < pos && delta < 0.0);
+    toward.then_some(over)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        deproxy_translate, download_name, is_risky_download, is_translate_proxy, nav_push,
-        origin_of, parse_tab_flag, url_is_ad_host, NavEntry, NavKind, NAV_CAP,
+        deproxy_translate, download_name, drag_step, is_risky_download, is_translate_proxy,
+        nav_push, origin_of, parse_tab_flag, url_is_ad_host, NavEntry, NavKind, NAV_CAP,
     };
     use std::path::Path;
+
+    #[test]
+    fn a_dragged_tab_moves_onto_the_tab_it_is_pulled_toward() {
+        // Pulled right over the next tab, or left over an earlier one: it moves there.
+        assert_eq!(drag_step(1, 2, 3.0), Some(2));
+        assert_eq!(drag_step(2, 0, -3.0), Some(0));
+        // Still over itself: nothing to do.
+        assert_eq!(drag_step(1, 1, 3.0), None);
+        // A narrow tab just swapped left past a wide one is still over the wide one,
+        // now to its RIGHT. Moving left must not swap it straight back.
+        assert_eq!(drag_step(0, 1, -2.0), None);
+        // A vertical-only wiggle (no movement along the strip) moves nothing.
+        assert_eq!(drag_step(0, 1, 0.0), None);
+    }
 
     #[test]
     fn nav_push_caps_the_stack_dropping_the_oldest() {
