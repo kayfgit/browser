@@ -213,11 +213,23 @@ pub fn delete_profile(name: &str) -> bool {
     profile_path(name).is_some_and(|p| std::fs::remove_file(p).is_ok())
 }
 
+/// `<file>.bak` beside a session file: the last version of it that had tabs.
+pub fn backup_path(path: &std::path::Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".bak");
+    path.with_file_name(name)
+}
+
 /// Write a session to an explicit path, creating the directory (best-effort;
 /// failures are ignored, like the config writer).
 pub fn save_to(path: &std::path::Path, session: &Session) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
+    }
+    // Keep the version being replaced as `<file>.bak` — but only when it HAD tabs, so
+    // a run of empty saves can't push the last real layout out of the backup.
+    if load_from(path).is_some_and(|old| !old.tabs.is_empty()) {
+        let _ = std::fs::copy(path, backup_path(path));
     }
     if let Ok(text) = toml::to_string(session) {
         let _ = std::fs::write(path, text);
@@ -284,6 +296,72 @@ mod tests {
         assert_eq!(back.tabs[1].kind, "term");
         assert_eq!(back.tabs[1].cwd, "C:\\projects\\browser");
         assert_eq!(back.windows, vec!["R0.5000(0|1)".to_string()]);
+    }
+
+    fn session_with(urls: &[&str]) -> Session {
+        Session {
+            name: String::new(),
+            zoom: 1.0,
+            content_zoom: 1.0,
+            nojs: false,
+            no_scrollbar: false,
+            adblock_mode: "ubo".into(),
+            search_template: "https://example.com/?q=%s".into(),
+            term_command: vec!["nu".into()],
+            active: 0,
+            history: Vec::new(),
+            history_at: Vec::new(),
+            windows: Vec::new(),
+            window: None,
+            tabs: urls
+                .iter()
+                .map(|u| SavedTab {
+                    provider: default_provider(),
+                    kind: "open".into(),
+                    url: (*u).into(),
+                    cwd: String::new(),
+                })
+                .collect(),
+        }
+    }
+
+    fn urls(path: &std::path::Path) -> Vec<String> {
+        load_from(path)
+            .expect("readable session")
+            .tabs
+            .into_iter()
+            .map(|t| t.url)
+            .collect()
+    }
+
+    #[test]
+    fn overwriting_a_session_keeps_a_backup_of_the_last_one_with_tabs() {
+        let dir = std::env::temp_dir().join(format!("browser-session-bak-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("session.toml");
+        save_to(
+            &path,
+            &session_with(&["https://a.test/", "https://b.test/"]),
+        );
+        // Nothing to back up on the first write.
+        assert!(!backup_path(&path).exists());
+        // An empty layout written over it (what an update finishing mid-quit did)
+        // leaves the tabs recoverable from the backup.
+        save_to(&path, &session_with(&[]));
+        assert!(urls(&path).is_empty());
+        assert_eq!(
+            urls(&backup_path(&path)),
+            ["https://a.test/", "https://b.test/"]
+        );
+        // A SECOND empty write (`:scratch` from the empty browser) must not
+        // replace that backup with the empty file.
+        save_to(&path, &session_with(&[]));
+        assert_eq!(urls(&backup_path(&path)).len(), 2);
+        // A real save afterwards moves the backup forward as usual.
+        save_to(&path, &session_with(&["https://c.test/"]));
+        save_to(&path, &session_with(&["https://d.test/"]));
+        assert_eq!(urls(&backup_path(&path)), ["https://c.test/"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
