@@ -514,7 +514,16 @@ impl App {
         if let Some(staged) = self.staged_update.take() {
             return self.on_update_downloaded(Ok(staged), true);
         }
-        self.set_status("downloading the update…");
+        if self.update_installing {
+            self.set_status(
+                "still downloading the update — the browser restarts by itself when it's ready",
+            );
+            return;
+        }
+        self.update_installing = true;
+        self.set_status(
+            "downloading the update — the browser restarts by itself when it's ready (keep it open)",
+        );
         let proxy = self.proxy.clone();
         let current = current_version();
         std::thread::spawn(move || {
@@ -532,6 +541,9 @@ impl App {
     /// A release was downloaded and verified. To install `now`: start the helper,
     /// save the session and quit. Otherwise keep it for when the browser quits.
     pub(crate) fn on_update_downloaded(&mut self, result: Result<Staged, String>, now: bool) {
+        if now {
+            self.update_installing = false;
+        }
         let staged = match result {
             Ok(staged) => staged,
             Err(error) => {
@@ -546,11 +558,24 @@ impl App {
                 return;
             }
         };
-        if !now {
-            self.staged_update = Some(staged);
-            self.staged_note_until = Some(Instant::now() + crate::status::STATUS_TIMEOUT);
-            self.window.request_redraw();
-            return;
+        match after_download(now, self.torn_down) {
+            AfterDownload::Stage => {
+                self.staged_update = Some(staged);
+                self.staged_note_until = Some(Instant::now() + crate::status::STATUS_TIMEOUT);
+                self.window.request_redraw();
+                return;
+            }
+            AfterDownload::InstallQuietly => {
+                // You quit while it was still downloading. Install it the way a staged
+                // update installs on quit: no session save (the tabs are already gone,
+                // and saving now wrote an empty layout over your `:w`), no restart.
+                if this_install() == Install::User {
+                    let script = install_script(std::process::id(), &staged.msi, None);
+                    let _ = spawn_helper(&script, &staged.msi);
+                }
+                return;
+            }
+            AfterDownload::InstallAndRestart => {}
         }
         let exe = std::env::current_exe().unwrap_or_default();
         let pid = std::process::id();
@@ -597,6 +622,28 @@ impl App {
     }
 }
 
+/// What to do with an update that just finished downloading.
+#[derive(Debug, PartialEq)]
+enum AfterDownload {
+    /// A background download: keep it, and install it when the browser quits.
+    Stage,
+    /// `:update install`: save the session, install, and restart.
+    InstallAndRestart,
+    /// `:update install`, but you quit while it downloaded: install without
+    /// saving or restarting.
+    InstallQuietly,
+}
+
+/// Decide what a finished download does: `now` = `:update install` asked for it,
+/// `quitting` = the browser has already started shutting down (its tabs are gone).
+fn after_download(now: bool, quitting: bool) -> AfterDownload {
+    match (now, quitting) {
+        (_, true) => AfterDownload::InstallQuietly,
+        (true, false) => AfterDownload::InstallAndRestart,
+        (false, false) => AfterDownload::Stage,
+    }
+}
+
 /// The bar's note about a newer version: that a `staged` one installs when you quit,
 /// while that note is `shown` (it clears itself like a status message: nothing to do,
 /// so it needn't stay), else that one is `available`, which stays until it's
@@ -612,6 +659,19 @@ fn update_note(staged: Option<&str>, shown: bool, available: Option<&str>) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_download_finishing_after_quit_installs_without_saving_or_restarting() {
+        assert_eq!(after_download(false, false), AfterDownload::Stage);
+        assert_eq!(
+            after_download(true, false),
+            AfterDownload::InstallAndRestart
+        );
+        // The lost-tabs bug: `:update install`, then `:l` before the download ended.
+        // The install-and-restart path saved the already-emptied browser over `:w`.
+        assert_eq!(after_download(true, true), AfterDownload::InstallQuietly);
+        assert_eq!(after_download(false, true), AfterDownload::InstallQuietly);
+    }
 
     #[test]
     fn the_staged_update_note_clears_but_an_available_one_stays() {

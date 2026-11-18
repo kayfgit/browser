@@ -577,6 +577,9 @@ pub(crate) struct App {
     /// An update downloaded in the background (`auto` mode), installed when the
     /// browser quits.
     pub(crate) staged_update: Option<crate::update::Staged>,
+    /// `:update install` is downloading the update right now, so running it again
+    /// says so instead of starting a second download.
+    pub(crate) update_installing: bool,
     /// Until when the bar says the staged update installs when you quit; it clears
     /// itself like a status message (the event loop wakes then and calls
     /// [`expire_staged_note`](Self::expire_staged_note)).
@@ -1522,7 +1525,10 @@ impl App {
     /// `:w` (vim-style) and by a profile switch, never automatically on exit.
     /// No-op during headless test runs so they don't clobber a real session.
     pub(crate) fn save_session(&self) {
-        if std::env::var("BROWSER_TEST_QUIT_MS").is_ok() {
+        // Once quitting has started the tabs are already gone: a save now (an update
+        // download finishing mid-quit did exactly this) would write an EMPTY layout
+        // over the session you saved.
+        if self.torn_down || std::env::var("BROWSER_TEST_QUIT_MS").is_ok() {
             return;
         }
         let Some(path) = self.current_session_path() else {
