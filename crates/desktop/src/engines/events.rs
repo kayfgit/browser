@@ -166,6 +166,10 @@ impl App {
                 let visible = self.pane_layout().0.iter().any(|(tab, _)| *tab == index);
                 if visible && !self.frozen {
                     self.page_gesture_at = Some(std::time::Instant::now());
+                    // A click in the page closes an open command line (see
+                    // `click_away_from_bar`); the shell takes the keyboard back
+                    // through the bridge's usual grab-focus that follows.
+                    self.click_away_from_bar(false);
                     self.focus_pane_click(index);
                 }
                 None

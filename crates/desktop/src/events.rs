@@ -193,7 +193,9 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
         } => {
             let (_, h) = app.inner();
             let bar_top = h as f64 - app.bar_h() as f64;
-            if app.bar_h() > 0 && app.cursor_pos.1 >= bar_top {
+            let on_bar = app.bar_h() > 0 && app.cursor_pos.1 >= bar_top;
+            app.click_away_from_bar(on_bar);
+            if on_bar {
                 // Click the command/status bar: edit the URL or place the caret.
                 app.bar_click(app.cursor_pos.0);
             } else if let Some(i) = app.button_at(app.cursor_pos.0, app.cursor_pos.1) {
@@ -383,6 +385,8 @@ fn on_user_event(app: &mut App, event: UserEvent, control_flow: &mut ControlFlow
             // until it has finished and the bridge has said who should keep the
             // keyboard (see `reclaim_focus_tick`).
             app.page_gesture_at = Some(Instant::now());
+            // A click in the page closes an open command line, as one on the chrome does.
+            app.click_away_from_bar(false);
             // Clicking inside a web pane focuses it (web panes consume the click in
             // their HWND, so this is the only way they reach us). Use the OS cursor
             // position, since CursorMoved isn't delivered over a child webview.

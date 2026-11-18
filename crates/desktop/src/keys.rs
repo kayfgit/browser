@@ -966,6 +966,17 @@ impl App {
         self.relayout_active();
     }
 
+    /// A left-press landed somewhere in the window (`on_bar` = inside the command/
+    /// status bar). Pressing anywhere else while the command line is open closes it,
+    /// exactly like Esc — the line is discarded. The press then carries on to whatever
+    /// it hit (a tab, a button, a page), so one click both closes the bar and acts.
+    pub(crate) fn click_away_from_bar(&mut self, on_bar: bool) {
+        if click_closes_command_bar(self.mode, on_bar) {
+            self.cancel_command();
+            self.window.request_redraw();
+        }
+    }
+
     /// Map a physical x pixel in the command bar to the nearest caret byte offset
     /// in the command line, replicating the draw layout: the line is `<pre><command>`
     /// drawn at `MARGIN - bar_cmd_scroll`, so boundary `k` sits at that origin plus
@@ -1497,9 +1508,27 @@ fn complete_from_history<'a>(
     Some(format!("{typed}{disp}"))
 }
 
+/// Whether a left-press should close the command line: only while typing a command
+/// (not the `/` find prompt, whose highlights you may want to keep clicking around),
+/// and only when the press missed the bar itself, where it places the caret instead.
+fn click_closes_command_bar(mode: ModeKind, on_bar: bool) -> bool {
+    mode == ModeKind::Command && !on_bar
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{complete_from_history, completion_parts};
+    use super::{click_closes_command_bar, complete_from_history, completion_parts};
+    use crate::ModeKind;
+
+    #[test]
+    fn clicking_outside_the_open_command_bar_closes_it() {
+        assert!(click_closes_command_bar(ModeKind::Command, false));
+        // A press on the bar itself moves the caret; it must not close the line.
+        assert!(!click_closes_command_bar(ModeKind::Command, true));
+        // Nothing to close in other modes, and find keeps its highlights.
+        assert!(!click_closes_command_bar(ModeKind::Normal, false));
+        assert!(!click_closes_command_bar(ModeKind::Find, false));
+    }
 
     #[test]
     fn history_completion_skips_open_flags() {
