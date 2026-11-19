@@ -32,10 +32,7 @@ feats:
 [] - add a way for users to freely install extensions
 [] - should have an icon for a tab that is playing audio, anything just to show feedback.
 [] - a tab should only load when the user has it selected, currently when opening up the browser all tabs load at once.
-[] - clicking on the command bar with the mouse opens it up, but clicking outside doesnt close it. it should.
 [] - hovering the tabs should expand them and show close buttons
-[] - allow dragging the tabs with the mouse
-[] - i had some tabs open, updated, close the browser and opened it again and the tabs are completely gone
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
