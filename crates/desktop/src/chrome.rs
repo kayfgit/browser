@@ -1694,11 +1694,13 @@ pub(crate) fn tab_cells(p: &Painter, w: usize, entries: &[TabEntry]) -> Vec<TabC
     let mut x = 8usize;
     for (i, e) in entries.iter().enumerate() {
         // The hovered entry's buttons, at its right end: close, and mute before it on
-        // web tabs. They replace its speaker, since the mute button shows the state.
-        // (4px of air before them, so the label's `]` doesn't touch the first.)
+        // a tab that's playing sound (or muted, so it can be unmuted). The mute button
+        // replaces the speaker, since it shows the same state. (4px of air before
+        // them, so the label's `]` doesn't touch the first.)
+        let mutable = e.web && e.sound != crate::audio::Sound::Silent;
         let buttons = if !e.hovered {
             0
-        } else if e.web {
+        } else if mutable {
             2 * (ic + 4) + 4
         } else {
             ic + 4 + 4
@@ -1739,7 +1741,7 @@ pub(crate) fn tab_cells(p: &Painter, w: usize, entries: &[TabEntry]) -> Vec<TabC
             icon_x: e.web.then_some(x + prefix_w),
             sound_x: speaker.then(|| (x + cell).saturating_sub(6 + ic)),
             mute_x: close_x
-                .filter(|_| e.web)
+                .filter(|_| mutable)
                 .map(|cx| cx.saturating_sub(ic + 4)),
             close_x,
             prefix,
@@ -1858,6 +1860,7 @@ mod tab_cell_tests {
         for e in &mut es {
             e.label = "a-22-character-label-x".into();
         }
+        es[2].sound = crate::audio::Sound::Playing;
         let plain = tab_cells(&p, 1600, &es);
         es[2].hovered = true;
         let hovered = tab_cells(&p, 1600, &es);
@@ -1880,6 +1883,30 @@ mod tab_cell_tests {
         assert_eq!(hovered[3].x, plain[3].x + shift);
         assert_eq!(hovered[3].w, plain[3].w);
         assert!(hovered[3].close_x.is_none() && plain[2].close_x.is_none());
+    }
+
+    #[test]
+    fn the_mute_button_shows_only_on_a_tab_playing_sound_or_muted() {
+        use crate::audio::Sound;
+        let p = Painter::new(15.0).unwrap();
+        for (sound, shown) in [
+            (Sound::Silent, false),
+            (Sound::Playing, true),
+            (Sound::Muted, true),
+        ] {
+            let mut es = entries(2);
+            es[1].sound = sound;
+            es[1].hovered = true;
+            let cell = &tab_cells(&p, 1200, &es)[1];
+            assert!(cell.close_x.is_some(), "{sound:?}: close is always there");
+            assert_eq!(cell.mute_x.is_some(), shown, "{sound:?}: mute button");
+            let row = &side_rows(&p, 300, 0, 600, &es)[1];
+            assert_eq!(
+                row.mute_x.is_some(),
+                shown,
+                "{sound:?}: sidebar mute button"
+            );
+        }
     }
 
     #[test]
@@ -2099,8 +2126,9 @@ pub(crate) fn side_rows(
         let label_x = 8 + num_w + slot;
         // A hovered row shows its buttons at the right end, in place of the speaker.
         let speaker = e.sound != crate::audio::Sound::Silent && !e.hovered;
+        let mutable = e.web && e.sound != crate::audio::Sound::Silent;
         let end = if e.hovered {
-            if e.web {
+            if mutable {
                 2 * (ic + 4)
             } else {
                 ic + 4
@@ -2120,7 +2148,7 @@ pub(crate) fn side_rows(
             icon_x: e.web.then_some(8 + num_w),
             sound_x: speaker.then(|| sw.saturating_sub(8 + ic)),
             mute_x: close_x
-                .filter(|_| e.web)
+                .filter(|_| mutable)
                 .map(|cx| cx.saturating_sub(ic + 4)),
             close_x,
         });
