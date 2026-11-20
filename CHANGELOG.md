@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.16.0](https://github.com/kayfgit/browser/compare/v0.15.0...v0.16.0) (2026-11-20)
+
+
+### Features
+
+* load restored tabs only when they're shown ([#76](https://github.com/kayfgit/browser/issues/76)) ([041fedf](https://github.com/kayfgit/browser/commit/041fedfa87334bb6a9f620e641e309f5fff0d875))
+* mark dev builds with "(dev)" in the title and an orange DEV icon ([#81](https://github.com/kayfgit/browser/issues/81)) ([6428a32](https://github.com/kayfgit/browser/commit/6428a3235c44ba0c483df8fc748cec91f5ee2f9a))
+* settings for lazy tab loading, the tab speaker and hover buttons ([#80](https://github.com/kayfgit/browser/issues/80)) ([1c539f5](https://github.com/kayfgit/browser/commit/1c539f55d1d65a6d2c99d12f82d03e45937fd1e9))
+* show a speaker on tabs playing sound, and :mutetab to mute one ([#77](https://github.com/kayfgit/browser/issues/77)) ([926cee6](https://github.com/kayfgit/browser/commit/926cee6b76215932f6c74ea8b764a089d1cef75e))
+* widen a hovered tab and show its close and mute buttons ([#78](https://github.com/kayfgit/browser/issues/78)) ([7205fb5](https://github.com/kayfgit/browser/commit/7205fb5e5aaecb758f1b472f90871300a85d0ecc))
+
+
+### Bug Fixes
+
+* stop a quick Alt+Tab from typing Tab into a terminal ([#75](https://github.com/kayfgit/browser/issues/75)) ([ff08341](https://github.com/kayfgit/browser/commit/ff083418c73e288ad9ee446bfdd110145dd5d4db))
+* update tao to 0.37 to stop a freeze when Alt meets a focus change ([#73](https://github.com/kayfgit/browser/issues/73)) ([ece9877](https://github.com/kayfgit/browser/commit/ece9877dc5664c39cc71161cdb5faadb177c8c1f))
+
 ## [0.15.0](https://github.com/kayfgit/browser/compare/v0.14.0...v0.15.0) (2026-11-18)
 
 
