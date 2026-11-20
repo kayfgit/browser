@@ -107,6 +107,10 @@ pub(crate) enum TabContent {
     /// A web tab whose view was dropped by `:freeze`; `:unfreeze` rebuilds it from the
     /// tab's URL with this provider.
     Frozen { provider: String },
+    /// A restored web tab that hasn't been shown yet: no view, no engine cost. It's
+    /// built from the tab's URL with this provider the first time it's on screen (see
+    /// [`App::load_shown_tabs`]), so opening the browser loads only the tabs you look at.
+    Unloaded { provider: String },
 }
 
 pub(crate) struct Tab {
@@ -229,9 +233,9 @@ impl Tab {
     pub(crate) fn provider(&self) -> Option<&str> {
         match &self.content {
             TabContent::Web(view, _) => Some(&view.identity().provider),
-            TabContent::Unavailable { provider, .. } | TabContent::Frozen { provider } => {
-                Some(provider)
-            }
+            TabContent::Unavailable { provider, .. }
+            | TabContent::Frozen { provider }
+            | TabContent::Unloaded { provider } => Some(provider),
             _ => None,
         }
     }
@@ -1356,6 +1360,8 @@ impl App {
         if let Some(active) = self.active.filter(|_| self.active_window().is_some()) {
             self.pane_focus.remember(active);
         }
+        // Restored tabs build their page the first time they're on screen.
+        self.load_shown_tabs();
         // The engine keepalive has done its job the moment a REAL web tab holds the
         // browser process — during a profile restore that's the first tab to come back,
         // and inside `:scratch` it's the first page you open there. Handing over here

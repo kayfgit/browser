@@ -189,7 +189,8 @@ and terminal working directories), window position and size, zoom, ad blocking a
 settings. `:quit` (or `:leave`, `:l`) quits, and like closing the window it does *not*
 save, so the last written session stays as it was. `:wl` saves and then quits. Vim's `:q`, `:wq` and `:x` don't
 quit the browser, so a habit from a terminal can't close it. The next launch without a URL argument
-restores it. Each save keeps the version it replaces as `session.toml.bak` (in
+restores it. Only the pages on screen load straight away; every other restored tab loads the
+first time you switch to it, so opening a big session stays quick and light. Each save keeps the version it replaces as `session.toml.bak` (in
 `%APPDATA%\browser\data`), but only if that version had tabs open, so an accidental empty save
 can be undone by copying the backup over `session.toml` while the browser is closed.
 

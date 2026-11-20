@@ -148,29 +148,18 @@ impl App {
     }
 
     /// Restore/reopen must preserve a missing provider and its URL without loading
-    /// the location in an unrelated engine. The placeholder itself uses no runtime.
+    /// the location in an unrelated engine. The tab comes back without a view: it's
+    /// built the first time the tab is on screen ([`App::load_shown_tabs`]), so a
+    /// restored session only loads the tabs you look at.
     pub(crate) fn restore_web_tab(&mut self, saved: &session::SavedTab) {
         let nojs = saved.kind == "nojs";
         let research = saved.kind == "research";
-        let extra = if research { RESEARCH_JS } else { "" };
+        let provider = saved.provider.clone();
         // While frozen, the tab comes back frozen too, and `:unfreeze` builds it.
         let content = if self.frozen {
-            TabContent::Frozen {
-                provider: saved.provider.clone(),
-            }
+            TabContent::Frozen { provider }
         } else {
-            match self.build_provider_view(
-                &saved.provider,
-                Source::Url(saved.url.clone()),
-                nojs,
-                extra,
-                false,
-            ) {
-                Ok((view, page)) => TabContent::Web(view, page),
-                Err(error) => {
-                    unavailable_content(&saved.provider, &saved.url, &format!("{error:#}"))
-                }
-            }
+            TabContent::Unloaded { provider }
         };
         self.place_tab_escaping_split(
             Tab {
