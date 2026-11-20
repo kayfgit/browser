@@ -360,6 +360,7 @@ fn main() -> Result<()> {
         nav_replaying: false,
         term_find_pending: None,
         engine_keepalive: None,
+        defer_tab_loads: false,
         config_edit_term: None,
         installing_scheme: None,
         term_last_find: None,

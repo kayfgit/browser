@@ -660,6 +660,10 @@ pub(crate) struct App {
     /// the engine exits; the content band shows a frozen notice instead of
     /// the pages. `:unfreeze` rebuilds them. See [`freeze`](crate::freeze).
     pub(crate) frozen: bool,
+    /// True while a session restore is placing its tabs: [`TabContent::Unloaded`] tabs
+    /// stay unbuilt even as each one briefly becomes the active tab, so only the tabs
+    /// actually on screen once the restore lands load their pages.
+    pub(crate) defer_tab_loads: bool,
     /// The HUD (tab strip / sidebar + command bar) is hidden with `;` — see
     /// [`chrome_hidden`](App::chrome_hidden). Not saved: a fresh launch shows it.
     pub(crate) hud_hidden: bool,
@@ -1690,6 +1694,9 @@ impl App {
         // that isn't created synchronously — a `read` tab is re-fetched on a thread and
         // arrives later as its own window). Drives the pane-layout rebuild below.
         let mut saved_to_live = vec![None; s.tabs.len()];
+        // Each placed tab is briefly the active one; don't let that load it. Only the
+        // tabs on screen once the restore lands load (`load_shown_tabs`, at the end).
+        self.defer_tab_loads = true;
         for (si, tab) in s.tabs.iter().enumerate() {
             let before = self.tabs.len();
             // Each restored tab is a NEW tab (push), so they don't replace each other.
@@ -1739,10 +1746,12 @@ impl App {
             .flatten()
             .or_else(|| saved_to_live.iter().flatten().copied().next())
             .filter(|&i| i < self.tabs.len());
+        self.defer_tab_loads = false;
         if let Some(active) = landing {
             self.active = Some(active);
-            self.refresh_visibility();
         }
+        // Builds the restored tabs that are on screen now; the rest wait until shown.
+        self.refresh_visibility();
         // A bulk restore must land in Normal mode. Reopening a saved TERMINAL calls the
         // same `open_terminal` a user would (which drops straight into passthrough so
         // you can type at the shell) — but nobody asked to type here, and with a web tab

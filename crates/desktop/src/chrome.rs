@@ -492,6 +492,11 @@ pub(crate) fn paint_pane(
         paint_frozen_pane(p, buf, wz, hz, rect);
         return;
     }
+    // A restored tab about to build its page (it loads as soon as it's shown): leave
+    // the band blank rather than flash the empty-pane prompt.
+    if matches!(t.content, crate::tabs::TabContent::Unloaded { .. }) {
+        return;
+    }
 
     // Blank pane: a quiet prompt centred in the rect.
     let msg = "empty pane — :open a page · :te terminal";
@@ -1169,7 +1174,10 @@ impl App {
                     color,
                     loading: page.and_then(|p| p.loading_for()),
                     icon: page.and_then(|p| p.icon.lock().ok().and_then(|g| g.clone())),
-                    web: page.is_some(),
+                    // An unloaded restored tab is a web tab too: reserving its icon
+                    // slot now keeps the label still when the page loads.
+                    web: page.is_some()
+                        || matches!(t.content, crate::tabs::TabContent::Unloaded { .. }),
                 })
             })
             .collect()
