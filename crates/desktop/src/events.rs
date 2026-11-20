@@ -180,6 +180,8 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             // Hovering the command bar reveals the full (vs. shortened) URL.
             let (_, h) = app.inner();
             let over_bar = app.bar_h() > 0 && position.y >= (h as f64 - app.bar_h() as f64);
+            // Widen the tab under the pointer and show its buttons.
+            app.update_tab_hover(Some((position.x, position.y)));
             // Highlight the button under the pointer.
             let over_button = app.button_at(position.x, position.y);
             if over_button != app.button_hover {
@@ -207,6 +209,7 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             app.term_drag = None;
             // A tab drag keeps wherever the tab got to.
             app.end_tab_drag();
+            app.update_tab_hover(None);
             if app.button_hover.take().is_some() {
                 app.window.request_redraw();
             }
@@ -258,6 +261,11 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             } else if let Some(i) = app.button_at(app.cursor_pos.0, app.cursor_pos.1) {
                 // A clickable button (back / forward / reload, or the user's own).
                 app.press_button(i);
+            } else if let Some((pos, button)) =
+                app.tab_button_at(app.cursor_pos.0, app.cursor_pos.1)
+            {
+                // A hovered tab's close or mute button.
+                app.press_tab_button(pos, button);
             } else if app.sidebar_w() > 0 && app.cursor_pos.0 < app.sidebar_w() as f64 {
                 // The vertical tab sidebar: a row switches to that tab (and can be
                 // dragged up or down), the empty space below the tabs moves the
