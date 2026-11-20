@@ -660,7 +660,7 @@ pub(crate) struct App {
     /// the engine exits; the content band shows a frozen notice instead of
     /// the pages. `:unfreeze` rebuilds them. See [`freeze`](crate::freeze).
     pub(crate) frozen: bool,
-    /// True while a session restore is placing its tabs: [`TabContent::Unloaded`] tabs
+    /// True while a session restore is placing its tabs: [`TabContent::Unloaded`](crate::tabs::TabContent::Unloaded) tabs
     /// stay unbuilt even as each one briefly becomes the active tab, so only the tabs
     /// actually on screen once the restore lands load their pages.
     pub(crate) defer_tab_loads: bool,
