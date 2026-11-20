@@ -113,8 +113,15 @@ impl App {
         if self.frozen || self.defer_tab_loads {
             return;
         }
-        let (panes, _) = self.pane_layout();
-        let shown = shown_unloaded(&panes, &self.tabs);
+        let shown = if self.config.setting("tabs.lazy_load") {
+            let (panes, _) = self.pane_layout();
+            shown_unloaded(&panes, &self.tabs)
+        } else {
+            // `tabs.lazy_load = false`: every restored tab loads, not just the shown.
+            (0..self.tabs.len())
+                .filter(|&i| matches!(self.tabs[i].content, TabContent::Unloaded { .. }))
+                .collect()
+        };
         if shown.is_empty() {
             return;
         }

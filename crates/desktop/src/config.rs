@@ -93,6 +93,159 @@ pub(crate) struct Config {
     /// [`DEFAULT_READ_WIDTH`]; `0` uses the whole pane.
     #[serde(default)]
     pub(crate) read_width: Option<u32>,
+    /// The tab strip's optional behaviours (the `[tabs]` table). Each is one of the
+    /// [`SETTINGS`], flipped with `:set` or by `:ai`.
+    #[serde(default)]
+    pub(crate) tabs: TabsConfig,
+}
+
+/// The `[tabs]` table. Unset fields take their [`SETTINGS`] default (all on).
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub(crate) struct TabsConfig {
+    /// Restored tabs load only when first shown; off loads them all at launch.
+    #[serde(default)]
+    pub(crate) lazy_load: Option<bool>,
+    /// A speaker on tabs playing sound (crossed out while muted).
+    #[serde(default)]
+    pub(crate) speaker: Option<bool>,
+    /// Hovering a tab widens it and shows its close and mute buttons.
+    #[serde(default)]
+    pub(crate) hover_buttons: Option<bool>,
+}
+
+/// One on/off setting: its `key` (`table.field`, as written in `config.toml`), its
+/// `default`, and what it does. The single list `:set`, the `:ai` assistant and the
+/// help read from: a new feature's switch is a field in [`Config`], an entry here,
+/// and an arm in [`Config::slot`] / [`Config::slot_mut`].
+pub(crate) struct Setting {
+    pub(crate) key: &'static str,
+    pub(crate) default: bool,
+    pub(crate) desc: &'static str,
+}
+
+pub(crate) const SETTINGS: &[Setting] = &[
+    Setting {
+        key: "tabs.lazy_load",
+        default: true,
+        desc: "restored tabs load only when first shown (off: every tab loads at launch)",
+    },
+    Setting {
+        key: "tabs.speaker",
+        default: true,
+        desc: "show a speaker on tabs playing sound, crossed out while muted",
+    },
+    Setting {
+        key: "tabs.hover_buttons",
+        default: true,
+        desc: "hovering a tab widens it and shows its close and mute buttons",
+    },
+];
+
+/// Parse a setting's value as typed: `on`/`off` (and `true`/`false`, `yes`/`no`,
+/// `1`/`0`), or `default` (→ `None`, back to the built-in default).
+pub(crate) fn parse_switch(value: &str) -> Result<Option<bool>, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "on" | "true" | "yes" | "1" => Ok(Some(true)),
+        "off" | "false" | "no" | "0" => Ok(Some(false)),
+        "default" | "reset" => Ok(None),
+        other => Err(format!("{other:?} isn't on, off or default")),
+    }
+}
+
+impl Config {
+    /// The stored value of setting `key` (`Some(None)` when unset), or `None` for an
+    /// unknown key.
+    fn slot(&self, key: &str) -> Option<Option<bool>> {
+        Some(match key {
+            "tabs.lazy_load" => self.tabs.lazy_load,
+            "tabs.speaker" => self.tabs.speaker,
+            "tabs.hover_buttons" => self.tabs.hover_buttons,
+            _ => return None,
+        })
+    }
+
+    fn slot_mut(&mut self, key: &str) -> Option<&mut Option<bool>> {
+        Some(match key {
+            "tabs.lazy_load" => &mut self.tabs.lazy_load,
+            "tabs.speaker" => &mut self.tabs.speaker,
+            "tabs.hover_buttons" => &mut self.tabs.hover_buttons,
+            _ => return None,
+        })
+    }
+
+    /// Setting `key`'s effective value: what's stored, else its default. Unknown keys
+    /// read as on, so a typo in the code can't silently switch a feature off (the
+    /// test below keeps every key known).
+    pub(crate) fn setting(&self, key: &str) -> bool {
+        let default = SETTINGS
+            .iter()
+            .find(|s| s.key == key)
+            .is_none_or(|s| s.default);
+        self.slot(key).flatten().unwrap_or(default)
+    }
+
+    /// Store setting `key` (`None` = back to its default).
+    pub(crate) fn set_setting(&mut self, key: &str, value: Option<bool>) -> Result<(), String> {
+        let known = SETTINGS.iter().any(|s| s.key == key);
+        match self.slot_mut(key).filter(|_| known) {
+            Some(slot) => {
+                *slot = value;
+                Ok(())
+            }
+            None => Err(format!(
+                "no setting {key:?} — try {}",
+                SETTINGS
+                    .iter()
+                    .map(|s| s.key)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn every_setting_is_stored_and_defaults_apply() {
+        let mut c = Config::default();
+        for s in SETTINGS {
+            assert!(c.slot(s.key).is_some(), "{} has no field", s.key);
+            assert_eq!(c.setting(s.key), s.default, "{} default", s.key);
+            c.set_setting(s.key, Some(!s.default)).unwrap();
+            assert_eq!(c.setting(s.key), !s.default, "{} set", s.key);
+            c.set_setting(s.key, None).unwrap();
+            assert_eq!(c.setting(s.key), s.default, "{} reset", s.key);
+        }
+        assert!(c.set_setting("tabs.nope", Some(true)).is_err());
+    }
+
+    #[test]
+    fn settings_round_trip_through_config_toml() {
+        let mut c = Config::default();
+        c.set_setting("tabs.speaker", Some(false)).unwrap();
+        let text = toml::to_string(&c).unwrap();
+        assert!(
+            text.contains("[tabs]") && text.contains("speaker = false"),
+            "{text}"
+        );
+        let back: Config = toml::from_str(&text).unwrap();
+        assert!(!back.setting("tabs.speaker"));
+        assert!(back.setting("tabs.lazy_load"));
+        // An older config.toml with no [tabs] table keeps every feature on.
+        let old: Config = toml::from_str("").unwrap();
+        assert!(SETTINGS.iter().all(|s| old.setting(s.key) == s.default));
+    }
+
+    #[test]
+    fn switches_parse_like_people_type_them() {
+        assert_eq!(parse_switch("ON"), Ok(Some(true)));
+        assert_eq!(parse_switch("off"), Ok(Some(false)));
+        assert_eq!(parse_switch(" default "), Ok(None));
+        assert!(parse_switch("maybe").is_err());
+    }
 }
 
 /// Read mode's default text column: lines past ~90 characters get hard to follow.

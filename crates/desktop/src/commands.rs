@@ -70,6 +70,7 @@ pub(crate) const BUILTIN_VERBS: &[&str] = &[
     "audio",
     "mutetab",
     "mt",
+    "set",
     "css",
     "scrollbar",
     "scrollbars",
@@ -205,6 +206,7 @@ pub(crate) const COMMANDS: &[&str] = &[
     "mute",
     "audio",
     "mutetab",
+    "set",
     "css",
     "video",
     "scrollbar",
@@ -467,6 +469,22 @@ impl App {
                 self.broadcast_toggle("mute", self.mute);
                 self.set_status(if self.mute { "audio muted" } else { "audio on" });
                 self.window.request_redraw();
+            }
+            // `:set` lists the settings; `:set <key> [on|off|default]` changes one (no
+            // value flips it); `:set <key>?` says what it does. The same switches live
+            // in config.toml.
+            "set" => {
+                let mut words = rest.split_whitespace();
+                match (words.next(), words.next()) {
+                    (None, _) => {
+                        let all = self.settings_summary();
+                        self.set_status(all);
+                    }
+                    (Some(key), value) => match self.apply_setting(key, value.unwrap_or("")) {
+                        Ok(msg) => self.set_status(msg),
+                        Err(e) => self.set_error(e),
+                    },
+                }
             }
             // `:mutetab [N]`: mute (or unmute) one tab, the current one by default.
             "mutetab" | "mt" => match rest.trim() {
