@@ -307,7 +307,11 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
                 app.on_wheel(dy);
             }
         }
-        WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed => {
+        WindowEvent::KeyboardInput {
+            event: key,
+            is_synthetic,
+            ..
+        } if takes_key_press(key.state, is_synthetic) => {
             app.handle_key(&key);
             if app.quit {
                 app.teardown();
@@ -782,5 +786,28 @@ fn schedule_wakeup(app: &App, control_flow: &mut ControlFlow, servo_smoke: bool)
             };
             *control_flow = ControlFlow::WaitUntil(next);
         }
+    }
+}
+
+/// Whether a keyboard event is a key press the shell should act on. Releases never
+/// are, and neither are SYNTHETIC presses: when the window gains focus, tao reports
+/// every key still held down as a fresh press. A quick Alt+Tab into the browser
+/// often lets go of Alt before Tab, so Tab is still down when focus arrives and the
+/// focused terminal would receive a Tab the user typed in another app.
+fn takes_key_press(state: ElementState, is_synthetic: bool) -> bool {
+    state == ElementState::Pressed && !is_synthetic
+}
+
+#[cfg(test)]
+mod tests {
+    use super::takes_key_press;
+    use tao::event::ElementState;
+
+    #[test]
+    fn keys_still_held_when_focus_arrives_are_ignored() {
+        assert!(takes_key_press(ElementState::Pressed, false));
+        assert!(!takes_key_press(ElementState::Pressed, true));
+        assert!(!takes_key_press(ElementState::Released, false));
+        assert!(!takes_key_press(ElementState::Released, true));
     }
 }
