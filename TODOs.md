@@ -30,10 +30,10 @@ issues:
 
 feats:
 [] - add a way for users to freely install extensions
-[~*] - should have an icon or animation or something for a tab that is playing audio, anything just to show feedback.
-[~*] - when opening the browser, a tab should only load when the user has it selected, currently when opening up the browser all tabs load at once.
-[~*] - hovering the tabs should expand them and show close/mute buttons (including a :mutetab command for muting a specific tab)
-[~*] - pressing alt+tab really quickly into the browser while on the terminal sends a "tab" button to the browser. (what i mean is if the browser has a terminal open, but im not on the browser, so for example i have discord open, and from discord i quickly alt+tab into the browser, then the "tab" gets sent to the terminal)
+[x] - should have an icon or animation or something for a tab that is playing audio, anything just to show feedback.
+[x] - when opening the browser, a tab should only load when the user has it selected, currently when opening up the browser all tabs load at once.
+[x] - hovering the tabs should expand them and show close/mute buttons (including a :mutetab command for muting a specific tab)
+[x] - pressing alt+tab really quickly into the browser while on the terminal sends a "tab" button to the browser. (what i mean is if the browser has a terminal open, but im not on the browser, so for example i have discord open, and from discord i quickly alt+tab into the browser, then the "tab" gets sent to the terminal)
 
 maybes:
 [~] - allow :ai to completely customize the browser, for example "the commandbar is too small, make it 25% taller and change the background color to green" or "change X keybind to Y"
