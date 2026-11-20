@@ -278,6 +278,7 @@ Other protections and toggles:
 - Favicons come from WebView2's own cache, never from a third-party favicon service.
 - `:clear history|cookies|cache|all [15m|1h|24h|7d|all]` erases browsing data.
 - `:mute`, `:css`, `:video` and `:scrollbar` toggle muting, page styles, video players and scrollbars live, without a reload.
+- A tab playing sound shows a speaker at the end of its entry in the tab strip; a muted tab shows it crossed out. `:mutetab` (`:mt`) mutes or unmutes the current tab, and `:mutetab 3` the third one. Muting a split tab mutes every page in it, and a muted tab stays muted when you open another page in it.
 - Private tabs (`:open -n`) are never saved to the session or the closed-tab list.
 
 ## Command bar tricks

@@ -1178,6 +1178,7 @@ impl App {
                     // slot now keeps the label still when the page loads.
                     web: page.is_some()
                         || matches!(t.content, crate::tabs::TabContent::Unloaded { .. }),
+                    sound: self.strip_sound(wi),
                 })
             })
             .collect()
@@ -1616,6 +1617,8 @@ pub(crate) struct TabEntry {
     /// icon arrives, so the label doesn't jump sideways when it lands; native tabs
     /// (terminals, read, `:ai`) never get one and start their label at the cell edge.
     pub(crate) web: bool,
+    /// The speaker at the end of the entry: playing, muted or none.
+    pub(crate) sound: crate::audio::Sound,
 }
 
 /// One laid-out tab cell. The label is painted as two runs so the favicon can sit
@@ -1630,6 +1633,8 @@ pub(crate) struct TabCell {
     pub(crate) label_x: usize,
     /// Top-left x of the reserved favicon square, for entries that have one.
     pub(crate) icon_x: Option<usize>,
+    /// Top-left x of the speaker square, for entries playing sound or muted.
+    pub(crate) sound_x: Option<usize>,
 }
 
 /// Side of the favicon square. Sized off the font (which scales with zoom exactly as
@@ -1667,16 +1672,22 @@ pub(crate) fn tab_cells(p: &Painter, w: usize, entries: &[TabEntry]) -> Vec<TabC
         let (open, close) = if e.active { ("[", "]") } else { (" ", " ") };
         let prefix = format!("{open}{}:", i + 1);
         let slot = if e.web { ic + 3 } else { 0 };
+        // The speaker sits at the cell's right end (before the 6px gap) and takes its
+        // room from the label.
+        let speaker = e.sound != crate::audio::Sound::Silent;
+        let sound_slot = if speaker { ic + 4 } else { 0 };
         let frame = format!("{prefix}{close}");
         let label_px = cell
             .saturating_sub(6)
             .saturating_sub(slot)
+            .saturating_sub(sound_slot)
             .saturating_sub(p.measure(&frame));
         let prefix_w = p.measure(&prefix);
         out.push(TabCell {
             label: format!("{}{close}", fit_px(p, &e.label, label_px)),
             label_x: x + prefix_w + slot,
             icon_x: e.web.then_some(x + prefix_w),
+            sound_x: speaker.then(|| (x + cell).saturating_sub(6 + ic)),
             prefix,
             x,
             w: cell,
@@ -1699,6 +1710,7 @@ mod tab_cell_tests {
                 loading: None,
                 icon: None,
                 web: true,
+                sound: crate::audio::Sound::Silent,
             })
             .collect()
     }
@@ -1763,6 +1775,27 @@ mod tab_cell_tests {
     }
 
     #[test]
+    fn a_tab_playing_sound_gets_a_speaker_inside_its_cell() {
+        let p = Painter::new(15.0).unwrap();
+        let mut es = entries(3);
+        es[1].sound = crate::audio::Sound::Playing;
+        es[2].sound = crate::audio::Sound::Muted;
+        let cells = tab_cells(&p, 1200, &es);
+        assert!(cells[0].sound_x.is_none(), "a silent tab shows no speaker");
+        let ic = icon_px(&p);
+        for c in &cells[1..] {
+            let sx = c.sound_x.expect("speaker slot");
+            // Inside the cell, clear of the label.
+            assert!(sx + ic <= c.x + c.w);
+            assert!(
+                c.label_x + p.measure(&c.label) <= sx,
+                "{:?} runs into the speaker",
+                c.label
+            );
+        }
+    }
+
+    #[test]
     fn only_web_tabs_reserve_a_favicon_slot() {
         let p = Painter::new(15.0).unwrap();
         let mut mixed = entries(2);
@@ -1802,6 +1835,10 @@ pub(crate) fn draw_tab_bar(
             // Centre the square on the text's x-height so it reads as part of the row.
             let iy = baseline.saturating_sub(ic * 5 / 6);
             crate::favicon::blit(icon, buf, w, h, ix as i32, iy as i32, ic);
+        }
+        if let Some(sx) = c.sound_x {
+            let iy = baseline.saturating_sub(ic * 5 / 6);
+            crate::audio::draw_speaker(buf, w, h, sx, iy, ic, e.color, e.sound);
         }
         if let Some(age) = e.loading {
             draw_load_sweep(buf, w, h, c, age, accent);
@@ -1861,6 +1898,8 @@ pub(crate) struct SideRow {
     pub(crate) h: usize,
     pub(crate) label_x: usize,
     pub(crate) icon_x: Option<usize>,
+    /// Top-left x of the speaker square, for entries playing sound or muted.
+    pub(crate) sound_x: Option<usize>,
 }
 
 /// Lay out the sidebar: one row per tab-strip entry, top to bottom, inside a column
@@ -1886,13 +1925,16 @@ pub(crate) fn side_rows(
         }
         let slot = if e.web { ic + 4 } else { 0 };
         let label_x = 8 + num_w + slot;
+        let speaker = e.sound != crate::audio::Sound::Silent;
+        let sound_slot = if speaker { ic + 4 } else { 0 };
         out.push(SideRow {
             prefix: format!("{}:", i + 1),
-            label: fit_px(p, &e.label, sw.saturating_sub(label_x + 8)),
+            label: fit_px(p, &e.label, sw.saturating_sub(label_x + 8 + sound_slot)),
             y,
             h: row_h,
             label_x,
             icon_x: e.web.then_some(8 + num_w),
+            sound_x: speaker.then(|| sw.saturating_sub(8 + ic)),
         });
         y += row_h;
     }
@@ -1931,6 +1973,10 @@ pub(crate) fn draw_sidebar(
         if let (Some(ix), Some(icon)) = (r.icon_x, &e.icon) {
             let iy = baseline.saturating_sub(ic * 5 / 6);
             crate::favicon::blit(icon, buf, w, bottom, ix as i32, iy as i32, ic);
+        }
+        if let Some(sx) = r.sound_x {
+            let iy = baseline.saturating_sub(ic * 5 / 6);
+            crate::audio::draw_speaker(buf, w, bottom, sx, iy, ic, e.color, e.sound);
         }
         if let Some(age) = e.loading {
             let (x0, x1) = sweep_span(3, sw - 7, age);

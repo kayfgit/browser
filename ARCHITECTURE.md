@@ -159,6 +159,7 @@ Pages and engines:
 - [navguard.rs](crates/desktop/src/navguard.rs) and [blocklist.rs](crates/desktop/src/blocklist.rs): blocking ad redirects and known-bad domains.
 - [extensions.rs](crates/desktop/src/extensions.rs), [bundled_extensions.rs](crates/desktop/src/bundled_extensions.rs): the extension picker and the bundled uBlock Origin Lite.
 - [favicon.rs](crates/desktop/src/favicon.rs), [freeze.rs](crates/desktop/src/freeze.rs), [data.rs](crates/desktop/src/data.rs): tab icons, `:freeze`, clearing browsing data.
+- [audio.rs](crates/desktop/src/audio.rs): a tab's sound — the strip's speaker on a tab playing audio or muted, and `:mutetab`. The WebView2 side (playing-audio events, per-page mute) is [engines/webview2/audio.rs](crates/desktop/src/engines/webview2/audio.rs).
 - [devtools.rs](crates/desktop/src/devtools.rs): `:inspect` (developer tools) and `:source` (view source).
 - [glance.rs](crates/desktop/src/glance.rs): glance, a link opened in a floating card over the page it came from (`q` hints, the right-click menu, `:glance`). The card is a windowless tab drawn over its opener's window; it closes once focus leaves it.
 - [droplink.rs](crates/desktop/src/droplink.rs): links dragged into the browser open in a new tab. This is the OLE drop target on the main window (tab strip, sidebar, native panes); drops on a web page are handled by `bridge.js`.

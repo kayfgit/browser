@@ -33,6 +33,7 @@ mod actions;
 mod adblock;
 mod ai;
 mod app;
+mod audio;
 mod bangs;
 mod blocklist;
 mod bookmarks;
