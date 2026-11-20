@@ -806,6 +806,9 @@ impl App {
         let buttons = self.button_cells();
         let button_labels: Vec<String> = self.buttons().into_iter().map(|b| b.label).collect();
         let button_hover = self.button_at(self.cursor_pos.0, self.cursor_pos.1);
+        let hot_tab_button = self
+            .tab_button_at(self.cursor_pos.0, self.cursor_pos.1)
+            .map(|(_, b)| b);
         let strip_w = self.tab_strip_w() as usize;
         let rows_top = self.sidebar_rows_top();
         // Minimized / degenerate size: skip the frame. The tab + command bars are a
@@ -973,7 +976,16 @@ impl App {
         // the buttons on it.
         let draw_top = |buf: &mut [u32]| {
             draw::fill_band(buf, wz, hz, 0, tab_h, theme.bar_bg);
-            draw_tab_bar(p, buf, wz, tab_h, strip_w, &tab_labels, theme.accent);
+            draw_tab_bar(
+                p,
+                buf,
+                wz,
+                tab_h,
+                strip_w,
+                &tab_labels,
+                theme.accent,
+                hot_tab_button,
+            );
             draw_sidebar(
                 p,
                 buf,
@@ -984,6 +996,7 @@ impl App {
                 &tab_labels,
                 theme.bar_bg,
                 theme.accent,
+                hot_tab_button,
             );
             draw_buttons(
                 p,
@@ -1179,6 +1192,7 @@ impl App {
                     web: page.is_some()
                         || matches!(t.content, crate::tabs::TabContent::Unloaded { .. }),
                     sound: self.strip_sound(wi),
+                    hovered: self.tab_hover == Some(wi),
                 })
             })
             .collect()
@@ -1619,6 +1633,18 @@ pub(crate) struct TabEntry {
     pub(crate) web: bool,
     /// The speaker at the end of the entry: playing, muted or none.
     pub(crate) sound: crate::audio::Sound,
+    /// The pointer is over this entry: it widens to show its whole label and gets its
+    /// close (and, for web tabs, mute) buttons.
+    pub(crate) hovered: bool,
+}
+
+/// A button on a hovered tab-strip entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TabButton {
+    /// Mute or unmute the tab's pages.
+    Mute,
+    /// Close the tab, every pane in it.
+    Close,
 }
 
 /// One laid-out tab cell. The label is painted as two runs so the favicon can sit
@@ -1635,12 +1661,16 @@ pub(crate) struct TabCell {
     pub(crate) icon_x: Option<usize>,
     /// Top-left x of the speaker square, for entries playing sound or muted.
     pub(crate) sound_x: Option<usize>,
+    /// Top-left x of the hovered entry's mute button (web tabs only).
+    pub(crate) mute_x: Option<usize>,
+    /// Top-left x of the hovered entry's close button.
+    pub(crate) close_x: Option<usize>,
 }
 
 /// Side of the favicon square. Sized off the font (which scales with zoom exactly as
 /// the bar does) at about half a line, so it sits inside the strip at roughly the
 /// height of the label's capitals rather than towering over them.
-fn icon_px(p: &Painter) -> usize {
+pub(crate) fn icon_px(p: &Painter) -> usize {
     (p.line_height() / 2).max(6)
 }
 
@@ -1659,35 +1689,59 @@ pub(crate) fn tab_cells(p: &Painter, w: usize, entries: &[TabEntry]) -> Vec<TabC
     let em = p.measure("m").max(1);
     let ic = icon_px(p);
     let avail = w.saturating_sub(16); // 8px margin each side
-    let cell = (avail / entries.len()).clamp(em * 5, em * 14);
+    let base = (avail / entries.len()).clamp(em * 5, em * 14);
     let mut out = Vec::new();
     let mut x = 8usize;
     for (i, e) in entries.iter().enumerate() {
+        // The hovered entry's buttons, at its right end: close, and mute before it on
+        // web tabs. They replace its speaker, since the mute button shows the state.
+        // (4px of air before them, so the label's `]` doesn't touch the first.)
+        let buttons = if !e.hovered {
+            0
+        } else if e.web {
+            2 * (ic + 4) + 4
+        } else {
+            ic + 4 + 4
+        };
+        let (open, close) = if e.active { ("[", "]") } else { (" ", " ") };
+        let prefix = format!("{open}{}:", i + 1);
+        let slot = if e.web { ic + 3 } else { 0 };
+        let speaker = e.sound != crate::audio::Sound::Silent && !e.hovered;
+        let sound_slot = if speaker { ic + 4 } else { 0 };
+        let frame = format!("{prefix}{close}");
+        // Hovering widens the entry to fit its whole label (already capped at 22
+        // characters) and buttons, within what's left of the strip; the entries after
+        // it shift right. Its left edge stays put, so the pointer stays over it.
+        let cell = if e.hovered {
+            let whole = p.measure(&frame) + slot + p.measure(&e.label) + buttons + 6;
+            let room = w.saturating_sub(8).saturating_sub(x);
+            whole.min(room).max(base)
+        } else {
+            base
+        };
         if x + cell > w.saturating_sub(8) && !out.is_empty() {
             break; // no room for this cell — the strip overflows with `…`
         }
         // The `N:` prefix (and the active brackets) always stay visible; only the
         // label part is truncated to what's left of the cell (6px inter-cell gap),
-        // minus the favicon slot on web tabs.
-        let (open, close) = if e.active { ("[", "]") } else { (" ", " ") };
-        let prefix = format!("{open}{}:", i + 1);
-        let slot = if e.web { ic + 3 } else { 0 };
-        // The speaker sits at the cell's right end (before the 6px gap) and takes its
-        // room from the label.
-        let speaker = e.sound != crate::audio::Sound::Silent;
-        let sound_slot = if speaker { ic + 4 } else { 0 };
-        let frame = format!("{prefix}{close}");
+        // minus the favicon slot on web tabs and the speaker or buttons at the end.
         let label_px = cell
             .saturating_sub(6)
             .saturating_sub(slot)
             .saturating_sub(sound_slot)
+            .saturating_sub(buttons)
             .saturating_sub(p.measure(&frame));
+        let close_x = e.hovered.then(|| (x + cell).saturating_sub(6 + ic));
         let prefix_w = p.measure(&prefix);
         out.push(TabCell {
             label: format!("{}{close}", fit_px(p, &e.label, label_px)),
             label_x: x + prefix_w + slot,
             icon_x: e.web.then_some(x + prefix_w),
             sound_x: speaker.then(|| (x + cell).saturating_sub(6 + ic)),
+            mute_x: close_x
+                .filter(|_| e.web)
+                .map(|cx| cx.saturating_sub(ic + 4)),
+            close_x,
             prefix,
             x,
             w: cell,
@@ -1711,6 +1765,7 @@ mod tab_cell_tests {
                 icon: None,
                 web: true,
                 sound: crate::audio::Sound::Silent,
+                hovered: false,
             })
             .collect()
     }
@@ -1796,6 +1851,60 @@ mod tab_cell_tests {
     }
 
     #[test]
+    fn hovering_widens_the_entry_to_its_whole_label_and_adds_buttons() {
+        let p = Painter::new(15.0).unwrap();
+        let mut es = entries(8);
+        // Real labels are capped at 22 characters (`truncate_label`).
+        for e in &mut es {
+            e.label = "a-22-character-label-x".into();
+        }
+        let plain = tab_cells(&p, 1600, &es);
+        es[2].hovered = true;
+        let hovered = tab_cells(&p, 1600, &es);
+        // Entries before it don't move, so the pointer stays over the hovered one.
+        for i in 0..=2 {
+            assert_eq!(plain[i].x, hovered[i].x);
+        }
+        assert!(hovered[2].w > plain[2].w, "the hovered entry should widen");
+        assert!(
+            !hovered[2].label.contains('…'),
+            "its whole label should show"
+        );
+        // Close at the right end, mute just before it, both inside the cell.
+        let ic = icon_px(&p);
+        let (m, x) = (hovered[2].mute_x.unwrap(), hovered[2].close_x.unwrap());
+        assert!(m + ic <= x && x + ic <= hovered[2].x + hovered[2].w);
+        assert!(hovered[2].label_x + p.measure(&hovered[2].label) <= m);
+        // The ones after it shift right by the same amount and keep their width.
+        let shift = hovered[2].w - plain[2].w;
+        assert_eq!(hovered[3].x, plain[3].x + shift);
+        assert_eq!(hovered[3].w, plain[3].w);
+        assert!(hovered[3].close_x.is_none() && plain[2].close_x.is_none());
+    }
+
+    #[test]
+    fn a_hovered_native_tab_gets_only_a_close_button() {
+        let p = Painter::new(15.0).unwrap();
+        let mut es = entries(2);
+        es[1].web = false;
+        es[1].hovered = true;
+        let cells = tab_cells(&p, 1200, &es);
+        assert!(cells[1].close_x.is_some());
+        assert!(cells[1].mute_x.is_none(), "a terminal has nothing to mute");
+    }
+
+    #[test]
+    fn a_hovered_entry_never_grows_past_the_strip() {
+        let p = Painter::new(15.0).unwrap();
+        let mut es = entries(3);
+        es[2].label = "an extremely long page title that would never fit ".repeat(4);
+        es[2].hovered = true;
+        let cells = tab_cells(&p, 700, &es);
+        let last = cells.last().unwrap();
+        assert!(last.x + last.w <= 700 - 8);
+    }
+
+    #[test]
     fn only_web_tabs_reserve_a_favicon_slot() {
         let p = Painter::new(15.0).unwrap();
         let mut mixed = entries(2);
@@ -1811,6 +1920,8 @@ mod tab_cell_tests {
 }
 
 /// `strip_w` is how much of the bar the tabs may use: the buttons take the rest.
+/// `hot` is the hovered tab's button under the pointer, if any.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_tab_bar(
     p: &Painter,
     buf: &mut [u32],
@@ -1819,6 +1930,7 @@ pub(crate) fn draw_tab_bar(
     strip_w: usize,
     entries: &[TabEntry],
     accent: draw::Rgb,
+    hot: Option<TabButton>,
 ) {
     // Hidden (fullscreen) or no visible tabs → zero height; drawing would paint the
     // labels as a clipped sliver at the very top edge, so skip it.
@@ -1836,10 +1948,11 @@ pub(crate) fn draw_tab_bar(
             let iy = baseline.saturating_sub(ic * 5 / 6);
             crate::favicon::blit(icon, buf, w, h, ix as i32, iy as i32, ic);
         }
+        let iy = baseline.saturating_sub(ic * 5 / 6);
         if let Some(sx) = c.sound_x {
-            let iy = baseline.saturating_sub(ic * 5 / 6);
             crate::audio::draw_speaker(buf, w, h, sx, iy, ic, e.color, e.sound);
         }
+        draw_tab_buttons(buf, w, h, (c.mute_x, c.close_x), iy, ic, e, hot);
         if let Some(age) = e.loading {
             draw_load_sweep(buf, w, h, c, age, accent);
         }
@@ -1848,6 +1961,61 @@ pub(crate) fn draw_tab_bar(
     if cells.len() < entries.len() {
         let x = cells.last().map(|c| c.x + c.w).unwrap_or(8);
         p.text(buf, w, h, x, baseline, "…", draw::DIM);
+    }
+}
+
+/// Paint a hovered entry's buttons, whose squares start at `mute_x` / `close_x`
+/// (top edge `y`, side `ic`): the mute button as the tab's speaker (crossed out while
+/// muted), the close button as an ×. The one under the pointer (`hot`) sits on a
+/// highlighted square.
+#[allow(clippy::too_many_arguments)]
+fn draw_tab_buttons(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    (mute_x, close_x): (Option<usize>, Option<usize>),
+    y: usize,
+    ic: usize,
+    e: &TabEntry,
+    hot: Option<TabButton>,
+) {
+    let pad = 2;
+    let highlight = |buf: &mut [u32], x: usize| {
+        draw::fill_rect(
+            buf,
+            w,
+            h,
+            x.saturating_sub(pad),
+            y.saturating_sub(pad),
+            x + ic + pad,
+            y + ic + pad,
+            draw::SEL,
+        );
+    };
+    if let Some(mx) = mute_x {
+        if hot == Some(TabButton::Mute) {
+            highlight(buf, mx);
+        }
+        let shown = if e.sound == crate::audio::Sound::Muted {
+            crate::audio::Sound::Muted
+        } else {
+            crate::audio::Sound::Playing
+        };
+        crate::audio::draw_speaker(buf, w, h, mx, y, ic, e.color, shown);
+    }
+    if let Some(cx) = close_x {
+        if hot == Some(TabButton::Close) {
+            highlight(buf, cx);
+        }
+        // An × inset a little from its square, two pixels thick from 12px up.
+        let t = if ic >= 12 { 2 } else { 1 };
+        let inset = ic / 5;
+        let n = ic.saturating_sub(2 * inset + t);
+        for k in 0..=n {
+            let (x0, y0, y1) = (cx + inset + k, y + inset + k, y + inset + n - k);
+            draw::fill_rect(buf, w, h, x0, y0, x0 + t, y0 + t, e.color);
+            draw::fill_rect(buf, w, h, x0, y1, x0 + t, y1 + t, e.color);
+        }
     }
 }
 
@@ -1900,6 +2068,10 @@ pub(crate) struct SideRow {
     pub(crate) icon_x: Option<usize>,
     /// Top-left x of the speaker square, for entries playing sound or muted.
     pub(crate) sound_x: Option<usize>,
+    /// Top-left x of the hovered row's mute button (web tabs only).
+    pub(crate) mute_x: Option<usize>,
+    /// Top-left x of the hovered row's close button.
+    pub(crate) close_x: Option<usize>,
 }
 
 /// Lay out the sidebar: one row per tab-strip entry, top to bottom, inside a column
@@ -1925,16 +2097,32 @@ pub(crate) fn side_rows(
         }
         let slot = if e.web { ic + 4 } else { 0 };
         let label_x = 8 + num_w + slot;
-        let speaker = e.sound != crate::audio::Sound::Silent;
-        let sound_slot = if speaker { ic + 4 } else { 0 };
+        // A hovered row shows its buttons at the right end, in place of the speaker.
+        let speaker = e.sound != crate::audio::Sound::Silent && !e.hovered;
+        let end = if e.hovered {
+            if e.web {
+                2 * (ic + 4)
+            } else {
+                ic + 4
+            }
+        } else if speaker {
+            ic + 4
+        } else {
+            0
+        };
+        let close_x = e.hovered.then(|| sw.saturating_sub(8 + ic));
         out.push(SideRow {
             prefix: format!("{}:", i + 1),
-            label: fit_px(p, &e.label, sw.saturating_sub(label_x + 8 + sound_slot)),
+            label: fit_px(p, &e.label, sw.saturating_sub(label_x + 8 + end)),
             y,
             h: row_h,
             label_x,
             icon_x: e.web.then_some(8 + num_w),
             sound_x: speaker.then(|| sw.saturating_sub(8 + ic)),
+            mute_x: close_x
+                .filter(|_| e.web)
+                .map(|cx| cx.saturating_sub(ic + 4)),
+            close_x,
         });
         y += row_h;
     }
@@ -1955,6 +2143,7 @@ pub(crate) fn draw_sidebar(
     entries: &[TabEntry],
     bar_bg: draw::Rgb,
     accent: draw::Rgb,
+    hot: Option<TabButton>,
 ) {
     if sw == 0 || bottom == 0 {
         return;
@@ -1974,10 +2163,11 @@ pub(crate) fn draw_sidebar(
             let iy = baseline.saturating_sub(ic * 5 / 6);
             crate::favicon::blit(icon, buf, w, bottom, ix as i32, iy as i32, ic);
         }
+        let iy = baseline.saturating_sub(ic * 5 / 6);
         if let Some(sx) = r.sound_x {
-            let iy = baseline.saturating_sub(ic * 5 / 6);
             crate::audio::draw_speaker(buf, w, bottom, sx, iy, ic, e.color, e.sound);
         }
+        draw_tab_buttons(buf, w, bottom, (r.mute_x, r.close_x), iy, ic, e, hot);
         if let Some(age) = e.loading {
             let (x0, x1) = sweep_span(3, sw - 7, age);
             let y1 = r.y + r.h;

@@ -499,6 +499,9 @@ pub(crate) struct App {
     pub(crate) bar_hover: bool,
     /// The clickable button under the pointer (`:button`), highlighted.
     pub(crate) button_hover: Option<usize>,
+    /// The tab-strip entry under the pointer (top strip or sidebar): it widens and
+    /// shows its close and mute buttons.
+    pub(crate) tab_hover: Option<usize>,
     /// The open glance, if any: a link floating over the page it came from
     /// (see [`crate::glance`]).
     pub(crate) glance: Option<crate::glance::Glance>,

@@ -368,6 +368,7 @@ fn main() -> Result<()> {
         frozen: false,
         hud_hidden: false,
         button_hover: None,
+        tab_hover: None,
         glance: None,
     };
     // Resolve the persisted appearance overrides into the live chrome theme and

@@ -8,6 +8,7 @@ pub(crate) use browser_engine::Source;
 use browser_engine::{EngineView, RectPx};
 
 use crate::blocklist::AD_HOSTS;
+use crate::chrome::TabButton;
 use crate::panes::{PaneNode, PaneRect, FOCUS_BORDER};
 use crate::term::TermSession;
 use crate::{read_view, session, vim, App, ModeKind, UserEvent, CLOSED_CAP, RESEARCH_JS};
@@ -1217,6 +1218,133 @@ impl App {
             }
         }
         None
+    }
+
+    /// The hovered tab's button under window pixel `(x, y)`, with the entry it's on.
+    /// Laid out by the same [`tab_cells`](crate::chrome::tab_cells) /
+    /// [`side_rows`](crate::chrome::side_rows) that paint them, so clicks match.
+    pub(crate) fn tab_button_at(&self, x: f64, y: f64) -> Option<(usize, TabButton)> {
+        let pos = self.tab_hover?;
+        let (x, y) = (x.max(0.0) as usize, y.max(0.0) as usize);
+        let p = &self.painter;
+        let ic = crate::chrome::icon_px(p);
+        let labels = self.tab_labels();
+        let (mute_x, close_x) = if self.sidebar_w() > 0 {
+            let bottom = self.inner().1.saturating_sub(self.bar_h()) as usize;
+            let rows = crate::chrome::side_rows(
+                p,
+                self.sidebar_w() as usize,
+                self.sidebar_rows_top(),
+                bottom,
+                &labels,
+            );
+            let row = rows.get(pos)?;
+            if y < row.y || y >= row.y + row.h {
+                return None;
+            }
+            (row.mute_x, row.close_x)
+        } else {
+            if y >= self.tab_bar_h() as usize {
+                return None;
+            }
+            let cells = crate::chrome::tab_cells(p, self.tab_strip_w() as usize, &labels);
+            let cell = cells.get(pos)?;
+            (cell.mute_x, cell.close_x)
+        };
+        // Each button's square, widened by its highlight's padding: easier to hit.
+        let on = |bx: Option<usize>| bx.is_some_and(|bx| x + 2 >= bx && x < bx + ic + 2);
+        if on(close_x) {
+            Some((pos, TabButton::Close))
+        } else if on(mute_x) {
+            Some((pos, TabButton::Mute))
+        } else {
+            None
+        }
+    }
+
+    /// The pointer moved to `(x, y)` (or left the window, `None`): track which
+    /// tab-strip entry it's over, repainting when that changes.
+    pub(crate) fn update_tab_hover(&mut self, at: Option<(f64, f64)>) {
+        let over = at.and_then(|(x, y)| {
+            if self.tabs.is_empty() {
+                None
+            } else if self.sidebar_w() > 0 {
+                (x < self.sidebar_w() as f64)
+                    .then(|| self.sidebar_tab_at(y))
+                    .flatten()
+            } else {
+                (y < self.tab_bar_h() as f64)
+                    .then(|| self.tab_at_pixel(x))
+                    .flatten()
+            }
+        });
+        if over != self.tab_hover {
+            self.tab_hover = over;
+            self.window.request_redraw();
+        }
+    }
+
+    /// Click a hovered tab's button: close the whole tab, or mute/unmute it.
+    pub(crate) fn press_tab_button(&mut self, pos: usize, button: TabButton) {
+        match button {
+            TabButton::Close => self.close_strip_entry(pos),
+            TabButton::Mute => self.toggle_tab_mute(Some(pos)),
+        }
+        // The layout under the pointer changed: re-check what it's over.
+        self.update_tab_hover(Some(self.cursor_pos));
+        self.window.request_redraw();
+    }
+
+    /// Close tab-strip entry `pos` and every pane in it, as ONE layout change, so a
+    /// single `U` brings the whole tab back. Focus stays where it was, unless it was
+    /// in the closed tab: then it moves to the tab that takes its place.
+    pub(crate) fn close_strip_entry(&mut self, pos: usize) {
+        if pos >= self.windows.len() {
+            return;
+        }
+        if self.active_is_glance() {
+            self.close_glance();
+        }
+        let mut leaves = Vec::new();
+        self.windows[pos].leaves(&mut leaves);
+        let before = self.layout_now();
+        let focused = self.active.filter(|a| !leaves.contains(a));
+        let focused_id = focused.and_then(|a| self.tabs.get(a)).map(|t| t.id);
+        let had_focus = self.active.is_some() && focused.is_none();
+        let closed: Vec<_> = leaves
+            .iter()
+            .filter_map(|&i| self.reopen_info(i).map(|how| (self.tabs[i].id, how)))
+            .collect();
+        for &i in &leaves {
+            self.record_closed(i);
+            if let Some(session) = self.tabs[i].take_term() {
+                session.shutdown();
+            }
+        }
+        // Highest index first, so the indices still to drop stay valid. Nothing is
+        // focused while dropping, so `drop_tab` doesn't chase a stale index.
+        leaves.sort_unstable_by(|a, b| b.cmp(a));
+        self.active = None;
+        for &i in &leaves {
+            self.drop_tab(i);
+        }
+        self.active = match focused_id {
+            Some(id) => self.tabs.iter().position(|t| t.id == id),
+            None if self.windows.is_empty() => None,
+            None => {
+                let w = pos.min(self.windows.len() - 1);
+                Some(self.pane_focus.target(&self.windows[w]))
+            }
+        };
+        if had_focus {
+            self.find_reset();
+            self.mode = ModeKind::Normal;
+        }
+        self.refresh_visibility();
+        if had_focus {
+            self.window.set_focus();
+        }
+        self.record_layout(crate::layout::ChangeKind::Close, before, Vec::new(), closed);
     }
 
     /// Where the clickable buttons are painted: at the right end of the top tab strip,
