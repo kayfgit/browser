@@ -2,6 +2,7 @@
 //! Page callbacks carry the identity of the view that emitted them. Storage mode
 //! is checked against the runtime before loading the requested location.
 
+mod audio;
 mod crashes;
 mod data;
 pub(crate) mod downloads;
@@ -451,6 +452,9 @@ fn build_view(
     // Watch WebView2's own favicon for this tab, so the strip can show it.
     #[cfg(windows)]
     favicon::install(&webview, page.icon.clone(), proxy.clone());
+    // And whether it's playing sound, for the strip's speaker icon.
+    #[cfg(windows)]
+    audio::install(&webview, page.audible.clone(), proxy.clone());
     Ok((
         WebView2View {
             inner: webview,
@@ -708,6 +712,10 @@ impl EngineView for WebView2View {
     fn open_devtools(&self) -> EngineResult {
         self.inner.open_devtools();
         Ok(())
+    }
+    #[cfg(windows)]
+    fn set_muted(&self, muted: bool) -> EngineResult {
+        audio::set_muted(&self.inner, muted)
     }
     fn trusted_click(&self, x: f64, y: f64) -> EngineResult {
         // A click may follow a link or submit a form cross-site; mark it as wanted so

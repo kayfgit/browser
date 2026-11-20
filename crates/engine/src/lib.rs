@@ -188,6 +188,12 @@ pub trait EngineView {
     fn open_devtools(&self) -> EngineResult {
         Err("this engine has no developer tools".into())
     }
+    /// Mute or unmute this page alone, without changing its own player state.
+    /// Providers without a native per-page mute return an error, and the caller
+    /// falls back to muting the page's media from script.
+    fn set_muted(&self, _muted: bool) -> EngineResult {
+        Err("this engine can't mute a single page".into())
+    }
 
     // Optional services are queried explicitly, rather than successful no-ops.
     // Runtime versions can still reject an operation even if its service exists.

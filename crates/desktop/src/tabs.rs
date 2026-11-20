@@ -11,6 +11,7 @@ use crate::blocklist::AD_HOSTS;
 use crate::panes::{PaneNode, PaneRect, FOCUS_BORDER};
 use crate::term::TermSession;
 use crate::{read_view, session, vim, App, ModeKind, UserEvent, CLOSED_CAP, RESEARCH_JS};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// The folder of unpacked extensions to load into WebView2 (uBlock Origin Lite).
@@ -40,6 +41,11 @@ pub(crate) struct PageState {
     load_started: Arc<Mutex<Option<std::time::Instant>>>,
     /// The decoded favicon, once WebView2 has one for this page.
     pub(crate) icon: crate::favicon::SharedIcon,
+    /// Whether the page is making sound right now, as its engine reports it (the
+    /// strip shows a speaker). Engines that can't tell leave it false.
+    pub(crate) audible: Arc<AtomicBool>,
+    /// Whether this page is muted on its own (`:mutetab` or the tab's speaker button).
+    muted: Arc<AtomicBool>,
 }
 
 /// Give up animating a load after this long. A page that never fires
@@ -66,6 +72,18 @@ impl PageState {
     /// How long the current load has been running, or `None` when the tab is settled
     /// (or has been "loading" past [`LOAD_ANIM_CAP`], which we treat as settled so a
     /// stuck page doesn't animate for the rest of the session).
+    pub(crate) fn audible(&self) -> bool {
+        self.audible.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn muted(&self) -> bool {
+        self.muted.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_muted(&self, muted: bool) {
+        self.muted.store(muted, Ordering::Relaxed);
+    }
+
     pub(crate) fn loading_for(&self) -> Option<std::time::Duration> {
         let started = (*self.load_started.lock().ok()?)?;
         let elapsed = started.elapsed();
@@ -567,6 +585,8 @@ impl App {
                 if let Some(session) = self.tabs[i].take_term() {
                     session.shutdown();
                 }
+                // A muted tab stays muted when it opens another page.
+                let was_muted = self.tabs[i].page_state().is_some_and(|p| p.muted());
                 let mut tab = tab;
                 tab.nav.back = back;
                 tab.nav.fwd = fwd;
@@ -574,6 +594,9 @@ impl App {
                 tab.id = self.tabs[i].id;
                 self.tabs[i] = tab;
                 self.active = Some(i);
+                if was_muted {
+                    self.set_tab_muted(i, true);
+                }
             }
             _ => {
                 self.tabs.push(tab);

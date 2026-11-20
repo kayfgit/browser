@@ -68,6 +68,8 @@ pub(crate) const BUILTIN_VERBS: &[&str] = &[
     "default",
     "mute",
     "audio",
+    "mutetab",
+    "mt",
     "css",
     "scrollbar",
     "scrollbars",
@@ -202,6 +204,7 @@ pub(crate) const COMMANDS: &[&str] = &[
     "downloads",
     "mute",
     "audio",
+    "mutetab",
     "css",
     "video",
     "scrollbar",
@@ -465,6 +468,14 @@ impl App {
                 self.set_status(if self.mute { "audio muted" } else { "audio on" });
                 self.window.request_redraw();
             }
+            // `:mutetab [N]`: mute (or unmute) one tab, the current one by default.
+            "mutetab" | "mt" => match rest.trim() {
+                "" => self.toggle_tab_mute(None),
+                n => match n.parse::<usize>() {
+                    Ok(n) if n > 0 => self.toggle_tab_mute(Some(n - 1)),
+                    _ => self.set_error(format!(":mutetab takes a tab number, not {n:?}")),
+                },
+            },
             "css" => {
                 self.no_css = !self.no_css;
                 self.broadcast_toggle("css", self.no_css);

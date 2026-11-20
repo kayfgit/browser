@@ -581,6 +581,7 @@ const CMD_ROWS: &[(&str, &str, &str)] = &[
     ("default", ":default [remove]", "register browser with Windows so it can be your default browser, then open Settings → Default apps to pick it (Windows doesn't let programs set themselves). Links from other apps open as a new tab in the running window. remove unregisters it"),
     ("downloads", ":downloads · :dl [dir <path>]", "every download asks first (y/Enter saves, n/Esc cancels; programs and installers get a warning) and shows its progress in the status bar · :downloads lists this session's downloads: Enter opens, e shows in folder, d cancels / forgets · dir shows or changes where they're saved (default: your Downloads folder)"),
     ("mute", ":mute · :audio", "toggle muting all page audio/video (live, all tabs)"),
+    ("mutetab", ":mutetab [N] · :mt", "mute or unmute one tab (tab N, or this one)"),
     ("css", ":css", "toggle page styling off/on (live, all tabs)"),
     ("scrollbar", ":scrollbar · :sb", "toggle hiding the pages' scrollbars (live, all tabs)"),
     ("video", ":video [url]", "no url: toggle stripping video/players off pages (live, all tabs); with a url: play it in mpv/vlc"),
