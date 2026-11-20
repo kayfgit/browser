@@ -252,8 +252,18 @@ fn main() -> Result<()> {
     };
 
     let mut builder = WindowBuilder::new()
-        .with_title("browser")
+        .with_title(window_title())
         .with_decorations(false); // no OS title bar; window control is command-driven
+                                  // A dev (debug) build gets its own icon, so it can't be mistaken for the installed
+                                  // browser in the taskbar or Alt+Tab.
+    #[cfg(windows)]
+    if cfg!(debug_assertions) {
+        use tao::platform::windows::WindowBuilderExtWindows;
+        let icon = tao::window::Icon::from_rgba(dev_icon_rgba(), DEV_ICON, DEV_ICON).ok();
+        builder = builder
+            .with_window_icon(icon.clone())
+            .with_taskbar_icon(icon);
+    }
     builder = match restore.as_ref().and_then(|s| s.window.as_ref()) {
         Some(g) => builder
             .with_inner_size(tao::dpi::PhysicalSize::new(g.w, g.h))
@@ -450,9 +460,98 @@ fn main() -> Result<()> {
         engines::with_window_target(target, || events::handle(&mut app, event, control_flow))
     });
 }
+/// The window's title: `browser`, or `browser (dev)` for a debug build, which is what
+/// test runs use, so the two can be told apart in the taskbar and Alt+Tab.
+fn window_title() -> &'static str {
+    if cfg!(debug_assertions) {
+        "browser (dev)"
+    } else {
+        "browser"
+    }
+}
+
+/// Side of the dev build's icon, in px.
+const DEV_ICON: u32 = 32;
+
+/// The dev build's icon as RGBA: an orange rounded square reading `DEV` in white.
+/// Drawn here rather than shipped as a file: only debug builds use it.
+fn dev_icon_rgba() -> Vec<u8> {
+    const ORANGE: [u8; 4] = [0xe8, 0x71, 0x0a, 0xff];
+    const WHITE: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
+    // 3x5 pixel letters, drawn at 2x.
+    const LETTERS: [[u8; 5]; 3] = [
+        [0b110, 0b101, 0b101, 0b101, 0b110], // D
+        [0b111, 0b100, 0b110, 0b100, 0b111], // E
+        [0b101, 0b101, 0b101, 0b101, 0b010], // V
+    ];
+    let n = DEV_ICON as usize;
+    let mut px = vec![0u8; n * n * 4];
+    let r = 6usize; // corner radius
+    for y in 0..n {
+        for x in 0..n {
+            // Distance into the nearest corner's square; outside its quarter circle
+            // stays transparent.
+            let cx = if x < r {
+                r - x
+            } else if x >= n - r {
+                x + 1 - (n - r)
+            } else {
+                0
+            };
+            let cy = if y < r {
+                r - y
+            } else if y >= n - r {
+                y + 1 - (n - r)
+            } else {
+                0
+            };
+            if cx * cx + cy * cy <= r * r {
+                px[(y * n + x) * 4..][..4].copy_from_slice(&ORANGE);
+            }
+        }
+    }
+    let (left, top) = (5, 11);
+    for (li, rows) in LETTERS.iter().enumerate() {
+        for (ry, bits) in rows.iter().enumerate() {
+            for rx in 0..3 {
+                if bits & (0b100 >> rx) == 0 {
+                    continue;
+                }
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let x = left + li * 8 + rx * 2 + dx;
+                    let y = top + ry * 2 + dy;
+                    px[(y * n + x) * 4..][..4].copy_from_slice(&WHITE);
+                }
+            }
+        }
+    }
+    px
+}
+
 #[cfg(test)]
 mod tests {
     use super::vim::{Key, TextBuffer};
+
+    #[test]
+    fn the_dev_icon_is_an_orange_tile_reading_dev() {
+        let px = super::dev_icon_rgba();
+        let n = super::DEV_ICON as usize;
+        assert_eq!(px.len(), n * n * 4);
+        let at = |x: usize, y: usize| &px[(y * n + x) * 4..][..4];
+        assert_eq!(at(0, 0)[3], 0, "rounded corners are transparent");
+        assert_eq!(at(n / 2, 2), &[0xe8, 0x71, 0x0a, 0xff]);
+        let white = (0..n * n).filter(|i| px[i * 4..][..4] == [0xff; 4]).count();
+        // D (10 cells) + E (10) + V (9), each cell 2x2.
+        assert_eq!(white, (10 + 10 + 9) * 4);
+    }
+
+    #[test]
+    fn a_debug_build_says_dev_in_its_title() {
+        assert_eq!(
+            super::window_title() == "browser (dev)",
+            cfg!(debug_assertions)
+        );
+    }
 
     fn type_keys(b: &mut TextBuffer, chars: &str) -> Option<String> {
         let mut last = None;
