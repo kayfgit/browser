@@ -1265,7 +1265,9 @@ impl App {
     /// The pointer moved to `(x, y)` (or left the window, `None`): track which
     /// tab-strip entry it's over, repainting when that changes.
     pub(crate) fn update_tab_hover(&mut self, at: Option<(f64, f64)>) {
-        let over = at.and_then(|(x, y)| {
+        // `tabs.hover_buttons = false`: tabs never widen or grow buttons.
+        let hover_on = self.config.setting("tabs.hover_buttons");
+        let over = at.filter(|_| hover_on).and_then(|(x, y)| {
             if self.tabs.is_empty() {
                 None
             } else if self.sidebar_w() > 0 {

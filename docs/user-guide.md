@@ -279,7 +279,20 @@ Other protections and toggles:
 - `:clear history|cookies|cache|all [15m|1h|24h|7d|all]` erases browsing data.
 - `:mute`, `:css`, `:video` and `:scrollbar` toggle muting, page styles, video players and scrollbars live, without a reload.
 - A tab playing sound shows a speaker at the end of its entry in the tab strip; a muted tab shows it crossed out. `:mutetab` (`:mt`) mutes or unmutes the current tab, and `:mutetab 3` the third one. Muting a split tab mutes every page in it, and a muted tab stays muted when you open another page in it.
-- Hovering a tab (in the strip or the sidebar) widens it to show its whole name, with a close button and, for web pages, a mute button. The close button closes the whole tab, every pane in it; `U` brings it back.
+- Hovering a tab (in the strip or the sidebar) widens it to show its whole name, with a close button and, for a tab playing sound, a mute button. The close button closes the whole tab, every pane in it; `U` brings it back.
+
+**Settings.** Each of these behaviours can be switched off. `:set` lists them with
+their values; `:set tabs.speaker off` switches one off, `:set tabs.speaker default`
+brings back the default, `:set tabs.speaker` on its own flips it, and
+`:set tabs.speaker?` says what it does. They live in
+the `[tabs]` table of `config.toml` (`:theme` opens it), and `:ai` can change them too
+("load all my tabs at startup").
+
+| Setting | Default | What it does |
+|---|---|---|
+| `tabs.lazy_load` | on | Restored tabs load only when first shown; off loads every tab at launch. |
+| `tabs.speaker` | on | A speaker on tabs playing sound, crossed out while muted. |
+| `tabs.hover_buttons` | on | Hovering a tab widens it and shows its close and mute buttons. |
 - Private tabs (`:open -n`) are never saved to the session or the closed-tab list.
 
 ## Command bar tricks

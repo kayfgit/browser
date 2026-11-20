@@ -37,6 +37,10 @@ pub(crate) struct ActionSpec {
     pub(crate) params: &'static [ParamSpec],
 }
 
+/// The [`SETTINGS`](crate::config::SETTINGS) keys, as the `set` action offers them
+/// (a test keeps the two lists equal).
+const SETTING_KEYS: &[&str] = &["tabs.lazy_load", "tabs.speaker", "tabs.hover_buttons"];
+
 /// Every action the browser exposes through [`App::perform`] — the single list the
 /// command bar, the help page, and the assistant all read from. A param with an
 /// empty `values` list is free text (no fixed choices).
@@ -309,6 +313,30 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
                 values: &[],
                 required: false,
                 desc: "Terminal default text colour (name or hex) — overrides the scheme's.",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "set",
+        summary: "Turn one of the browser's optional behaviours on or off. Use for \
+                  requests like 'load all my tabs at startup' (tabs.lazy_load off), \
+                  'hide the speaker icon on tabs' (tabs.speaker off) or 'stop tabs \
+                  growing when I hover them' (tabs.hover_buttons off).",
+        params: &[
+            ParamSpec {
+                name: "key",
+                values: SETTING_KEYS,
+                required: true,
+                desc: "tabs.lazy_load: restored tabs load only when first shown. \
+                       tabs.speaker: a speaker on tabs playing sound. \
+                       tabs.hover_buttons: hovering a tab widens it and shows close/mute \
+                       buttons.",
+            },
+            ParamSpec {
+                name: "value",
+                values: &["on", "off", "default"],
+                required: true,
+                desc: "on, off, or default (the built-in default, which is on).",
             },
         ],
     },
@@ -667,6 +695,7 @@ impl App {
             "resetbangs" => self.reset_bangs(str_arg("key")),
             "restore" => Ok(self.restore_defaults()),
             "theme" => self.set_theme(args),
+            "set" => self.apply_setting(str_arg("key"), str_arg("value")),
             "install_scheme" => {
                 let name = str_arg("name");
                 if name.is_empty() {
@@ -877,6 +906,65 @@ impl App {
     /// net behind `:restore` and the `Ctrl+Alt+Shift+R` hook chord. Re-applies every
     /// config-driven surface live (today: chrome appearance), so a bad theme is undone
     /// without a restart. Returns the status message.
+    /// `:set <key> [on|off|default]` / the `set` action: change one of the
+    /// [`SETTINGS`](crate::config::SETTINGS), save it and apply it at once. No value
+    /// flips it. Returns what it's now set to.
+    pub(crate) fn apply_setting(&mut self, key: &str, value: &str) -> Result<String, String> {
+        let key = key.trim();
+        // `:set tabs.speaker?` (vim's query form): say what it is and what it does.
+        if let Some(key) = key.strip_suffix('?') {
+            let spec = crate::config::SETTINGS
+                .iter()
+                .find(|s| s.key == key)
+                .ok_or_else(|| format!("no setting {key:?}"))?;
+            let on = if self.config.setting(key) {
+                "on"
+            } else {
+                "off"
+            };
+            return Ok(format!("{key} = {on} — {}", spec.desc));
+        }
+        let value = if value.trim().is_empty() {
+            Some(!self.config.setting(key))
+        } else {
+            crate::config::parse_switch(value)?
+        };
+        self.config.set_setting(key, value)?;
+        crate::config::save(&self.config);
+        // Each takes effect now: lazy loading off loads the remaining tabs, the
+        // strip repaints without the speaker or the hover state.
+        if self.tab_hover.is_some() {
+            self.update_tab_hover(Some(self.cursor_pos));
+        }
+        self.refresh_visibility();
+        self.window.request_redraw();
+        let on = if self.config.setting(key) {
+            "on"
+        } else {
+            "off"
+        };
+        Ok(match value {
+            None => format!("{key} = {on} (default)"),
+            Some(_) => format!("{key} = {on}"),
+        })
+    }
+
+    /// Every setting and its current value, for a bare `:set`.
+    pub(crate) fn settings_summary(&self) -> String {
+        crate::config::SETTINGS
+            .iter()
+            .map(|s| {
+                let on = if self.config.setting(s.key) {
+                    "on"
+                } else {
+                    "off"
+                };
+                format!("{}={on}", s.key)
+            })
+            .collect::<Vec<_>>()
+            .join("  ")
+    }
+
     pub(crate) fn restore_defaults(&mut self) -> String {
         // Reset customization only. Which profile is active (and the scratch state)
         // and the last version seen are state; resetting the theme mustn't move you
@@ -1567,6 +1655,12 @@ mod tests {
             assert!(alias_rejection(&map, "mk", expansion, false).is_none());
         }
         assert!(alias_rejection(&map, "gh", "open github.com", true).is_none());
+    }
+
+    #[test]
+    fn the_set_action_offers_every_setting() {
+        let keys: Vec<_> = crate::config::SETTINGS.iter().map(|s| s.key).collect();
+        assert_eq!(super::SETTING_KEYS, keys.as_slice());
     }
 
     #[test]

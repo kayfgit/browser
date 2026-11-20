@@ -1192,6 +1192,7 @@ impl App {
                     web: page.is_some()
                         || matches!(t.content, crate::tabs::TabContent::Unloaded { .. }),
                     sound: self.strip_sound(wi),
+                    show_speaker: self.config.setting("tabs.speaker"),
                     hovered: self.tab_hover == Some(wi),
                 })
             })
@@ -1633,6 +1634,9 @@ pub(crate) struct TabEntry {
     pub(crate) web: bool,
     /// The speaker at the end of the entry: playing, muted or none.
     pub(crate) sound: crate::audio::Sound,
+    /// Whether to paint that speaker (`tabs.speaker`). The hover mute button shows
+    /// either way.
+    pub(crate) show_speaker: bool,
     /// The pointer is over this entry: it widens to show its whole label and gets its
     /// close (and, for web tabs, mute) buttons.
     pub(crate) hovered: bool,
@@ -1708,7 +1712,7 @@ pub(crate) fn tab_cells(p: &Painter, w: usize, entries: &[TabEntry]) -> Vec<TabC
         let (open, close) = if e.active { ("[", "]") } else { (" ", " ") };
         let prefix = format!("{open}{}:", i + 1);
         let slot = if e.web { ic + 3 } else { 0 };
-        let speaker = e.sound != crate::audio::Sound::Silent && !e.hovered;
+        let speaker = e.show_speaker && e.sound != crate::audio::Sound::Silent && !e.hovered;
         let sound_slot = if speaker { ic + 4 } else { 0 };
         let frame = format!("{prefix}{close}");
         // Hovering widens the entry to fit its whole label (already capped at 22
@@ -1767,6 +1771,7 @@ mod tab_cell_tests {
                 icon: None,
                 web: true,
                 sound: crate::audio::Sound::Silent,
+                show_speaker: true,
                 hovered: false,
             })
             .collect()
@@ -1883,6 +1888,18 @@ mod tab_cell_tests {
         assert_eq!(hovered[3].x, plain[3].x + shift);
         assert_eq!(hovered[3].w, plain[3].w);
         assert!(hovered[3].close_x.is_none() && plain[2].close_x.is_none());
+    }
+
+    #[test]
+    fn turning_the_speaker_off_hides_it_but_keeps_the_mute_button() {
+        let p = Painter::new(15.0).unwrap();
+        let mut es = entries(2);
+        es[1].sound = crate::audio::Sound::Playing;
+        es[1].show_speaker = false;
+        assert!(tab_cells(&p, 1200, &es)[1].sound_x.is_none());
+        assert!(side_rows(&p, 300, 0, 600, &es)[1].sound_x.is_none());
+        es[1].hovered = true;
+        assert!(tab_cells(&p, 1200, &es)[1].mute_x.is_some());
     }
 
     #[test]
@@ -2125,7 +2142,7 @@ pub(crate) fn side_rows(
         let slot = if e.web { ic + 4 } else { 0 };
         let label_x = 8 + num_w + slot;
         // A hovered row shows its buttons at the right end, in place of the speaker.
-        let speaker = e.sound != crate::audio::Sound::Silent && !e.hovered;
+        let speaker = e.show_speaker && e.sound != crate::audio::Sound::Silent && !e.hovered;
         let mutable = e.web && e.sound != crate::audio::Sound::Silent;
         let end = if e.hovered {
             if mutable {
