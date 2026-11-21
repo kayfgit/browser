@@ -226,7 +226,10 @@ pub(crate) fn nav_entry(tab: &Tab) -> Option<NavEntry> {
         return None;
     };
     Some(NavEntry {
-        provider: tab.provider().unwrap_or("webview2").into(),
+        provider: tab
+            .provider()
+            .unwrap_or(crate::engines::DEFAULT_PROVIDER)
+            .into(),
         url: tab.url.clone(),
         kind,
         private: tab.private,
@@ -661,7 +664,10 @@ impl App {
         // A closed terminal keeps its last known cwd so `u` reopens it there.
         let cwd = t.term().and_then(|s| s.cwd()).unwrap_or_default();
         Some(session::SavedTab {
-            provider: t.provider().unwrap_or("webview2").into(),
+            provider: t
+                .provider()
+                .unwrap_or(crate::engines::DEFAULT_PROVIDER)
+                .into(),
             kind: kind.to_string(),
             url: t.url.clone(),
             cwd,
@@ -702,7 +708,7 @@ impl App {
         crate::engines::build(
             provider,
             &self.window,
-            crate::engines::WebView2Options {
+            crate::engines::BuildOptions {
                 source,
                 disable_js,
                 extra_init,
@@ -744,8 +750,8 @@ impl App {
         if self.engine_keepalive.is_some() {
             return;
         }
-        match crate::engines::keep_webview2_alive(&self.window) {
-            Ok(view) => self.engine_keepalive = Some(view),
+        match crate::engines::keep_engine_alive(&self.window) {
+            Ok(view) => self.engine_keepalive = view,
             // Not fatal: without it the switch just cold-starts the engine as before.
             Err(e) => self.set_error(format!("keeping the engine alive: {e}")),
         }
@@ -1935,7 +1941,7 @@ impl App {
         let private = t.private;
         let extra = if research { RESEARCH_JS } else { "" };
         match self.build_provider_view(
-            t.provider().unwrap_or("webview2"),
+            t.provider().unwrap_or(crate::engines::DEFAULT_PROVIDER),
             Source::Url(url.clone()),
             self.nojs,
             extra,

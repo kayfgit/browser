@@ -5,7 +5,10 @@ use crate::{App, ModeKind, Source, RESEARCH_JS};
 
 impl App {
     pub(crate) fn default_engine(&self) -> &str {
-        self.config.engine.as_deref().unwrap_or("webview2")
+        self.config
+            .engine
+            .as_deref()
+            .unwrap_or(crate::engines::DEFAULT_PROVIDER)
     }
 
     pub(crate) fn provider_for_open(&self, new_tab: bool) -> String {
@@ -241,11 +244,13 @@ impl App {
 }
 
 pub(crate) fn crashed_content(provider: &str, url: &str, reason: &str) -> TabContent {
-    // WebView2 is the fallback engine, so only another engine's crash can suggest it.
-    let next = if provider == "webview2" {
+    // The system webview is the fallback engine, so only another engine's crash can
+    // suggest it.
+    let fallback = super::DEFAULT_PROVIDER;
+    let next = if provider == fallback {
         ":reload to open it again.".to_string()
     } else {
-        ":reload to open it again, or :engine webview2 to open it in another engine.".into()
+        format!(":reload to open it again, or :engine {fallback} to open it in another engine.")
     };
     TabContent::Unavailable {
         provider: provider.into(),
@@ -275,7 +280,10 @@ pub(crate) fn unavailable_content(provider: &str, url: &str, error: &str) -> Tab
             error.into(),
             String::new(),
             "The saved provider and URL have been kept.".into(),
-            "Install its provider and :reload to retry, or :engine webview2 to reopen here.".into(),
+            format!(
+                "Install its provider and :reload to retry, or :engine {} to reopen here.",
+                super::DEFAULT_PROVIDER
+            ),
         ]),
     }
 }

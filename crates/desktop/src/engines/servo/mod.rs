@@ -10,7 +10,7 @@ mod page;
 pub(crate) mod smoke;
 mod watchdog;
 
-use super::{PageEventProxy, WebView2Options};
+use super::{BuildOptions, PageEventProxy};
 use crate::{App, ModeKind, UserEvent};
 use browser_engine::{EngineResult, EngineView, History, RectPx, Source, ViewId, ViewIdentity};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -256,7 +256,7 @@ impl servo::WebViewDelegate for Delegate {
 
 pub(super) fn build(
     parent: &Rc<Window>,
-    opts: WebView2Options<'_>,
+    opts: BuildOptions<'_>,
     identity: ViewIdentity,
 ) -> anyhow::Result<(Box<dyn EngineView>, crate::tabs::PageState)> {
     if !TARGET.is_set() {

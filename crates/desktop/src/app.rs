@@ -1622,7 +1622,10 @@ impl App {
             // live process read — see TermSession::cwd) so restore reopens it there.
             let cwd = tab.term().and_then(|s| s.cwd()).unwrap_or_default();
             tabs.push(session::SavedTab {
-                provider: tab.provider().unwrap_or("webview2").into(),
+                provider: tab
+                    .provider()
+                    .unwrap_or(crate::engines::DEFAULT_PROVIDER)
+                    .into(),
                 kind: kind.to_string(),
                 url: tab.url.clone(),
                 cwd,

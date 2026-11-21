@@ -15,6 +15,7 @@ pub(crate) mod permissions;
 pub(crate) mod popups;
 mod suspension;
 
+use super::BuildOptions;
 use crate::tabs::{
     deproxy_translate, is_translate_proxy, origin_of, ublock_extensions_dir, url_is_ad_host,
     PageState,
@@ -46,22 +47,6 @@ use wry::{
 pub(crate) const BROWSER_ARGS: &str =
     "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,\
      Translate,msAutoTranslate --autoplay-policy=no-user-gesture-required";
-
-pub(crate) struct BuildOptions<'a> {
-    pub source: Source,
-    pub disable_js: bool,
-    pub extra_init: &'a str,
-    pub storage: browser_engine::StorageMode,
-    pub bounds: RectPx,
-    pub adblock: bool,
-    pub mute: bool,
-    pub no_css: bool,
-    pub no_video: bool,
-    pub no_scrollbar: bool,
-    pub proxy: EventLoopProxy<UserEvent>,
-    pub adblock_on: Arc<AtomicBool>,
-    pub blocker: crate::blocklist::SharedBlocker,
-}
 
 /// The WebView2 user-data folder (cookies, cache, extensions) every view shares.
 ///

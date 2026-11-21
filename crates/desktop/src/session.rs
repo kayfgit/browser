@@ -97,7 +97,7 @@ pub struct SavedTab {
 }
 
 pub fn default_provider() -> String {
-    "webview2".into()
+    crate::engines::DEFAULT_PROVIDER.into()
 }
 
 /// Serde default for [`Session::content_zoom`]: 100% (no page scaling) for
@@ -416,7 +416,7 @@ mod tests {
         // Sessions written before terminal-cwd tracking have no `cwd` key.
         let tab: SavedTab = toml::from_str("kind = \"term\"").expect("deserialize");
         assert_eq!(tab.cwd, "");
-        assert_eq!(tab.provider, "webview2");
+        assert_eq!(tab.provider, crate::engines::DEFAULT_PROVIDER);
     }
 
     #[test]

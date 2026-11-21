@@ -8,8 +8,9 @@
 //! So the new-window handler builds a regular shell view on the opener's own WebView2
 //! environment and hands it to the engine as the pop-up (`NewWindowResponse::Create`).
 //! WebView2 then loads the pop-up into it, opener and all. The handler can't reach the
-//! `App`, so the view waits here until [`UserEvent::PopupPane`] lets the shell adopt it
-//! as a narrow split beside its opener ([`App::adopt_popups`](crate::App::adopt_popups)).
+//! `App`, so the view waits in [`super::super::popup_queue`] until
+//! [`UserEvent::PopupPane`] lets the shell adopt it as a narrow split beside its
+//! opener ([`App::adopt_popups`](crate::App::adopt_popups)).
 //! When the pop-up closes itself (`window.close()`, as a finished sign-in does), its
 //! pane closes too.
 
@@ -18,39 +19,17 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use browser_engine::{EngineView, RectPx, Source, StorageMode, ViewId, ViewIdentity};
+use browser_engine::{RectPx, Source, StorageMode, ViewId, ViewIdentity};
 use tao::event_loop::EventLoopProxy;
 use tao::window::Window;
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
 use webview2_com::WindowCloseRequestedEventHandler;
 use wry::{NewWindowFeatures, WebViewExtWindows};
 
+use super::super::popup_queue::{self, PendingPopup};
 use super::super::PageEventProxy;
 use super::BuildOptions;
-use crate::tabs::PageState;
 use crate::UserEvent;
-
-/// A pop-up built as a shell view, waiting for the shell to give it a pane.
-pub(crate) struct PendingPopup {
-    pub(crate) view: Box<dyn EngineView>,
-    pub(crate) page: PageState,
-    /// The view whose page opened it; the pane goes beside that one.
-    pub(crate) opener: ViewId,
-    /// The width the page asked for, in CSS pixels (`None` for a blank window).
-    pub(crate) width: Option<f64>,
-}
-
-thread_local! {
-    /// Built pop-ups (or why one couldn't be built) not yet adopted by the shell.
-    /// Views are UI-thread objects, so they wait on the UI thread rather than travel
-    /// in a `UserEvent`.
-    static PENDING: RefCell<Vec<Result<PendingPopup, String>>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Every pop-up built since the last call, in order.
-pub(crate) fn take() -> Vec<Result<PendingPopup, String>> {
-    PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()))
-}
 
 /// What a view needs to build pop-ups like itself: an owned copy of its
 /// [`BuildOptions`], taken when the view is built.
@@ -127,21 +106,19 @@ impl Seed {
         let (view, page) = match built {
             Ok(built) => built,
             Err(e) => {
-                PENDING.with(|p| p.borrow_mut().push(Err(e.clone())));
+                popup_queue::push(Err(e.clone()));
                 let _ = self.proxy.send_event(UserEvent::PopupPane);
                 return Err(e);
             }
         };
         let core = view.inner.webview();
         close_with_page(&core, PageEventProxy::new(self.proxy.clone(), id));
-        PENDING.with(|p| {
-            p.borrow_mut().push(Ok(PendingPopup {
-                view: Box::new(view),
-                page,
-                opener: self.opener,
-                width: features.size.map(|s| s.width),
-            }))
-        });
+        popup_queue::push(Ok(PendingPopup {
+            view: Box::new(view),
+            page,
+            opener: self.opener,
+            width: features.size.map(|s| s.width),
+        }));
         let _ = self.proxy.send_event(UserEvent::PopupPane);
         Ok(core)
     }
