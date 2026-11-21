@@ -767,6 +767,8 @@ mod tests {
         assert_eq!(parse_checksum("not a hash"), None);
     }
 
+    // Windows paths: the MSI install layout only exists there.
+    #[cfg(windows)]
     #[test]
     fn the_install_kind_decides_how_a_copy_updates() {
         let pf = [PathBuf::from(r"C:\Program Files")];

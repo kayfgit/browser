@@ -254,11 +254,7 @@ impl App {
             return;
         };
         if matches!(arg, "folder" | "dir" | "open") {
-            let mut select = std::ffi::OsString::from("/select,");
-            select.push(path.as_os_str());
-            let _ = std::process::Command::new("explorer.exe")
-                .arg(select)
-                .spawn();
+            crate::shell_open::open_path(&path, true);
             return;
         }
         let text = std::fs::read_to_string(&path).unwrap_or_default();
@@ -533,7 +529,7 @@ pub(crate) fn now_stamp() -> String {
     // Howard Hinnant's days-from-civil, inverted: civil date from days since epoch (UTC).
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as i64;
+    let doe = z - era * 146_097;
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);

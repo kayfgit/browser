@@ -238,12 +238,13 @@ impl App {
     /// typing the command into the PTY, which ConPTY buffers until the prompt.
     pub(crate) fn open_terminal_at(&mut self, cwd: Option<&str>) {
         let mut shell = if self.term_command.is_empty() {
-            vec!["cmd".to_string()]
+            default_shell()
         } else {
             self.term_command.clone()
         };
         let (spawn_dir, wsl) = match cwd {
-            Some(dir) => match wsl_target(dir) {
+            // A saved Linux path means WSL only on Windows; elsewhere it is just a folder.
+            Some(dir) => match wsl_target(dir).filter(|_| cfg!(windows)) {
                 Some(t) => (None, Some(t)),
                 None => (Some(dir.to_string()), None),
             },
@@ -931,10 +932,11 @@ pub(crate) fn exec_command(cmd: &str) -> (String, Option<i32>) {
 
 /// The shell `:te` starts until `:shell` picks another: PowerShell 7 (`pwsh`) when
 /// it's installed, else Windows PowerShell, which every Windows install has. `-NoLogo`
-/// skips the copyright banner. Elsewhere, `sh`.
+/// skips the copyright banner. Elsewhere, the user's login shell (`$SHELL`), else `/bin/sh`.
 pub(crate) fn default_shell() -> Vec<String> {
     if !cfg!(windows) {
-        return vec!["sh".into()];
+        let shell = std::env::var("SHELL").ok().filter(|s| !s.trim().is_empty());
+        return vec![shell.unwrap_or_else(|| "/bin/sh".into())];
     }
     let program = if program_exists("pwsh") {
         "pwsh"
