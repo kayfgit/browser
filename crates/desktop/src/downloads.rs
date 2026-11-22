@@ -458,17 +458,10 @@ impl crate::App {
     }
 }
 
-/// Open a downloaded file with its program, or (`reveal`) show it selected in Explorer.
+/// Open a downloaded file with its program, or (`reveal`) show it selected in the file
+/// manager.
 fn open_with_shell(path: &Path, reveal: bool) {
-    let mut cmd = std::process::Command::new("explorer.exe");
-    if reveal {
-        let mut arg = std::ffi::OsString::from("/select,");
-        arg.push(path.as_os_str());
-        cmd.arg(arg);
-    } else {
-        cmd.arg(path);
-    }
-    let _ = cmd.spawn();
+    crate::shell_open::open_path(path, reveal);
 }
 
 #[cfg(test)]

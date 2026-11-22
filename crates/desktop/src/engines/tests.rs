@@ -266,3 +266,19 @@ fn native_engine_access_stays_inside_the_provider() {
         &src.join("engines/tests.rs"),
     );
 }
+
+#[test]
+fn a_provider_from_another_platform_opens_in_this_platforms_default() {
+    // A session or config.toml copied from Windows names `webview2`, one from Linux
+    // `webkitgtk`: each resolves to whatever this platform's default resolves to.
+    let other = if cfg!(windows) {
+        "webkitgtk"
+    } else {
+        "webview2"
+    };
+    let id = |name: &str| super::resolve(name, super::DEFAULT_PROVIDER).map(|p| p.id);
+    assert_eq!(id(other), id(super::DEFAULT_PROVIDER));
+    assert_eq!(id(&other.to_ascii_uppercase()), id(super::DEFAULT_PROVIDER));
+    // Unknown engines still never fall back.
+    assert!(id("netscape").is_err());
+}

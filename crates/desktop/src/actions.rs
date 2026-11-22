@@ -1051,8 +1051,13 @@ impl App {
                     }
                     None => {
                         return Err(format!(
-                            "no installed font matches '{s}' — use the font's name (as in \
-                             Settings > Fonts) or a .ttf/.otf path"
+                            "no installed font matches '{s}' — use the font's name (as \
+                             {}) or a .ttf/.otf path",
+                            if cfg!(windows) {
+                                "in Settings > Fonts"
+                            } else {
+                                "fc-list shows it"
+                            }
                         ))
                     }
                 }
@@ -1210,9 +1215,9 @@ impl App {
                 }
             }
             None => {
-                let _ = std::process::Command::new("notepad").arg(&path).spawn();
+                crate::shell_open::edit_text_file(std::path::Path::new(&path));
                 self.set_status(
-                    "opened config.toml in notepad — save, then :theme reload to apply",
+                    "opened config.toml in your text editor — save, then :theme reload to apply",
                 );
             }
         }

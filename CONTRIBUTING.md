@@ -10,6 +10,21 @@ cargo build --release -p browser
 .\target\release\browser.exe
 ```
 
+### Linux (port in progress)
+
+The Linux port is under way (X11 first). The shell, `:read`, search and terminals
+build and run; web tabs need the WebKitGTK engine, which comes in a later step. On
+Debian, Ubuntu or Kali:
+
+```sh
+sudo apt install build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev \
+  libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libxkbcommon-dev fontconfig fonts-dejavu-core
+cargo run -p browser -- --scratch
+```
+
+Engines that only exist on Windows (WebView2, Internet Explorer's Trident, Servo for
+now) aren't compiled there.
+
 That builds both executables of the `browser` package (in `crates/desktop`): `browser.exe` and
 `browser-pty-host.exe`, the companion process terminals run in. They must stay in
 the same folder.

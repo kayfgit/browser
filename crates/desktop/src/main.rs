@@ -16,6 +16,10 @@
 //!     only on Ctrl+S or Shift+Esc (a terminal keeps Esc for the shell).
 
 #![windows_subsystem = "windows"]
+// The Linux port is in progress: until the WebKitGTK engine lands there, the code that
+// serves a web engine (page events, downloads, permissions, pop-ups, ad-block hooks)
+// has nothing to call it on Linux. Remove this with the engine.
+#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
 
 #[cfg(all(windows, feature = "servo-engine"))]
 surfman::declare_surfman!();
@@ -55,6 +59,7 @@ mod extensions;
 mod external;
 mod favicon;
 mod find;
+mod fonts;
 mod freeze;
 mod glance;
 mod hints;
@@ -76,6 +81,7 @@ mod read_view;
 mod schemes;
 mod scripts;
 mod session;
+mod shell_open;
 mod shellkeys;
 mod status;
 mod tabs;

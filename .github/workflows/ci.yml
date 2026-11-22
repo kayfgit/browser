@@ -46,6 +46,48 @@ jobs:
       - name: page script tests
         run: node --test crates/desktop/tests/bridge-hints.cjs crates/desktop/tests/scroll-hints.cjs crates/desktop/tests/navguard.cjs crates/desktop/tests/servo-bridge-queue.cjs
 
+  linux:
+    name: fmt, clippy, docs, tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # GTK and WebKitGTK headers for tao/wry; fontconfig and fonts (CJK too) for the
+      # painter's tests.
+      - name: system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev libxkbcommon-dev \
+            fontconfig fonts-dejavu-core fonts-noto-cjk
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: rustdoc
+        run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: --document-private-items -D warnings
+
+      - name: tests
+        run: cargo test --workspace --locked
+
+      - name: page script tests
+        run: node --test crates/desktop/tests/bridge-hints.cjs crates/desktop/tests/scroll-hints.cjs crates/desktop/tests/navguard.cjs crates/desktop/tests/servo-bridge-queue.cjs
+
   servo:
     name: clippy, docs (with Servo)
     runs-on: windows-latest

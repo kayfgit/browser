@@ -33,7 +33,7 @@ use windows::Win32::{
     },
 };
 
-use super::{events::decode_page_message, PageEventProxy, WebView2Options};
+use super::{events::decode_page_message, BuildOptions, PageEventProxy};
 use crate::{App, UserEvent};
 pub(crate) use host::run_if_helper;
 use protocol::Command;
@@ -192,7 +192,7 @@ impl History for View {
 
 /// The scripts every top-level document gets: the IE11 prelude (which also connects
 /// `window.__post` to the shell), then the same shell bridge the other engines run.
-fn init_script(opts: &WebView2Options<'_>) -> String {
+fn init_script(opts: &BuildOptions<'_>) -> String {
     let (m, c, v, sb) = (opts.mute, opts.no_css, opts.no_video, opts.no_scrollbar);
     let mut init = format!(
         "{}\n{}\n{}\n{}\nwindow.__featureDefaults={{mute:{m},css:{c},video:{v},scrollbar:{sb}}};\n{}",
@@ -217,7 +217,7 @@ fn init_script(opts: &WebView2Options<'_>) -> String {
 
 pub(super) fn build(
     parent: &Rc<Window>,
-    opts: WebView2Options<'_>,
+    opts: BuildOptions<'_>,
     identity: ViewIdentity,
 ) -> anyhow::Result<(Box<dyn EngineView>, crate::tabs::PageState)> {
     let url = match &opts.source {

@@ -131,6 +131,7 @@ The core, in reading order:
 - [actions.rs](crates/desktop/src/actions.rs): the action registry used by commands and the `:ai` assistant, plus aliases.
 - [chrome.rs](crates/desktop/src/chrome.rs): drawing the shell.
 - [draw.rs](crates/desktop/src/draw.rs): the text painter, colours and `Theme`.
+- [fonts.rs](crates/desktop/src/fonts.rs): which font files the painter reads: `C:\Windows\Fonts` on Windows, fontconfig (`fc-match`) and the font folders on Linux.
 - [tabs.rs](crates/desktop/src/tabs.rs): tab kinds, opening and placing tabs, ad-block switching.
 - [panes.rs](crates/desktop/src/panes.rs): tmux-style splits (each tab-strip entry is a tree of panes).
 
@@ -154,7 +155,7 @@ Keyboard and focus:
 
 Pages and engines:
 
-- [engines/](crates/desktop/src/engines/mod.rs): adapters behind the `crates/engine` contract. [engines/webview2/](crates/desktop/src/engines/webview2/mod.rs) is the only code that owns WebView2 objects; `engines/servo/` is the second engine, with page content in Servo's content processes (`watchdog.rs` notices crashed ones). [engines/trident/](crates/desktop/src/engines/trident/mod.rs) is Internet Explorer 11's MSHTML: each view is a copy of this executable started with `--trident-host` in an AppContainer (`sandbox.rs`), hosting the WebBrowser control (`host.rs`) and talking JSON lines over its stdin and stdout (`protocol.rs`).
+- [engines/](crates/desktop/src/engines/mod.rs): adapters behind the `crates/engine` contract. [engines/webview2/](crates/desktop/src/engines/webview2/mod.rs) is the only code that owns WebView2 objects (Windows only; `DEFAULT_PROVIDER` names each platform's system webview, and `BuildOptions` is what every factory gets); `engines/servo/` is the second engine, with page content in Servo's content processes (`watchdog.rs` notices crashed ones). [engines/trident/](crates/desktop/src/engines/trident/mod.rs) is Internet Explorer 11's MSHTML: each view is a copy of this executable started with `--trident-host` in an AppContainer (`sandbox.rs`), hosting the WebBrowser control (`host.rs`) and talking JSON lines over its stdin and stdout (`protocol.rs`).
 - [scripts.rs](crates/desktop/src/scripts.rs): the JavaScript injected into pages (the files are in [crates/desktop/scripts/](crates/desktop/scripts/bridge.js)).
 - [navguard.rs](crates/desktop/src/navguard.rs) and [blocklist.rs](crates/desktop/src/blocklist.rs): blocking ad redirects and known-bad domains.
 - [extensions.rs](crates/desktop/src/extensions.rs), [bundled_extensions.rs](crates/desktop/src/bundled_extensions.rs): the extension picker and the bundled uBlock Origin Lite.
@@ -164,6 +165,7 @@ Pages and engines:
 - [glance.rs](crates/desktop/src/glance.rs): glance, a link opened in a floating card over the page it came from (`q` hints, the right-click menu, `:glance`). The card is a windowless tab drawn over its opener's window; it closes once focus leaves it.
 - [droplink.rs](crates/desktop/src/droplink.rs): links dragged into the browser open in a new tab. This is the OLE drop target on the main window (tab strip, sidebar, native panes); drops on a web page are handled by `bridge.js`.
 - [external.rs](crates/desktop/src/external.rs): links from other apps — a later launch hands its URL to the running browser over a named pipe — and `:default`, which registers the browser with Windows.
+- [shell_open.rs](crates/desktop/src/shell_open.rs): handing a file to the desktop (open it, or show it in the file manager): Explorer on Windows, `xdg-open` and FileManager1 on Linux.
 - [page_colors.rs](crates/desktop/src/page_colors.rs): the colours of the engine-free `browser://` pages, applied per page and line as they're drawn.
 - [prompts.rs](crates/desktop/src/prompts.rs): the yes/no questions the bar asks for the engine, a site's permission request or saving a download, replacing Edge's keyboard-unreachable bubbles. The WebView2 side is [engines/webview2/permissions.rs](crates/desktop/src/engines/webview2/permissions.rs).
 - [downloads.rs](crates/desktop/src/downloads.rs): downloads, shell side: answering the "save it?" question, status-bar progress and the `:downloads` page. The WebView2 side (holding a download at the prompt, progress, cancel) is [engines/webview2/downloads.rs](crates/desktop/src/engines/webview2/downloads.rs).

@@ -115,19 +115,17 @@ pub fn parse_color(s: &str) -> Option<Rgb> {
 /// all the time, go through fontdue; each fallback is a [`LazyFace`], mapped when a
 /// glyph first reaches it and read one glyph at a time.
 ///
-/// The system monospace face (Consolas → Segoe UI → Arial), which covers normal text.
-/// Keep the shell's own UI text within it: one symbol it lacks loads a fallback face.
+/// The system monospace face (see [`crate::fonts::system_font_path`]), which covers
+/// normal text. Keep the shell's own UI text within it: one symbol it lacks loads a
+/// fallback face.
 static SYSTEM_FONT: OnceLock<Font> = OnceLock::new();
 
-/// A fallback face for glyphs the primary lacks, opened on first use (`None` when it
-/// isn't installed or doesn't parse).
-struct Fallback {
-    path: &'static str,
-    /// Only characters in CJK, kana and Hangul ranges try this face, so an icon no font
-    /// has (a private-use prompt glyph, say) doesn't open every CJK face.
-    cjk_only: bool,
-    face: OnceLock<Option<LazyFace>>,
-}
+/// The [`crate::fonts::FALLBACKS`] faces for glyphs the primary lacks, each opened on
+/// first use (`None` when it isn't installed or doesn't parse). Only characters in CJK,
+/// kana and Hangul ranges try a `cjk_only` face, so an icon no font has (a private-use
+/// prompt glyph, say) doesn't open every CJK face.
+static FALLBACK_FACES: [OnceLock<Option<LazyFace>>; crate::fonts::FALLBACKS.len()] =
+    [const { OnceLock::new() }; crate::fonts::FALLBACKS.len()];
 
 /// A font read straight from its memory-mapped file, one glyph at a time: it costs no
 /// private memory (the OS pages the file in and out as needed), at the price of parsing
@@ -137,7 +135,7 @@ struct LazyFace {
 }
 
 impl LazyFace {
-    fn open(path: &str) -> Option<Self> {
+    fn open(path: impl AsRef<std::path::Path>) -> Option<Self> {
         let file = std::fs::File::open(path).ok()?;
         // SAFETY: system font files aren't modified while they're in use.
         let data = unsafe { memmap2::Mmap::map(&file) }.ok()?;
@@ -345,28 +343,6 @@ impl Face<'_> {
     }
 }
 
-const fn fallback(path: &'static str, cjk_only: bool) -> Fallback {
-    Fallback {
-        path,
-        cjk_only,
-        face: OnceLock::new(),
-    }
-}
-
-/// Tried in order, so terminals and pages show real glyphs rather than `.notdef` tofu
-/// boxes: symbols (Braille, dingbats) and other Latin first, then CJK — Japanese first
-/// so the Han ideographs shared across CJK render in Japanese forms, then Korean, then
-/// Chinese. `.ttc` collections load their first face (fontdue's default).
-static FALLBACKS: [Fallback; 7] = [
-    fallback(r"C:\Windows\Fonts\seguisym.ttf", false), // Segoe UI Symbol
-    fallback(r"C:\Windows\Fonts\arial.ttf", false),
-    fallback(r"C:\Windows\Fonts\YuGothR.ttc", true), // Yu Gothic — Japanese
-    fallback(r"C:\Windows\Fonts\msgothic.ttc", true), // MS Gothic — Japanese
-    fallback(r"C:\Windows\Fonts\malgun.ttf", true),  // Malgun Gothic — Korean
-    fallback(r"C:\Windows\Fonts\msyh.ttc", true),    // Microsoft YaHei — Chinese
-    fallback(r"C:\Windows\Fonts\simsun.ttc", true),  // SimSun — Chinese
-];
-
 pub struct Painter {
     /// A custom primary face (the terminal's configured font), tried before the
     /// system face.
@@ -410,19 +386,20 @@ impl Painter {
 
     /// The first font that has a glyph for `ch` (else the primary, which renders its
     /// `.notdef`): the custom and system faces first — the hot path for ordinary text
-    /// — then the [`FALLBACKS`] in order, each loaded when a glyph first reaches it.
+    /// — then the [`crate::fonts::FALLBACKS`] in order, each loaded when a glyph first
+    /// reaches it.
     fn font_for(&self, ch: char) -> Face<'_> {
         let has = |f: &&Font| f.lookup_glyph_index(ch) != 0;
         if let Some(f) = self.custom.iter().chain([self.system]).find(has) {
             return Face::Parsed(f);
         }
         let cjk = is_cjk(ch);
-        FALLBACKS
+        crate::fonts::FALLBACKS
             .iter()
-            .filter(|fb| cjk || !fb.cjk_only)
-            .find_map(|fb| {
-                fb.face
-                    .get_or_init(|| LazyFace::open(fb.path))
+            .zip(&FALLBACK_FACES)
+            .filter(|(fb, _)| cjk || !fb.cjk_only)
+            .find_map(|(fb, face)| {
+                face.get_or_init(|| crate::fonts::fallback_path(fb).and_then(LazyFace::open))
                     .as_ref()
                     .filter(|f| f.has(ch))
             })
@@ -723,24 +700,19 @@ fn is_cjk(ch: char) -> bool {
 }
 
 fn load_system_font() -> Result<Vec<u8>> {
-    const CANDIDATES: &[&str] = &[
-        r"C:\Windows\Fonts\consola.ttf",
-        r"C:\Windows\Fonts\segoeui.ttf",
-        r"C:\Windows\Fonts\arial.ttf",
-    ];
-    for path in CANDIDATES {
-        if let Ok(bytes) = std::fs::read(path) {
-            return Ok(bytes);
-        }
-    }
-    Err(anyhow!(
-        "no system font found (looked for Consolas/Segoe UI/Arial)"
-    ))
+    crate::fonts::system_font_path()
+        .and_then(|path| std::fs::read(path).ok())
+        .ok_or_else(|| {
+            anyhow!(
+                "no system font found (looked for {})",
+                crate::fonts::SYSTEM_FONT_NAMES
+            )
+        })
 }
 
 /// Resolve a font NAME (e.g. "Cascadia Code", "jetbrains mono") or explicit file
 /// path to a font file. Names are matched case/space-insensitively against the
-/// filenames in the system (`C:\Windows\Fonts`) and per-user font directories;
+/// file names in the system and per-user font folders ([`crate::fonts::font_dirs`]);
 /// among matches the best score wins (exact > prefix > contains), ties broken by
 /// the shortest name — so "cascadia code" picks CascadiaCode.ttf over
 /// CascadiaCodeItalic.ttf. `None` when nothing matches (the caller reports it).
@@ -751,35 +723,14 @@ pub fn find_font(query: &str) -> Option<std::path::PathBuf> {
         let p = PathBuf::from(query);
         return p.is_file().then_some(p);
     }
-    let norm = |s: &str| -> String {
-        s.chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .collect::<String>()
-            .to_ascii_lowercase()
-    };
+    let norm = crate::fonts::normalize;
     let q = norm(query);
     if q.is_empty() {
         return None;
     }
-    let mut dirs = vec![PathBuf::from(r"C:\Windows\Fonts")];
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        // Per-user installed fonts (the default for "Install for me" on Windows 10+).
-        dirs.push(PathBuf::from(local).join(r"Microsoft\Windows\Fonts"));
-    }
     let mut best: Option<(u32, usize, PathBuf)> = None;
-    for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let ext = path
-                .extension()
-                .and_then(|s| s.to_str())
-                .map(str::to_ascii_lowercase);
-            if !matches!(ext.as_deref(), Some("ttf" | "otf" | "ttc")) {
-                continue;
-            }
+    for dir in crate::fonts::font_dirs() {
+        for path in crate::fonts::font_files(&dir) {
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
@@ -910,11 +861,12 @@ mod tests {
 
     #[test]
     fn a_lazy_face_draws_the_same_glyph_as_fontdue() {
-        // Arial through both paths: same advance, same box, near-identical coverage.
-        let path = r"C:\Windows\Fonts\arial.ttf";
-        let lazy = LazyFace::open(path).expect("arial is installed");
+        // The system face through both paths: same advance, same box, near-identical
+        // coverage.
+        let path = crate::fonts::system_font_path().expect("a system font is installed");
+        let lazy = LazyFace::open(&path).expect("the system font parses");
         let parsed = fontdue::Font::from_bytes(
-            std::fs::read(path).unwrap(),
+            std::fs::read(&path).unwrap(),
             fontdue::FontSettings::default(),
         )
         .unwrap();
