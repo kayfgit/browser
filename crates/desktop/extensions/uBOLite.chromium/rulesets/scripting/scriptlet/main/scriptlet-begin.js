@@ -2736,6 +2736,7 @@ function preventClipboardWrite(matches = '', ...varargs) {
             const code = doc.createElement('code');
             const styles = [
                 'background-color: #ddc',
+                'color: inherit',
                 'display: inline-block',
                 'font-family: monospace',
                 'font-size: 100%',
@@ -4527,7 +4528,7 @@ function xmlPrune(
     });
 }
 
-function zeta_581517b0591349ada9381bc6b2b2d5a2() { // fingerprint2.js
+function zeta_77c8b410804e4a15a7cb2a3b7d57edca() { // fingerprint2.js
 // Reference:
 // https://github.com/fingerprintjs/fingerprintjs/tree/v2
 
@@ -4564,7 +4565,7 @@ function zeta_581517b0591349ada9381bc6b2b2d5a2() { // fingerprint2.js
 })();
 }
 
-function zeta_4a8ac0757d764d059a57276ea4599ad1() { // google-ima.js
+function zeta_54552bdfa18d4308820d6be315d92476() { // google-ima.js
 'use strict';
 
 
@@ -5193,7 +5194,7 @@ if (!window.google || !window.google.ima || !window.google.ima.VERSION) {
 }
 }
 
-function zeta_02c096ce627444eaad3da997996f7875() { // nobab2.js
+function zeta_34f66a7de3ee4b8bba66c40e6e26b2cb() { // nobab2.js
 (function() {
     'use strict';
     const script = document.currentScript;
@@ -5217,7 +5218,7 @@ function zeta_02c096ce627444eaad3da997996f7875() { // nobab2.js
 })();
 }
 
-function zeta_ea8514673e554c5c866a57afb86728f8() { // noeval.js
+function zeta_469b81e2f02f4b7aaabfba1eb926a953() { // noeval.js
 (function() {
     'use strict';
     const log = console.log.bind(console);
@@ -5229,7 +5230,7 @@ function zeta_ea8514673e554c5c866a57afb86728f8() { // noeval.js
 })();
 }
 
-function zeta_3a8fe7e4325949348464d43fff4072c0() { // nofab.js
+function zeta_b5eb93153e774be79bc519b6efd1a73e() { // nofab.js
 (function() {
     'use strict';
     const noopfn = function() {
@@ -5278,7 +5279,7 @@ function zeta_3a8fe7e4325949348464d43fff4072c0() { // nofab.js
 })();
 }
 
-function zeta_06aa865c7fda4c4e918b6cebddc3c5b5() { // popads-dummy.js
+function zeta_549e8f67a0a245f6abe3ef85a2891bdf() { // popads-dummy.js
 (function() {
     'use strict';
     delete window.PopAds;
@@ -5294,18 +5295,18 @@ function zeta_06aa865c7fda4c4e918b6cebddc3c5b5() { // popads-dummy.js
 
 scriptletGlobals.origins = (( ) => {
     const docloc = document.location;
-    const origins = [ docloc.origin ];
+    const origins = [{ origin: docloc.origin, path: docloc.pathname }];
     if ( docloc.ancestorOrigins?.length ) {
         const topOrigin = docloc.ancestorOrigins[docloc.ancestorOrigins.length-1];
         if ( topOrigin !== 'null' ) {
-            origins.push(topOrigin);
+            origins.push({ origin: topOrigin });
         } else if ( scriptletGlobals.topOrigin ) {
-            origins.push(scriptletGlobals.topOrigin);
+            origins.push({ origin: scriptletGlobals.topOrigin });
         }
     }
     const out = [];
     for ( let i = 0; i < origins.length; i++ ) {
-        const origin = origins[i];
+        const { origin, path } = origins[i];
         const beg = origin.indexOf('://') + 3;
         if ( beg === 2 ) { continue; }
         const end = origin.indexOf(':', beg);
@@ -5332,16 +5333,16 @@ scriptletGlobals.origins = (( ) => {
             if ( d !== 0 ) { return d; }
             return a > b ? -1 : 1;
         });
-        out.push({ hns, ens, i });
+        out.push({ hns, ens, path, i });
     }
     return out;
 })();
 
-scriptletGlobals.functionRefs = /* 59 */ [trustedEditInboundObject,adjustSetTimeout,jsonPruneFetchResponse,jsonPruneXhrResponse,trustedReplaceXhrResponse,trustedReplaceFetchResponse,trustedPreventDomBypass,jsonPrune,jsonEdit,jsonlEditXhrResponse,noWindowOpenIf,setConstant,abortCurrentScript,preventXhr,preventSetTimeout,preventFetch,trustedReplaceArgument,abortOnPropertyRead,removeAttr,trustedOverrideElementMethod,trustedReplaceOutboundText,trustedSuppressNativeMethod,preventAddEventListener,abortOnStackTrace,trustedPreventFetch,trustedPreventXhr,adjustSetInterval,preventSetInterval,zeta_581517b0591349ada9381bc6b2b2d5a2,trustedSetConstant,jsonEditFetchResponse,zeta_ea8514673e554c5c866a57afb86728f8,abortOnPropertyWrite,noWebrtc,zeta_3a8fe7e4325949348464d43fff4072c0,zeta_06aa865c7fda4c4e918b6cebddc3c5b5,preventRequestAnimationFrame,noEvalIf,preventBab,disableNewtabLinks,trustedJsonEditFetchResponse,preventInnerHTML,editObjectOnSetter,trustedJsonEdit,trustedJsonEditXhrResponse,preventClipboardWrite,jsonEditXhrResponse,xmlPrune,m3uPrune,spoofCSS,zeta_4a8ac0757d764d059a57276ea4599ad1,alertBuster,preventCanvas,mpegdashPrune,jsonEditFetchRequest,proxyApplyConfig,jsonlEditFetchResponse,evaldataPrune,zeta_02c096ce627444eaad3da997996f7875];
+scriptletGlobals.functionRefs = /* 59 */ [trustedEditInboundObject,adjustSetTimeout,jsonPruneFetchResponse,jsonPruneXhrResponse,trustedReplaceXhrResponse,trustedReplaceFetchResponse,trustedPreventDomBypass,jsonPrune,jsonEdit,jsonlEditXhrResponse,noWindowOpenIf,setConstant,abortCurrentScript,preventXhr,preventSetTimeout,preventFetch,trustedReplaceArgument,abortOnPropertyRead,removeAttr,trustedOverrideElementMethod,trustedReplaceOutboundText,trustedSuppressNativeMethod,preventAddEventListener,abortOnStackTrace,trustedPreventFetch,trustedPreventXhr,adjustSetInterval,preventSetInterval,zeta_77c8b410804e4a15a7cb2a3b7d57edca,trustedSetConstant,jsonEditFetchResponse,zeta_469b81e2f02f4b7aaabfba1eb926a953,abortOnPropertyWrite,noWebrtc,zeta_b5eb93153e774be79bc519b6efd1a73e,zeta_549e8f67a0a245f6abe3ef85a2891bdf,preventRequestAnimationFrame,noEvalIf,preventBab,disableNewtabLinks,trustedJsonEditFetchResponse,preventInnerHTML,editObjectOnSetter,trustedJsonEdit,trustedJsonEditXhrResponse,preventClipboardWrite,jsonEditXhrResponse,xmlPrune,m3uPrune,spoofCSS,zeta_54552bdfa18d4308820d6be315d92476,alertBuster,preventCanvas,mpegdashPrune,jsonEditFetchRequest,proxyApplyConfig,jsonlEditFetchResponse,evaldataPrune,zeta_34f66a7de3ee4b8bba66c40e6e26b2cb];
 
 /******************************************************************************/
 
 // End of local scope
-})("05723a46-3114-4ba9-ac80-1c775003e606");
+})("28049053-2f06-4210-9323-9d4634fd8974");
 
 void 0;
