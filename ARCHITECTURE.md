@@ -173,7 +173,7 @@ Tabs the shell draws itself:
 - [read_view.rs](crates/desktop/src/read_view.rs): lays out a `:read` document.
 - [pages.rs](crates/desktop/src/pages.rs): internal pages (`:msg` / `:warn` / `:err` and their session log, `:res`, `:history`, …) and the `:commands` help (`CMD_ROWS`).
 - [vim.rs](crates/desktop/src/vim.rs): the read-only vim pager those pages use.
-- [term.rs](crates/desktop/src/term.rs), [pty_term.rs](crates/desktop/src/pty_term.rs), [proc_cwd.rs](crates/desktop/src/proc_cwd.rs): terminal tabs. The shell runs in a separate process, [bin/browser-pty-host.rs](crates/desktop/src/bin/browser-pty-host.rs), under the bundled Microsoft ConPTY ([bundled_conpty.rs](crates/desktop/src/bundled_conpty.rs)) or Windows' own.
+- [term.rs](crates/desktop/src/term.rs), [pty_term.rs](crates/desktop/src/pty_term.rs), [proc_cwd.rs](crates/desktop/src/proc_cwd.rs): terminal tabs; [kitty_keys.rs](crates/desktop/src/kitty_keys.rs) encodes keys for programs using the kitty keyboard protocol. The shell runs in a separate process, [bin/browser-pty-host.rs](crates/desktop/src/bin/browser-pty-host.rs), under the bundled Microsoft ConPTY ([bundled_conpty.rs](crates/desktop/src/bundled_conpty.rs)) or Windows' own.
 - [schemes.rs](crates/desktop/src/schemes.rs): installing terminal colour schemes.
 - [ai.rs](crates/desktop/src/ai.rs), [markdown.rs](crates/desktop/src/markdown.rs): the `:ai` tab and rendering its answers.
 - [news.rs](crates/desktop/src/news.rs): `:news`, from the changelog.

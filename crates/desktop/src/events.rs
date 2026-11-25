@@ -380,6 +380,14 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
                 *control_flow = ControlFlow::Exit;
             }
         }
+        // A program using the kitty keyboard protocol can ask for key releases too.
+        WindowEvent::KeyboardInput {
+            event: key,
+            is_synthetic: false,
+            ..
+        } if key.state == ElementState::Released && app.term_wants_releases() => {
+            app.key_term(&key);
+        }
         _ => {}
     }
 }

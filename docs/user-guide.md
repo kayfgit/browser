@@ -241,6 +241,9 @@ current one, and `:w` saves your choice with the session.
   hollow while the terminal doesn't have the keyboard. Programs can copy to the
   clipboard (nvim, tmux, also over SSH), and the pane flashes when one rings the bell.
   Each of these can be switched off (see the `term.*` settings below).
+- Programs that use the kitty keyboard protocol (nvim, helix, fish, kakoune…) get
+  keys the legacy encoding can't tell apart: Ctrl+I from Tab, Esc from Alt, Ctrl+Shift
+  chords, Shift+Enter, and key releases when they ask.
 - Typing `exit` closes the tab.
 - `:te <command>` (with a command) runs it once and shows the output in the command bar.
 
@@ -345,6 +348,7 @@ the `[tabs]` and `[term]` tables of `config.toml` (`:theme` opens it), and `:ai`
 | `term.search` | on | `/` in a terminal's copy mode searches its whole scrollback. |
 | `term.shell_integration` | on | Terminals know their prompts: `[`/`]` jump between them and `Y` copies a command's output in copy mode, failed commands are marked; PowerShell and cmd are set up automatically. |
 | `term.notify_done` | on | A command that ran 5s+ finishing (or the bell) in a terminal off screen marks its tab with ✓/✗/•, and flashes the taskbar when the browser isn't in front. |
+| `term.kitty_keyboard` | on | Terminal programs can use the kitty keyboard protocol (Ctrl+I apart from Tab, Ctrl+Shift chords, key releases). |
 | `term.bundled_conpty` | on | New terminals run under the bundled Microsoft ConPTY (what Windows Terminal ships); off uses Windows' own console host. |
 - Private tabs (`:open -n`) are never saved to the session or the closed-tab list.
 

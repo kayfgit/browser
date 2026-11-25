@@ -635,6 +635,7 @@ impl App {
                     pty: {
                         let mut pty = pty_term::PtyTerm::new(cols, rows, self.term_scrollback);
                         pty.set_cursor_blink(self.config.setting("term.cursor_blink"));
+                        pty.set_kitty_keyboard(self.config.setting("term.kitty_keyboard"));
                         pty
                     },
                     bell_at: None,
@@ -807,7 +808,44 @@ impl App {
         if is_altgr(&key.logical_key, &key.key_without_modifiers(), ctrl, alt) {
             (ctrl, alt) = (false, false);
         }
-        if let Some(bytes) = encode_term_key(&key.logical_key, ctrl, alt, shift, app_cursor) {
+        // A program that asked for the kitty keyboard protocol gets keys its way; keys
+        // the protocol leaves alone fall through to the legacy encoding.
+        let kitty = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.term())
+            .map(|s| s.pty.kitty_flags())
+            .filter(|f| f.any());
+        let event = if key.state == tao::event::ElementState::Released {
+            crate::kitty_keys::Event::Release
+        } else if key.repeat {
+            crate::kitty_keys::Event::Repeat
+        } else {
+            crate::kitty_keys::Event::Press
+        };
+        let encoded = kitty.and_then(|flags| {
+            let mods = crate::kitty_keys::Mods {
+                shift,
+                alt,
+                ctrl,
+                meta: self.modifiers.super_key(),
+            };
+            crate::kitty_keys::encode(
+                &key.logical_key,
+                &key.key_without_modifiers(),
+                key.text,
+                mods,
+                event,
+                flags,
+            )
+        });
+        let bytes = match encoded {
+            Some(bytes) => Some(bytes),
+            // Releases only ever go out in the kitty encoding.
+            None if event == crate::kitty_keys::Event::Release => None,
+            None => encode_term_key(&key.logical_key, ctrl, alt, shift, app_cursor),
+        };
+        if let Some(bytes) = bytes.filter(|b| !b.is_empty()) {
             if let Some(s) = self
                 .active
                 .and_then(|i| self.tabs.get_mut(i))
@@ -826,6 +864,17 @@ impl App {
                 self.restart_term_blink();
             }
         }
+    }
+
+    /// Whether a key release should reach the terminal: it's typing into a terminal
+    /// whose program asked for releases (kitty flag 2).
+    pub(crate) fn term_wants_releases(&self) -> bool {
+        self.mode == ModeKind::Passthrough
+            && self
+                .active
+                .and_then(|i| self.tabs.get(i))
+                .and_then(|t| t.term())
+                .is_some_and(|s| s.pty.kitty_flags().event_types)
     }
 
     /// Paste the clipboard into the active terminal's PTY (Ctrl+V in a `:te` tab).

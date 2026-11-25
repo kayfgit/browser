@@ -194,6 +194,11 @@ pub(crate) const SETTINGS: &[Setting] = &[
         default: true,
         desc: "a command that ran 5s+ finishing (or the bell) in a terminal you're not looking at marks its tab with ✓/✗/•, and flashes the taskbar when the browser isn't in front",
     },
+    Setting {
+        key: "term.kitty_keyboard",
+        default: true,
+        desc: "terminal programs can use the kitty keyboard protocol (nvim, helix, fish): Ctrl+I apart from Tab, Ctrl+Shift chords, key releases",
+    },
 ];
 
 /// Parse a setting's value as typed: `on`/`off` (and `true`/`false`, `yes`/`no`,
@@ -226,6 +231,7 @@ impl Config {
             "term.bundled_conpty" => self.term.bundled_conpty,
             "term.shell_integration" => self.term.shell_integration,
             "term.notify_done" => self.term.notify_done,
+            "term.kitty_keyboard" => self.term.kitty_keyboard,
             _ => return None,
         })
     }
@@ -246,6 +252,7 @@ impl Config {
             "term.bundled_conpty" => &mut self.term.bundled_conpty,
             "term.shell_integration" => &mut self.term.shell_integration,
             "term.notify_done" => &mut self.term.notify_done,
+            "term.kitty_keyboard" => &mut self.term.kitty_keyboard,
             _ => return None,
         })
     }
@@ -455,6 +462,9 @@ pub(crate) struct TermConfig {
     /// and flashes the taskbar when the browser isn't in front.
     #[serde(default)]
     pub(crate) notify_done: Option<bool>,
+    /// Programs can turn on the kitty keyboard protocol (nvim, helix, fish, …).
+    #[serde(default)]
+    pub(crate) kitty_keyboard: Option<bool>,
 }
 
 /// Location of the config file (plain TOML in the app data dir, beside the session).

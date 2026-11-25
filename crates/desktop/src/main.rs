@@ -62,6 +62,7 @@ mod glance;
 mod hints;
 mod journal;
 mod keys;
+mod kitty_keys;
 mod layout;
 mod markdown;
 mod navguard;
