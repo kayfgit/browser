@@ -132,6 +132,7 @@ pub(crate) fn paint_pane(
     p: &Painter,
     term_p: &Painter,
     term_style: &pty_term::TermStyle,
+    term_opts: pty_term::RenderOpts,
     find: &FindState,
     mode: ModeKind,
     native_hints: &[NativeHint],
@@ -472,6 +473,9 @@ pub(crate) fn paint_pane(
             term_p.line_height() as i32,
         );
         fill(buf, rect.x, top, right, bottom, term_style.bg);
+        // The cursor has the keyboard when this pane is focused and keys reach the
+        // terminal: Passthrough types into it, copy mode moves its cursor.
+        let has_keys = focused && (mode == ModeKind::Passthrough || s.pty.is_vi());
         pty_term::render(
             &s.pty,
             term_p,
@@ -484,7 +488,23 @@ pub(crate) fn paint_pane(
             ch,
             bottom,
             term_style,
+            pty_term::RenderOpts {
+                focused: term_opts.focused && has_keys,
+                ..term_opts
+            },
         );
+        // The bell: a brief wash of the text colour over the pane.
+        if s.bell_at.is_some() {
+            draw::tint_rect(
+                buf,
+                wz,
+                hz,
+                (rect.x.max(0) as usize, top.max(0) as usize),
+                (right.max(0) as usize, bottom.max(0) as usize),
+                term_style.fg,
+                40,
+            );
+        }
         return;
     }
 
@@ -580,6 +600,7 @@ mod pane_paint_tests {
             &p,
             &p,
             &pty_term::TermStyle::default(),
+            pty_term::RenderOpts::default(),
             find,
             mode,
             &[],
@@ -880,6 +901,9 @@ impl App {
             .then(|| self.hover_link.clone())
             .flatten();
 
+        // Terminal style/cursor settings and focus, read before the buffer borrows.
+        let term_opts = self.term_render_opts();
+
         self.surface
             .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
             .map_err(|e| anyhow::anyhow!("resize: {e}"))?;
@@ -1033,6 +1057,7 @@ impl App {
                         p,
                         term_p,
                         term_style,
+                        term_opts,
                         &self.find,
                         self.mode,
                         &self.native_hints,
