@@ -1049,7 +1049,8 @@ fn encode_mouse_wheel(sgr: bool, button: u8, col: i32, row: i32) -> Vec<u8> {
 
 /// Encode a key event into the bytes a PTY expects (the inverse of what xterm.js
 /// used to do). Covers printable input, Ctrl-combos → control codes, Enter/Tab/
-/// Backspace/Esc, and the cursor/navigation keys (honoring DECCKM app-cursor mode).
+/// Backspace/Esc, the cursor/navigation keys (honoring DECCKM app-cursor mode) and
+/// F1–F12.
 /// `None` for keys with no terminal meaning. Alt prefixes the sequence with ESC.
 fn encode_term_key(
     key: &Key,
@@ -1079,6 +1080,13 @@ fn encode_term_key(
             format!("\x1b[{n}~").into_bytes()
         }
     };
+    let ss3 = |c: u8| -> Vec<u8> {
+        if modf > 1 {
+            format!("\x1b[1;{modf}{}", c as char).into_bytes()
+        } else {
+            vec![0x1b, b'O', c]
+        }
+    };
     let mut out: Vec<u8> = match key {
         Key::Character(s) => {
             if ctrl {
@@ -1088,6 +1096,9 @@ fn encode_term_key(
             }
         }
         Key::Enter => vec![b'\r'],
+        // Ctrl+Backspace is ^H, the "delete word backward" key in PowerShell, bash and
+        // fish (Windows Terminal sends it too); plain Backspace is DEL.
+        Key::Backspace if ctrl => vec![0x08],
         Key::Backspace => vec![0x7f],
         // Shift+Tab is the "back-tab" CSI Z — TUIs (Claude Code's mode switch,
         // form/field navigation) need it to move backward; plain Tab otherwise.
@@ -1110,6 +1121,20 @@ fn encode_term_key(
         Key::PageDown => tilde(6),
         Key::Delete => tilde(3),
         Key::Insert => tilde(2),
+        // F1–F4 are SS3 keys (`ESC O P`), switching to CSI when modified (`ESC[1;2P`).
+        Key::F1 => ss3(b'P'),
+        Key::F2 => ss3(b'Q'),
+        Key::F3 => ss3(b'R'),
+        Key::F4 => ss3(b'S'),
+        // F5–F12 are numbered tilde keys; xterm skips 16 and 22.
+        Key::F5 => tilde(15),
+        Key::F6 => tilde(17),
+        Key::F7 => tilde(18),
+        Key::F8 => tilde(19),
+        Key::F9 => tilde(20),
+        Key::F10 => tilde(21),
+        Key::F11 => tilde(23),
+        Key::F12 => tilde(24),
         _ => return None,
     };
     // Alt = Meta: prefix with ESC (unless the sequence already starts with one).
@@ -1228,5 +1253,33 @@ mod tests {
         assert_eq!(enc(Key::Delete, false, false, false, false), b"\x1b[3~");
         assert_eq!(enc(Key::Delete, true, false, false, false), b"\x1b[3;5~");
         assert_eq!(enc(Key::Home, true, false, false, false), b"\x1b[1;5H");
+    }
+
+    /// F1–F12 reach the program as xterm sends them (htop quits on F10, Midnight
+    /// Commander lives on them). F1–F4 are SS3 (`ESC O P`) unmodified and CSI with a
+    /// modifier; F5–F12 are numbered tilde keys with the gap at 16 and 22.
+    #[test]
+    fn function_keys_use_xterm_sequences() {
+        let enc = |key, ctrl, alt, shift| encode_term_key(&key, ctrl, alt, shift, false).unwrap();
+        assert_eq!(enc(Key::F1, false, false, false), b"\x1bOP");
+        assert_eq!(enc(Key::F4, false, false, false), b"\x1bOS");
+        assert_eq!(enc(Key::F1, false, false, true), b"\x1b[1;2P");
+        assert_eq!(enc(Key::F5, false, false, false), b"\x1b[15~");
+        assert_eq!(enc(Key::F6, false, false, false), b"\x1b[17~");
+        assert_eq!(enc(Key::F10, false, false, false), b"\x1b[21~");
+        assert_eq!(enc(Key::F11, false, false, false), b"\x1b[23~");
+        assert_eq!(enc(Key::F12, false, false, false), b"\x1b[24~");
+        assert_eq!(enc(Key::F12, true, false, false), b"\x1b[24;5~");
+        // Alt doesn't add a second ESC in front of a sequence that has one.
+        assert_eq!(enc(Key::F2, false, true, false), b"\x1b[1;3Q");
+    }
+
+    /// Ctrl+Backspace sends ^H, which PowerShell, bash and fish read as "delete the
+    /// word before the cursor" (as in Windows Terminal); plain Backspace stays DEL.
+    #[test]
+    fn ctrl_backspace_deletes_a_word() {
+        let enc = |ctrl| encode_term_key(&Key::Backspace, ctrl, false, false, false).unwrap();
+        assert_eq!(enc(false), b"\x7f");
+        assert_eq!(enc(true), b"\x08");
     }
 }
