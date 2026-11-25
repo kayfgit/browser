@@ -672,6 +672,9 @@ pub(crate) struct App {
     /// The terminal and cell the last button-less motion report named, so a program
     /// tracking every motion (DEC 1003) hears once per cell crossed.
     pub(crate) term_mouse_hover: Option<(usize, (u32, u32))>,
+    /// Wheel movement over a terminal not yet turned into whole lines or notches
+    /// (a precision touchpad sends fractions). See [`take_wheel_steps`](crate::term::take_wheel_steps).
+    pub(crate) term_wheel_acc: f64,
     /// True while the browser is frozen (`:freeze`): every web tab's view is dropped so
     /// the engine exits; the content band shows a frozen notice instead of
     /// the pages. `:unfreeze` rebuilds them. See [`freeze`](crate::freeze).
@@ -1490,18 +1493,7 @@ impl App {
             return;
         };
         if self.tabs.get(tab).is_some_and(|t| t.term().is_some()) {
-            // If the program enabled mouse reporting (vim `mouse=a`, less, tmux…),
-            // hand it the wheel so IT scrolls; otherwise page our own scrollback.
-            if self.term_mouse_wheel(tab, rect, dy_lines) {
-                return;
-            }
-            let lines = (dy_lines * 3.0).round() as i32;
-            if lines != 0 {
-                if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
-                    s.pty.scroll_display(lines);
-                    self.window.request_redraw();
-                }
-            }
+            self.term_wheel(tab, rect, dy_lines);
             return;
         }
         // Native read pane: scroll its own pixel offset, clamped to its pane height.

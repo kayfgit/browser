@@ -48,6 +48,48 @@ pub(crate) fn blink_phase(elapsed: Duration) -> (bool, Option<Duration>) {
     (on, Some(next.min(BLINK_TIMEOUT - elapsed)))
 }
 
+/// Add a wheel movement (`dy`, in lines) to `acc` and take out the whole `step`s
+/// it now holds (signed: positive = up). The remainder waits for the next event,
+/// so a precision touchpad's fractions add up instead of each rounding to a whole
+/// step; turning the other way drops what was left of the old direction.
+pub(crate) fn take_wheel_steps(acc: &mut f64, dy: f64, step: f64) -> i32 {
+    if *acc != 0.0 && acc.signum() != dy.signum() {
+        *acc = 0.0;
+    }
+    *acc += dy;
+    let steps = (*acc / step).trunc();
+    *acc -= steps * step;
+    steps as i32
+}
+
+/// Windows' "lines to scroll per notch" setting (3 unless changed; a page setting
+/// counts as 3, as tao treats it).
+fn wheel_lines() -> f64 {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SystemParametersInfoW, SPI_GETWHEELSCROLLLINES, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        };
+        let mut lines = 3u32;
+        // SAFETY: SPI_GETWHEELSCROLLLINES writes one UINT into `lines`.
+        let _ = unsafe {
+            SystemParametersInfoW(
+                SPI_GETWHEELSCROLLLINES,
+                0,
+                Some((&mut lines as *mut u32).cast()),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+        };
+        // WHEEL_PAGESCROLL (u32::MAX) means "a page per notch".
+        if lines == 0 || lines == u32::MAX {
+            return 3.0;
+        }
+        lines as f64
+    }
+    #[cfg(not(windows))]
+    3.0
+}
+
 /// How long a terminal flashes when a program rings the bell.
 pub(crate) const BELL_FLASH: Duration = Duration::from_millis(150);
 
@@ -1101,42 +1143,49 @@ impl App {
         }
     }
 
-    /// Hand a wheel notch to the terminal program instead of scrolling our own
-    /// scrollback: as wheel-button reports when it reads the mouse, or as arrow keys
-    /// when a full-screen program without mouse support (less, man) is up — the
-    /// alternate screen has no scrollback to scroll. Returns `false` when neither
-    /// applies and the caller should scroll the scrollback.
-    pub(crate) fn term_mouse_wheel(&mut self, tab: usize, rect: PaneRect, dy_lines: f64) -> bool {
-        // The delta is in lines (tao applies Windows' lines-per-notch setting): one report
-        // or arrow per line, as before for mouse reports.
-        let lines = (dy_lines.abs().round() as usize).max(1);
+    /// The wheel over terminal `tab` (`dy_lines` > 0 = rolled up, in lines: tao
+    /// multiplies notches by Windows' lines-per-notch setting). A program reading the
+    /// mouse gets one wheel report per notch, as xterm and Windows Terminal send, and
+    /// scrolls its own amount for each (vim: 3 lines). Otherwise it moves a line per
+    /// line: as arrow keys when a full-screen program without mouse support (less,
+    /// man) is up, since the alternate screen has no scrollback, else our scrollback.
+    pub(crate) fn term_wheel(&mut self, tab: usize, rect: PaneRect, dy_lines: f64) {
         if let Some(report) = self.term_mouse_report(tab) {
+            let notches = take_wheel_steps(&mut self.term_wheel_acc, dy_lines, wheel_lines());
+            if notches == 0 {
+                return;
+            }
             let (x, y) = self.cursor_pos;
             let Some(cell) = self.term_report_cell(tab, rect, x, y) else {
-                return false;
+                return;
             };
             // xterm wheel buttons: 64 = up, 65 = down.
-            let button = if dy_lines > 0.0 { 64 } else { 65 };
+            let button = if notches > 0 { 64 } else { 65 };
             let one = encode_mouse(report.encoding, button | self.mouse_mods(), cell, false);
-            self.term_mouse_send(tab, &one.repeat(lines));
-            return true;
+            self.term_mouse_send(tab, &one.repeat(notches.unsigned_abs() as usize));
+            return;
         }
-        let Some(s) = self.tabs.get(tab).and_then(|t| t.term()) else {
-            return false;
-        };
-        if !self.config.setting("term.mouse_reporting") || !s.pty.alternate_scroll() {
-            return false;
+        let lines = take_wheel_steps(&mut self.term_wheel_acc, dy_lines, 1.0);
+        if lines == 0 {
+            return;
         }
-        let key = if dy_lines > 0.0 {
-            Key::ArrowUp
-        } else {
-            Key::ArrowDown
+        let mouse_on = self.config.setting("term.mouse_reporting");
+        let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) else {
+            return;
         };
-        let Some(one) = encode_term_key(&key, false, false, false, s.pty.app_cursor()) else {
-            return false;
-        };
-        self.term_mouse_send(tab, &one.repeat(lines));
-        true
+        if mouse_on && s.pty.alternate_scroll() {
+            let key = if lines > 0 {
+                Key::ArrowUp
+            } else {
+                Key::ArrowDown
+            };
+            if let Some(one) = encode_term_key(&key, false, false, false, s.pty.app_cursor()) {
+                s.send(0, &one.repeat(lines.unsigned_abs() as usize));
+            }
+            return;
+        }
+        s.pty.scroll_display(lines);
+        self.window.request_redraw();
     }
 }
 
@@ -1589,6 +1638,28 @@ mod tests {
         // ...after which it stays shown and nothing more is scheduled.
         assert_eq!(blink_phase(BLINK_TIMEOUT), (true, None));
         assert_eq!(blink_phase(BLINK_TIMEOUT * 3), (true, None));
+    }
+
+    /// A notch (3 lines on Windows' default) is one wheel report and three lines;
+    /// touchpad fractions add up; reversing drops the old direction's remainder.
+    #[test]
+    fn wheel_movement_becomes_whole_steps() {
+        let mut acc = 0.0;
+        assert_eq!(
+            take_wheel_steps(&mut acc, 3.0, 3.0),
+            1,
+            "a notch is one report"
+        );
+        assert_eq!(take_wheel_steps(&mut acc, 3.0, 1.0), 3, "and three lines");
+        assert_eq!(take_wheel_steps(&mut acc, -6.0, 3.0), -2);
+        assert_eq!(acc, 0.0);
+        // A touchpad's small deltas: nothing until a whole notch has built up.
+        assert_eq!(take_wheel_steps(&mut acc, 1.2, 3.0), 0);
+        assert_eq!(take_wheel_steps(&mut acc, 1.2, 3.0), 0);
+        assert_eq!(take_wheel_steps(&mut acc, 1.2, 3.0), 1);
+        assert!((acc - 0.6).abs() < 1e-9);
+        // Turning around starts fresh rather than paying back the leftover.
+        assert_eq!(take_wheel_steps(&mut acc, -1.0, 1.0), -1);
     }
 
     /// Mouse reports in the three encodings programs ask for: SGR keeps the button

@@ -313,6 +313,7 @@ fn main() -> Result<()> {
         term_clicks: None,
         term_mouse_held: None,
         term_mouse_hover: None,
+        term_wheel_acc: 0.0,
         extension_request: 0,
         downloads: Default::default(),
         permissions: Default::default(),
