@@ -169,6 +169,16 @@ pub(crate) const SETTINGS: &[Setting] = &[
         default: true,
         desc: "the terminal flashes when a program rings the bell",
     },
+    Setting {
+        key: "term.links",
+        default: true,
+        desc: "links in a terminal open in a new tab: Ctrl+click one, or Ctrl+Shift+O to label them all",
+    },
+    Setting {
+        key: "term.search",
+        default: true,
+        desc: "/ in a terminal's copy mode searches its whole scrollback (n goes further back, N forward)",
+    },
 ];
 
 /// Parse a setting's value as typed: `on`/`off` (and `true`/`false`, `yes`/`no`,
@@ -196,6 +206,8 @@ impl Config {
             "term.cursor_blink" => self.term.cursor_blink,
             "term.clipboard_write" => self.term.clipboard_write,
             "term.visual_bell" => self.term.visual_bell,
+            "term.links" => self.term.links,
+            "term.search" => self.term.search,
             _ => return None,
         })
     }
@@ -211,6 +223,8 @@ impl Config {
             "term.cursor_blink" => &mut self.term.cursor_blink,
             "term.clipboard_write" => &mut self.term.clipboard_write,
             "term.visual_bell" => &mut self.term.visual_bell,
+            "term.links" => &mut self.term.links,
+            "term.search" => &mut self.term.search,
             _ => return None,
         })
     }
@@ -400,6 +414,13 @@ pub(crate) struct TermConfig {
     /// The terminal flashes when a program rings the bell.
     #[serde(default)]
     pub(crate) visual_bell: Option<bool>,
+    /// Links in a terminal open in a new tab: Ctrl+click, or Ctrl+Shift+O to label
+    /// them all.
+    #[serde(default)]
+    pub(crate) links: Option<bool>,
+    /// `/` in a terminal's copy mode searches its scrollback.
+    #[serde(default)]
+    pub(crate) search: Option<bool>,
 }
 
 /// Location of the config file (plain TOML in the app data dir, beside the session).

@@ -8,10 +8,11 @@ use std::sync::{Arc, Mutex};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::index::{Column, Direction, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
+use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{
@@ -267,6 +268,83 @@ pub struct PtyTerm {
     cwd: Option<String>,
     /// The engine's options, kept so one can change (`set_options` takes them all).
     config: Config,
+    /// The live `/` search over the scrollback, if any (see [`PtyTerm::search_set`]).
+    search: Option<TermSearch>,
+    /// The link under the mouse while Ctrl is held: drawn underlined.
+    pub link_hover: Option<(Point, Point)>,
+}
+
+/// A `/` search over a terminal's whole buffer, scrollback included.
+struct TermSearch {
+    regex: RegexSearch,
+    /// Every match, oldest (top) first.
+    matches: Vec<Match>,
+    /// The current one, an index into `matches`.
+    current: usize,
+    /// Output arrived since the matches were found (they've moved up the buffer).
+    stale: bool,
+}
+
+/// The most matches a search keeps: searching for one letter in a full scrollback
+/// shouldn't build a list the size of the buffer.
+const SEARCH_CAP: usize = 10_000;
+
+/// A link on screen: from `start` to `end` (inclusive, absolute grid points).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TermLink {
+    pub start: Point,
+    pub end: Point,
+    pub url: String,
+}
+
+/// Web addresses as they appear in program output (the same idea as Alacritty's URL
+/// hint): a scheme or `www.`, then everything up to whitespace or a character URLs
+/// don't contain. Local `file://` links are left out: opening one in a web tab isn't
+/// supported.
+const URL_REGEX: &str = r#"(?:https?://|www\.)[^\x00-\x1F\x7F-\x9F\s<>"'`{}|\\^⟨⟩]+"#;
+
+/// Trim what a sentence wraps around a URL: trailing punctuation, and a closing
+/// bracket that has no opening one inside the URL ("(see https://x.org/a)").
+fn trim_url(url: &str) -> &str {
+    let mut url = url;
+    loop {
+        let before = url;
+        url = url.trim_end_matches(['.', ',', ';', ':', '!', '?', '\'', '"']);
+        for (open, close) in [('(', ')'), ('[', ']')] {
+            if url.ends_with(close) && url.matches(open).count() < url.matches(close).count() {
+                url = &url[..url.len() - 1];
+            }
+        }
+        if url == before {
+            return url;
+        }
+    }
+}
+
+/// A link the browser can open: a web address (a bare `www.` gets `https://`).
+/// Other schemes (`file:`, `mailto:`, `ssh:`…) come back `None`.
+pub fn openable_url(url: &str) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        Some(url.to_string())
+    } else if lower.starts_with("www.") {
+        Some(format!("https://{url}"))
+    } else {
+        None
+    }
+}
+
+/// `text` as a regex that matches it literally, ignoring case (like the browser's
+/// find everywhere else).
+fn literal_regex(text: &str) -> String {
+    let mut out = String::from("(?i)");
+    for c in text.chars() {
+        if "\\.+*?()|[]{}^$#&-~".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Incremental scanner for the two cwd escape sequences shells emit each prompt
@@ -412,6 +490,8 @@ impl PtyTerm {
             cwd_scan: CwdScan::default(),
             cwd: None,
             config,
+            search: None,
+            link_hover: None,
         }
     }
 
@@ -635,6 +715,9 @@ impl PtyTerm {
             }
         }
         self.parser.advance(&mut self.vt, bytes);
+        if let Some(s) = self.search.as_mut() {
+            s.stale = true;
+        }
     }
 
     /// Drain the bytes the engine wants written back to the PTY: the cursor-position
@@ -739,6 +822,224 @@ impl PtyTerm {
 
     pub fn bracketed_paste(&self) -> bool {
         self.vt.mode().contains(TermMode::BRACKETED_PASTE)
+    }
+
+    // --- links ------------------------------------------------------------------
+
+    /// The first and last absolute points of what's on screen.
+    fn viewport_bounds(&self) -> (Point, Point) {
+        let top = Line(-(self.vt.grid().display_offset() as i32));
+        let bottom = top + (self.rows as i32 - 1);
+        (
+            Point::new(top, Column(0)),
+            Point::new(bottom, Column(self.cols.saturating_sub(1))),
+        )
+    }
+
+    /// Every link on screen: hyperlinks programs marked (OSC 8: `ls --hyperlink`,
+    /// gcc, cargo, delta), then web addresses in plain text that aren't inside one.
+    pub fn visible_links(&self) -> Vec<TermLink> {
+        let (start, end) = self.viewport_bounds();
+        let grid = self.vt.grid();
+        let mut links: Vec<TermLink> = Vec::new();
+        // OSC 8: runs of cells carrying the same hyperlink.
+        let mut line = start.line;
+        while line <= end.line {
+            for col in 0..self.cols {
+                let point = Point::new(line, Column(col));
+                let Some(link) = grid[point].hyperlink() else {
+                    continue;
+                };
+                match links.last_mut() {
+                    Some(last)
+                        if last.url == link.uri()
+                            && last.end.line == line
+                            && last.end.column.0 + 1 == col =>
+                    {
+                        last.end = point;
+                    }
+                    _ => links.push(TermLink {
+                        start: point,
+                        end: point,
+                        url: link.uri().to_string(),
+                    }),
+                }
+            }
+            line += 1;
+        }
+        // Plain web addresses (across wrapped lines too).
+        let Ok(mut regex) = RegexSearch::new(URL_REGEX) else {
+            return links;
+        };
+        let marked = links.len();
+        for m in RegexIter::new(start, end, Direction::Right, &self.vt, &mut regex) {
+            let (from, to) = (*m.start(), *m.end());
+            if links[..marked]
+                .iter()
+                .any(|l| l.start <= to && from <= l.end)
+            {
+                continue;
+            }
+            let text = self.vt.bounds_to_string(from, to);
+            let text: String = text.chars().filter(|c| *c != '\n').collect();
+            let trimmed = trim_url(&text);
+            if trimmed.is_empty() {
+                continue;
+            }
+            // Cells dropped from the end by the trim come off the range too.
+            let cut = text.chars().count() - trimmed.chars().count();
+            let mut to = to;
+            for _ in 0..cut {
+                to = if to.column.0 == 0 {
+                    Point::new(to.line - 1, Column(self.cols.saturating_sub(1)))
+                } else {
+                    Point::new(to.line, to.column - 1)
+                };
+            }
+            links.push(TermLink {
+                start: from,
+                end: to,
+                url: trimmed.to_string(),
+            });
+        }
+        links
+    }
+
+    /// The link at a visible cell (row 0 = the pane's top line), if any.
+    pub fn link_at(&self, col: usize, row: usize) -> Option<TermLink> {
+        let p = self.to_absolute(col, row);
+        self.visible_links()
+            .into_iter()
+            .find(|l| l.start <= p && p <= l.end)
+    }
+
+    /// Where an absolute point is on screen: its (col, row) in viewport cells.
+    pub fn viewport_cell(&self, p: Point) -> Option<(usize, usize)> {
+        let row = p.line.0 + self.vt.grid().display_offset() as i32;
+        (0..self.rows as i32)
+            .contains(&row)
+            .then_some((p.column.0, row as usize))
+    }
+
+    // --- search -----------------------------------------------------------------
+
+    /// Search the whole buffer for `query` (literally, ignoring case), replacing any
+    /// earlier search. The current match is the newest one at or above the copy-mode
+    /// cursor (else the newest of all): a terminal is searched from where you are
+    /// back through older output. Returns how many matched.
+    pub fn search_set(&mut self, query: &str) -> usize {
+        self.search = None;
+        if query.is_empty() {
+            return 0;
+        }
+        let Ok(regex) = RegexSearch::new(&literal_regex(query)) else {
+            return 0;
+        };
+        let mut search = TermSearch {
+            regex,
+            matches: Vec::new(),
+            current: 0,
+            stale: false,
+        };
+        self.run_search(&mut search);
+        let origin = if self.is_vi() {
+            self.vt.vi_mode_cursor.point
+        } else {
+            Point::new(
+                self.vt.bottommost_line(),
+                Column(self.cols.saturating_sub(1)),
+            )
+        };
+        search.current = search
+            .matches
+            .iter()
+            .rposition(|m| *m.start() <= origin)
+            .unwrap_or(search.matches.len().saturating_sub(1));
+        let n = search.matches.len();
+        self.search = Some(search);
+        n
+    }
+
+    fn run_search(&self, search: &mut TermSearch) {
+        let start = Point::new(self.vt.topmost_line(), Column(0));
+        let end = Point::new(
+            self.vt.bottommost_line(),
+            Column(self.cols.saturating_sub(1)),
+        );
+        search.matches = RegexIter::new(start, end, Direction::Right, &self.vt, &mut search.regex)
+            .take(SEARCH_CAP)
+            .collect();
+        search.stale = false;
+    }
+
+    /// Find the matches again after output moved them. New output lands below, so
+    /// the current match keeps its place counted from the oldest and stays on the
+    /// same text (until a full scrollback starts dropping its oldest lines).
+    pub fn search_refresh(&mut self) {
+        let Some(mut search) = self.search.take() else {
+            return;
+        };
+        if search.stale {
+            let current = search.current;
+            self.run_search(&mut search);
+            search.current = current.min(search.matches.len().saturating_sub(1));
+        }
+        self.search = Some(search);
+    }
+
+    /// Step to the next match back through the output (`older`) or forward.
+    pub fn search_step(&mut self, older: bool) {
+        if let Some(s) = self.search.as_mut().filter(|s| !s.matches.is_empty()) {
+            let n = s.matches.len();
+            s.current = if older {
+                (s.current + n - 1) % n
+            } else {
+                (s.current + 1) % n
+            };
+        }
+    }
+
+    /// Bring the current match on screen, with the copy-mode cursor on it.
+    pub fn search_reveal(&mut self) {
+        let Some(m) = self
+            .search
+            .as_ref()
+            .and_then(|s| s.matches.get(s.current).cloned())
+        else {
+            return;
+        };
+        if self.is_vi() {
+            self.vt.vi_goto_point(*m.start());
+            self.force_extend();
+        }
+        self.vt.scroll_to_point(*m.start());
+    }
+
+    /// Drop the search and its highlights.
+    pub fn search_clear(&mut self) {
+        self.search = None;
+    }
+
+    /// `(current, total)` with `current` counted from the newest match (1 = the
+    /// newest), as the status bar shows it; `None` without a search.
+    pub fn search_position(&self) -> Option<(usize, usize)> {
+        let s = self.search.as_ref()?;
+        let n = s.matches.len();
+        Some((if n == 0 { 0 } else { n - s.current }, n))
+    }
+
+    /// The matches on screen, each with whether it's the current one.
+    fn visible_matches(&self) -> Vec<(Match, bool)> {
+        let Some(s) = self.search.as_ref() else {
+            return Vec::new();
+        };
+        let (top, bottom) = self.viewport_bounds();
+        s.matches
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| *m.start() <= bottom && top <= *m.end())
+            .map(|(i, m)| (m.clone(), i == s.current))
+            .collect()
     }
 }
 
@@ -1113,6 +1414,9 @@ pub fn render(
     let selection = content.selection;
     let baseline_off = cell_h * 3 / 4;
     let mut cursor_cell = (' ', draw::FontStyle::Regular, false);
+    // `/` matches on screen, and the Ctrl-hovered link.
+    let hits = pty.visible_matches();
+    let hover = pty.link_hover;
 
     // Both `display_iter` cells AND `cursor.point` use ABSOLUTE buffer coordinates
     // (lines are negative for scrollback): `display_iter` starts at
@@ -1131,11 +1435,14 @@ pub fn render(
         if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
             continue;
         }
-        let flags = if opts.text_styles {
+        let mut flags = if opts.text_styles {
             cell.flags
         } else {
             cell.flags & (Flags::INVERSE | Flags::WIDE_CHAR)
         };
+        if hover.is_some_and(|(from, to)| from <= item.point && item.point <= to) {
+            flags.insert(Flags::UNDERLINE);
+        }
         let style = font_style(flags);
         let row = item.point.line.0 + display_offset;
         let col = item.point.column.0 as i32;
@@ -1162,7 +1469,11 @@ pub fn render(
         if flags.contains(Flags::INVERSE) {
             std::mem::swap(&mut fg, &mut bg);
         }
-        // Selection highlight — copy mode's `v`/`V` and mouse drags share it.
+        // `/` matches (the current one brighter), then the selection on top —
+        // copy mode's `v`/`V` and mouse drags share it.
+        if let Some((_, current)) = hits.iter().find(|(m, _)| m.contains(&item.point)) {
+            bg = if *current { draw::FIND_CUR } else { draw::FIND };
+        }
         if selection.is_some_and(|s| s.contains(item.point)) {
             bg = draw::SEL;
         }
@@ -1740,5 +2051,151 @@ mod tests {
         assert!(r.drag && !r.motion && r.encoding == MouseEncoding::Sgr);
         pty.feed(b"\x1b[?1003h");
         assert!(pty.mouse_report().unwrap().motion);
+    }
+
+    fn urls(pty: &PtyTerm) -> Vec<String> {
+        pty.visible_links().into_iter().map(|l| l.url).collect()
+    }
+
+    #[test]
+    fn web_addresses_in_output_are_links_without_the_sentence_around_them() {
+        let mut pty = PtyTerm::new(80, 4, DEFAULT_SCROLLBACK);
+        pty.feed(
+            b"docs (see https://example.com/a_(b)). or www.rust-lang.org, not file:///c/x\r\n",
+        );
+        assert_eq!(
+            urls(&pty),
+            ["https://example.com/a_(b)", "www.rust-lang.org"]
+        );
+        // The link under a cell: column 12 is inside the first address.
+        let link = pty.link_at(12, 0).expect("a link at col 12");
+        assert_eq!(link.url, "https://example.com/a_(b)");
+        assert_eq!(pty.viewport_cell(link.start), Some((10, 0)));
+        assert_eq!(pty.viewport_cell(link.end), Some((34, 0)));
+        assert_eq!(pty.link_at(2, 0), None);
+    }
+
+    #[test]
+    fn a_wrapped_address_is_one_link() {
+        let mut pty = PtyTerm::new(20, 4, DEFAULT_SCROLLBACK);
+        pty.feed(b"https://example.com/a/long/path ok");
+        assert_eq!(urls(&pty), ["https://example.com/a/long/path"]);
+        // Clicking its second line finds it too.
+        assert!(pty.link_at(3, 1).is_some());
+    }
+
+    #[test]
+    fn hyperlinks_programs_mark_are_links() {
+        let mut pty = PtyTerm::new(40, 4, DEFAULT_SCROLLBACK);
+        // OSC 8 around "click"; a web address as the visible text isn't counted twice.
+        pty.feed(b"\x1b]8;;https://x.org/p\x1b\\click\x1b]8;;\x1b\\ \x1b]8;;https://y.org\x07https://y.org\x1b]8;;\x07\r\n");
+        let links = pty.visible_links();
+        assert_eq!(links.len(), 2, "{links:?}");
+        assert_eq!(links[0].url, "https://x.org/p");
+        assert_eq!(pty.viewport_cell(links[0].end), Some((4, 0)));
+        assert_eq!(links[1].url, "https://y.org");
+    }
+
+    #[test]
+    fn only_web_addresses_open() {
+        assert_eq!(openable_url("https://a.b").as_deref(), Some("https://a.b"));
+        assert_eq!(openable_url("HTTP://a.b").as_deref(), Some("HTTP://a.b"));
+        assert_eq!(openable_url("www.a.b").as_deref(), Some("https://www.a.b"));
+        assert_eq!(openable_url("file://host/c/x.txt"), None);
+        assert_eq!(openable_url("mailto:a@b.c"), None);
+    }
+
+    #[test]
+    fn trimming_keeps_brackets_that_belong_to_the_address() {
+        assert_eq!(trim_url("https://a.b/x."), "https://a.b/x");
+        assert_eq!(trim_url("https://a.b/x)."), "https://a.b/x");
+        assert_eq!(trim_url("https://w.org/A_(b)"), "https://w.org/A_(b)");
+        assert_eq!(trim_url("https://a.b/?q=1&r=2"), "https://a.b/?q=1&r=2");
+    }
+
+    /// 30 numbered lines, every third saying "Error".
+    fn log_term() -> PtyTerm {
+        let mut pty = PtyTerm::new(30, 5, DEFAULT_SCROLLBACK);
+        for i in 0..30 {
+            let word = if i % 3 == 0 { "Error" } else { "fine" };
+            pty.feed(format!("{i:02} {word}\r\n").as_bytes());
+        }
+        pty
+    }
+
+    #[test]
+    fn search_covers_the_scrollback_newest_first() {
+        let mut pty = log_term();
+        assert_eq!(
+            pty.search_set("error"),
+            10,
+            "ignores case, sees all 30 lines"
+        );
+        assert_eq!(pty.search_position(), Some((1, 10)), "starts at the newest");
+        // `n` goes further back.
+        pty.search_step(true);
+        assert_eq!(pty.search_position(), Some((2, 10)));
+        pty.search_step(false);
+        pty.search_step(false);
+        assert_eq!(pty.search_position(), Some((10, 10)), "wraps to the oldest");
+        // Revealing the oldest scrolls the view up to it.
+        pty.search_reveal();
+        assert!(pty.scrolled_back());
+        // Matched literally: "e.r" isn't a pattern.
+        assert_eq!(pty.search_set("e.r"), 0);
+        pty.search_clear();
+        assert_eq!(pty.search_position(), None);
+    }
+
+    #[test]
+    fn search_from_copy_mode_starts_above_the_cursor() {
+        let mut pty = log_term();
+        pty.toggle_vi();
+        // Up past the newest "Error" (line 27, four rows up: 27, 28, 29, prompt).
+        for _ in 0..5 {
+            pty.vi_motion(ViMotion::Up);
+        }
+        pty.search_set("error");
+        assert_eq!(pty.search_position(), Some((2, 10)));
+        pty.search_reveal();
+        assert_eq!(pty.selection_text(), None);
+        let cursor = pty.vt.vi_mode_cursor.point;
+        assert_eq!(
+            pty.vt
+                .bounds_to_string(cursor, Point::new(cursor.line, Column(7))),
+            "Error"
+        );
+    }
+
+    #[test]
+    fn new_output_moves_the_matches_with_it() {
+        let mut pty = log_term();
+        pty.search_set("error");
+        pty.feed(b"30 Error\r\n31 fine\r\n");
+        pty.search_refresh();
+        // The new one is counted, and the current match stays on the same text.
+        assert_eq!(pty.search_position(), Some((2, 11)));
+    }
+
+    #[test]
+    fn matches_and_the_hovered_link_are_drawn() {
+        let mut pty = PtyTerm::new(10, 2, DEFAULT_SCROLLBACK);
+        pty.feed(b"ab ab\x1b[?25l");
+        let plain = paint_pty(&pty, RenderOpts::default());
+        pty.search_set("ab");
+        let found = paint_pty(&pty, RenderOpts::default());
+        let has = |buf: &[u32], c: Rgb| {
+            let mut px = [0u32];
+            draw::fill_rect(&mut px, 1, 1, 0, 0, 1, 1, c);
+            buf.contains(&px[0])
+        };
+        assert!(!has(&plain, draw::FIND) && !has(&plain, draw::FIND_CUR));
+        assert!(has(&found, draw::FIND) && has(&found, draw::FIND_CUR));
+        pty.search_clear();
+        pty.link_hover = Some((
+            Point::new(Line(0), Column(0)),
+            Point::new(Line(0), Column(1)),
+        ));
+        assert_ne!(paint_pty(&pty, RenderOpts::default()), plain, "underlined");
     }
 }

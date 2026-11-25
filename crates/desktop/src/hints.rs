@@ -267,6 +267,16 @@ impl App {
         {
             let url = h.url.clone();
             let act = self.hint_act;
+            // A terminal's link opens in a new tab (replacing the terminal makes no
+            // sense); one that can't open leaves you where you were.
+            if self.active_is_term() {
+                let back = std::mem::take(&mut self.hint_back_to_passthrough);
+                self.exit_hint();
+                if !self.open_term_link(&url) && back {
+                    self.enter_passthrough();
+                }
+                return;
+            }
             self.exit_hint();
             match act {
                 HintAct::Copy => self.copy_text(&url),
@@ -301,6 +311,10 @@ impl App {
         self.hint_input.clear();
         self.hint_act = HintAct::Follow;
         self.mode = ModeKind::Normal;
+        // Labels called up while typing in a terminal: back to typing.
+        if std::mem::take(&mut self.hint_back_to_passthrough) && self.active_is_term() {
+            self.enter_passthrough();
+        }
         self.window.request_redraw();
     }
 

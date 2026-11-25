@@ -1009,6 +1009,147 @@ impl App {
         self.window.request_redraw();
     }
 
+    /// Ctrl held over a link in a terminal: underline it and show a hand pointer, as
+    /// a hint that Ctrl+click opens it. Called as the pointer moves and as Ctrl goes
+    /// down or up; cheap when Ctrl isn't held and nothing was hovered.
+    pub(crate) fn term_link_hover(&mut self) {
+        let (x, y) = self.cursor_pos;
+        let want = if self.config.setting("term.links") && self.modifiers.control_key() {
+            self.pane_at_pixel(x, y).and_then(|(tab, rect)| {
+                let (col, row, _) = self.term_cell_at(tab, rect, x, y)?;
+                let link = self.tabs.get(tab)?.term()?.pty.link_at(col, row)?;
+                Some((tab, (link.start, link.end)))
+            })
+        } else {
+            None
+        };
+        if want == self.term_link_hover {
+            return;
+        }
+        if let Some((tab, _)) = self.term_link_hover.take() {
+            if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
+                s.pty.link_hover = None;
+            }
+        }
+        if let Some((tab, range)) = want {
+            if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
+                s.pty.link_hover = Some(range);
+            }
+        }
+        self.term_link_hover = want;
+        self.window.set_cursor_icon(if want.is_some() {
+            tao::window::CursorIcon::Hand
+        } else {
+            tao::window::CursorIcon::Default
+        });
+        self.window.request_redraw();
+    }
+
+    /// A Ctrl+click on a link in terminal `tab`: open it in a new tab. Returns whether
+    /// the press was on a link (and so is used up).
+    pub(crate) fn term_click_link(&mut self, tab: usize, rect: PaneRect) -> bool {
+        if !self.config.setting("term.links") || !self.modifiers.control_key() {
+            return false;
+        }
+        let (x, y) = self.cursor_pos;
+        let Some((col, row, _)) = self.term_cell_at(tab, rect, x, y) else {
+            return false;
+        };
+        let Some(link) = self
+            .tabs
+            .get(tab)
+            .and_then(|t| t.term()?.pty.link_at(col, row))
+        else {
+            return false;
+        };
+        self.open_term_link(&link.url);
+        true
+    }
+
+    /// Open a link from a terminal in a new tab. Only web addresses open: a terminal's
+    /// `file:` links (`ls --hyperlink`) and other schemes just say so.
+    pub(crate) fn open_term_link(&mut self, url: &str) -> bool {
+        match pty_term::openable_url(url) {
+            Some(url) => {
+                self.clear_term_link_hover();
+                self.open_tab(&url, false, true);
+                true
+            }
+            None => {
+                self.set_status(format!("only web links open from the terminal: {url}"));
+                false
+            }
+        }
+    }
+
+    /// Re-run the `/` search in each terminal on screen whose output moved since its
+    /// matches were found, once per frame rather than once per chunk of output.
+    pub(crate) fn refresh_term_searches(&mut self) {
+        let (panes, _) = self.pane_layout();
+        for (tab, _) in panes {
+            if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
+                s.pty.search_refresh();
+            }
+        }
+    }
+
+    /// Drop the hovered-link underline and hand pointer.
+    pub(crate) fn clear_term_link_hover(&mut self) {
+        if let Some((tab, _)) = self.term_link_hover.take() {
+            if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
+                s.pty.link_hover = None;
+            }
+            self.window
+                .set_cursor_icon(tao::window::CursorIcon::Default);
+        }
+    }
+
+    /// Ctrl+Shift+O in a terminal (typing or copy mode): label every link on screen;
+    /// typing a label opens that link in a new tab, Esc goes back to what you were
+    /// doing. The same badges and letters as `f` on a page.
+    pub(crate) fn enter_term_hints(&mut self) {
+        if !self.config.setting("term.links") {
+            self.set_status("terminal links are off (term.links)");
+            return;
+        }
+        let rect = self.focused_pane_rect();
+        let (cw, ch) = self.term_cell();
+        let Some(pty) = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.term())
+            .map(|s| &s.pty)
+        else {
+            return;
+        };
+        let links = pty.visible_links();
+        let labels = crate::hints::hint_labels(links.len());
+        let hints: Vec<crate::hints::NativeHint> = links
+            .into_iter()
+            .zip(labels)
+            .filter_map(|(link, label)| {
+                let (col, row) = pty.viewport_cell(link.start)?;
+                Some(crate::hints::NativeHint {
+                    label,
+                    url: link.url,
+                    x: rect.x + TERM_PAD + col as i32 * cw,
+                    y: rect.y + row as i32 * ch + ch * 3 / 4,
+                })
+            })
+            .collect();
+        if hints.is_empty() {
+            self.set_status("no links on screen");
+            return;
+        }
+        self.clear_term_link_hover();
+        self.native_hints = hints;
+        self.hint_back_to_passthrough = self.mode == ModeKind::Passthrough;
+        self.hint_act = crate::hints::HintAct::Follow;
+        self.hint_input.clear();
+        self.mode = ModeKind::Hint;
+        self.window.request_redraw();
+    }
+
     /// The mouse reporting terminal `tab`'s program asked for, when it should get the
     /// mouse: `term.mouse_reporting` is on and copy mode isn't (copy mode's clicks
     /// and drags select, as they do for a program that reads no mouse).
