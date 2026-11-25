@@ -227,8 +227,9 @@ current one, and `:w` saves your choice with the session.
   highlighted, starting from the newest one above the cursor; `n` goes further back
   through older output, `N` comes forward, `Esc` clears it.
 - Links open in a new tab: hold `Ctrl` to underline the one under the pointer and
-  `Ctrl`+click it, or press `Ctrl+Shift+O` (while typing or in copy mode) to label
-  every link on screen and type a label. Web addresses in the output count, and so do
+  `Ctrl`+click it, or label every link on screen and type a label: `s` in copy mode
+  (it's the terminal's `f`, which is vim's find-char there), `Ctrl+Shift+O` while
+  typing. Web addresses in the output count, and so do
   links programs mark (`ls --hyperlink`, compilers, `delta`); `file:` links don't
   open.
 - `Ctrl+V` pastes; you can also drag to select, and double/triple-click takes a word/line.
@@ -315,7 +316,7 @@ the `[tabs]` and `[term]` tables of `config.toml` (`:theme` opens it), and `:ai`
 | `term.cursor_blink` | on | The terminal cursor blinks (it stops after 5 seconds idle), unless a program asks for a steady one. |
 | `term.clipboard_write` | on | Terminal programs can copy to the clipboard. |
 | `term.visual_bell` | on | The terminal flashes when a program rings the bell. |
-| `term.links` | on | Terminal links open in a new tab (`Ctrl`+click, or `Ctrl+Shift+O` to label them). |
+| `term.links` | on | Terminal links open in a new tab (`Ctrl`+click, or `s` in copy mode / `Ctrl+Shift+O` while typing to label them). |
 | `term.search` | on | `/` in a terminal's copy mode searches its whole scrollback. |
 - Private tabs (`:open -n`) are never saved to the session or the closed-tab list.
 

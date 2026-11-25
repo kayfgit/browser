@@ -351,7 +351,7 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
                        the terminal cursor blinks. term.clipboard_write: terminal \
                        programs can copy to the clipboard. term.visual_bell: the terminal \
                        flashes on the bell. term.links: terminal links open in a new tab \
-                       (Ctrl+click, Ctrl+Shift+O). term.search: / searches a terminal's \
+                       (Ctrl+click, s in copy mode, Ctrl+Shift+O). term.search: / searches a terminal's \
                        scrollback.",
             },
             ParamSpec {

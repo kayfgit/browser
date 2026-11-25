@@ -761,6 +761,8 @@ impl App {
         let mut consumed = true;
         // An f/F/t/T that needs to wait for its target char (applied after the borrow).
         let mut pending: Option<(bool, bool)> = None;
+        // `s`: label the links on screen (after the borrow).
+        let mut link_hints = false;
         {
             let Some(s) = self
                 .active
@@ -837,6 +839,9 @@ impl App {
                         }
                         "y" => yank = pty.yank(),
                         "i" => exit = true,
+                        // Links: the terminal's `f` (which is vim's find-char here).
+                        // `s` is a scroll-hint key on pages, with no use in a terminal.
+                        "s" => link_hints = true,
                         _ => consumed = false,
                     },
                     _ => consumed = false,
@@ -845,6 +850,10 @@ impl App {
         }
         if let Some(p) = pending {
             self.term_find_pending = Some(p);
+        }
+        if link_hints {
+            self.enter_term_hints();
+            return true;
         }
         if let Some(text) = yank {
             let n = text.chars().count();
@@ -1104,7 +1113,7 @@ impl App {
         }
     }
 
-    /// Ctrl+Shift+O in a terminal (typing or copy mode): label every link on screen;
+    /// Label every link on screen (`s` in copy mode, Ctrl+Shift+O while typing);
     /// typing a label opens that link in a new tab, Esc goes back to what you were
     /// doing. The same badges and letters as `f` on a page.
     pub(crate) fn enter_term_hints(&mut self) {

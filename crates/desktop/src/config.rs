@@ -172,7 +172,7 @@ pub(crate) const SETTINGS: &[Setting] = &[
     Setting {
         key: "term.links",
         default: true,
-        desc: "links in a terminal open in a new tab: Ctrl+click one, or Ctrl+Shift+O to label them all",
+        desc: "links in a terminal open in a new tab: Ctrl+click one, or label them all with s in copy mode (Ctrl+Shift+O while typing)",
     },
     Setting {
         key: "term.search",
