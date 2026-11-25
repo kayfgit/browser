@@ -605,9 +605,13 @@ impl App {
             .and_then(|i| self.tabs.get(i))
             .and_then(|t| t.term())
             .is_some_and(|s| s.pty.app_cursor());
-        let ctrl = self.modifiers.control_key();
-        let alt = self.modifiers.alt_key();
+        let mut ctrl = self.modifiers.control_key();
+        let mut alt = self.modifiers.alt_key();
         let shift = self.modifiers.shift_key();
+        // A character typed with AltGr (Ctrl+Alt to Windows) is plain text.
+        if is_altgr(&key.logical_key, &key.key_without_modifiers(), ctrl, alt) {
+            (ctrl, alt) = (false, false);
+        }
         if let Some(bytes) = encode_term_key(&key.logical_key, ctrl, alt, shift, app_cursor) {
             if let Some(s) = self
                 .active
@@ -1103,7 +1107,9 @@ impl App {
     /// alternate screen has no scrollback to scroll. Returns `false` when neither
     /// applies and the caller should scroll the scrollback.
     pub(crate) fn term_mouse_wheel(&mut self, tab: usize, rect: PaneRect, dy_lines: f64) -> bool {
-        let notches = (dy_lines.abs().round() as usize).max(1);
+        // The delta is in lines (tao applies Windows' lines-per-notch setting): one report
+        // or arrow per line, as before for mouse reports.
+        let lines = (dy_lines.abs().round() as usize).max(1);
         if let Some(report) = self.term_mouse_report(tab) {
             let (x, y) = self.cursor_pos;
             let Some(cell) = self.term_report_cell(tab, rect, x, y) else {
@@ -1112,7 +1118,7 @@ impl App {
             // xterm wheel buttons: 64 = up, 65 = down.
             let button = if dy_lines > 0.0 { 64 } else { 65 };
             let one = encode_mouse(report.encoding, button | self.mouse_mods(), cell, false);
-            self.term_mouse_send(tab, &one.repeat(notches));
+            self.term_mouse_send(tab, &one.repeat(lines));
             return true;
         }
         let Some(s) = self.tabs.get(tab).and_then(|t| t.term()) else {
@@ -1129,8 +1135,7 @@ impl App {
         let Some(one) = encode_term_key(&key, false, false, false, s.pty.app_cursor()) else {
             return false;
         };
-        // Three lines a notch, as our own scrollback moves.
-        self.term_mouse_send(tab, &one.repeat(notches * 3));
+        self.term_mouse_send(tab, &one.repeat(lines));
         true
     }
 }
@@ -1428,6 +1433,19 @@ fn encode_term_key(
     Some(out)
 }
 
+/// Whether a key pressed with Ctrl+Alt is really AltGr typing a character: Windows
+/// reports AltGr as Ctrl+Alt, and the layout then made a different character than
+/// the bare key (`/` from AltGr+Q on a Brazilian layout, `@` on a German one). A
+/// letter with Ctrl+Alt that the layout left alone is a real chord (Meta+Ctrl+Q).
+fn is_altgr(logical: &Key, unmodified: &Key, ctrl: bool, alt: bool) -> bool {
+    match (logical, unmodified) {
+        (Key::Character(typed), Key::Character(bare)) if ctrl && alt => {
+            typed.to_lowercase() != bare.to_lowercase()
+        }
+        _ => false,
+    }
+}
+
 /// Control code for `Ctrl+<char>`: `Ctrl+A`→0x01 … `Ctrl+Z`→0x1a, `Ctrl+[`→ESC,
 /// `Ctrl+Space`→NUL, etc. `None` for non-controllable keys.
 fn ctrl_byte(c: char) -> Option<u8> {
@@ -1593,6 +1611,24 @@ mod tests {
             encode_mouse(Utf8, 0, (200, 1), false),
             b"\x1b[M\x20\xc3\xa8\x21"
         );
+    }
+
+    /// AltGr is Ctrl+Alt on Windows, so a character typed with it (`/` and `?` on
+    /// Brazilian keyboards, `@ { [ ] } \` on German ones) arrives with both held.
+    /// It's text when the layout made a different character than the bare key;
+    /// Ctrl+Alt+Q on a US layout (still `q`) stays a chord.
+    #[test]
+    fn altgr_characters_are_text_not_chords() {
+        let ch = |s: &'static str| Key::Character(s);
+        assert!(is_altgr(&ch("/"), &ch("q"), true, true));
+        assert!(is_altgr(&ch("@"), &ch("q"), true, true));
+        assert!(!is_altgr(&ch("q"), &ch("q"), true, true));
+        assert!(
+            !is_altgr(&ch("Q"), &ch("q"), true, true),
+            "Shift isn't AltGr"
+        );
+        assert!(!is_altgr(&ch("/"), &ch("q"), true, false), "needs Alt too");
+        assert!(!is_altgr(&Key::F1, &Key::F1, true, true));
     }
 
     /// Ctrl+Backspace sends ^H, which PowerShell, bash and fish read as "delete the
