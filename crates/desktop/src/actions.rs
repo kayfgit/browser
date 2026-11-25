@@ -49,6 +49,8 @@ const SETTING_KEYS: &[&str] = &[
     "term.cursor_blink",
     "term.clipboard_write",
     "term.visual_bell",
+    "term.links",
+    "term.search",
 ];
 
 /// Every action the browser exposes through [`App::perform`] — the single list the
@@ -348,7 +350,9 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
                        ask for and turns hollow without the keyboard. term.cursor_blink: \
                        the terminal cursor blinks. term.clipboard_write: terminal \
                        programs can copy to the clipboard. term.visual_bell: the terminal \
-                       flashes on the bell.",
+                       flashes on the bell. term.links: terminal links open in a new tab \
+                       (Ctrl+click, Ctrl+Shift+O). term.search: / searches a terminal's \
+                       scrollback.",
             },
             ParamSpec {
                 name: "value",

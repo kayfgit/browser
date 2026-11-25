@@ -96,6 +96,13 @@ impl App {
                     if self.modifiers.control_key() && key.physical_key == KeyCode::KeyS {
                         return self.exit_to_normal();
                     }
+                    // Ctrl+Shift+O labels the links on screen (Alacritty's chord).
+                    if self.modifiers.control_key()
+                        && self.modifiers.shift_key()
+                        && key.physical_key == KeyCode::KeyO
+                    {
+                        return self.enter_term_hints();
+                    }
                     if self.modifiers.control_key() {
                         match key.physical_key {
                             KeyCode::KeyV => return self.term_paste(),
@@ -222,6 +229,15 @@ impl App {
         // through to the normal browser bindings.
         if self.active_is_term() {
             self.ensure_term_vi(); // a tab/pane switch can leave vi mode off (stuck cursor)
+        }
+        // Ctrl+Shift+O labels the terminal's links, in copy mode as while typing.
+        if self.active_is_term()
+            && self.modifiers.control_key()
+            && self.modifiers.shift_key()
+            && key.physical_key == KeyCode::KeyO
+        {
+            self.enter_term_hints();
+            return;
         }
         if self.active_term_vi() && self.key_term_vi(key) {
             return;

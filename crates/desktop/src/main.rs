@@ -314,6 +314,8 @@ fn main() -> Result<()> {
         term_mouse_held: None,
         term_mouse_hover: None,
         term_wheel_acc: 0.0,
+        term_link_hover: None,
+        hint_back_to_passthrough: false,
         extension_request: 0,
         downloads: Default::default(),
         permissions: Default::default(),

@@ -122,6 +122,61 @@ mod damage_tests {
 /// Paint one pane's native content into `rect`: an engine-free read document,
 /// the vim error/res pager, a terminal grid, or the blank-pane prompt. Web panes
 /// paint nothing here (their webview HWND covers the rect). `focused` gates the
+/// Draw a badge with its label over each native hint whose label starts with what's
+/// been typed (`f` on a read tab, Ctrl+Shift+O in a terminal), kept inside
+/// `(left, right, top, bottom)`. Each hint's `y` is its text baseline.
+fn draw_hint_badges(
+    p: &Painter,
+    buf: &mut [u32],
+    (wz, hz): (usize, usize),
+    native_hints: &[NativeHint],
+    hint_input: &str,
+    hint_act: HintAct,
+    (left, right, top, bottom): (i32, i32, i32, i32),
+) {
+    let lh = p.line_height() as i32;
+    for hint in native_hints {
+        if !hint.label.starts_with(hint_input) {
+            continue;
+        }
+        let label = if hint_act.upper() {
+            hint.label.to_uppercase()
+        } else {
+            hint.label.clone()
+        };
+        let lw = p.measure(&label) as i32;
+        let bx = hint.x.max(0);
+        let by = hint.y - lh * 3 / 4;
+        let (x0, y0) = (bx.max(left), by.max(top));
+        let (x1, y1) = ((bx + lw + 4).min(right), (by + lh).min(bottom));
+        if x1 > x0 && y1 > y0 {
+            draw::fill_rect(
+                buf,
+                wz,
+                hz,
+                x0 as usize,
+                y0 as usize,
+                x1 as usize,
+                y1 as usize,
+                hint_act.badge_rgb(),
+            );
+        }
+        p.text_rect(
+            buf,
+            wz,
+            hz,
+            bx + 2,
+            hint.y.max(0) as usize,
+            &label,
+            (0x10, 0x10, 0x10),
+            left,
+            right,
+            top,
+            bottom,
+        );
+    }
+}
+
 /// overlays that only apply to the active pane: find highlights, the read caret,
 /// and hint badges. Everything is clipped to `rect` so it never bleeds into a
 /// neighbouring pane. A free fn (not a method) so it can borrow individual App
@@ -269,41 +324,15 @@ pub(crate) fn paint_pane(
             }
         }
         if focused && mode == ModeKind::Hint {
-            let lh = p.line_height();
-            for hint in native_hints {
-                if !hint.label.starts_with(hint_input) {
-                    continue;
-                }
-                let label = if hint_act.upper() {
-                    hint.label.to_uppercase()
-                } else {
-                    hint.label.clone()
-                };
-                let lw = p.measure(&label);
-                let bx = hint.x.max(0);
-                let by = hint.y - (lh as i32) * 3 / 4;
-                fill(
-                    buf,
-                    bx,
-                    by,
-                    bx + lw as i32 + 4,
-                    by + lh as i32,
-                    hint_act.badge_rgb(),
-                );
-                p.text_rect(
-                    buf,
-                    wz,
-                    hz,
-                    bx + 2,
-                    hint.y.max(0) as usize,
-                    &label,
-                    (0x10, 0x10, 0x10),
-                    left,
-                    right,
-                    top,
-                    bottom,
-                );
-            }
+            draw_hint_badges(
+                p,
+                buf,
+                (wz, hz),
+                native_hints,
+                hint_input,
+                hint_act,
+                (left, right, top, bottom),
+            );
         }
         return;
     }
@@ -493,6 +522,18 @@ pub(crate) fn paint_pane(
                 ..term_opts
             },
         );
+        // Ctrl+Shift+O: badges over the links on screen.
+        if focused && mode == ModeKind::Hint {
+            draw_hint_badges(
+                p,
+                buf,
+                (wz, hz),
+                native_hints,
+                hint_input,
+                hint_act,
+                (rect.x, right, top, bottom),
+            );
+        }
         // The bell: a brief wash of the text colour over the pane.
         if s.bell_at.is_some() {
             draw::tint_rect(
@@ -901,8 +942,10 @@ impl App {
             .then(|| self.hover_link.clone())
             .flatten();
 
-        // Terminal style/cursor settings and focus, read before the buffer borrows.
+        // Terminal style/cursor settings and focus, read before the buffer borrows,
+        // and live `/` searches re-run over output that arrived since the last frame.
         let term_opts = self.term_render_opts();
+        self.refresh_term_searches();
 
         self.surface
             .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())

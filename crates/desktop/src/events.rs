@@ -163,6 +163,8 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
         WindowEvent::ModifiersChanged(state) => {
             app.modifiers = state;
             app.on_modifiers_changed();
+            // Pressing or letting go of Ctrl over a terminal link shows or hides it.
+            app.term_link_hover();
         }
         WindowEvent::Focused(focused) => {
             crate::journal::log(
@@ -188,6 +190,8 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             app.term_select_drag(position.x, position.y);
             // A terminal program tracking the mouse hears the motion.
             app.term_mouse_motion(position.x, position.y);
+            // Ctrl over a terminal link underlines it.
+            app.term_link_hover();
             // Left-drag on a tab slides it along the strip.
             app.tab_drag_move(position.x, position.y);
             // Hovering the command bar reveals the full (vs. shortened) URL.
@@ -226,6 +230,7 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
                 app.term_mouse_release(held.button, true);
             }
             app.term_mouse_hover = None;
+            app.clear_term_link_hover();
             // A tab drag keeps wherever the tab got to.
             app.end_tab_drag();
             app.update_tab_hover(None);
@@ -346,7 +351,7 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
                 // Then hand the press to a terminal program reading the mouse, or
                 // start a drag-selection if that pane is a terminal (also when
                 // unsplit — one terminal filling the band still selects).
-                if !app.term_mouse_press(tab, rect, 0) {
+                if !app.term_click_link(tab, rect) && !app.term_mouse_press(tab, rect, 0) {
                     app.term_select_start(tab, rect, app.cursor_pos.0, app.cursor_pos.1);
                 }
             }

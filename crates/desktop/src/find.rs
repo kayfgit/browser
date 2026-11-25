@@ -50,7 +50,7 @@ impl App {
     pub(crate) fn find_confirm(&mut self) {
         self.cmdline.clear();
         self.mode = ModeKind::Normal;
-        let native_empty = self.active_webview().is_none() && self.find.matches.is_empty();
+        let native_empty = self.active_webview().is_none() && self.find_match_count() == 0;
         if self.find.query.is_empty() || native_empty {
             self.find_clear();
         } else {
@@ -78,6 +78,7 @@ impl App {
         self.find.query.clear();
         self.find.matches.clear();
         self.find.current = 0;
+        self.clear_term_searches();
         if let Some(wv) = self.active_webview() {
             let _ = wv.evaluate_script("window.__findClear&&window.__findClear()");
         }
@@ -91,6 +92,34 @@ impl App {
         self.find.query.clear();
         self.find.matches.clear();
         self.find.current = 0;
+        self.clear_term_searches();
+    }
+
+    /// Drop every terminal's search highlights (a search belongs to the tab it was
+    /// typed in, and ends when you leave it).
+    fn clear_term_searches(&mut self) {
+        for s in self.tabs.iter_mut().filter_map(|t| t.term_mut()) {
+            s.pty.search_clear();
+        }
+    }
+
+    /// The active terminal, when the active tab is one.
+    fn active_term_mut(&mut self) -> Option<&mut crate::term::TermSession> {
+        self.active
+            .and_then(|i| self.tabs.get_mut(i))
+            .and_then(|t| t.term_mut())
+    }
+
+    /// How many matches the live search has on a native tab or terminal.
+    fn find_match_count(&self) -> usize {
+        let term = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.term());
+        match term {
+            Some(s) => s.pty.search_position().map_or(0, |(_, n)| n),
+            None => self.find.matches.len(),
+        }
     }
 
     /// Run a search for `q` on the active tab (web → injected JS; read/vim → a
@@ -106,6 +135,17 @@ impl App {
                 format!("window.__find&&window.__find({})", js_string(q))
             };
             let _ = wv.evaluate_script(&js);
+            return;
+        }
+        // Terminal: search its whole scrollback, newest match first.
+        let term_search = self.config.setting("term.search");
+        if let Some(s) = self.active_term_mut() {
+            if term_search {
+                s.pty.search_set(q);
+                if reveal {
+                    s.pty.search_reveal();
+                }
+            }
             return;
         }
         if q.is_empty() {
@@ -136,6 +176,14 @@ impl App {
                 "window.__findPrev&&window.__findPrev()"
             };
             let _ = wv.evaluate_script(js);
+            return;
+        }
+        // Terminal: `n` goes further back through the output, `N` comes forward.
+        if let Some(s) = self.active_term_mut() {
+            s.pty.search_step(forward);
+            s.pty.search_reveal();
+            self.set_status(self.find_count_label());
+            self.window.request_redraw();
             return;
         }
         let n = self.find.matches.len();
@@ -213,6 +261,19 @@ impl App {
 
     /// `"/query  cur/total"` (or `no matches`) for the status bar on native tabs.
     pub(crate) fn find_count_label(&self) -> String {
+        let term = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.term());
+        if let Some(s) = term {
+            return match s.pty.search_position() {
+                Some((cur, n)) if n > 0 => format!("/{}  {cur}/{n}", self.find.query),
+                _ if !self.config.setting("term.search") => {
+                    "terminal search is off (term.search)".to_string()
+                }
+                _ => format!("/{}  no matches", self.find.query),
+            };
+        }
         if self.find.matches.is_empty() {
             format!("/{}  no matches", self.find.query)
         } else {

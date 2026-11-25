@@ -223,6 +223,14 @@ current one, and `:w` saves your choice with the session.
 - `Ctrl+S` gives the keyboard back to the browser and enters copy mode: a vim cursor
   over the output and scrollback (`h`/`j`/`k`/`l`, `w`/`b`, `f` to find, `v` to select,
   `y` to yank). `i` or `Enter` returns to the live shell.
+- `/` in copy mode searches the whole scrollback, ignoring case. Every match is
+  highlighted, starting from the newest one above the cursor; `n` goes further back
+  through older output, `N` comes forward, `Esc` clears it.
+- Links open in a new tab: hold `Ctrl` to underline the one under the pointer and
+  `Ctrl`+click it, or press `Ctrl+Shift+O` (while typing or in copy mode) to label
+  every link on screen and type a label. Web addresses in the output count, and so do
+  links programs mark (`ls --hyperlink`, compilers, `delta`); `file:` links don't
+  open.
 - `Ctrl+V` pastes; you can also drag to select, and double/triple-click takes a word/line.
 - Programs that use the mouse (htop, lazygit, vim with `mouse=a`, tmux) get clicks,
   drags and the wheel; hold `Shift` to select text instead. In full-screen programs
@@ -307,6 +315,8 @@ the `[tabs]` and `[term]` tables of `config.toml` (`:theme` opens it), and `:ai`
 | `term.cursor_blink` | on | The terminal cursor blinks (it stops after 5 seconds idle), unless a program asks for a steady one. |
 | `term.clipboard_write` | on | Terminal programs can copy to the clipboard. |
 | `term.visual_bell` | on | The terminal flashes when a program rings the bell. |
+| `term.links` | on | Terminal links open in a new tab (`Ctrl`+click, or `Ctrl+Shift+O` to label them). |
+| `term.search` | on | `/` in a terminal's copy mode searches its whole scrollback. |
 - Private tabs (`:open -n`) are never saved to the session or the closed-tab list.
 
 ## Command bar tricks

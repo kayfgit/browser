@@ -675,6 +675,17 @@ pub(crate) struct App {
     /// Wheel movement over a terminal not yet turned into whole lines or notches
     /// (a precision touchpad sends fractions). See [`take_wheel_steps`](crate::term::take_wheel_steps).
     pub(crate) term_wheel_acc: f64,
+    /// The terminal and link the pointer is over while Ctrl is held (drawn underlined).
+    pub(crate) term_link_hover: Option<(
+        usize,
+        (
+            alacritty_terminal::index::Point,
+            alacritty_terminal::index::Point,
+        ),
+    )>,
+    /// Hint mode was entered from a terminal's Passthrough (Ctrl+Shift+O): Esc goes
+    /// back to typing in it.
+    pub(crate) hint_back_to_passthrough: bool,
     /// True while the browser is frozen (`:freeze`): every web tab's view is dropped so
     /// the engine exits; the content band shows a frozen notice instead of
     /// the pages. `:unfreeze` rebuilds them. See [`freeze`](crate::freeze).
