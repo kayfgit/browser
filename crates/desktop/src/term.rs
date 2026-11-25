@@ -90,6 +90,31 @@ fn wheel_lines() -> f64 {
     3.0
 }
 
+/// Whether character `c` is the next piece of text an input method committed within
+/// the last half second (`pending`), using it up if so. Anything else ends the watch.
+fn ime_echo(pending: &mut Option<(String, Instant)>, c: &str, now: Instant) -> bool {
+    let Some((text, at)) = pending.as_mut() else {
+        return false;
+    };
+    if now.duration_since(*at) > Duration::from_millis(500) {
+        *pending = None;
+        return false;
+    }
+    match text.strip_prefix(c) {
+        Some(rest) => {
+            *text = rest.to_string();
+            if text.is_empty() {
+                *pending = None;
+            }
+            true
+        }
+        None => {
+            *pending = None;
+            false
+        }
+    }
+}
+
 /// How long a terminal flashes when a program rings the bell.
 pub(crate) const BELL_FLASH: Duration = Duration::from_millis(150);
 
@@ -385,6 +410,83 @@ impl App {
         let cols = (((r.w - 2 * TERM_PAD) / cw).max(1)) as usize;
         let rows = ((r.h / ch).max(1)) as usize;
         (cols, rows)
+    }
+
+    /// Text an input method (Japanese, Chinese, Korean IME, the emoji panel) committed:
+    /// it goes where typing goes, into the terminal while it has the keyboard, or into
+    /// the command line. Web pages handle their own IME.
+    pub(crate) fn on_ime_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        crate::journal::log(
+            "keys",
+            format!("ime commit ({} chars)", text.chars().count()),
+        );
+        match self.mode {
+            ModeKind::Passthrough if self.active_is_term() => {
+                if !self.config.setting("term.ime") {
+                    return;
+                }
+                if let Some(s) = self
+                    .active
+                    .and_then(|i| self.tabs.get_mut(i))
+                    .and_then(|t| t.term_mut())
+                {
+                    s.pty.clear_selection();
+                    snap_to_live(s, &self.window);
+                    s.send(0, text.as_bytes());
+                }
+                self.ime_committed = Some((text.to_string(), Instant::now()));
+                self.restart_term_blink();
+            }
+            ModeKind::Command | ModeKind::Find => {
+                self.cmdline.insert(text);
+                if self.mode == ModeKind::Find {
+                    self.find_update();
+                }
+                self.ime_committed = Some((text.to_string(), Instant::now()));
+                self.window.request_redraw();
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether a key event is the same text an input method just committed, which
+    /// Windows can also deliver as ordinary character messages: typed twice otherwise.
+    pub(crate) fn is_ime_echo(&mut self, key: &KeyEvent) -> bool {
+        match &key.logical_key {
+            Key::Character(c) => ime_echo(&mut self.ime_committed, c, Instant::now()),
+            _ => false,
+        }
+    }
+
+    /// Put the input method's composition window at the terminal cursor (its own
+    /// candidate list opens there), when typing into a terminal. Cheap when the cursor
+    /// hasn't moved.
+    pub(crate) fn place_ime(&mut self) {
+        if self.mode != ModeKind::Passthrough || !self.config.setting("term.ime") {
+            return;
+        }
+        let Some(cell) = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.term())
+            .and_then(|s| s.pty.cursor_cell())
+        else {
+            return;
+        };
+        let rect = self.focused_pane_rect();
+        let (cw, ch) = self.term_cell();
+        let pos = (
+            rect.x + TERM_PAD + cell.0 as i32 * cw,
+            rect.y + cell.1 as i32 * ch,
+        );
+        if self.ime_pos != Some(pos) {
+            self.ime_pos = Some(pos);
+            self.window
+                .set_ime_position(tao::dpi::PhysicalPosition::new(pos.0, pos.1));
+        }
     }
 
     /// How terminals are drawn this frame: the style and cursor settings, the blink
@@ -2077,6 +2179,23 @@ mod tests {
         assert!(pwsh_runs_something(&args("-c ls")));
         assert!(pwsh_runs_something(&args("-File x.ps1")));
         assert!(pwsh_runs_something(&args("-NoExit")));
+    }
+
+    /// Characters repeating what the IME just committed are dropped once each; a
+    /// different one, or one after half a second, types normally.
+    #[test]
+    fn ime_text_isnt_typed_twice() {
+        let t0 = Instant::now();
+        let mut pending = Some(("漢字".to_string(), t0));
+        assert!(ime_echo(&mut pending, "漢", t0));
+        assert!(ime_echo(&mut pending, "字", t0));
+        assert!(pending.is_none());
+        assert!(!ime_echo(&mut pending, "字", t0), "used up");
+        let mut pending = Some(("ab".to_string(), t0));
+        assert!(!ime_echo(&mut pending, "x", t0));
+        assert!(pending.is_none(), "a different key ends the watch");
+        let mut pending = Some(("a".to_string(), t0));
+        assert!(!ime_echo(&mut pending, "a", t0 + Duration::from_secs(1)));
     }
 
     #[test]

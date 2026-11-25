@@ -199,6 +199,11 @@ pub(crate) const SETTINGS: &[Setting] = &[
         default: true,
         desc: "terminal programs can use the kitty keyboard protocol (nvim, helix, fish): Ctrl+I apart from Tab, Ctrl+Shift chords, key releases",
     },
+    Setting {
+        key: "term.ime",
+        default: true,
+        desc: "input methods (Japanese, Chinese, Korean IME, the emoji panel Win+.) type into terminals, with their window at the cursor",
+    },
 ];
 
 /// Parse a setting's value as typed: `on`/`off` (and `true`/`false`, `yes`/`no`,
@@ -232,6 +237,7 @@ impl Config {
             "term.shell_integration" => self.term.shell_integration,
             "term.notify_done" => self.term.notify_done,
             "term.kitty_keyboard" => self.term.kitty_keyboard,
+            "term.ime" => self.term.ime,
             _ => return None,
         })
     }
@@ -253,6 +259,7 @@ impl Config {
             "term.shell_integration" => &mut self.term.shell_integration,
             "term.notify_done" => &mut self.term.notify_done,
             "term.kitty_keyboard" => &mut self.term.kitty_keyboard,
+            "term.ime" => &mut self.term.ime,
             _ => return None,
         })
     }
@@ -465,6 +472,10 @@ pub(crate) struct TermConfig {
     /// Programs can turn on the kitty keyboard protocol (nvim, helix, fish, …).
     #[serde(default)]
     pub(crate) kitty_keyboard: Option<bool>,
+    /// Input methods (Japanese, Chinese, Korean IME, the emoji panel) type into
+    /// terminals, with their composition window at the cursor.
+    #[serde(default)]
+    pub(crate) ime: Option<bool>,
 }
 
 /// Location of the config file (plain TOML in the app data dir, beside the session).

@@ -629,6 +629,11 @@ impl PtyTerm {
         crate::kitty_keys::Flags::from_mode(*self.vt.mode())
     }
 
+    /// Where the live cursor is on screen, as a (col, row) viewport cell, if it is.
+    pub fn cursor_cell(&self) -> Option<(usize, usize)> {
+        self.viewport_cell(self.vt.grid().cursor.point)
+    }
+
     /// Whether the cursor blinks now: the program's choice, else the default above.
     pub fn cursor_blinking(&self) -> bool {
         self.vt.cursor_style().blinking

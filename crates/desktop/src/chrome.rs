@@ -942,6 +942,8 @@ impl App {
             .then(|| self.hover_link.clone())
             .flatten();
 
+        // The IME's composition window follows the terminal cursor.
+        self.place_ime();
         // Terminal style/cursor settings and focus, read before the buffer borrows,
         // and live `/` searches re-run over output that arrived since the last frame.
         let term_opts = self.term_render_opts();

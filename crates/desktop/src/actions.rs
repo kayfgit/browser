@@ -55,6 +55,7 @@ const SETTING_KEYS: &[&str] = &[
     "term.shell_integration",
     "term.notify_done",
     "term.kitty_keyboard",
+    "term.ime",
 ];
 
 /// Every action the browser exposes through [`App::perform`] — the single list the
@@ -362,7 +363,8 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
                        and failed-command marks in terminals. term.notify_done: mark a \
                        terminal's tab when a long command finishes there. \
                        term.kitty_keyboard: terminal programs can use the kitty keyboard \
-                       protocol.",
+                       protocol. term.ime: input methods (Japanese/Chinese/Korean IME, the \
+                       emoji panel) type into terminals.",
             },
             ParamSpec {
                 name: "value",

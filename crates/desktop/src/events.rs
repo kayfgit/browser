@@ -374,12 +374,18 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             is_synthetic,
             ..
         } if takes_key_press(key.state, is_synthetic) => {
+            let key = packet_as_char(key);
+            if app.is_ime_echo(&key) {
+                return;
+            }
             app.handle_key(&key);
             if app.quit {
                 app.teardown();
                 *control_flow = ControlFlow::Exit;
             }
         }
+        // Text from an input method (Japanese/Chinese/Korean IME, the emoji panel).
+        WindowEvent::ReceivedImeText(text) => app.on_ime_text(&text),
         // A program using the kitty keyboard protocol can ask for key releases too.
         WindowEvent::KeyboardInput {
             event: key,
@@ -870,6 +876,31 @@ fn schedule_wakeup(app: &App, control_flow: &mut ControlFlow, servo_smoke: bool)
     }
 }
 
+/// Unicode "packet" input (SendInput with KEYEVENTF_UNICODE: the emoji panel,
+/// AutoHotkey, remote desktop, on-screen keyboards) reaches tao as an unidentified
+/// key that carries its text. Treat it as that character, so it types like any other.
+fn packet_as_char(mut key: tao::event::KeyEvent) -> tao::event::KeyEvent {
+    if let Some(text) = packet_char(&key.logical_key, key.text) {
+        key.logical_key = tao::keyboard::Key::Character(text);
+    }
+    key
+}
+
+/// The character an unidentified key with printable text types, if that's what it is.
+fn packet_char(
+    logical: &tao::keyboard::Key<'static>,
+    text: Option<&'static str>,
+) -> Option<&'static str> {
+    match (logical, text) {
+        (tao::keyboard::Key::Unidentified(_), Some(t))
+            if !t.is_empty() && !t.chars().any(char::is_control) =>
+        {
+            Some(t)
+        }
+        _ => None,
+    }
+}
+
 /// Whether a keyboard event is a key press the shell should act on. Releases never
 /// are, and neither are SYNTHETIC presses: when the window gains focus, tao reports
 /// every key still held down as a fresh press. A quick Alt+Tab into the browser
@@ -881,8 +912,25 @@ fn takes_key_press(state: ElementState, is_synthetic: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::takes_key_press;
+    use super::{packet_char, takes_key_press};
     use tao::event::ElementState;
+
+    /// Unicode packet input types its character; real unidentified keys and control
+    /// text don't.
+    #[test]
+    fn packet_input_types_its_character() {
+        use tao::keyboard::{Key, NativeKeyCode};
+        let unknown = Key::Unidentified(NativeKeyCode::Windows(0));
+        assert_eq!(packet_char(&unknown, Some("漢")), Some("漢"));
+        assert_eq!(packet_char(&unknown, Some("é")), Some("é"));
+        assert_eq!(packet_char(&unknown, None), None);
+        assert_eq!(packet_char(&unknown, Some("\r")), None);
+        assert_eq!(
+            packet_char(&Key::Character("a"), Some("a")),
+            None,
+            "already a character"
+        );
+    }
 
     #[test]
     fn keys_still_held_when_focus_arrives_are_ignored() {
