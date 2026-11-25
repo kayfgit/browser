@@ -102,6 +102,14 @@ fn on_timer(app: &mut App) {
     if app.term_resize.deadline().is_some() {
         app.window.request_redraw();
     }
+    // The terminal cursor's blink, including the change that stops it shown.
+    if app.term_cursor_blinks()
+        && app.term_blink_at.elapsed() < crate::term::BLINK_TIMEOUT + crate::term::BLINK_HALF
+    {
+        app.window.request_redraw();
+    }
+    // A finished bell flash repaints without it.
+    app.expire_term_bells();
     // Repeatable pane-resize auto-leaves after a spell of no resize key, so a
     // later j/k (meant to scroll) doesn't silently resize.
     if app.mode == ModeKind::PaneResize
@@ -168,6 +176,9 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             if focused {
                 app.last_focus_gain = Instant::now();
             }
+            app.window_focused = focused;
+            app.term_blink_at = Instant::now();
+            app.window.request_redraw();
         }
         WindowEvent::CursorMoved { position, .. } => {
             app.cursor_pos = (position.x, position.y);
@@ -810,6 +821,17 @@ fn schedule_wakeup(app: &App, control_flow: &mut ControlFlow, servo_smoke: bool)
             let next = match *control_flow {
                 ControlFlow::WaitUntil(t) => t.min(clear_at),
                 _ => clear_at,
+            };
+            *control_flow = ControlFlow::WaitUntil(next);
+        }
+        // A blinking terminal cursor's next change, and the end of a bell flash.
+        for deadline in [app.term_blink_deadline(), app.term_bell_deadline()]
+            .into_iter()
+            .flatten()
+        {
+            let next = match *control_flow {
+                ControlFlow::WaitUntil(t) => t.min(deadline),
+                _ => deadline,
             };
             *control_flow = ControlFlow::WaitUntil(next);
         }

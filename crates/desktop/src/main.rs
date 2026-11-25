@@ -349,6 +349,8 @@ fn main() -> Result<()> {
         config: cfg,
         theme: draw::Theme::default(),
         last_focus_gain: Instant::now(),
+        window_focused: true,
+        term_blink_at: Instant::now(),
         visited: visited::Visited::default(),
         saved: bookmarks::load(),
         closed_tabs: Vec::new(),

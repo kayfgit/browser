@@ -544,6 +544,12 @@ pub(crate) struct App {
     /// When the window last gained focus — used to swallow the stray `Tab` that
     /// Alt+Tab delivers to a focused terminal.
     pub(crate) last_focus_gain: Instant,
+    /// Whether the window has the OS focus (a terminal's cursor goes hollow without).
+    pub(crate) window_focused: bool,
+    /// When the terminal cursor's blink cycle last restarted: typing, output and
+    /// focus restart it with the cursor showing, and it stops blinking (stays shown)
+    /// [`BLINK_TIMEOUT`](crate::term::BLINK_TIMEOUT) after.
+    pub(crate) term_blink_at: Instant,
     /// Visited URLs with their visit times, most recent first. Drives command-bar
     /// autocomplete for `:open <partial>` and `:history`; persisted in the session.
     pub(crate) visited: crate::visited::Visited,

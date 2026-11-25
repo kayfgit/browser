@@ -25,6 +25,32 @@ pub(crate) const MULTI_CLICK: Duration = Duration::from_millis(500);
 /// zoom taps; shorter refits the grid sooner.
 pub(crate) const TERM_RESIZE_DEBOUNCE: Duration = Duration::from_millis(300);
 
+/// Half a cursor blink: shown this long, then hidden this long. Windows' default
+/// caret blink rate.
+pub(crate) const BLINK_HALF: Duration = Duration::from_millis(530);
+
+/// A cursor stops blinking (and stays shown) this long after the last keypress,
+/// output or focus change, as in Alacritty: an idle terminal shouldn't wake the
+/// browser twice a second forever.
+pub(crate) const BLINK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Where a blink cycle that restarted `elapsed` ago stands: whether the cursor shows,
+/// and when that next changes (`None` once it has stopped blinking).
+pub(crate) fn blink_phase(elapsed: Duration) -> (bool, Option<Duration>) {
+    if elapsed >= BLINK_TIMEOUT {
+        return (true, None);
+    }
+    let half = BLINK_HALF.as_millis();
+    let ms = elapsed.as_millis();
+    let on = (ms / half).is_multiple_of(2);
+    let next = Duration::from_millis((half - ms % half) as u64);
+    // The last change before the timeout lands it shown.
+    (on, Some(next.min(BLINK_TIMEOUT - elapsed)))
+}
+
+/// How long a terminal flashes when a program rings the bell.
+pub(crate) const BELL_FLASH: Duration = Duration::from_millis(150);
+
 /// A terminal grid size a pane wants: `(tab, cols, rows)`.
 pub(crate) type GridWant = (usize, usize, usize);
 
@@ -79,6 +105,9 @@ pub(crate) struct TermSession {
     pub(crate) reader: Option<JoinHandle<()>>,
     /// The native VT engine + grid this terminal renders from (no WebView2).
     pub(crate) pty: pty_term::PtyTerm,
+    /// When a program last rang the bell, while its flash
+    /// (`term.visual_bell`) is still showing.
+    pub(crate) bell_at: Option<Instant>,
 }
 
 impl TermSession {
@@ -210,6 +239,45 @@ impl App {
         let cols = (((r.w - 2 * TERM_PAD) / cw).max(1)) as usize;
         let rows = ((r.h / ch).max(1)) as usize;
         (cols, rows)
+    }
+
+    /// How terminals are drawn this frame: the style and cursor settings, the blink
+    /// phase, and `focused` = the window has the OS focus and keys go to terminals
+    /// (each pane narrows that to itself, see `chrome::paint_pane`).
+    pub(crate) fn term_render_opts(&self) -> pty_term::RenderOpts {
+        pty_term::RenderOpts {
+            text_styles: self.config.setting("term.text_styles"),
+            cursor_shapes: self.config.setting("term.cursor_shape"),
+            focused: self.window_focused,
+            blink_on: blink_phase(self.term_blink_at.elapsed()).0,
+        }
+    }
+
+    /// When the focused terminal's blinking cursor next turns on or off, so the event
+    /// loop can wake to repaint it. `None` when nothing is blinking.
+    pub(crate) fn term_blink_deadline(&self) -> Option<Instant> {
+        if !self.term_cursor_blinks() {
+            return None;
+        }
+        let (_, next) = blink_phase(self.term_blink_at.elapsed());
+        Some(Instant::now() + next?)
+    }
+
+    /// Whether the focused terminal shows a blinking cursor: the window is focused,
+    /// keys go to the terminal, and its cursor style blinks.
+    pub(crate) fn term_cursor_blinks(&self) -> bool {
+        self.window_focused
+            && self.mode == ModeKind::Passthrough
+            && self
+                .active
+                .and_then(|i| self.tabs.get(i))
+                .and_then(|t| t.term())
+                .is_some_and(|s| s.pty.cursor_blinking() && !s.pty.is_vi())
+    }
+
+    /// Restart the cursor blink with the cursor shown (typing, output, focus).
+    pub(crate) fn restart_term_blink(&mut self) {
+        self.term_blink_at = Instant::now();
     }
 
     /// Open a native terminal tab (no WebView2). The ConPTY + shell run in the
@@ -402,7 +470,12 @@ impl App {
                     stdin,
                     job,
                     reader: Some(reader_handle),
-                    pty: pty_term::PtyTerm::new(cols, rows, self.term_scrollback),
+                    pty: {
+                        let mut pty = pty_term::PtyTerm::new(cols, rows, self.term_scrollback);
+                        pty.set_cursor_blink(self.config.setting("term.cursor_blink"));
+                        pty
+                    },
+                    bell_at: None,
                 }),
             },
             true,
@@ -424,12 +497,56 @@ impl App {
     /// the engine produced (e.g. the `ESC[6n` cursor-position answer the shell waits
     /// for) is written straight back to the PTY.
     pub(crate) fn feed_terminal(&mut self, id: u64, data: &[u8]) {
-        if let Some(s) = self.term_session_mut(id) {
-            s.pty.feed(data);
-            let reply = s.pty.take_reply();
-            if !reply.is_empty() {
-                s.send(0, &reply);
+        let style = self.term_style;
+        let (cw, ch) = self.term_cell();
+        let clipboard_ok = self.config.setting("term.clipboard_write");
+        let bell_ok = self.config.setting("term.visual_bell");
+        let active = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.term())
+            .is_some_and(|s| s.id == id);
+        let Some(s) = self.term_session_mut(id) else {
+            return;
+        };
+        s.pty.feed(data);
+        let reply = s.pty.take_reply(&style, (cw as u16, ch as u16));
+        if !reply.is_empty() {
+            s.send(0, &reply);
+        }
+        if s.pty.take_bell() && bell_ok {
+            s.bell_at = Some(Instant::now());
+        }
+        // A program copying (nvim, tmux, also over SSH) writes the clipboard.
+        if let Some(text) = s.pty.take_clipboard().filter(|_| clipboard_ok) {
+            clipboard_set(&text);
+        }
+        // Output shows the cursor again, like typing does.
+        if active {
+            self.restart_term_blink();
+        }
+        self.window.request_redraw();
+    }
+
+    /// When the next bell flash ends (to wake and repaint without it).
+    pub(crate) fn term_bell_deadline(&self) -> Option<Instant> {
+        self.tabs
+            .iter()
+            .filter_map(|t| t.term()?.bell_at)
+            .map(|at| at + BELL_FLASH)
+            .min()
+    }
+
+    /// End bell flashes that have run their course, repainting without them.
+    pub(crate) fn expire_term_bells(&mut self) {
+        let mut ended = false;
+        for s in self.tabs.iter_mut().filter_map(|t| t.term_mut()) {
+            if s.bell_at.is_some_and(|at| at.elapsed() >= BELL_FLASH) {
+                s.bell_at = None;
+                ended = true;
             }
+        }
+        if ended {
             self.window.request_redraw();
         }
     }
@@ -504,6 +621,7 @@ impl App {
                 s.pty.clear_selection();
                 snap_to_live(s, &self.window);
                 s.send(0, &bytes);
+                self.restart_term_blink();
             }
         }
     }
@@ -536,6 +654,7 @@ impl App {
         }
         snap_to_live(s, &self.window);
         s.send(0, &out);
+        self.restart_term_blink();
     }
 
     /// Whether the active terminal is in copy/vi mode.
@@ -1435,6 +1554,23 @@ mod tests {
         assert_eq!(enc(Key::F12, true, false, false), b"\x1b[24;5~");
         // Alt doesn't add a second ESC in front of a sequence that has one.
         assert_eq!(enc(Key::F2, false, true, false), b"\x1b[1;3Q");
+    }
+
+    /// The cursor shows for the first half of each blink, hides for the second, and
+    /// stops blinking, shown, once things have been quiet for the timeout.
+    #[test]
+    fn the_blink_alternates_then_settles_shown() {
+        let ms = Duration::from_millis;
+        assert_eq!(blink_phase(ms(0)), (true, Some(BLINK_HALF)));
+        assert_eq!(blink_phase(ms(100)), (true, Some(BLINK_HALF - ms(100))));
+        assert_eq!(blink_phase(BLINK_HALF), (false, Some(BLINK_HALF)));
+        assert!(blink_phase(BLINK_HALF * 2).0);
+        // The last change lands exactly on the timeout...
+        let near = BLINK_TIMEOUT - ms(10);
+        assert_eq!(blink_phase(near).1, Some(ms(10)));
+        // ...after which it stays shown and nothing more is scheduled.
+        assert_eq!(blink_phase(BLINK_TIMEOUT), (true, None));
+        assert_eq!(blink_phase(BLINK_TIMEOUT * 3), (true, None));
     }
 
     /// Mouse reports in the three encodings programs ask for: SGR keeps the button

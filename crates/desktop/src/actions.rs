@@ -955,6 +955,10 @@ impl App {
             self.update_tab_hover(Some(self.cursor_pos));
         }
         self.refresh_visibility();
+        let blink = self.config.setting("term.cursor_blink");
+        for s in self.tabs.iter_mut().filter_map(|t| t.term_mut()) {
+            s.pty.set_cursor_blink(blink);
+        }
         self.window.request_redraw();
         let on = if self.config.setting(key) {
             "on"

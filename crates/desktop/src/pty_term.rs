@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use alacritty_terminal::event::{Event, EventListener};
+use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
@@ -14,7 +14,9 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Processor, Rgb as VtRgb};
+use alacritty_terminal::vte::ansi::{
+    Color, CursorShape, CursorStyle, NamedColor, Processor, Rgb as VtRgb,
+};
 
 // Re-exported so the shell can drive vi-mode without importing alacritty directly.
 pub use alacritty_terminal::vi_mode::ViMotion;
@@ -183,13 +185,33 @@ pub fn scheme(name: &str) -> Option<TermStyle> {
     })
 }
 
-/// Event sink for the VT engine. The only events we must act on are `PtyWrite`s —
-/// replies the engine generates to device queries (notably the `ESC[6n` cursor-
-/// position report the shell sends on startup and STALLS waiting for). We queue
-/// those bytes; the app drains them after each feed and writes them to the PTY.
+/// A reply the engine owes the program, in the order it was asked. Most are ready
+/// bytes; colour and size queries need the renderer's palette and cell size, which
+/// the engine doesn't know, so they're answered when the app drains them.
+enum Reply {
+    Bytes(String),
+    Color(usize, Arc<dyn Fn(VtRgb) -> String + Sync + Send>),
+    TextAreaSize(Arc<dyn Fn(WindowSize) -> String + Sync + Send>),
+}
+
+/// What the engine reported since the app last looked.
+#[derive(Default)]
+struct Reported {
+    replies: Vec<Reply>,
+    /// The last text a program copied (OSC 52).
+    clipboard: Option<String>,
+    /// A program rang the bell.
+    bell: bool,
+}
+
+/// Event sink for the VT engine. It queues what the app must act on: replies to
+/// device queries (notably the `ESC[6n` cursor-position report the shell sends on
+/// startup and STALLS waiting for, and the colour queries programs use to pick a
+/// light or dark theme), clipboard copies, the bell, and the title. The app drains
+/// them after each feed.
 #[derive(Clone)]
 pub struct TermListener {
-    out: Arc<Mutex<Vec<u8>>>,
+    reported: Arc<Mutex<Reported>>,
     /// The terminal's current OSC title (set by the running program: e.g. vim sets
     /// it to the open file, Claude Code to "Claude Code"). `None` once reset/unset.
     title: Arc<Mutex<Option<String>>>,
@@ -199,8 +221,25 @@ impl EventListener for TermListener {
     fn send_event(&self, event: Event) {
         match event {
             Event::PtyWrite(text) => {
-                self.out.lock().unwrap().extend_from_slice(text.as_bytes());
+                self.reported
+                    .lock()
+                    .unwrap()
+                    .replies
+                    .push(Reply::Bytes(text));
             }
+            Event::ColorRequest(index, format) => {
+                let reply = Reply::Color(index, format);
+                self.reported.lock().unwrap().replies.push(reply);
+            }
+            Event::TextAreaSizeRequest(format) => {
+                let reply = Reply::TextAreaSize(format);
+                self.reported.lock().unwrap().replies.push(reply);
+            }
+            // Windows has one clipboard, so a copy to the X "selection" lands there too.
+            Event::ClipboardStore(_, text) => {
+                self.reported.lock().unwrap().clipboard = Some(text);
+            }
+            Event::Bell => self.reported.lock().unwrap().bell = true,
             Event::Title(t) => {
                 let t = t.trim();
                 *self.title.lock().unwrap() = (!t.is_empty()).then(|| t.to_string());
@@ -218,7 +257,7 @@ pub struct PtyTerm {
     parser: Processor,
     pub cols: usize,
     pub rows: usize,
-    out: Arc<Mutex<Vec<u8>>>,
+    reported: Arc<Mutex<Reported>>,
     title: Arc<Mutex<Option<String>>>,
     /// Incremental scanner for the shell-integration cwd escapes (see [`CwdScan`]).
     cwd_scan: CwdScan,
@@ -226,6 +265,8 @@ pub struct PtyTerm {
     /// A Windows path (`C:\…`, `\\wsl.localhost\…`) or a Linux one (`/home/…` from
     /// inside WSL). `None` until a shell-integration prompt first reports it.
     cwd: Option<String>,
+    /// The engine's options, kept so one can change (`set_options` takes them all).
+    config: Config,
 }
 
 /// Incremental scanner for the two cwd escape sequences shells emit each prompt
@@ -344,28 +385,48 @@ pub const DEFAULT_SCROLLBACK: usize = 5000;
 impl PtyTerm {
     pub fn new(cols: usize, rows: usize, scrollback: usize) -> Self {
         let (cols, rows) = (cols.max(1), rows.max(1));
-        let out = Arc::new(Mutex::new(Vec::new()));
+        let reported = Arc::new(Mutex::new(Reported::default()));
         let title = Arc::new(Mutex::new(None));
         let listener = TermListener {
-            out: out.clone(),
+            reported: reported.clone(),
             title: title.clone(),
         };
         // Keep scrollback so copy-mode (Shift+Esc) can page back through history.
         let config = Config {
             scrolling_history: scrollback,
+            // Copy mode's cursor is a steady block whatever the program set.
+            vi_mode_cursor_style: Some(CursorStyle {
+                shape: CursorShape::Block,
+                blinking: false,
+            }),
             ..Config::default()
         };
-        let vt = Term::new(config, &TermSize::new(cols, rows), listener);
+        let vt = Term::new(config.clone(), &TermSize::new(cols, rows), listener);
         PtyTerm {
             vt,
             parser: Processor::new(),
             cols,
             rows,
-            out,
+            reported,
             title,
             cwd_scan: CwdScan::default(),
             cwd: None,
+            config,
         }
+    }
+
+    /// Whether the cursor blinks when no program has said (`term.cursor_blink`). A
+    /// program can still ask for a steady or a blinking cursor (DECSCUSR).
+    pub fn set_cursor_blink(&mut self, on: bool) {
+        if self.config.default_cursor_style.blinking != on {
+            self.config.default_cursor_style.blinking = on;
+            self.vt.set_options(self.config.clone());
+        }
+    }
+
+    /// Whether the cursor blinks now: the program's choice, else the default above.
+    pub fn cursor_blinking(&self) -> bool {
+        self.vt.cursor_style().blinking
     }
 
     /// The shell's current working directory, as last reported by shell
@@ -576,10 +637,54 @@ impl PtyTerm {
         self.parser.advance(&mut self.vt, bytes);
     }
 
-    /// Drain bytes the engine wants written back to the PTY (e.g. the cursor-position
-    /// report answering `ESC[6n`). Call after `feed`; without this the shell hangs.
-    pub fn take_reply(&mut self) -> Vec<u8> {
-        std::mem::take(&mut *self.out.lock().unwrap())
+    /// Drain the bytes the engine wants written back to the PTY: the cursor-position
+    /// report answering `ESC[6n` (call after `feed`; without this the shell hangs),
+    /// and answers to colour queries (OSC 4/10/11/12, from `st` where the program set
+    /// no colour of its own) and text-area size queries (`CSI 14 t`, from the
+    /// `cell` size in pixels).
+    pub fn take_reply(&mut self, st: &TermStyle, cell: (u16, u16)) -> Vec<u8> {
+        let replies = std::mem::take(&mut self.reported.lock().unwrap().replies);
+        let mut out = Vec::new();
+        for reply in replies {
+            let text = match reply {
+                Reply::Bytes(text) => text,
+                Reply::Color(index, format) => {
+                    let (r, g, b) = self.query_color(index, st);
+                    format(VtRgb { r, g, b })
+                }
+                Reply::TextAreaSize(format) => format(WindowSize {
+                    num_lines: self.rows as u16,
+                    num_cols: self.cols as u16,
+                    cell_width: cell.0,
+                    cell_height: cell.1,
+                }),
+            };
+            out.extend_from_slice(text.as_bytes());
+        }
+        out
+    }
+
+    /// The colour a query for palette entry `index` gets: what the program set, else
+    /// ours (0–255 the palette, then the default foreground, background, cursor).
+    fn query_color(&self, index: usize, st: &TermStyle) -> Rgb {
+        if let Some(c) = self.vt.colors()[index] {
+            return to_rgb(c);
+        }
+        match index {
+            0..=255 => indexed_default(index as u8, st),
+            i if i == NamedColor::Background as usize => st.bg,
+            _ => st.fg,
+        }
+    }
+
+    /// The text a program last copied to the clipboard (OSC 52), once.
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.reported.lock().unwrap().clipboard.take()
+    }
+
+    /// Whether a program rang the bell since the last call.
+    pub fn take_bell(&mut self) -> bool {
+        std::mem::take(&mut self.reported.lock().unwrap().bell)
     }
 
     /// Resize the grid (after the window/zoom changes the cell count). Returns
@@ -872,10 +977,121 @@ fn resolve(c: Color, colors: &Colors, st: &TermStyle) -> Rgb {
     }
 }
 
+/// How a terminal is drawn this frame, beyond its grid: the user's settings and
+/// whether its cursor has the keyboard.
+#[derive(Clone, Copy, Debug)]
+pub struct RenderOpts {
+    /// Draw bold, italic, dim, hidden, underlined and struck-through text as such
+    /// (`term.text_styles`); off, only colours and inverse show.
+    pub text_styles: bool,
+    /// Draw the cursor in the shape the program asked for, hollow while the terminal
+    /// doesn't have the keyboard (`term.cursor_shape`); off, always a solid block.
+    pub cursor_shapes: bool,
+    /// The terminal has the keyboard: its pane is focused, the window is, and keys
+    /// go to it (Passthrough) or to its copy mode.
+    pub focused: bool,
+    /// The blink cycle is in its visible half (always true when nothing blinks).
+    pub blink_on: bool,
+}
+
+impl Default for RenderOpts {
+    fn default() -> Self {
+        RenderOpts {
+            text_styles: true,
+            cursor_shapes: true,
+            focused: true,
+            blink_on: true,
+        }
+    }
+}
+
+/// The face a cell's text is drawn in.
+fn font_style(flags: Flags) -> draw::FontStyle {
+    match (flags.contains(Flags::BOLD), flags.contains(Flags::ITALIC)) {
+        (true, true) => draw::FontStyle::BoldItalic,
+        (true, false) => draw::FontStyle::Bold,
+        (false, true) => draw::FontStyle::Italic,
+        (false, false) => draw::FontStyle::Regular,
+    }
+}
+
+/// Draw a cell's underline (single, double, curly, dotted or dashed) and
+/// strikethrough over the `cw`-wide cell at (`cx`, `cy`). Patterns follow the
+/// absolute x so they run on unbroken across cells.
+#[allow(clippy::too_many_arguments)]
+fn draw_decorations(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    (cx, cy, cw): (i32, i32, i32),
+    (cell_w, cell_h, baseline_off): (i32, i32, i32),
+    flags: Flags,
+    underline: Rgb,
+    strike: Rgb,
+) {
+    let mut fill = |x0: i32, y0: i32, x1: i32, y1: i32, c: Rgb| {
+        if x1 > x0 && y1 > y0 && x1 > 0 && y1 > 0 {
+            draw::fill_rect(
+                buf,
+                w,
+                h,
+                x0.max(0) as usize,
+                y0.max(0) as usize,
+                x1 as usize,
+                y1 as usize,
+                c,
+            );
+        }
+    };
+    let th = (cell_h / 14).max(1);
+    let bottom = cy + cell_h;
+    // A third of the way into the descender band, kept inside the cell.
+    let descent = cell_h - baseline_off;
+    let uy = (cy + baseline_off + (descent / 3).max(1)).min(bottom - th);
+    if flags.contains(Flags::DOUBLE_UNDERLINE) {
+        let second = if uy + 3 * th <= bottom {
+            uy + 2 * th
+        } else {
+            uy - 2 * th
+        };
+        fill(cx, uy, cx + cw, uy + th, underline);
+        fill(cx, second, cx + cw, second + th, underline);
+    } else if flags.contains(Flags::UNDERCURL) {
+        let amp = ((descent - th) / 3).max(1) as f32;
+        let mid = (uy as f32).min((bottom - th) as f32 - amp);
+        for x in cx..cx + cw {
+            let phase = x as f32 / cell_w.max(1) as f32 * std::f32::consts::TAU;
+            let y = (mid - amp * phase.sin()).round() as i32;
+            fill(x, y, x + 1, y + th, underline);
+        }
+    } else if flags.contains(Flags::DOTTED_UNDERLINE) {
+        for x in cx..cx + cw {
+            if (x / th) % 2 == 0 {
+                fill(x, uy, x + 1, uy + th, underline);
+            }
+        }
+    } else if flags.contains(Flags::DASHED_UNDERLINE) {
+        let dash = (cell_w / 3).max(2);
+        for x in cx..cx + cw {
+            if (x / dash) % 3 != 2 {
+                fill(x, uy, x + 1, uy + th, underline);
+            }
+        }
+    } else if flags.contains(Flags::UNDERLINE) {
+        fill(cx, uy, cx + cw, uy + th, underline);
+    }
+    if flags.contains(Flags::STRIKEOUT) {
+        // Through the middle of lowercase letters (about half the x-height).
+        let sy = cy + baseline_off - cell_h * 2 / 9;
+        fill(cx, sy, cx + cw, sy + th, strike);
+    }
+}
+
 /// Paint the terminal grid into `buf`. The grid's top-left cell is at (`x0`, `y0`);
 /// `cell_w`/`cell_h` are the monospace cell size. Cells past the bottom of the
 /// content band (`>= clip_bottom`) are skipped; the caller paints the bars on top.
-/// `st` supplies the default fg/bg + ANSI palette (the `:theme term_*` overrides).
+/// `st` supplies the default fg/bg + ANSI palette (the `:theme term_*` overrides),
+/// `opts` the text-style and cursor settings and focus.
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     pty: &PtyTerm,
@@ -889,13 +1105,14 @@ pub fn render(
     cell_h: i32,
     clip_bottom: i32,
     st: &TermStyle,
+    opts: RenderOpts,
 ) {
     let content = pty.vt.renderable_content();
     let colors = content.colors;
     let cursor = content.cursor;
     let selection = content.selection;
     let baseline_off = cell_h * 3 / 4;
-    let mut cursor_char = ' ';
+    let mut cursor_cell = (' ', draw::FontStyle::Regular, false);
 
     // Both `display_iter` cells AND `cursor.point` use ABSOLUTE buffer coordinates
     // (lines are negative for scrollback): `display_iter` starts at
@@ -914,10 +1131,21 @@ pub fn render(
         if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
             continue;
         }
+        let flags = if opts.text_styles {
+            cell.flags
+        } else {
+            cell.flags & (Flags::INVERSE | Flags::WIDE_CHAR)
+        };
+        let style = font_style(flags);
         let row = item.point.line.0 + display_offset;
         let col = item.point.column.0 as i32;
         if row == cursor_row && col == cursor_col {
-            cursor_char = cell.c;
+            let shown = if flags.contains(Flags::HIDDEN) {
+                ' '
+            } else {
+                cell.c
+            };
+            cursor_cell = (shown, style, flags.contains(Flags::WIDE_CHAR));
         }
         let cx = x0 + col * cell_w;
         let cy = y0 + row * cell_h;
@@ -926,14 +1154,19 @@ pub fn render(
         }
         let mut fg = resolve(cell.fg, colors, st);
         let mut bg = resolve(cell.bg, colors, st);
-        if cell.flags.contains(Flags::INVERSE) {
+        // Dim (SGR 2: hints, inactive text) blends a third of the way into the
+        // background, which works on light schemes as well as dark ones.
+        if flags.contains(Flags::DIM) {
+            fg = lerp(fg, bg, 0x55);
+        }
+        if flags.contains(Flags::INVERSE) {
             std::mem::swap(&mut fg, &mut bg);
         }
         // Selection highlight — copy mode's `v`/`V` and mouse drags share it.
         if selection.is_some_and(|s| s.contains(item.point)) {
             bg = draw::SEL;
         }
-        let cw = if cell.flags.contains(Flags::WIDE_CHAR) {
+        let cw = if flags.contains(Flags::WIDE_CHAR) {
             cell_w * 2
         } else {
             cell_w
@@ -952,9 +1185,10 @@ pub fn render(
         }
         if cell.c != ' '
             && cell.c != '\0'
+            && !flags.contains(Flags::HIDDEN)
             && !draw_special(buf, w, h, cx, cy, cell_w, cell_h, cell.c, fg, bg)
         {
-            p.put_char(
+            p.put_char_styled(
                 buf,
                 w,
                 h,
@@ -962,38 +1196,135 @@ pub fn render(
                 (cy + baseline_off) as usize,
                 cell.c,
                 fg,
+                style,
+            );
+        }
+        if flags.intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT) {
+            let underline = cell
+                .underline_color()
+                .map_or(fg, |c| resolve(c, colors, st));
+            draw_decorations(
+                buf,
+                w,
+                h,
+                (cx, cy, cw),
+                (cell_w, cell_h, baseline_off),
+                flags,
+                underline,
+                fg,
             );
         }
     }
 
-    // Block cursor (inverse cell), unless hidden. Uses the viewport-converted row
-    // so it tracks the display when copy-mode has scrolled into scrollback.
-    if !matches!(cursor.shape, CursorShape::Hidden) {
-        let cx = x0 + cursor_col * cell_w;
-        let cy = y0 + cursor_row * cell_h;
-        if cy >= y0 && cy + cell_h <= clip_bottom {
+    draw_cursor(
+        pty,
+        p,
+        buf,
+        (w, h),
+        (x0, y0, clip_bottom),
+        (cell_w, cell_h, baseline_off),
+        (cursor_col, cursor_row),
+        cursor.shape,
+        cursor_cell,
+        colors,
+        st,
+        opts,
+    );
+}
+
+/// The cursor's look for a frame: `None` hides it (the program did, or it's in the
+/// off half of a blink). Copy mode's cursor is always a steady block; otherwise the
+/// program's shape when `cursor_shapes` is on (hollow and steady without the
+/// keyboard), else a solid block; either blinks when the program's style does.
+fn cursor_look(
+    shape: CursorShape,
+    blinking: bool,
+    vi: bool,
+    opts: RenderOpts,
+) -> Option<CursorShape> {
+    if shape == CursorShape::Hidden {
+        return None;
+    }
+    if vi {
+        return Some(CursorShape::Block);
+    }
+    let shape = match (opts.cursor_shapes, opts.focused) {
+        (false, _) => CursorShape::Block,
+        (true, false) => return Some(CursorShape::HollowBlock),
+        (true, true) => shape,
+    };
+    (!blinking || opts.blink_on).then_some(shape)
+}
+
+/// Paint the cursor at viewport cell (`col`, `row`) in the shape [`cursor_look`]
+/// picks. A block inverts the character under it (`cell`: its char, face, width).
+#[allow(clippy::too_many_arguments)]
+fn draw_cursor(
+    pty: &PtyTerm,
+    p: &Painter,
+    buf: &mut [u32],
+    (w, h): (usize, usize),
+    (x0, y0, clip_bottom): (i32, i32, i32),
+    (cell_w, cell_h, baseline_off): (i32, i32, i32),
+    (col, row): (i32, i32),
+    shape: CursorShape,
+    (ch, style, wide): (char, draw::FontStyle, bool),
+    colors: &Colors,
+    st: &TermStyle,
+    opts: RenderOpts,
+) {
+    let Some(shape) = cursor_look(shape, pty.cursor_blinking(), pty.is_vi(), opts) else {
+        return;
+    };
+    let cx = x0 + col * cell_w;
+    let cy = y0 + row * cell_h;
+    if cy < y0 || cy + cell_h > clip_bottom {
+        return;
+    }
+    let cw = if wide { cell_w * 2 } else { cell_w };
+    // A program can set the cursor colour (OSC 12).
+    let color = colors[NamedColor::Cursor].map_or(st.fg, to_rgb);
+    let mut fill = |x0: i32, y0: i32, x1: i32, y1: i32| {
+        if x1 > x0 && y1 > y0 && x1 > 0 && y1 > 0 {
             draw::fill_rect(
                 buf,
                 w,
                 h,
-                cx.max(0) as usize,
-                cy.max(0) as usize,
-                (cx + cell_w).max(0) as usize,
-                (cy + cell_h).max(0) as usize,
-                st.fg,
+                x0.max(0) as usize,
+                y0.max(0) as usize,
+                x1 as usize,
+                y1 as usize,
+                color,
             );
-            if cursor_char != ' '
-                && cursor_char != '\0'
-                && !draw_special(buf, w, h, cx, cy, cell_w, cell_h, cursor_char, st.bg, st.fg)
+        }
+    };
+    // Bar and underline thickness, as Alacritty draws them: 15% of a cell's width.
+    let th = ((cell_w as f32 * 0.15).round() as i32).max(1);
+    match shape {
+        CursorShape::Beam => fill(cx, cy, cx + th, cy + cell_h),
+        CursorShape::Underline => fill(cx, cy + cell_h - th, cx + cw, cy + cell_h),
+        CursorShape::HollowBlock => {
+            let t = (cell_w / 10).max(1);
+            fill(cx, cy, cx + cw, cy + t);
+            fill(cx, cy + cell_h - t, cx + cw, cy + cell_h);
+            fill(cx, cy, cx + t, cy + cell_h);
+            fill(cx + cw - t, cy, cx + cw, cy + cell_h);
+        }
+        _ => {
+            fill(cx, cy, cx + cw, cy + cell_h);
+            if ch != ' '
+                && ch != '\0'
+                && !draw_special(buf, w, h, cx, cy, cell_w, cell_h, ch, st.bg, color)
             {
-                p.put_char(
+                p.put_char_styled(
                     buf,
                     w,
                     h,
                     cx.max(0) as usize,
                     (cy + baseline_off) as usize,
-                    cursor_char,
+                    ch,
                     st.bg,
+                    style,
                 );
             }
         }
@@ -1199,5 +1530,215 @@ mod tests {
         assert!(pty.scrolled_back(), "output must not move the view");
         pty.scroll_to_bottom();
         assert!(!pty.scrolled_back());
+    }
+
+    /// A 10×2 terminal fed `bytes`, painted at 20 px cells into a fresh buffer with
+    /// the cursor hidden, so only the text shows.
+    fn paint(bytes: &[u8], opts: RenderOpts) -> Vec<u32> {
+        let mut pty = PtyTerm::new(10, 2, DEFAULT_SCROLLBACK);
+        pty.feed(bytes);
+        pty.feed(b"\x1b[?25l");
+        paint_pty(&pty, opts)
+    }
+
+    const CELL: (i32, i32) = (10, 20);
+
+    fn paint_pty(pty: &PtyTerm, opts: RenderOpts) -> Vec<u32> {
+        let (w, h) = (100usize, 40usize);
+        let p = Painter::new(15.0).unwrap();
+        let mut buf = vec![0u32; w * h];
+        let st = TermStyle::default();
+        render(
+            pty, &p, &mut buf, w, h, 0, 0, CELL.0, CELL.1, h as i32, &st, opts,
+        );
+        buf
+    }
+
+    /// The pixels of cell `col` in row 0.
+    fn cell(buf: &[u32], col: usize) -> Vec<u32> {
+        let (cw, ch) = (CELL.0 as usize, CELL.1 as usize);
+        (0..ch)
+            .flat_map(|y| buf[y * 100 + col * cw..][..cw].to_vec())
+            .collect()
+    }
+
+    fn lit(px: &[u32]) -> usize {
+        px.iter().filter(|&&p| p != 0).count()
+    }
+
+    #[test]
+    fn styled_text_is_drawn_differently_unless_styles_are_off() {
+        let on = RenderOpts::default();
+        let off = RenderOpts {
+            text_styles: false,
+            ..on
+        };
+        let plain = paint(b"l", on);
+        for sgr in ["1", "3", "4", "9", "2", "4:2", "4:3", "4:4", "4:5"] {
+            let styled = paint(format!("\x1b[{sgr}ml").as_bytes(), on);
+            assert_ne!(styled, plain, "SGR {sgr} drew like plain text");
+            let ignored = paint(format!("\x1b[{sgr}ml").as_bytes(), off);
+            assert_eq!(ignored, plain, "SGR {sgr} with text styles off");
+        }
+        // Hidden text (SGR 8) draws nothing.
+        assert_eq!(lit(&paint(b"\x1b[8ml", on)), 0);
+        // An underline marks a space too; plain spaces stay blank.
+        assert_eq!(lit(&cell(&paint(b" ", on), 0)), 0);
+        assert!(lit(&cell(&paint(b"\x1b[4m ", on), 0)) > 0);
+    }
+
+    #[test]
+    fn dim_text_is_fainter() {
+        let brightest = |buf: &[u32]| {
+            buf.iter()
+                .map(|&p| (p >> 16 & 0xff) + (p >> 8 & 0xff) + (p & 0xff))
+                .max()
+                .unwrap()
+        };
+        let plain = paint(b"\x1b[37mM", RenderOpts::default());
+        let dim = paint(b"\x1b[2;37mM", RenderOpts::default());
+        assert!(brightest(&dim) < brightest(&plain));
+    }
+
+    #[test]
+    fn the_cursor_takes_the_programs_shape_and_goes_hollow_unfocused() {
+        let opts = RenderOpts::default();
+        let blur = RenderOpts {
+            focused: false,
+            ..opts
+        };
+        let no_shapes = RenderOpts {
+            cursor_shapes: false,
+            ..opts
+        };
+        use CursorShape::*;
+        assert_eq!(cursor_look(Beam, false, false, opts), Some(Beam));
+        assert_eq!(cursor_look(Underline, false, false, opts), Some(Underline));
+        assert_eq!(cursor_look(Beam, false, false, blur), Some(HollowBlock));
+        assert_eq!(cursor_look(Beam, false, false, no_shapes), Some(Block));
+        assert_eq!(cursor_look(Hidden, false, false, opts), None);
+        // Copy mode's cursor is a block, whatever the program asked for.
+        assert_eq!(cursor_look(Beam, true, true, blur), Some(Block));
+        // A blinking cursor hides in the off half, unless it's hollow.
+        let off_phase = RenderOpts {
+            blink_on: false,
+            ..opts
+        };
+        assert_eq!(cursor_look(Block, true, false, off_phase), None);
+        assert_eq!(cursor_look(Block, false, false, off_phase), Some(Block));
+        assert_eq!(
+            cursor_look(
+                Block,
+                true,
+                false,
+                RenderOpts {
+                    focused: false,
+                    ..off_phase
+                }
+            ),
+            Some(HollowBlock)
+        );
+
+        // And on screen: a bar covers less of the cell than a block.
+        let mut pty = PtyTerm::new(10, 2, DEFAULT_SCROLLBACK);
+        let block = lit(&cell(&paint_pty(&pty, opts), 0));
+        pty.feed(b"\x1b[6 q"); // steady bar
+        let bar = lit(&cell(&paint_pty(&pty, opts), 0));
+        assert!(bar > 0 && bar < block, "bar {bar} block {block}");
+    }
+
+    #[test]
+    fn programs_choose_whether_the_cursor_blinks() {
+        let mut pty = PtyTerm::new(10, 2, DEFAULT_SCROLLBACK);
+        assert!(!pty.cursor_blinking());
+        pty.set_cursor_blink(true);
+        assert!(pty.cursor_blinking(), "the setting's default");
+        pty.feed(b"\x1b[2 q"); // steady block
+        assert!(!pty.cursor_blinking());
+        pty.set_cursor_blink(false);
+        pty.feed(b"\x1b[5 q"); // blinking bar
+        assert!(pty.cursor_blinking());
+        // Copy mode never blinks.
+        pty.toggle_vi();
+        assert!(!pty.cursor_blinking());
+    }
+
+    #[test]
+    fn colour_and_size_queries_are_answered() {
+        let st = TermStyle::default();
+        let mut pty = PtyTerm::new(80, 24, DEFAULT_SCROLLBACK);
+        let reply = |pty: &mut PtyTerm, q: &[u8]| {
+            pty.feed(q);
+            String::from_utf8(pty.take_reply(&st, (9, 18))).unwrap()
+        };
+        let hex = |(r, g, b): Rgb| format!("rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}");
+        assert_eq!(
+            reply(&mut pty, b"\x1b]11;?\x1b\\"),
+            format!("\x1b]11;{}\x1b\\", hex(st.bg))
+        );
+        assert_eq!(
+            reply(&mut pty, b"\x1b]10;?\x07"),
+            format!("\x1b]10;{}\x07", hex(st.fg))
+        );
+        assert_eq!(
+            reply(&mut pty, b"\x1b]4;1;?\x07"),
+            format!("\x1b]4;1;{}\x07", hex(st.ansi[1]))
+        );
+        // A colour the program set is the one it gets back.
+        pty.feed(b"\x1b]11;rgb:12/34/56\x07");
+        assert_eq!(
+            reply(&mut pty, b"\x1b]11;?\x07"),
+            "\x1b]11;rgb:1212/3434/5656\x07"
+        );
+        // Text area in pixels, and replies keep the order they were asked in.
+        assert_eq!(
+            reply(&mut pty, b"\x1b[14t\x1b[6n"),
+            "\x1b[4;432;720t\x1b[1;1R"
+        );
+    }
+
+    #[test]
+    fn clipboard_copies_and_the_bell_are_reported_once() {
+        let mut pty = PtyTerm::new(10, 2, DEFAULT_SCROLLBACK);
+        pty.feed(b"\x1b]52;c;aGVsbG8=\x07"); // "hello"
+        assert_eq!(pty.take_clipboard().as_deref(), Some("hello"));
+        assert_eq!(pty.take_clipboard(), None);
+        // A request to READ the clipboard is refused (OSC 52 copy-only).
+        pty.feed(b"\x1b]52;c;?\x07");
+        assert!(pty.take_reply(&TermStyle::default(), (9, 18)).is_empty());
+        assert!(!pty.take_bell());
+        pty.feed(b"\x07");
+        assert!(pty.take_bell());
+        assert!(!pty.take_bell());
+    }
+
+    #[test]
+    fn mouse_modes_and_alternate_scroll_follow_the_program() {
+        let mut pty = PtyTerm::new(10, 2, DEFAULT_SCROLLBACK);
+        assert_eq!(pty.mouse_report(), None);
+        assert!(
+            !pty.alternate_scroll(),
+            "the main screen scrolls its scrollback"
+        );
+        pty.feed(b"\x1b[?1049h"); // alternate screen (less, man)
+        assert!(pty.alternate_scroll());
+        pty.feed(b"\x1b[?1000h");
+        assert_eq!(
+            pty.mouse_report(),
+            Some(MouseReport {
+                drag: false,
+                motion: false,
+                encoding: MouseEncoding::X10
+            })
+        );
+        assert!(
+            !pty.alternate_scroll(),
+            "a program reading the mouse gets the wheel"
+        );
+        pty.feed(b"\x1b[?1002h\x1b[?1006h");
+        let r = pty.mouse_report().unwrap();
+        assert!(r.drag && !r.motion && r.encoding == MouseEncoding::Sgr);
+        pty.feed(b"\x1b[?1003h");
+        assert!(pty.mouse_report().unwrap().motion);
     }
 }
