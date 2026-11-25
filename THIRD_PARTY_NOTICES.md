@@ -63,6 +63,41 @@ Notable ones include [wry](https://github.com/tauri-apps/wry) (Apache-2.0/MIT),
   source is in this repository at `vendor/servo-paint-api/`, with
   the change described in its `PATCH.md`.
 
+## Microsoft ConPTY
+
+- Location: `crates/desktop/conpty/` (`conpty.dll` and `OpenConsole.exe`, x64), packed
+  into `browser.exe` and unpacked to `%LOCALAPPDATA%\browser\data\conpty\` for
+  terminal tabs.
+- Author: Microsoft Corporation
+- Source: the `Microsoft.Windows.Console.ConPTY` package,
+  <https://www.nuget.org/packages/Microsoft.Windows.Console.ConPTY>, built from
+  <https://github.com/microsoft/terminal>. The version is in `crates/desktop/conpty/VERSION`.
+- License: MIT. Microsoft's license text:
+
+```
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## Microsoft Visual C++ runtime
 
 The installer places `msvcp140.dll`, `vcruntime140.dll` and `vcruntime140_1.dll` beside

@@ -15,6 +15,10 @@
 //!    hash goes into `BUNDLED_EXTENSIONS_HASH` so a changed bundle gets re-extracted.
 //!    `_metadata` folders are skipped: Chromium writes its own indexes there whenever it
 //!    loads an unpacked extension, so they're per-machine output, not part of the bundle.
+//!
+//! 3. Pack `conpty/` (Microsoft's ConPTY: conpty.dll + OpenConsole.exe, see
+//!    `update-conpty.ps1`) the same way, for `bundled_conpty.rs`; its hash goes into
+//!    `BUNDLED_CONPTY_HASH` and names the folder it unpacks into.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
@@ -32,6 +36,7 @@ fn main() {
         .expect("embed application manifest");
     }
     pack_extensions();
+    pack_conpty();
     println!("cargo:rerun-if-changed=build.rs");
 }
 
@@ -66,6 +71,34 @@ fn pack_extensions() {
     hasher.write(&bytes);
     println!(
         "cargo:rustc-env=BUNDLED_EXTENSIONS_HASH={:016x}",
+        hasher.finish()
+    );
+}
+
+fn pack_conpty() {
+    let src = Path::new("conpty");
+    println!("cargo:rerun-if-changed=conpty");
+    let out = Path::new(&std::env::var("OUT_DIR").unwrap()).join("conpty.tar.gz");
+    let file = std::fs::File::create(&out).expect("create conpty archive");
+    let gz = flate2::write::GzEncoder::new(file, flate2::Compression::best());
+    let mut tar = tar::Builder::new(gz);
+    tar.mode(tar::HeaderMode::Deterministic);
+    // Only the two binaries ship; VERSION stays in the repo.
+    for name in ["conpty.dll", "OpenConsole.exe"] {
+        let path = src.join(name);
+        if path.is_file() {
+            tar.append_path_with_name(&path, name)
+                .expect("pack conpty file");
+        }
+    }
+    tar.into_inner()
+        .and_then(|gz| gz.finish())
+        .expect("finish conpty archive");
+    let bytes = std::fs::read(&out).expect("read conpty archive");
+    let mut hasher = DefaultHasher::new();
+    hasher.write(&bytes);
+    println!(
+        "cargo:rustc-env=BUNDLED_CONPTY_HASH={:016x}",
         hasher.finish()
     );
 }

@@ -37,6 +37,8 @@ mod audio;
 mod bangs;
 mod blocklist;
 mod bookmarks;
+#[cfg(windows)]
+mod bundled_conpty;
 mod bundled_extensions;
 mod buttons;
 mod chrome;
