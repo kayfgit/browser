@@ -52,6 +52,8 @@ const SETTING_KEYS: &[&str] = &[
     "term.links",
     "term.search",
     "term.bundled_conpty",
+    "term.shell_integration",
+    "term.notify_done",
 ];
 
 /// Every action the browser exposes through [`App::perform`] — the single list the
@@ -354,7 +356,10 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
                        flashes on the bell. term.links: terminal links open in a new tab \
                        (Ctrl+click, s in copy mode, Ctrl+Shift+O). term.search: / searches a terminal's \
                        scrollback. term.bundled_conpty: new terminals use the bundled \
-                       Microsoft ConPTY instead of Windows' own console host.",
+                       Microsoft ConPTY instead of Windows' own console host. \
+                       term.shell_integration: prompt jumps, copying a command's output \
+                       and failed-command marks in terminals. term.notify_done: mark a \
+                       terminal's tab when a long command finishes there.",
             },
             ParamSpec {
                 name: "value",
