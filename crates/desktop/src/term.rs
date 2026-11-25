@@ -432,6 +432,14 @@ impl App {
         if let Some(dir) = cwd {
             command.arg("--cwd").arg(dir);
         }
+        // The bundled Microsoft ConPTY, unpacked on first use; without it (setting
+        // off, or it couldn't be unpacked) the host uses Windows' own.
+        #[cfg(windows)]
+        if self.config.setting("term.bundled_conpty") {
+            if let Some(dir) = crate::bundled_conpty::dir() {
+                command.arg("--conpty").arg(dir);
+            }
+        }
         // cmd reads its prompt from the PROMPT env var, so cwd reporting can be
         // injected with no user setup: prefix the prompt with `OSC 9;9;<cwd> ST`
         // ($E = ESC, $P = cwd — the Windows Terminal shell-integration pattern).

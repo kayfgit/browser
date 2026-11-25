@@ -244,6 +244,12 @@ current one, and `:w` saves your choice with the session.
 - Typing `exit` closes the tab.
 - `:te <command>` (with a command) runs it once and shows the output in the command bar.
 
+Terminals run under Microsoft's ConPTY, the console host Windows Terminal ships, which
+comes bundled with the browser. It's faster than Windows' own on heavy output and passes
+through what Windows' own drops: colour queries (programs picking a light or dark theme),
+curly/dotted/dashed underlines and underline colours. `:set term.bundled_conpty off` uses
+Windows' own for terminals opened after that.
+
 When you save the session, each terminal's working directory is saved too, and the next
 launch reopens the shell there. How the directory is detected depends on the shell:
 
@@ -318,6 +324,7 @@ the `[tabs]` and `[term]` tables of `config.toml` (`:theme` opens it), and `:ai`
 | `term.visual_bell` | on | The terminal flashes when a program rings the bell. |
 | `term.links` | on | Terminal links open in a new tab (`Ctrl`+click, or `s` in copy mode / `Ctrl+Shift+O` while typing to label them). |
 | `term.search` | on | `/` in a terminal's copy mode searches its whole scrollback. |
+| `term.bundled_conpty` | on | New terminals run under the bundled Microsoft ConPTY (what Windows Terminal ships); off uses Windows' own console host. |
 - Private tabs (`:open -n`) are never saved to the session or the closed-tab list.
 
 ## Command bar tricks

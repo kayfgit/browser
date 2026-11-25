@@ -1,0 +1,74 @@
+# Keep the bundled Microsoft ConPTY (crates/desktop/conpty) current: it's what terminal
+# tabs run their shell under, and Microsoft ships fixes every month or two alongside
+# Windows Terminal.
+#
+# Weekly (or on demand), run update-conpty.ps1, which takes the latest stable
+# Microsoft.Windows.Console.ConPTY from nuget.org and refuses files without a valid
+# Microsoft Authenticode signature (hence a Windows runner). If it changed, commit it on
+# `conpty-update/<version>` and open a PR, closing any older one it replaces. The commit
+# is a `fix:`, so release-please puts it in the next release.
+#
+# A PR opened with GITHUB_TOKEN doesn't trigger other workflows, so CI is started
+# explicitly with `gh workflow run`. Its checks still show on the PR.
+name: update ConPTY
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays, 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: update-conpty
+
+jobs:
+  bump:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the latest ConPTY
+        shell: pwsh
+        run: ./update-conpty.ps1
+
+      - name: Open a PR if it changed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git add -A crates/desktop/conpty
+          if git diff --cached --quiet; then
+            echo "The bundled ConPTY is already up to date."
+            exit 0
+          fi
+          version=$(cat crates/desktop/conpty/VERSION)
+          branch="conpty-update/$version"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "$branch already exists; nothing to do."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -q -m "fix: update the bundled ConPTY to $version" \
+            -m "Microsoft's console host for terminal tabs (automated, update-conpty.yml)."
+          git push -q origin "$branch"
+
+          url=$(gh pr create --base main --head "$branch" \
+            --title "fix: update the bundled ConPTY to $version" \
+            --body "Automated weekly bump of the bundled Microsoft ConPTY (\`conpty.dll\` + \`OpenConsole.exe\`, what terminal tabs run under) to [$version](https://www.nuget.org/packages/Microsoft.Windows.Console.ConPTY/$version). \`update-conpty.ps1\` checked that both files carry a valid Microsoft Authenticode signature.")
+          echo "Opened $url"
+
+          # Older bump PRs are superseded by this one.
+          gh pr list --state open --json number,headRefName \
+            --jq ".[] | select(.headRefName | startswith(\"conpty-update/\")) | select(.headRefName != \"$branch\") | .number" |
+            while read -r old; do
+              gh pr close "$old" --delete-branch --comment "Superseded by $url."
+            done
+
+          gh workflow run ci.yml --ref "$branch"

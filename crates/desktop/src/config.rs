@@ -179,6 +179,11 @@ pub(crate) const SETTINGS: &[Setting] = &[
         default: true,
         desc: "/ in a terminal's copy mode searches its whole scrollback (n goes further back, N forward)",
     },
+    Setting {
+        key: "term.bundled_conpty",
+        default: true,
+        desc: "new terminals use the bundled Microsoft ConPTY (what Windows Terminal ships): colour queries, styled underlines, faster output; off uses Windows' own console host",
+    },
 ];
 
 /// Parse a setting's value as typed: `on`/`off` (and `true`/`false`, `yes`/`no`,
@@ -208,6 +213,7 @@ impl Config {
             "term.visual_bell" => self.term.visual_bell,
             "term.links" => self.term.links,
             "term.search" => self.term.search,
+            "term.bundled_conpty" => self.term.bundled_conpty,
             _ => return None,
         })
     }
@@ -225,6 +231,7 @@ impl Config {
             "term.visual_bell" => &mut self.term.visual_bell,
             "term.links" => &mut self.term.links,
             "term.search" => &mut self.term.search,
+            "term.bundled_conpty" => &mut self.term.bundled_conpty,
             _ => return None,
         })
     }
@@ -421,6 +428,10 @@ pub(crate) struct TermConfig {
     /// `/` in a terminal's copy mode searches its scrollback.
     #[serde(default)]
     pub(crate) search: Option<bool>,
+    /// New terminals run under the bundled Microsoft ConPTY instead of Windows' own
+    /// console host. See [`bundled_conpty`](crate::bundled_conpty).
+    #[serde(default)]
+    pub(crate) bundled_conpty: Option<bool>,
 }
 
 /// Location of the config file (plain TOML in the app data dir, beside the session).

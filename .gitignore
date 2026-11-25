@@ -5,6 +5,9 @@
 # Compiled/native artifacts and locally downloaded Windows toolchains
 *.exe
 *.dll
+# ...except the bundled Microsoft ConPTY (update-conpty.ps1).
+!/crates/desktop/conpty/conpty.dll
+!/crates/desktop/conpty/OpenConsole.exe
 *.lib
 *.exp
 *.obj

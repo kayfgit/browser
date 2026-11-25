@@ -20,7 +20,11 @@ config). Debug builds keep the WebView2 profile next to the executable and unpac
 extension to `target/debug/bundled/extensions`. The bundled uBlock Origin Lite updates
 itself: every Monday the `update uBOL` workflow runs `./update-ubol.ps1` (it checks the
 release's SHA-256) and opens a PR when there's a new version. Run the script yourself,
-or the workflow from the Actions tab, to bump sooner.
+or the workflow from the Actions tab, to bump sooner. The bundled Microsoft ConPTY
+(`crates/desktop/conpty/`, what terminal tabs run under) works the same way: the
+`update ConPTY` workflow runs `./update-conpty.ps1` every Monday, which takes the latest
+stable `Microsoft.Windows.Console.ConPTY` from nuget.org and refuses files without a
+valid Microsoft signature. Debug builds unpack it to `target/debug/bundled/conpty`.
 
 Launch development builds with `--scratch` so they can't touch your real session or
 profiles:
