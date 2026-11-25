@@ -39,7 +39,17 @@ pub(crate) struct ActionSpec {
 
 /// The [`SETTINGS`](crate::config::SETTINGS) keys, as the `set` action offers them
 /// (a test keeps the two lists equal).
-const SETTING_KEYS: &[&str] = &["tabs.lazy_load", "tabs.speaker", "tabs.hover_buttons"];
+const SETTING_KEYS: &[&str] = &[
+    "tabs.lazy_load",
+    "tabs.speaker",
+    "tabs.hover_buttons",
+    "term.mouse_reporting",
+    "term.text_styles",
+    "term.cursor_shape",
+    "term.cursor_blink",
+    "term.clipboard_write",
+    "term.visual_bell",
+];
 
 /// Every action the browser exposes through [`App::perform`] — the single list the
 /// command bar, the help page, and the assistant all read from. A param with an
@@ -321,7 +331,8 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         summary: "Turn one of the browser's optional behaviours on or off. Use for \
                   requests like 'load all my tabs at startup' (tabs.lazy_load off), \
                   'hide the speaker icon on tabs' (tabs.speaker off) or 'stop tabs \
-                  growing when I hover them' (tabs.hover_buttons off).",
+                  growing when I hover them' (tabs.hover_buttons off), 'stop my \
+                  terminal cursor blinking' (term.cursor_blink off).",
         params: &[
             ParamSpec {
                 name: "key",
@@ -330,7 +341,14 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
                 desc: "tabs.lazy_load: restored tabs load only when first shown. \
                        tabs.speaker: a speaker on tabs playing sound. \
                        tabs.hover_buttons: hovering a tab widens it and shows close/mute \
-                       buttons.",
+                       buttons. term.mouse_reporting: terminal programs that read the \
+                       mouse get clicks, drags and the wheel. term.text_styles: terminals \
+                       draw bold, italic, dim, underline and strikethrough. \
+                       term.cursor_shape: the terminal cursor takes the shape programs \
+                       ask for and turns hollow without the keyboard. term.cursor_blink: \
+                       the terminal cursor blinks. term.clipboard_write: terminal \
+                       programs can copy to the clipboard. term.visual_bell: the terminal \
+                       flashes on the bell.",
             },
             ParamSpec {
                 name: "value",

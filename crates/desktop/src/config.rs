@@ -139,6 +139,36 @@ pub(crate) const SETTINGS: &[Setting] = &[
         default: true,
         desc: "hovering a tab widens it and shows its close and mute buttons",
     },
+    Setting {
+        key: "term.mouse_reporting",
+        default: true,
+        desc: "terminal programs that read the mouse (htop, lazygit, vim) get clicks, drags and the wheel; Shift+drag still selects",
+    },
+    Setting {
+        key: "term.text_styles",
+        default: true,
+        desc: "terminals draw bold, italic, dim, underlined and struck-through text",
+    },
+    Setting {
+        key: "term.cursor_shape",
+        default: true,
+        desc: "the terminal cursor takes the shape programs ask for (bar, underline) and turns hollow when the terminal doesn't have the keyboard",
+    },
+    Setting {
+        key: "term.cursor_blink",
+        default: true,
+        desc: "the terminal cursor blinks, unless a program asks for a steady one",
+    },
+    Setting {
+        key: "term.clipboard_write",
+        default: true,
+        desc: "terminal programs can copy to the clipboard (nvim, tmux, also over SSH)",
+    },
+    Setting {
+        key: "term.visual_bell",
+        default: true,
+        desc: "the terminal flashes when a program rings the bell",
+    },
 ];
 
 /// Parse a setting's value as typed: `on`/`off` (and `true`/`false`, `yes`/`no`,
@@ -160,6 +190,12 @@ impl Config {
             "tabs.lazy_load" => self.tabs.lazy_load,
             "tabs.speaker" => self.tabs.speaker,
             "tabs.hover_buttons" => self.tabs.hover_buttons,
+            "term.mouse_reporting" => self.term.mouse_reporting,
+            "term.text_styles" => self.term.text_styles,
+            "term.cursor_shape" => self.term.cursor_shape,
+            "term.cursor_blink" => self.term.cursor_blink,
+            "term.clipboard_write" => self.term.clipboard_write,
+            "term.visual_bell" => self.term.visual_bell,
             _ => return None,
         })
     }
@@ -169,6 +205,12 @@ impl Config {
             "tabs.lazy_load" => &mut self.tabs.lazy_load,
             "tabs.speaker" => &mut self.tabs.speaker,
             "tabs.hover_buttons" => &mut self.tabs.hover_buttons,
+            "term.mouse_reporting" => &mut self.term.mouse_reporting,
+            "term.text_styles" => &mut self.term.text_styles,
+            "term.cursor_shape" => &mut self.term.cursor_shape,
+            "term.cursor_blink" => &mut self.term.cursor_blink,
+            "term.clipboard_write" => &mut self.term.clipboard_write,
+            "term.visual_bell" => &mut self.term.visual_bell,
             _ => return None,
         })
     }
@@ -338,6 +380,26 @@ pub(crate) struct TermConfig {
     /// Terminal default text colour (name or hex) — overrides the scheme's.
     #[serde(default)]
     pub(crate) fg: Option<String>,
+    /// Programs that read the mouse (htop, lazygit, vim `mouse=a`) get clicks, drags
+    /// and the wheel. One of the [`SETTINGS`].
+    #[serde(default)]
+    pub(crate) mouse_reporting: Option<bool>,
+    /// Bold, italic, dim, underlined and struck-through text is drawn as such.
+    #[serde(default)]
+    pub(crate) text_styles: Option<bool>,
+    /// The cursor takes the shape programs ask for (a bar, an underline) and turns
+    /// hollow while the terminal doesn't have the keyboard.
+    #[serde(default)]
+    pub(crate) cursor_shape: Option<bool>,
+    /// The cursor blinks (unless a program asks for a steady one).
+    #[serde(default)]
+    pub(crate) cursor_blink: Option<bool>,
+    /// Programs can copy to the clipboard (OSC 52: nvim, tmux, over SSH too).
+    #[serde(default)]
+    pub(crate) clipboard_write: Option<bool>,
+    /// The terminal flashes when a program rings the bell.
+    #[serde(default)]
+    pub(crate) visual_bell: Option<bool>,
 }
 
 /// Location of the config file (plain TOML in the app data dir, beside the session).

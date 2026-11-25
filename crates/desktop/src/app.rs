@@ -659,6 +659,13 @@ pub(crate) struct App {
     /// `(when, x, y, count)` of the last press. A press near the same spot within
     /// [`MULTI_CLICK`](crate::term::MULTI_CLICK) grows `count` (2 = word, 3 = line).
     pub(crate) term_clicks: Option<(Instant, f64, f64, u8)>,
+    /// A mouse button whose press went to a terminal program (it reads the mouse),
+    /// so its drag and release go there too. See
+    /// [`term_mouse_press`](App::term_mouse_press).
+    pub(crate) term_mouse_held: Option<crate::term::TermMouseHeld>,
+    /// The terminal and cell the last button-less motion report named, so a program
+    /// tracking every motion (DEC 1003) hears once per cell crossed.
+    pub(crate) term_mouse_hover: Option<(usize, (u32, u32))>,
     /// True while the browser is frozen (`:freeze`): every web tab's view is dropped so
     /// the engine exits; the content band shows a frozen notice instead of
     /// the pages. `:unfreeze` rebuilds them. See [`freeze`](crate::freeze).

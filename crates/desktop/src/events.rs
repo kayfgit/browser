@@ -175,6 +175,8 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             app.bar_drag(position.x);
             // Left-drag inside a terminal pane extends ITS selection.
             app.term_select_drag(position.x, position.y);
+            // A terminal program tracking the mouse hears the motion.
+            app.term_mouse_motion(position.x, position.y);
             // Left-drag on a tab slides it along the strip.
             app.tab_drag_move(position.x, position.y);
             // Hovering the command bar reveals the full (vs. shortened) URL.
@@ -207,6 +209,12 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             // HWND) isn't a release, and shouldn't clobber the clipboard. What
             // was selected stays highlighted and yankable.
             app.term_drag = None;
+            // A button a terminal program was told about went down: tell it the
+            // button is up again, or it would stay held there.
+            if let Some(held) = app.term_mouse_held {
+                app.term_mouse_release(held.button, true);
+            }
+            app.term_mouse_hover = None;
             // A tab drag keeps wherever the tab got to.
             app.end_tab_drag();
             app.update_tab_hover(None);
@@ -229,6 +237,8 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             ..
         } => {
             app.bar_dragging = false;
+            // A press a terminal program got: its release goes there too.
+            app.term_mouse_release(0, false);
             // Ends a terminal drag-select and copies what it covered.
             app.term_select_end();
             // Drops a dragged tab where it is.
@@ -243,7 +253,32 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             ..
         } => {
             crate::journal::log("mouse", format!("right press at {:?}", app.cursor_pos));
-            app.right_click_copy(app.cursor_pos.0, app.cursor_pos.1)
+            // A terminal program reading the mouse gets the right button; otherwise
+            // a right press copies the surface's selection.
+            if !app.term_mouse_button_press(2) {
+                app.right_click_copy(app.cursor_pos.0, app.cursor_pos.1)
+            }
+        }
+        WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Middle,
+            ..
+        } => {
+            app.term_mouse_button_press(1);
+        }
+        WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Right,
+            ..
+        } => {
+            app.term_mouse_release(2, false);
+        }
+        WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Middle,
+            ..
+        } => {
+            app.term_mouse_release(1, false);
         }
         WindowEvent::MouseInput {
             state: ElementState::Pressed,
@@ -297,9 +332,12 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
                 if app.is_split() {
                     app.focus_pane_click(tab);
                 }
-                // Then start a drag-selection if that pane is a terminal (also
-                // when unsplit — one terminal filling the band still selects).
-                app.term_select_start(tab, rect, app.cursor_pos.0, app.cursor_pos.1);
+                // Then hand the press to a terminal program reading the mouse, or
+                // start a drag-selection if that pane is a terminal (also when
+                // unsplit — one terminal filling the band still selects).
+                if !app.term_mouse_press(tab, rect, 0) {
+                    app.term_select_start(tab, rect, app.cursor_pos.0, app.cursor_pos.1);
+                }
             }
         }
         // Mouse wheel: scroll the native-drawn content under the cursor (the

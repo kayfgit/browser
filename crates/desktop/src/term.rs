@@ -771,14 +771,7 @@ impl App {
         let Some((col, row, right)) = self.term_cell_at(tab, rect, x, y) else {
             return false;
         };
-        let shift = self.modifiers.shift_key();
-        if self
-            .tabs
-            .get(tab)
-            .and_then(|t| t.term())
-            .is_some_and(|s| s.pty.mouse_mode())
-            && !shift
-        {
+        if self.term_mouse_report(tab).is_some() && !self.modifiers.shift_key() {
             return false;
         }
         // A press within the streak window AND on the same cell continues the streak;
@@ -851,34 +844,188 @@ impl App {
         self.window.request_redraw();
     }
 
-    /// Forward a wheel notch to a terminal program that turned on mouse reporting,
-    /// as a mouse wheel-button event at the cell under the cursor (relative to the
-    /// pane's rect). Returns `false` (so the caller scrolls our scrollback instead)
-    /// when no program wants mice.
-    pub(crate) fn term_mouse_wheel(&mut self, tab: usize, rect: PaneRect, dy_lines: f64) -> bool {
-        let (cw, ch) = self.term_cell();
-        let (px, py) = (self.cursor_pos.0 as i32, self.cursor_pos.1 as i32);
-        let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) else {
+    /// The mouse reporting terminal `tab`'s program asked for, when it should get the
+    /// mouse: `term.mouse_reporting` is on and copy mode isn't (copy mode's clicks
+    /// and drags select, as they do for a program that reads no mouse).
+    pub(crate) fn term_mouse_report(&self, tab: usize) -> Option<pty_term::MouseReport> {
+        if !self.config.setting("term.mouse_reporting") {
+            return None;
+        }
+        let s = self.tabs.get(tab)?.term()?;
+        if s.pty.is_vi() {
+            return None;
+        }
+        s.pty.mouse_report()
+    }
+
+    /// The 1-based cell a mouse report names for a window pixel over terminal `tab`.
+    fn term_report_cell(&self, tab: usize, rect: PaneRect, x: f64, y: f64) -> Option<(u32, u32)> {
+        let (col, row, _) = self.term_cell_at(tab, rect, x, y)?;
+        Some((col as u32 + 1, row as u32 + 1))
+    }
+
+    /// The modifier bits a mouse report carries: Shift 4, Alt 8, Ctrl 16.
+    fn mouse_mods(&self) -> u8 {
+        let m = &self.modifiers;
+        (m.shift_key() as u8) << 2 | (m.alt_key() as u8) << 3 | (m.control_key() as u8) << 4
+    }
+
+    /// A mouse button pressed over terminal `tab`: report it to the program when it
+    /// reads the mouse (Shift held keeps the press ours, to select, as in xterm).
+    /// `button` is xterm's code: 0 left, 1 middle, 2 right. Returns whether the press
+    /// went to the program.
+    pub(crate) fn term_mouse_press(&mut self, tab: usize, rect: PaneRect, button: u8) -> bool {
+        let Some(report) = self.term_mouse_report(tab) else {
             return false;
         };
-        if !s.pty.mouse_mode() {
+        if self.modifiers.shift_key() {
             return false;
         }
-        let (cols, rows) = (s.pty.cols as i32, s.pty.rows as i32);
-        let col = (((px - rect.x - TERM_PAD) / cw) + 1).clamp(1, cols.max(1));
-        let row = (((py - rect.y) / ch) + 1).clamp(1, rows.max(1));
-        // xterm wheel buttons: 64 = up, 65 = down.
-        let button = if dy_lines > 0.0 { 64 } else { 65 };
-        let sgr = s.pty.sgr_mouse();
-        let notches = (dy_lines.abs().round() as i32).max(1);
-        let mut out = Vec::new();
-        for _ in 0..notches {
-            out.extend_from_slice(&encode_mouse_wheel(sgr, button, col, row));
-        }
-        s.send(0, &out);
-        self.window.request_redraw();
+        let (x, y) = self.cursor_pos;
+        let Some(cell) = self.term_report_cell(tab, rect, x, y) else {
+            return false;
+        };
+        let bytes = encode_mouse(report.encoding, button | self.mouse_mods(), cell, false);
+        self.term_mouse_held = Some(TermMouseHeld {
+            tab,
+            rect,
+            button,
+            cell,
+        });
+        self.term_mouse_send(tab, &bytes);
         true
     }
+
+    /// [`term_mouse_press`](Self::term_mouse_press) for whatever pane is under the
+    /// pointer (the right and middle buttons, which don't focus or select).
+    pub(crate) fn term_mouse_button_press(&mut self, button: u8) -> bool {
+        let (x, y) = self.cursor_pos;
+        match self.pane_at_pixel(x, y) {
+            Some((tab, rect)) => self.term_mouse_press(tab, rect, button),
+            None => false,
+        }
+    }
+
+    /// A mouse button released: report it when its press went to the program. The
+    /// release lands on the cell under the pointer (clamped to the pane), or on the
+    /// last one reported when the pointer left the window (`at_last_cell`).
+    pub(crate) fn term_mouse_release(&mut self, button: u8, at_last_cell: bool) -> bool {
+        let Some(held) = self.term_mouse_held.filter(|h| h.button == button) else {
+            return false;
+        };
+        self.term_mouse_held = None;
+        let Some(report) = self.term_mouse_report(held.tab) else {
+            return true;
+        };
+        let (x, y) = self.cursor_pos;
+        let cell = if at_last_cell {
+            held.cell
+        } else {
+            self.term_report_cell(held.tab, held.rect, x, y)
+                .unwrap_or(held.cell)
+        };
+        let bytes = encode_mouse(report.encoding, button | self.mouse_mods(), cell, true);
+        self.term_mouse_send(held.tab, &bytes);
+        true
+    }
+
+    /// The pointer moved: report it when the program tracks motion — while a button
+    /// it was told about is held (drag, DEC 1002), or always (DEC 1003). One report
+    /// per cell crossed, not per pixel.
+    pub(crate) fn term_mouse_motion(&mut self, x: f64, y: f64) {
+        if let Some(held) = self.term_mouse_held {
+            let Some(report) = self.term_mouse_report(held.tab) else {
+                return;
+            };
+            if !(report.drag || report.motion) {
+                return;
+            }
+            let Some(cell) = self.term_report_cell(held.tab, held.rect, x, y) else {
+                return;
+            };
+            if cell == held.cell {
+                return;
+            }
+            self.term_mouse_held = Some(TermMouseHeld { cell, ..held });
+            let code = held.button | 32 | self.mouse_mods();
+            let bytes = encode_mouse(report.encoding, code, cell, false);
+            self.term_mouse_send(held.tab, &bytes);
+            return;
+        }
+        let Some((tab, rect)) = self.pane_at_pixel(x, y) else {
+            self.term_mouse_hover = None;
+            return;
+        };
+        let Some(report) = self.term_mouse_report(tab).filter(|r| r.motion) else {
+            self.term_mouse_hover = None;
+            return;
+        };
+        let Some(cell) = self.term_report_cell(tab, rect, x, y) else {
+            return;
+        };
+        if self.term_mouse_hover == Some((tab, cell)) {
+            return;
+        }
+        self.term_mouse_hover = Some((tab, cell));
+        // No button held: xterm reports motion as button 3 (none) plus the motion bit.
+        let bytes = encode_mouse(report.encoding, 3 | 32 | self.mouse_mods(), cell, false);
+        self.term_mouse_send(tab, &bytes);
+    }
+
+    fn term_mouse_send(&mut self, tab: usize, bytes: &[u8]) {
+        if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
+            s.send(0, bytes);
+        }
+    }
+
+    /// Hand a wheel notch to the terminal program instead of scrolling our own
+    /// scrollback: as wheel-button reports when it reads the mouse, or as arrow keys
+    /// when a full-screen program without mouse support (less, man) is up — the
+    /// alternate screen has no scrollback to scroll. Returns `false` when neither
+    /// applies and the caller should scroll the scrollback.
+    pub(crate) fn term_mouse_wheel(&mut self, tab: usize, rect: PaneRect, dy_lines: f64) -> bool {
+        let notches = (dy_lines.abs().round() as usize).max(1);
+        if let Some(report) = self.term_mouse_report(tab) {
+            let (x, y) = self.cursor_pos;
+            let Some(cell) = self.term_report_cell(tab, rect, x, y) else {
+                return false;
+            };
+            // xterm wheel buttons: 64 = up, 65 = down.
+            let button = if dy_lines > 0.0 { 64 } else { 65 };
+            let one = encode_mouse(report.encoding, button | self.mouse_mods(), cell, false);
+            self.term_mouse_send(tab, &one.repeat(notches));
+            return true;
+        }
+        let Some(s) = self.tabs.get(tab).and_then(|t| t.term()) else {
+            return false;
+        };
+        if !self.config.setting("term.mouse_reporting") || !s.pty.alternate_scroll() {
+            return false;
+        }
+        let key = if dy_lines > 0.0 {
+            Key::ArrowUp
+        } else {
+            Key::ArrowDown
+        };
+        let Some(one) = encode_term_key(&key, false, false, false, s.pty.app_cursor()) else {
+            return false;
+        };
+        // Three lines a notch, as our own scrollback moves.
+        self.term_mouse_send(tab, &one.repeat(notches * 3));
+        true
+    }
+}
+
+/// A mouse button whose press went to a terminal program, so its motion and
+/// release go there too.
+#[derive(Clone, Copy)]
+pub(crate) struct TermMouseHeld {
+    pub(crate) tab: usize,
+    pub(crate) rect: PaneRect,
+    /// xterm's code: 0 left, 1 middle, 2 right.
+    pub(crate) button: u8,
+    /// The last cell reported (1-based).
+    pub(crate) cell: (u32, u32),
 }
 
 /// Input sent to a terminal returns its view to the live screen, as other terminals
@@ -1031,20 +1178,36 @@ fn pty_host_path() -> Option<std::path::PathBuf> {
     Some(exe.parent()?.join(name))
 }
 
-/// Encode a single mouse-button event for a terminal in mouse-reporting mode.
-/// `button` is the xterm button code (64/65 = wheel up/down), `col`/`row` are
-/// 1-based cell coordinates. Uses the SGR (1006) form when the program asked for
-/// it, else the legacy X10 byte form. Wheel events are press-only (no release).
-fn encode_mouse_wheel(sgr: bool, button: u8, col: i32, row: i32) -> Vec<u8> {
-    if sgr {
-        format!("\x1b[<{button};{col};{row}M").into_bytes()
-    } else {
-        // X10: each field is its value + 32, clamped to one byte.
-        let cb = 32u8.saturating_add(button);
-        let cx = (32 + col).clamp(32, 255) as u8;
-        let cy = (32 + row).clamp(32, 255) as u8;
-        vec![0x1b, b'[', b'M', cb, cx, cy]
+/// Encode one mouse report for a terminal program. `code` is xterm's button code
+/// with its extra bits already added: 0/1/2 left/middle/right, 3 no button, 64/65
+/// wheel up/down, +4 Shift, +8 Alt, +16 Ctrl, +32 motion. `cell` is the 1-based
+/// (col, row). A release keeps its button in SGR (`…m`) but is button 3 in the
+/// older encodings, which can't say which button went up.
+fn encode_mouse(
+    encoding: pty_term::MouseEncoding,
+    code: u8,
+    (col, row): (u32, u32),
+    release: bool,
+) -> Vec<u8> {
+    use pty_term::MouseEncoding;
+    if encoding == MouseEncoding::Sgr {
+        let end = if release { 'm' } else { 'M' };
+        return format!("\x1b[<{code};{col};{row}{end}").into_bytes();
     }
+    let code = if release { (code & !0b11) | 3 } else { code };
+    let mut out = vec![0x1b, b'[', b'M', 32 + code];
+    for v in [col, row] {
+        let v = 32 + v;
+        if encoding == MouseEncoding::Utf8 {
+            // Up to 2015 fits in two UTF-8 bytes; past that it clamps.
+            let ch = char::from_u32(v.min(2047)).unwrap_or(' ');
+            let mut b = [0; 4];
+            out.extend_from_slice(ch.encode_utf8(&mut b).as_bytes());
+        } else {
+            out.push(v.min(255) as u8);
+        }
+    }
+    out
 }
 
 /// Encode a key event into the bytes a PTY expects (the inverse of what xterm.js
@@ -1272,6 +1435,28 @@ mod tests {
         assert_eq!(enc(Key::F12, true, false, false), b"\x1b[24;5~");
         // Alt doesn't add a second ESC in front of a sequence that has one.
         assert_eq!(enc(Key::F2, false, true, false), b"\x1b[1;3Q");
+    }
+
+    /// Mouse reports in the three encodings programs ask for: SGR keeps the button
+    /// on release and writes plain numbers; X10 adds 32 to everything and reports
+    /// every release as button 3; UTF-8 is X10 with big coordinates UTF-8 encoded.
+    #[test]
+    fn mouse_reports_follow_the_programs_encoding() {
+        use pty_term::MouseEncoding::*;
+        assert_eq!(encode_mouse(Sgr, 0, (5, 3), false), b"\x1b[<0;5;3M");
+        assert_eq!(encode_mouse(Sgr, 0, (5, 3), true), b"\x1b[<0;5;3m");
+        assert_eq!(encode_mouse(Sgr, 2 | 16, (1, 1), false), b"\x1b[<18;1;1M");
+        assert_eq!(encode_mouse(Sgr, 32, (300, 2), false), b"\x1b[<32;300;2M");
+        assert_eq!(encode_mouse(X10, 0, (5, 3), false), b"\x1b[M\x20\x25\x23");
+        assert_eq!(encode_mouse(X10, 2, (5, 3), true), b"\x1b[M\x23\x25\x23");
+        assert_eq!(encode_mouse(X10, 65, (1, 1), false), b"\x1b[M\x61\x21\x21");
+        // X10 can't go past column 223.
+        assert_eq!(encode_mouse(X10, 0, (500, 1), false), b"\x1b[M\x20\xff\x21");
+        // UTF-8 writes column 200 (232) as two bytes.
+        assert_eq!(
+            encode_mouse(Utf8, 0, (200, 1), false),
+            b"\x1b[M\x20\xc3\xa8\x21"
+        );
     }
 
     /// Ctrl+Backspace sends ^H, which PowerShell, bash and fish read as "delete the

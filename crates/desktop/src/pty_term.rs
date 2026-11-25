@@ -28,6 +28,28 @@ pub enum SelectKind {
     Line,
 }
 
+/// The mouse reporting a terminal program turned on (see [`PtyTerm::mouse_report`]).
+/// Clicks are always reported once any mode is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MouseReport {
+    /// Motion while a button is held (DEC 1002).
+    pub drag: bool,
+    /// Every motion, button or not (DEC 1003).
+    pub motion: bool,
+    pub encoding: MouseEncoding,
+}
+
+/// How mouse reports are written to the PTY.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseEncoding {
+    /// `ESC [ M` and three bytes of value + 32 (the original; coordinates stop at 223).
+    X10,
+    /// Like X10, but coordinates past 95 are UTF-8 encoded (DEC 1005).
+    Utf8,
+    /// `ESC [ < b ; x ; y M/m` (DEC 1006), what modern programs ask for.
+    Sgr,
+}
+
 use crate::draw::{self, Painter, Rgb};
 
 /// Default 16-color ANSI palette — Windows Terminal's "Campbell" scheme, so colors
@@ -582,17 +604,32 @@ impl PtyTerm {
     /// Whether the program enabled bracketed-paste mode (DEC 2004). If so, pasted
     /// text must be wrapped in `ESC[200~`…`ESC[201~` so the app treats it as one
     /// literal block (e.g. a shell won't run each pasted line on its own).
-    /// Whether the running program enabled any mouse reporting (e.g. vim `mouse=a`,
-    /// less, tmux). When set, wheel/clicks should be forwarded to it as mouse events
-    /// instead of driving our own scrollback.
-    pub fn mouse_mode(&self) -> bool {
-        self.vt.mode().intersects(TermMode::MOUSE_MODE)
+    /// Which mouse events the running program asked for (vim `mouse=a`, htop,
+    /// lazygit, tmux) and how to encode them. `None` when it reads no mouse at all,
+    /// so clicks select and the wheel scrolls our own scrollback.
+    pub fn mouse_report(&self) -> Option<MouseReport> {
+        let m = self.vt.mode();
+        m.intersects(TermMode::MOUSE_MODE).then(|| MouseReport {
+            drag: m.contains(TermMode::MOUSE_DRAG),
+            motion: m.contains(TermMode::MOUSE_MOTION),
+            encoding: if m.contains(TermMode::SGR_MOUSE) {
+                MouseEncoding::Sgr
+            } else if m.contains(TermMode::UTF8_MOUSE) {
+                MouseEncoding::Utf8
+            } else {
+                MouseEncoding::X10
+            },
+        })
     }
 
-    /// Whether mouse reports should use the SGR (1006) encoding rather than the
-    /// legacy X10 byte form.
-    pub fn sgr_mouse(&self) -> bool {
-        self.vt.mode().contains(TermMode::SGR_MOUSE)
+    /// Whether the wheel should turn into arrow keys: a full-screen program (less,
+    /// man, git's pager) is on the alternate screen, which has no scrollback, and
+    /// didn't ask for the mouse itself. xterm's "alternate scroll" mode, on unless
+    /// the program turns it off.
+    pub fn alternate_scroll(&self) -> bool {
+        let m = self.vt.mode();
+        m.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL)
+            && !m.intersects(TermMode::MOUSE_MODE)
     }
 
     pub fn bracketed_paste(&self) -> bool {
