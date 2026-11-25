@@ -224,6 +224,14 @@ current one, and `:w` saves your choice with the session.
   over the output and scrollback (`h`/`j`/`k`/`l`, `w`/`b`, `f` to find, `v` to select,
   `y` to yank). `i` or `Enter` returns to the live shell.
 - `Ctrl+V` pastes; you can also drag to select, and double/triple-click takes a word/line.
+- Programs that use the mouse (htop, lazygit, vim with `mouse=a`, tmux) get clicks,
+  drags and the wheel; hold `Shift` to select text instead. In full-screen programs
+  without mouse support (less, man, git's pager) the wheel scrolls with arrow keys.
+- Bold, italic, dim, underlined and struck-through text show as such. The cursor
+  takes the shape a program asks for (vim's insert-mode bar), blinks, and turns
+  hollow while the terminal doesn't have the keyboard. Programs can copy to the
+  clipboard (nvim, tmux, also over SSH), and the pane flashes when one rings the bell.
+  Each of these can be switched off (see the `term.*` settings below).
 - Typing `exit` closes the tab.
 - `:te <command>` (with a command) runs it once and shows the output in the command bar.
 
@@ -285,7 +293,7 @@ Other protections and toggles:
 their values; `:set tabs.speaker off` switches one off, `:set tabs.speaker default`
 brings back the default, `:set tabs.speaker` on its own flips it, and
 `:set tabs.speaker?` says what it does. They live in
-the `[tabs]` table of `config.toml` (`:theme` opens it), and `:ai` can change them too
+the `[tabs]` and `[term]` tables of `config.toml` (`:theme` opens it), and `:ai` can change them too
 ("load all my tabs at startup").
 
 | Setting | Default | What it does |
@@ -293,6 +301,12 @@ the `[tabs]` table of `config.toml` (`:theme` opens it), and `:ai` can change th
 | `tabs.lazy_load` | on | Restored tabs load only when first shown; off loads every tab at launch. |
 | `tabs.speaker` | on | A speaker on tabs playing sound, crossed out while muted. |
 | `tabs.hover_buttons` | on | Hovering a tab widens it and shows its close and mute buttons. |
+| `term.mouse_reporting` | on | Terminal programs that use the mouse get clicks, drags and the wheel (`Shift`+drag still selects). |
+| `term.text_styles` | on | Terminals draw bold, italic, dim, underlined and struck-through text. |
+| `term.cursor_shape` | on | The terminal cursor takes the shape programs ask for and turns hollow without the keyboard; off is always a solid block. |
+| `term.cursor_blink` | on | The terminal cursor blinks (it stops after 5 seconds idle), unless a program asks for a steady one. |
+| `term.clipboard_write` | on | Terminal programs can copy to the clipboard. |
+| `term.visual_bell` | on | The terminal flashes when a program rings the bell. |
 - Private tabs (`:open -n`) are never saved to the session or the closed-tab list.
 
 ## Command bar tricks
