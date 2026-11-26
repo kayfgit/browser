@@ -2,13 +2,18 @@
 
 ## [0.17.0](https://github.com/kayfgit/browser/compare/v0.16.0...v0.17.0) (2026-11-26)
 
+**TL;DR**
+- The terminal grew up: programs like htop, lazygit and vim now get mouse clicks, function keys and modern keyboard shortcuts, and text shows bold, italic, underlined and coloured as intended.
+- Links in the terminal open in a new tab (Ctrl+click, or `s` in copy mode), `/` searches everything it printed, and `[` / `]` jump between your commands, with failed ones marked in red.
+- Japanese, Chinese and Korean input, the emoji panel and AltGr characters now type correctly, and a finished long command marks its tab when you're elsewhere.
+- Terminals now use Microsoft's newer console layer (what Windows Terminal uses): faster, and it no longer picks up another app's copy from PATH.
+
 
 ### Features
 
 * bundled Microsoft ConPTY for terminals, and no conpty.dll from PATH ([#87](https://github.com/kayfgit/browser/issues/87)) ([bf0cba3](https://github.com/kayfgit/browser/commit/bf0cba3b0a87662b85b982d6a50d6000e0a5924f))
 * clickable links and scrollback search in the terminal ([8e88e01](https://github.com/kayfgit/browser/commit/8e88e01ed89c22b9375d9561605230fb295b2d07))
 * draw terminal text styles, cursor shapes and blink, answer colour queries ([a33ad42](https://github.com/kayfgit/browser/commit/a33ad424a88190df68009c1e88bc9b182878d5d9))
-* IME and Unicode text input in the terminal ([f921aec](https://github.com/kayfgit/browser/commit/f921aec839b2186e3c1e71d182cebe6a4d33abf7))
 * IME and Unicode text input in the terminal ([954d23c](https://github.com/kayfgit/browser/commit/954d23c9b679874a685d8d484a5fba453471152b))
 * kitty keyboard protocol in the terminal ([5ea4211](https://github.com/kayfgit/browser/commit/5ea4211780171711129c3b25158e8521965a2596))
 * pass mouse clicks, drags and motion to terminal programs ([61223e4](https://github.com/kayfgit/browser/commit/61223e4e37950bbc7e4af654daed75c8dfdca323))
@@ -25,7 +30,6 @@
 
 ### Performance
 
-* faster terminal output ([610cd5b](https://github.com/kayfgit/browser/commit/610cd5b35acf6ea3286bfbd66978d70f4855c548))
 * faster terminal output: skip plain text in the OSC scan, 64 KB reads, paced repaints ([a51db89](https://github.com/kayfgit/browser/commit/a51db89c58d88693d6f6920c9de908f6e802b1c0))
 
 ## [0.16.0](https://github.com/kayfgit/browser/compare/v0.15.0...v0.16.0) (2026-11-20)
