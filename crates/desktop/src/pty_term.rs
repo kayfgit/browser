@@ -10,7 +10,7 @@ use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Direction, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
-use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::cell::{Flags, Hyperlink};
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 use alacritty_terminal::term::test::TermSize;
@@ -270,6 +270,9 @@ pub struct PtyTerm {
     config: Config,
     /// The live `/` search over the scrollback, if any (see [`PtyTerm::search_set`]).
     search: Option<TermSearch>,
+    /// Shell integration: where the shell is in its prompt/command cycle, and what's
+    /// known about each prompt (see [`Mark`]).
+    shell: ShellState,
     /// The link under the mouse while Ctrl is held: drawn underlined.
     pub link_hover: Option<(Point, Point)>,
 }
@@ -288,6 +291,112 @@ struct TermSearch {
 /// The most matches a search keeps: searching for one letter in a full scrollback
 /// shouldn't build a list the size of the buffer.
 const SEARCH_CAP: usize = 10_000;
+
+/// A shell-integration mark (OSC 133, the FinalTerm convention Windows Terminal, VS
+/// Code and kitty read; VS Code's OSC 633 uses the same letters): the shell prints
+/// one at each step of its prompt/command cycle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mark {
+    /// `A`: a prompt starts.
+    PromptStart,
+    /// `B`: the prompt ends; what's typed next is the command.
+    InputStart,
+    /// `C`: the command was entered and runs; its output follows.
+    OutputStart,
+    /// `D[;code]`: the command finished (with its exit code, when the shell says).
+    Finished(Option<i32>),
+}
+
+/// The mark an OSC payload carries, if it's one (`133;A`, `633;D;1`, …).
+fn osc_mark(payload: &[u8]) -> Option<Mark> {
+    let s = std::str::from_utf8(payload).ok()?;
+    let rest = s.strip_prefix("133;").or_else(|| s.strip_prefix("633;"))?;
+    let mut parts = rest.split(';');
+    Some(match parts.next()? {
+        "A" => Mark::PromptStart,
+        "B" => Mark::InputStart,
+        "C" => Mark::OutputStart,
+        "D" => Mark::Finished(parts.next().and_then(|c| c.trim().parse().ok())),
+        _ => return None,
+    })
+}
+
+/// The hyperlink scheme shell-integration tags carry. Prompt cells get
+/// `browser-prompt:<id>`, a command's typed text `browser-cmd:<id>`. Tags live on the
+/// cells themselves (the grid's own OSC 8 slot), so they move with their text through
+/// scrolling, scrollback trimming and reflow, which no stored line number could.
+/// They're never shown or opened as links.
+const PROMPT_TAG: &str = "browser-prompt:";
+const CMD_TAG: &str = "browser-cmd:";
+
+/// Whether a hyperlink is a shell-integration tag rather than a real link.
+pub fn is_shell_tag(uri: &str) -> bool {
+    uri.starts_with(PROMPT_TAG) || uri.starts_with(CMD_TAG)
+}
+
+/// The prompt id in a tag's URI.
+fn tag_id(uri: &str) -> Option<u64> {
+    uri.strip_prefix(PROMPT_TAG)
+        .or_else(|| uri.strip_prefix(CMD_TAG))?
+        .parse()
+        .ok()
+}
+
+/// What's known about one prompt and the command typed at it.
+#[derive(Clone, Copy, Debug, Default)]
+struct PromptInfo {
+    /// When the command started (a `C` mark, or Enter at the prompt).
+    started: Option<std::time::Instant>,
+    /// The exit code, once it finished (`None` inside: the shell didn't say).
+    finished: Option<Option<i32>>,
+}
+
+/// Where the shell is in its cycle.
+#[derive(Clone, Copy, Debug, Default)]
+enum Phase {
+    #[default]
+    Idle,
+    /// Between `A` and `B`: the prompt is being drawn from `start`.
+    Prompt { start: Point },
+    /// Between `B` and the command starting: typing at the prompt, from `start`.
+    Input { start: Point },
+    /// The command runs.
+    Running,
+}
+
+/// Shell-integration state of one terminal.
+#[derive(Default)]
+struct ShellState {
+    /// The newest prompt's id (ids count up from 1).
+    current: u64,
+    phase: Phase,
+    /// The most recent prompts, by id.
+    prompts: std::collections::BTreeMap<u64, PromptInfo>,
+    /// Commands that finished since the app last looked.
+    done: Vec<CommandDone>,
+    /// Whether this shell has sent any mark (so features can tell it's integrated).
+    seen: bool,
+}
+
+/// The most prompts remembered (their tags stay on screen; only the exit code and
+/// timing of older ones is forgotten).
+const PROMPTS_KEPT: usize = 4096;
+
+/// A command that finished: how long it ran and how it ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommandDone {
+    pub duration: std::time::Duration,
+    /// `Some(0)` success, `Some(n)` failure, `None` the shell didn't say.
+    pub exit: Option<i32>,
+}
+
+/// One command's output, for `Y` in copy mode.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CommandOutput {
+    /// What was typed at the prompt (empty when the shell doesn't mark it).
+    pub command: String,
+    pub output: String,
+}
 
 /// A link on screen: from `start` to `end` (inclusive, absolute grid points).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -492,6 +601,7 @@ impl PtyTerm {
             config,
             search: None,
             link_hover: None,
+            shell: ShellState::default(),
         }
     }
 
@@ -707,14 +817,22 @@ impl PtyTerm {
     /// Feed raw PTY output bytes through the VT parser into the grid — and through
     /// the cwd scanner, since the VT engine drops the OSC 9;9 / OSC 7 sequences.
     pub fn feed(&mut self, bytes: &[u8]) {
-        for &b in bytes {
+        // Shell-integration marks need the cursor position at the moment each one
+        // arrives, so the parser runs up to every mark before it's handled.
+        let mut parsed = 0;
+        for (i, &b) in bytes.iter().enumerate() {
             if let Some(payload) = self.cwd_scan.push(b) {
                 if let Some(dir) = osc_cwd(&payload) {
                     self.cwd = Some(dir);
                 }
+                if let Some(mark) = osc_mark(&payload) {
+                    self.parser.advance(&mut self.vt, &bytes[parsed..=i]);
+                    parsed = i + 1;
+                    self.on_mark(mark);
+                }
             }
         }
-        self.parser.advance(&mut self.vt, bytes);
+        self.parser.advance(&mut self.vt, &bytes[parsed..]);
         if let Some(s) = self.search.as_mut() {
             s.stale = true;
         }
@@ -824,6 +942,247 @@ impl PtyTerm {
         self.vt.mode().contains(TermMode::BRACKETED_PASTE)
     }
 
+    // --- shell integration ------------------------------------------------------
+
+    /// Act on a shell-integration mark, with the cursor where the shell put it.
+    fn on_mark(&mut self, mark: Mark) {
+        self.shell.seen = true;
+        let cursor = self.vt.grid().cursor.point;
+        match mark {
+            Mark::PromptStart => {
+                // A command that never reported finishing (no `D`) ends here.
+                if matches!(self.shell.phase, Phase::Running) {
+                    self.finish(None);
+                }
+                self.shell.current += 1;
+                let id = self.shell.current;
+                self.shell.prompts.insert(id, PromptInfo::default());
+                while self.shell.prompts.len() > PROMPTS_KEPT {
+                    self.shell.prompts.pop_first();
+                }
+                self.shell.phase = Phase::Prompt { start: cursor };
+            }
+            Mark::InputStart => {
+                if let Phase::Prompt { start } = self.shell.phase {
+                    self.tag(start, cursor, PROMPT_TAG);
+                }
+                self.shell.phase = Phase::Input { start: cursor };
+            }
+            Mark::OutputStart => {
+                if let Phase::Input { start } = self.shell.phase {
+                    self.tag(start, cursor, CMD_TAG);
+                    self.start_command();
+                }
+            }
+            Mark::Finished(exit) => {
+                if matches!(self.shell.phase, Phase::Running) {
+                    self.finish(exit);
+                }
+            }
+        }
+    }
+
+    /// Enter was pressed: if the shell is at its prompt, the command starts now (for
+    /// shells that don't send `C`, such as cmd and PowerShell without a key hook).
+    pub fn command_entered(&mut self) {
+        if matches!(self.shell.phase, Phase::Input { .. }) {
+            self.start_command();
+        }
+    }
+
+    fn start_command(&mut self) {
+        if let Some(p) = self.shell.prompts.get_mut(&self.shell.current) {
+            p.started = Some(std::time::Instant::now());
+        }
+        self.shell.phase = Phase::Running;
+    }
+
+    fn finish(&mut self, exit: Option<i32>) {
+        self.shell.phase = Phase::Idle;
+        if let Some(p) = self.shell.prompts.get_mut(&self.shell.current) {
+            p.finished = Some(exit);
+            if let Some(started) = p.started {
+                self.shell.done.push(CommandDone {
+                    duration: started.elapsed(),
+                    exit,
+                });
+            }
+        }
+    }
+
+    /// Tag the cells from `from` up to (not including) `to` as the current prompt's
+    /// (`kind` = [`PROMPT_TAG`] or [`CMD_TAG`]). Cells a program already linked keep
+    /// their link.
+    fn tag(&mut self, from: Point, to: Point, kind: &str) {
+        let link = Hyperlink::new(
+            Some(format!("b{}", self.shell.current)),
+            format!("{kind}{}", self.shell.current),
+        );
+        let last_col = self.cols.saturating_sub(1);
+        let top = self.vt.topmost_line();
+        let mut p = from;
+        while p < to && p.line >= top {
+            let cell = &mut self.vt.grid_mut()[p];
+            if cell.hyperlink().is_none() {
+                cell.set_hyperlink(Some(link.clone()));
+            }
+            p = if p.column.0 >= last_col {
+                Point::new(p.line + 1, Column(0))
+            } else {
+                Point::new(p.line, p.column + 1)
+            };
+        }
+    }
+
+    /// Commands that finished since the last call.
+    pub fn take_commands_done(&mut self) -> Vec<CommandDone> {
+        std::mem::take(&mut self.shell.done)
+    }
+
+    /// Whether the shell has sent shell-integration marks.
+    pub fn shell_integrated(&self) -> bool {
+        self.shell.seen
+    }
+
+    /// The tag on a line: the id of the first prompt or command cell on it.
+    fn line_tag(&self, line: Line) -> Option<(u64, bool)> {
+        let grid = self.vt.grid();
+        (0..self.cols).find_map(|c| {
+            let link = grid[Point::new(line, Column(c))].hyperlink()?;
+            let id = tag_id(link.uri())?;
+            Some((id, link.uri().starts_with(PROMPT_TAG)))
+        })
+    }
+
+    /// Each prompt in the buffer as `(id, first line, last tagged line)`, oldest first.
+    /// The last tagged line is the prompt's, or its typed command's when the shell
+    /// marks that.
+    fn prompt_spans(&self) -> Vec<(u64, Line, Line)> {
+        let mut spans: Vec<(u64, Line, Line)> = Vec::new();
+        let mut line = self.vt.topmost_line();
+        let bottom = self.vt.bottommost_line();
+        while line <= bottom {
+            if let Some((id, _)) = self.line_tag(line) {
+                match spans.last_mut() {
+                    Some(last) if last.0 == id => last.2 = line,
+                    _ => spans.push((id, line, line)),
+                }
+            }
+            line += 1;
+        }
+        spans
+    }
+
+    /// Move the copy-mode cursor to the previous (`older`) or next prompt, keeping it
+    /// in view. Returns whether there was one to go to.
+    pub fn vi_prompt_jump(&mut self, older: bool) -> bool {
+        let here = self.vt.vi_mode_cursor.point.line;
+        let mut starts = self.prompt_spans().into_iter().map(|(_, first, _)| first);
+        let target = if older {
+            starts.rfind(|l| *l < here)
+        } else {
+            starts.find(|l| *l > here)
+        };
+        let Some(line) = target else {
+            return false;
+        };
+        let p = Point::new(line, Column(0));
+        self.vt.vi_goto_point(p);
+        self.vt.scroll_to_point(p);
+        self.force_extend();
+        true
+    }
+
+    /// The output of the command whose prompt is at or above `line` (the copy-mode
+    /// cursor): from after its prompt (and typed command) to before the next prompt
+    /// or the end. Trailing blank lines are left out. `None` without a prompt there.
+    pub fn command_output_at(&self, line: Line) -> Option<CommandOutput> {
+        let spans = self.prompt_spans();
+        let i = spans.iter().rposition(|(_, first, _)| *first <= line)?;
+        let (id, first, last) = spans[i];
+        let end = match spans.get(i + 1) {
+            Some((_, next, _)) => *next - 1,
+            None => self.vt.bottommost_line(),
+        };
+        let cols = self.cols.saturating_sub(1);
+        let output = if last < end {
+            self.vt.bounds_to_string(
+                Point::new(last + 1, Column(0)),
+                Point::new(end, Column(cols)),
+            )
+        } else {
+            String::new()
+        };
+        let output = output.trim_end().to_string();
+        // The typed command: tagged command cells, else what follows the prompt on its
+        // last line.
+        let grid = self.vt.grid();
+        let mut command = String::new();
+        let mut l = first;
+        while l <= last {
+            for c in 0..self.cols {
+                let cell = &grid[Point::new(l, Column(c))];
+                if cell
+                    .hyperlink()
+                    .is_some_and(|h| h.uri() == format!("{CMD_TAG}{id}"))
+                {
+                    command.push(cell.c);
+                }
+            }
+            l += 1;
+        }
+        if command.trim().is_empty() {
+            let row: String = (0..self.cols)
+                .map(|c| grid[Point::new(last, Column(c))].c)
+                .collect();
+            let prompt_end = (0..self.cols)
+                .rev()
+                .find(|&c| {
+                    grid[Point::new(last, Column(c))]
+                        .hyperlink()
+                        .is_some_and(|h| h.uri().starts_with(PROMPT_TAG))
+                })
+                .map_or(0, |c| c + 1);
+            command = row.chars().skip(prompt_end).collect();
+        }
+        Some(CommandOutput {
+            command: command.trim().to_string(),
+            output,
+        })
+    }
+
+    /// The exit code of each prompt starting on screen, as `(viewport row, exit)`,
+    /// for the failed-command marks in the gutter.
+    fn visible_prompt_exits(&self) -> Vec<(i32, Option<i32>)> {
+        let (top, bottom) = self.viewport_bounds();
+        let off = self.vt.grid().display_offset() as i32;
+        let mut out = Vec::new();
+        let mut prev: Option<u64> = None;
+        // Start a line above the screen so a prompt cut by the top isn't mistaken for
+        // one starting on the first row.
+        let mut line = Line(top.line.0 - 1).max(self.vt.topmost_line());
+        while line <= bottom.line {
+            let tag = self
+                .line_tag(line)
+                .filter(|(_, prompt)| *prompt)
+                .map(|(id, _)| id);
+            if let Some(id) = tag {
+                if prev != Some(id) && line >= top.line {
+                    let exit = self
+                        .shell
+                        .prompts
+                        .get(&id)
+                        .and_then(|p| p.finished)
+                        .flatten();
+                    out.push((line.0 + off, exit));
+                }
+            }
+            prev = tag;
+            line += 1;
+        }
+        out
+    }
+
     // --- links ------------------------------------------------------------------
 
     /// The first and last absolute points of what's on screen.
@@ -847,7 +1206,7 @@ impl PtyTerm {
         while line <= end.line {
             for col in 0..self.cols {
                 let point = Point::new(line, Column(col));
-                let Some(link) = grid[point].hyperlink() else {
+                let Some(link) = grid[point].hyperlink().filter(|l| !is_shell_tag(l.uri())) else {
                     continue;
                 };
                 match links.last_mut() {
@@ -1293,6 +1652,8 @@ pub struct RenderOpts {
     pub focused: bool,
     /// The blink cycle is in its visible half (always true when nothing blinks).
     pub blink_on: bool,
+    /// Mark the prompts of failed commands in the gutter (`term.shell_integration`).
+    pub shell_marks: bool,
 }
 
 impl Default for RenderOpts {
@@ -1302,6 +1663,7 @@ impl Default for RenderOpts {
             cursor_shapes: true,
             focused: true,
             blink_on: true,
+            shell_marks: true,
         }
     }
 }
@@ -1524,6 +1886,25 @@ pub fn render(
                 underline,
                 fg,
             );
+        }
+    }
+
+    // A failed command: a red bar in the gutter beside its prompt.
+    if opts.shell_marks {
+        for (row, exit) in pty.visible_prompt_exits() {
+            let cy = y0 + row * cell_h;
+            if exit.is_some_and(|code| code != 0) && cy >= y0 && cy + cell_h <= clip_bottom {
+                draw::fill_rect(
+                    buf,
+                    w,
+                    h,
+                    (x0 - 3).max(0) as usize,
+                    cy as usize,
+                    (x0 - 1).max(0) as usize,
+                    (cy + cell_h) as usize,
+                    draw::ERR,
+                );
+            }
         }
     }
 
@@ -2197,5 +2578,136 @@ mod tests {
             Point::new(Line(0), Column(1)),
         ));
         assert_ne!(paint_pty(&pty, RenderOpts::default()), plain, "underlined");
+    }
+
+    #[test]
+    fn shell_marks_parse_in_both_dialects() {
+        assert_eq!(osc_mark(b"133;A"), Some(Mark::PromptStart));
+        assert_eq!(osc_mark(b"633;B"), Some(Mark::InputStart));
+        assert_eq!(osc_mark(b"133;C"), Some(Mark::OutputStart));
+        assert_eq!(osc_mark(b"133;D;2"), Some(Mark::Finished(Some(2))));
+        assert_eq!(osc_mark(b"133;D"), Some(Mark::Finished(None)));
+        assert_eq!(osc_mark(b"133;D;0;aid=7"), Some(Mark::Finished(Some(0))));
+        assert_eq!(osc_mark(b"633;E;ls"), None);
+        assert_eq!(osc_mark(b"9;9;C:\\x"), None);
+    }
+
+    /// A PowerShell-style session: prompts marked A/B, Enter starts the command,
+    /// the next prompt reports the exit code.
+    fn session() -> PtyTerm {
+        let mut pty = PtyTerm::new(40, 6, DEFAULT_SCROLLBACK);
+        let prompt = |pty: &mut PtyTerm, exit: Option<i32>| {
+            let done = exit.map_or(String::new(), |c| format!("\x1b]133;D;{c}\x07"));
+            pty.feed(format!("{done}\x1b]133;A\x07PS C:\\> \x1b]133;B\x07").as_bytes());
+        };
+        prompt(&mut pty, None);
+        pty.feed(b"dir");
+        pty.command_entered();
+        pty.feed(b"\r\na.txt\r\nb.txt\r\n");
+        prompt(&mut pty, Some(0));
+        pty.feed(b"bad");
+        pty.command_entered();
+        pty.feed(b"\r\nnot found\r\n");
+        prompt(&mut pty, Some(1));
+        pty
+    }
+
+    #[test]
+    fn prompts_are_found_and_copy_mode_jumps_between_them() {
+        let mut pty = session();
+        assert!(pty.shell_integrated());
+        let lines: Vec<i32> = pty.prompt_spans().iter().map(|s| s.1 .0).collect();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        pty.toggle_vi();
+        let at = |pty: &PtyTerm| pty.vt.vi_mode_cursor.point.line.0;
+        // From the live prompt, back to the second, then the first, then nowhere.
+        assert!(pty.vi_prompt_jump(true));
+        assert_eq!(at(&pty), lines[1]);
+        assert!(pty.vi_prompt_jump(true));
+        assert_eq!(at(&pty), lines[0]);
+        assert!(!pty.vi_prompt_jump(true));
+        assert!(pty.vi_prompt_jump(false));
+        assert_eq!(at(&pty), lines[1]);
+    }
+
+    #[test]
+    fn a_commands_output_is_what_follows_its_prompt() {
+        let pty = session();
+        let first = pty.prompt_spans()[0].1;
+        let out = pty.command_output_at(first).unwrap();
+        assert_eq!(out.command, "dir");
+        assert_eq!(out.output, "a.txt\nb.txt");
+        // From inside the output, it's still that command's.
+        let out = pty.command_output_at(first + 2).unwrap();
+        assert_eq!(out.command, "dir");
+        let second = pty.prompt_spans()[1].1;
+        assert_eq!(pty.command_output_at(second).unwrap().output, "not found");
+    }
+
+    #[test]
+    fn a_shell_that_marks_its_command_has_it_copied_exactly() {
+        let mut pty = PtyTerm::new(40, 6, DEFAULT_SCROLLBACK);
+        pty.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07echo hi\x1b]133;C\x07\r\nhi\r\n\x1b]133;D;0\x07");
+        let done = pty.take_commands_done();
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].exit, Some(0));
+        let out = pty.command_output_at(pty.prompt_spans()[0].1).unwrap();
+        assert_eq!(
+            (out.command.as_str(), out.output.as_str()),
+            ("echo hi", "hi")
+        );
+    }
+
+    #[test]
+    fn finished_commands_are_reported_with_their_exit_codes() {
+        let mut pty = session();
+        let done = pty.take_commands_done();
+        assert_eq!(
+            done.iter().map(|d| d.exit).collect::<Vec<_>>(),
+            [Some(0), Some(1)]
+        );
+        assert!(pty.take_commands_done().is_empty(), "once");
+        // A prompt without a command typed (empty Enter) reports nothing.
+        pty.feed(b"\x1b]133;D\x07\x1b]133;A\x07PS> \x1b]133;B\x07");
+        assert!(pty.take_commands_done().is_empty());
+    }
+
+    #[test]
+    fn a_failed_command_gets_a_mark_in_the_gutter() {
+        let pty = session();
+        let exits: Vec<Option<i32>> = pty.visible_prompt_exits().iter().map(|e| e.1).collect();
+        assert_eq!(exits, [Some(0), Some(1), None]);
+        let (w, h) = (500usize, 200usize);
+        let p = Painter::new(15.0).unwrap();
+        let st = TermStyle::default();
+        let draw = |marks: bool| {
+            let mut buf = vec![0u32; w * h];
+            let opts = RenderOpts {
+                shell_marks: marks,
+                ..RenderOpts::default()
+            };
+            render(&pty, &p, &mut buf, w, h, 4, 0, 10, 20, h as i32, &st, opts);
+            buf
+        };
+        let red = |buf: &[u32]| {
+            let mut px = [0u32];
+            draw::fill_rect(&mut px, 1, 1, 0, 0, 1, 1, draw::ERR);
+            (0..h).filter(|y| buf[y * w + 2] == px[0]).count()
+        };
+        // One prompt row (20px) failed.
+        assert_eq!(red(&draw(true)), 20);
+        assert_eq!(red(&draw(false)), 0);
+    }
+
+    #[test]
+    fn prompt_tags_survive_scrolling_and_are_not_links() {
+        let mut pty = session();
+        assert!(pty.visible_links().is_empty(), "tags aren't links");
+        for i in 0..200 {
+            pty.feed(format!("line {i}\r\n").as_bytes());
+        }
+        assert_eq!(pty.prompt_spans().len(), 3);
+        let first = pty.prompt_spans()[0].1;
+        assert_eq!(pty.command_output_at(first).unwrap().output, "a.txt\nb.txt");
     }
 }

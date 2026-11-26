@@ -1244,6 +1244,20 @@ impl App {
                 if t.provider() == Some("trident") {
                     label.insert_str(0, "[ie] ");
                 }
+                // A terminal with news for you (a long command finished, the bell)
+                // while off screen: ✓ / ✗ / • before its label until you look.
+                if self.config.setting("term.notify_done") {
+                    let mut leaves = Vec::new();
+                    if let Some(tree) = self.windows.get(wi) {
+                        tree.leaves(&mut leaves);
+                    }
+                    let news = leaves
+                        .iter()
+                        .find_map(|&i| self.tabs.get(i)?.term()?.activity);
+                    if let Some(news) = news {
+                        label.insert_str(0, &format!("{} ", news.marker()));
+                    }
+                }
                 // A split window shows how many panes it holds, tmux-style.
                 if panes > 1 {
                     label.push_str(&format!(" ¦{panes}"));

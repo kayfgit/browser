@@ -150,6 +150,110 @@ pub(crate) struct TermSession {
     /// When a program last rang the bell, while its flash
     /// (`term.visual_bell`) is still showing.
     pub(crate) bell_at: Option<Instant>,
+    /// Something happened here while you weren't looking: a long command finished or
+    /// a program rang the bell. Shown in the tab strip until the terminal is on screen.
+    pub(crate) activity: Option<Activity>,
+}
+
+/// What a terminal off screen has to tell you (see [`TermSession::activity`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Activity {
+    /// A command that ran at least [`NOTIFY_AFTER`] finished, with its exit code when
+    /// the shell reports one.
+    Done(Option<i32>),
+    /// A program rang the bell.
+    Bell,
+}
+
+impl Activity {
+    /// The marker the tab strip puts before the label: ✓ succeeded, ✗ failed,
+    /// • the bell or a command whose result the shell didn't say.
+    pub(crate) fn marker(self) -> &'static str {
+        match self {
+            Activity::Done(Some(0)) => "✓",
+            Activity::Done(Some(_)) => "✗",
+            Activity::Done(None) | Activity::Bell => "•",
+        }
+    }
+}
+
+/// How long a command must run before its finishing is worth telling you about
+/// (`term.notify_done`): long enough that you'd have looked away.
+pub(crate) const NOTIFY_AFTER: Duration = Duration::from_secs(5);
+
+/// The PowerShell side of shell integration, run at startup (`-NoExit
+/// -EncodedCommand`, after the profile): wrap whatever `prompt` the profile set up
+/// (starship, oh-my-posh, the default) so each prompt reports the last command's exit
+/// code (`OSC 133;D`), where the prompt starts and ends (`133;A`/`133;B`) and the
+/// current folder (`OSC 9;9`, so session restore works with no `$PROFILE` edit). A
+/// command counts as run when the history grew, so an empty Enter reports nothing.
+const PWSH_HOOK: &str = r#"
+$global:__browserPrompt = $function:prompt
+$global:__browserLast = $null
+function global:prompt {
+    $ok = $global:?
+    $code = $global:LASTEXITCODE
+    $e = [char]27; $b = [char]7
+    $h = Get-History -Count 1
+    $id = if ($h) { $h.Id } else { 0 }
+    $done = ''
+    if ($null -ne $global:__browserLast -and $id -ne $global:__browserLast) {
+        $exit = if ($ok) { 0 } elseif ($code) { $code } else { 1 }
+        $done = "$e]133;D;$exit$b"
+    }
+    $global:__browserLast = $id
+    $loc = $executionContext.SessionState.Path.CurrentLocation
+    $cwd = if ($loc.Provider.Name -eq 'FileSystem') { "$e]9;9;$($loc.ProviderPath)$b" } else { '' }
+    $p = & $global:__browserPrompt
+    "$done$e]133;A$b$cwd$p$e]133;B$b"
+}
+"#;
+
+/// The arguments that start PowerShell with [`PWSH_HOOK`]: `-NoExit -EncodedCommand`
+/// with the script base64-encoded as UTF-16LE (PowerShell's own format), so no
+/// quoting can mangle it on the way through two command lines.
+fn pwsh_hook_args() -> [String; 3] {
+    use base64::Engine as _;
+    let utf16: Vec<u8> = PWSH_HOOK
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    [
+        "-NoExit".into(),
+        "-EncodedCommand".into(),
+        base64::engine::general_purpose::STANDARD.encode(utf16),
+    ]
+}
+
+/// Whether a PowerShell command line already says what to run (then it isn't
+/// interactive, or the user wired their own startup, and the hook stays out).
+fn pwsh_runs_something(args: &[String]) -> bool {
+    args.iter().any(|a| {
+        let a = a.to_ascii_lowercase();
+        let a = a.trim_start_matches(['-', '/']);
+        [
+            "command",
+            "c",
+            "file",
+            "f",
+            "encodedcommand",
+            "e",
+            "ec",
+            "noexit",
+        ]
+        .contains(&a)
+    })
+}
+
+/// cmd's `PROMPT` with shell-integration marks around it: the previous command
+/// finished (cmd can't report its exit code there), a prompt starts, the folder is
+/// `$P`, the user's own prompt, the prompt ends. Without integration, just the folder.
+fn cmd_prompt(prompt: &str, marks: bool) -> String {
+    if marks {
+        format!("$E]133;D$E\\$E]133;A$E\\$E]9;9;$P$E\\{prompt}$E]133;B$E\\")
+    } else {
+        format!("$E]9;9;$P$E\\{prompt}")
+    }
 }
 
 impl TermSession {
@@ -292,6 +396,7 @@ impl App {
             cursor_shapes: self.config.setting("term.cursor_shape"),
             focused: self.window_focused,
             blink_on: blink_phase(self.term_blink_at.elapsed()).0,
+            shell_marks: self.config.setting("term.shell_integration"),
         }
     }
 
@@ -445,9 +550,16 @@ impl App {
         // ($E = ESC, $P = cwd — the Windows Terminal shell-integration pattern).
         // Other shells (pwsh, bash/WSL) need their own one-line prompt hook; see
         // `:help te`.
+        // Shell integration (`term.shell_integration`): cmd gets its marks the same way,
+        // and PowerShell runs a startup hook that wraps its prompt (see PWSH_HOOK).
+        let marks = self.config.setting("term.shell_integration");
         if shell_kind(&shell[0]) == ShellKind::Cmd {
             let prompt = std::env::var("PROMPT").unwrap_or_else(|_| "$P$G".to_string());
-            command.env("PROMPT", format!("$E]9;9;$P$E\\{prompt}"));
+            command.env("PROMPT", cmd_prompt(&prompt, marks));
+        }
+        let mut shell = shell;
+        if marks && shell_kind(&shell[0]) == ShellKind::Pwsh && !pwsh_runs_something(&shell[1..]) {
+            shell.extend(pwsh_hook_args());
         }
         command
             .args(&shell)
@@ -526,6 +638,7 @@ impl App {
                         pty
                     },
                     bell_at: None,
+                    activity: None,
                 }),
             },
             true,
@@ -556,16 +669,44 @@ impl App {
             .and_then(|i| self.tabs.get(i))
             .and_then(|t| t.term())
             .is_some_and(|s| s.id == id);
+        let notify = self.config.setting("term.notify_done");
+        let on_screen = self.pane_layout().0.iter().any(|(tab, _)| {
+            self.tabs
+                .get(*tab)
+                .and_then(|t| t.term())
+                .is_some_and(|s| s.id == id)
+        });
+        let window_focused = self.window_focused;
         let Some(s) = self.term_session_mut(id) else {
             return;
         };
         s.pty.feed(data);
+        // A long command finishing, or the bell, while you're elsewhere: mark the tab
+        // when it's off screen, and flash the taskbar when the browser isn't in front.
+        let mut attention = false;
+        if notify {
+            for done in s.pty.take_commands_done() {
+                if done.duration >= NOTIFY_AFTER {
+                    if !on_screen {
+                        s.activity = Some(Activity::Done(done.exit));
+                    }
+                    attention |= !window_focused;
+                }
+            }
+        } else {
+            s.pty.take_commands_done();
+        }
         let reply = s.pty.take_reply(&style, (cw as u16, ch as u16));
         if !reply.is_empty() {
             s.send(0, &reply);
         }
-        if s.pty.take_bell() && bell_ok {
-            s.bell_at = Some(Instant::now());
+        if s.pty.take_bell() {
+            if bell_ok {
+                s.bell_at = Some(Instant::now());
+            }
+            if notify && !on_screen && s.activity.is_none() {
+                s.activity = Some(Activity::Bell);
+            }
         }
         // A program copying (nvim, tmux, also over SSH) writes the clipboard.
         if let Some(text) = s.pty.take_clipboard().filter(|_| clipboard_ok) {
@@ -574,6 +715,10 @@ impl App {
         // Output shows the cursor again, like typing does.
         if active {
             self.restart_term_blink();
+        }
+        if attention {
+            self.window
+                .request_user_attention(Some(tao::window::UserAttentionType::Informational));
         }
         self.window.request_redraw();
     }
@@ -674,6 +819,9 @@ impl App {
                 // (keys only reach the PTY in passthrough).
                 s.pty.clear_selection();
                 snap_to_live(s, &self.window);
+                if bytes == b"\r" {
+                    s.pty.command_entered();
+                }
                 s.send(0, &bytes);
                 self.restart_term_blink();
             }
@@ -709,6 +857,23 @@ impl App {
         snap_to_live(s, &self.window);
         s.send(0, &out);
         self.restart_term_blink();
+    }
+
+    /// What to say when copy mode looks for a prompt and finds none: there isn't one
+    /// that far, or this shell doesn't mark its prompts.
+    fn no_prompt_hint(&self) -> String {
+        let integrated = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.term())
+            .is_some_and(|s| s.pty.shell_integrated());
+        if integrated {
+            "no prompt that way".into()
+        } else if !self.config.setting("term.shell_integration") {
+            "shell integration is off (term.shell_integration)".into()
+        } else {
+            "this shell doesn't mark its prompts (see :help te for bash/zsh)".into()
+        }
     }
 
     /// Whether the active terminal is in copy/vi mode.
@@ -771,6 +936,9 @@ impl App {
         let mut pending: Option<(bool, bool)> = None;
         // `s`: label the links on screen (after the borrow).
         let mut link_hints = false;
+        // `Y`: copy the output of the command at the cursor (after the borrow).
+        let mut copy_output = None;
+        let mut no_prompt = false;
         {
             let Some(s) = self
                 .active
@@ -850,6 +1018,14 @@ impl App {
                         // Links: the terminal's `f` (which is vim's find-char here).
                         // `s` is a scroll-hint key on pages, with no use in a terminal.
                         "s" => link_hints = true,
+                        // Shell integration: `[`/`]` jump to the previous/next prompt,
+                        // `Y` copies the output of the command the cursor is in.
+                        "[" | "{" => no_prompt = !pty.vi_prompt_jump(true),
+                        "]" | "}" => no_prompt = !pty.vi_prompt_jump(false),
+                        "Y" => {
+                            let line = pty.vt.vi_mode_cursor.point.line;
+                            copy_output = Some(pty.command_output_at(line));
+                        }
                         _ => consumed = false,
                     },
                     _ => consumed = false,
@@ -862,6 +1038,23 @@ impl App {
         if link_hints {
             self.enter_term_hints();
             return true;
+        }
+        if no_prompt {
+            self.set_status(self.no_prompt_hint());
+        }
+        match copy_output {
+            Some(Some(out)) => {
+                let lines = out.output.lines().count();
+                clipboard_set(&out.output);
+                let what = if out.command.is_empty() {
+                    "that command".to_string()
+                } else {
+                    format!("`{}`", out.command.chars().take(40).collect::<String>())
+                };
+                self.set_status(format!("copied the output of {what} ({lines} lines)"));
+            }
+            Some(None) => self.set_status(self.no_prompt_hint()),
+            None => {}
         }
         if let Some(text) = yank {
             let n = text.chars().count();
@@ -1106,6 +1299,8 @@ impl App {
         for (tab, _) in panes {
             if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
                 s.pty.search_refresh();
+                // On screen now: whatever it had to tell you has been seen.
+                s.activity = None;
             }
         }
     }
@@ -1796,6 +1991,51 @@ mod tests {
         // ...after which it stays shown and nothing more is scheduled.
         assert_eq!(blink_phase(BLINK_TIMEOUT), (true, None));
         assert_eq!(blink_phase(BLINK_TIMEOUT * 3), (true, None));
+    }
+
+    /// cmd's prompt gets the marks around the user's own; without integration only
+    /// the folder report, as before.
+    #[test]
+    fn cmd_prompts_carry_the_marks() {
+        let marked = cmd_prompt("$P$G", true);
+        assert!(marked.starts_with(r"$E]133;D$E\$E]133;A$E\"), "{marked}");
+        assert!(marked.ends_with(r"$P$G$E]133;B$E\"), "{marked}");
+        assert!(marked.contains("$E]9;9;$P"));
+        assert_eq!(cmd_prompt("$P$G", false), r"$E]9;9;$P$E\$P$G");
+    }
+
+    /// The PowerShell hook travels as UTF-16LE base64 and decodes back to itself; it
+    /// stays out of a command line that already runs something.
+    #[test]
+    fn the_powershell_hook_is_encoded_for_its_command_line() {
+        use base64::Engine as _;
+        let [noexit, flag, b64] = pwsh_hook_args();
+        assert_eq!(
+            (noexit.as_str(), flag.as_str()),
+            ("-NoExit", "-EncodedCommand")
+        );
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
+        let units: Vec<u16> = bytes
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        assert_eq!(String::from_utf16(&units).unwrap(), PWSH_HOOK);
+        let args = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
+        assert!(!pwsh_runs_something(&args("-NoLogo")));
+        assert!(pwsh_runs_something(&args("-NoLogo -Command ls")));
+        assert!(pwsh_runs_something(&args("-c ls")));
+        assert!(pwsh_runs_something(&args("-File x.ps1")));
+        assert!(pwsh_runs_something(&args("-NoExit")));
+    }
+
+    #[test]
+    fn tab_markers_say_how_it_ended() {
+        assert_eq!(Activity::Done(Some(0)).marker(), "✓");
+        assert_eq!(Activity::Done(Some(3)).marker(), "✗");
+        assert_eq!(Activity::Done(None).marker(), "•");
+        assert_eq!(Activity::Bell.marker(), "•");
     }
 
     /// A notch (3 lines on Windows' default) is one wheel report and three lines;

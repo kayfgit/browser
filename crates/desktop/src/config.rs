@@ -184,6 +184,16 @@ pub(crate) const SETTINGS: &[Setting] = &[
         default: true,
         desc: "new terminals use the bundled Microsoft ConPTY (what Windows Terminal ships): colour queries, styled underlines, faster output; off uses Windows' own console host",
     },
+    Setting {
+        key: "term.shell_integration",
+        default: true,
+        desc: "terminals know where each prompt and command is: [ and ] jump between prompts in copy mode, Y copies a command's output, failed commands get a red mark (PowerShell and cmd are set up automatically)",
+    },
+    Setting {
+        key: "term.notify_done",
+        default: true,
+        desc: "a command that ran 5s+ finishing (or the bell) in a terminal you're not looking at marks its tab with ✓/✗/•, and flashes the taskbar when the browser isn't in front",
+    },
 ];
 
 /// Parse a setting's value as typed: `on`/`off` (and `true`/`false`, `yes`/`no`,
@@ -214,6 +224,8 @@ impl Config {
             "term.links" => self.term.links,
             "term.search" => self.term.search,
             "term.bundled_conpty" => self.term.bundled_conpty,
+            "term.shell_integration" => self.term.shell_integration,
+            "term.notify_done" => self.term.notify_done,
             _ => return None,
         })
     }
@@ -232,6 +244,8 @@ impl Config {
             "term.links" => &mut self.term.links,
             "term.search" => &mut self.term.search,
             "term.bundled_conpty" => &mut self.term.bundled_conpty,
+            "term.shell_integration" => &mut self.term.shell_integration,
+            "term.notify_done" => &mut self.term.notify_done,
             _ => return None,
         })
     }
@@ -432,6 +446,15 @@ pub(crate) struct TermConfig {
     /// console host. See [`bundled_conpty`](crate::bundled_conpty).
     #[serde(default)]
     pub(crate) bundled_conpty: Option<bool>,
+    /// Shell integration: PowerShell and cmd mark their prompts (set up at launch),
+    /// copy mode jumps between prompts and copies a command's output, failed commands
+    /// are marked.
+    #[serde(default)]
+    pub(crate) shell_integration: Option<bool>,
+    /// A long command finishing (or the bell) in a terminal off screen marks its tab,
+    /// and flashes the taskbar when the browser isn't in front.
+    #[serde(default)]
+    pub(crate) notify_done: Option<bool>,
 }
 
 /// Location of the config file (plain TOML in the app data dir, beside the session).

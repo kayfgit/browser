@@ -256,13 +256,7 @@ launch reopens the shell there. How the directory is detected depends on the she
 - **cmd**: automatic.
 - **nushell**: automatic. For exact results while a long-running program is open, add
   `$env.config.shell_integration.osc9_9 = true` to `config.nu`.
-- **PowerShell**: `Set-Location` doesn't change the process directory, so add a prompt
-  hook to `$PROFILE`:
-
-  ```powershell
-  function prompt { "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) $([char]27)]9;9;$($executionContext.SessionState.Path.CurrentLocation.ProviderPath)$([char]27)\" }
-  ```
-
+- **PowerShell**: automatic (shell integration, below, sets it up at launch).
 - **WSL**: the Linux directory isn't visible from Windows. Add this to the distro's
   `~/.bashrc` (for zsh, put the `printf` in a `precmd()` function) and restore re-enters
   WSL in the saved directory:
@@ -271,6 +265,31 @@ launch reopens the shell there. How the directory is detected depends on the she
   __browser_cwd() { printf '\e]9;9;\\\\wsl.localhost\\%s%s\e\\' "$WSL_DISTRO_NAME" "${PWD//\//\\}"; }
   PROMPT_COMMAND=__browser_cwd
   ```
+
+### Shell integration
+
+The terminal knows where each prompt, command and its output is, so:
+
+- In copy mode, `[` and `]` jump to the previous and next prompt, and `Y` copies the
+  output of the command the cursor is in.
+- A command that failed gets a red mark beside its prompt.
+- When a command that ran 5 seconds or more finishes in a terminal you're not looking
+  at, its tab shows ✓ (it worked), ✗ (it failed) or • (no result reported, or the
+  terminal rang the bell) until you look; if the browser isn't in front, the taskbar
+  flashes too.
+
+PowerShell and cmd are set up automatically when the terminal starts (PowerShell keeps
+whatever prompt your profile sets, starship and oh-my-posh included); cmd can't report
+exit codes, so its commands get no ✗. Nushell marks its prompts by itself. For bash or
+zsh (WSL), add the marks to the prompt, for example in `~/.bashrc`:
+
+  ```bash
+  PS0='\[\e]133;C\a\]'
+  PS1='\[\e]133;D;$?\a\e]133;A\a\]'"$PS1"'\[\e]133;B\a\]'
+  ```
+
+`:set term.shell_integration off` turns all of this off (for terminals opened after),
+and `:set term.notify_done off` just the tab marks.
 
 ## Ad blocking and privacy
 
@@ -324,6 +343,8 @@ the `[tabs]` and `[term]` tables of `config.toml` (`:theme` opens it), and `:ai`
 | `term.visual_bell` | on | The terminal flashes when a program rings the bell. |
 | `term.links` | on | Terminal links open in a new tab (`Ctrl`+click, or `s` in copy mode / `Ctrl+Shift+O` while typing to label them). |
 | `term.search` | on | `/` in a terminal's copy mode searches its whole scrollback. |
+| `term.shell_integration` | on | Terminals know their prompts: `[`/`]` jump between them and `Y` copies a command's output in copy mode, failed commands are marked; PowerShell and cmd are set up automatically. |
+| `term.notify_done` | on | A command that ran 5s+ finishing (or the bell) in a terminal off screen marks its tab with ✓/✗/•, and flashes the taskbar when the browser isn't in front. |
 | `term.bundled_conpty` | on | New terminals run under the bundled Microsoft ConPTY (what Windows Terminal ships); off uses Windows' own console host. |
 - Private tabs (`:open -n`) are never saved to the session or the closed-tab list.
 
