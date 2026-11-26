@@ -154,7 +154,8 @@ fn main() {
     let mut reader = pair.master.try_clone_reader().expect("pty reader");
     std::thread::spawn(move || {
         let mut stdout = std::io::stdout();
-        let mut buf = [0u8; 8192];
+        // Big reads: a flood of output crosses to the browser in fewer, larger writes.
+        let mut buf = vec![0u8; 65536];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => std::process::exit(0),

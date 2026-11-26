@@ -102,6 +102,11 @@ fn on_timer(app: &mut App) {
     if app.term_resize.deadline().is_some() {
         app.window.request_redraw();
     }
+    // A terminal repaint held for its frame slot.
+    if app.term_redraw_at.is_some_and(|at| Instant::now() >= at) {
+        app.term_redraw_at = None;
+        app.window.request_redraw();
+    }
     // The terminal cursor's blink, including the change that stops it shown.
     if app.term_cursor_blinks()
         && app.term_blink_at.elapsed() < crate::term::BLINK_TIMEOUT + crate::term::BLINK_HALF
@@ -843,10 +848,15 @@ fn schedule_wakeup(app: &App, control_flow: &mut ControlFlow, servo_smoke: bool)
             };
             *control_flow = ControlFlow::WaitUntil(next);
         }
-        // A blinking terminal cursor's next change, and the end of a bell flash.
-        for deadline in [app.term_blink_deadline(), app.term_bell_deadline()]
-            .into_iter()
-            .flatten()
+        // A blinking terminal cursor's next change, the end of a bell flash, and a
+        // terminal repaint waiting for its frame slot.
+        for deadline in [
+            app.term_blink_deadline(),
+            app.term_bell_deadline(),
+            app.term_redraw_at,
+        ]
+        .into_iter()
+        .flatten()
         {
             let next = match *control_flow {
                 ControlFlow::WaitUntil(t) => t.min(deadline),

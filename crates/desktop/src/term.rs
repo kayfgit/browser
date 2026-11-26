@@ -115,6 +115,16 @@ fn ime_echo(pending: &mut Option<(String, Instant)>, c: &str, now: Instant) -> b
     }
 }
 
+/// The shortest gap between repaints driven by terminal output (~120 a second).
+pub(crate) const TERM_FRAME: Duration = Duration::from_millis(8);
+
+/// When an output-driven repaint may happen, given the last paint: `None` = now,
+/// `Some(t)` = wait for that frame slot.
+fn frame_slot(last_draw: Instant, now: Instant) -> Option<Instant> {
+    let due = last_draw + TERM_FRAME;
+    (now < due).then_some(due)
+}
+
 /// How long a terminal flashes when a program rings the bell.
 pub(crate) const BELL_FLASH: Duration = Duration::from_millis(150);
 
@@ -698,7 +708,8 @@ impl App {
         let proxy = self.proxy.clone();
         let reader_handle = std::thread::spawn(move || {
             let mut stdout = stdout;
-            let mut buf = [0u8; 8192];
+            // Big reads: a flood of output arrives in fewer, larger events.
+            let mut buf = vec![0u8; 65536];
             loop {
                 match stdout.read(&mut buf) {
                     Ok(0) | Err(_) => {
@@ -823,7 +834,20 @@ impl App {
             self.window
                 .request_user_attention(Some(tao::window::UserAttentionType::Informational));
         }
-        self.window.request_redraw();
+        self.request_term_redraw();
+    }
+
+    /// Repaint for new terminal output, at most once per [`TERM_FRAME`]: a flood of
+    /// output (ConPTY sends hundreds of small updates a second) would otherwise repaint
+    /// the whole window for each one. A repaint that comes too soon waits for the next
+    /// frame slot (the event loop wakes for it); typing still repaints at once.
+    pub(crate) fn request_term_redraw(&mut self) {
+        match frame_slot(self.last_draw, Instant::now()) {
+            None => self.window.request_redraw(),
+            Some(due) => {
+                self.term_redraw_at.get_or_insert(due);
+            }
+        }
     }
 
     /// When the next bell flash ends (to wake and repaint without it).
@@ -2196,6 +2220,16 @@ mod tests {
         assert!(pending.is_none(), "a different key ends the watch");
         let mut pending = Some(("a".to_string(), t0));
         assert!(!ime_echo(&mut pending, "a", t0 + Duration::from_secs(1)));
+    }
+
+    /// Output repaints come at most one frame slot apart; past it, at once.
+    #[test]
+    fn output_repaints_are_paced() {
+        let t0 = Instant::now();
+        assert_eq!(frame_slot(t0, t0), Some(t0 + TERM_FRAME));
+        assert_eq!(frame_slot(t0, t0 + TERM_FRAME / 2), Some(t0 + TERM_FRAME));
+        assert_eq!(frame_slot(t0, t0 + TERM_FRAME), None);
+        assert_eq!(frame_slot(t0, t0 + TERM_FRAME * 3), None);
     }
 
     #[test]

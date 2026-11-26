@@ -321,6 +321,8 @@ fn main() -> Result<()> {
         hint_back_to_passthrough: false,
         ime_committed: None,
         ime_pos: None,
+        last_draw: Instant::now(),
+        term_redraw_at: None,
         extension_request: 0,
         downloads: Default::default(),
         permissions: Default::default(),
