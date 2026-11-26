@@ -475,6 +475,11 @@ struct CwdScan {
 const OSC_CAP: usize = 4096;
 
 impl CwdScan {
+    /// Whether it's between sequences, where only an ESC can change anything.
+    fn idle(&self) -> bool {
+        self.state == 0
+    }
+
     /// Advance by one raw byte; returns a completed OSC payload when one ends.
     fn push(&mut self, b: u8) -> Option<Vec<u8>> {
         match self.state {
@@ -840,8 +845,20 @@ impl PtyTerm {
         // Shell-integration marks need the cursor position at the moment each one
         // arrives, so the parser runs up to every mark before it's handled.
         let mut parsed = 0;
-        for (i, &b) in bytes.iter().enumerate() {
+        let mut i = 0;
+        while i < bytes.len() {
+            // Outside an escape sequence nothing but ESC matters: jump to the next one
+            // (bulk output is almost all plain text, and this scan runs on every byte).
+            if self.cwd_scan.idle() {
+                match bytes[i..].iter().position(|&b| b == 0x1b) {
+                    Some(at) => i += at,
+                    None => break,
+                }
+            }
+            let b = bytes[i];
+            i += 1;
             if let Some(payload) = self.cwd_scan.push(b) {
+                let i = i - 1;
                 if let Some(dir) = osc_cwd(&payload) {
                     self.cwd = Some(dir);
                 }
@@ -2747,5 +2764,83 @@ mod tests {
         assert!(f.disambiguate && f.event_types && !f.all_as_escapes);
         pty.feed(b"[<u");
         assert!(!pty.kitty_flags().any(), "popped");
+    }
+
+    /// How fast output is parsed: `PtyTerm` against a bare alacritty `Term`, the raw
+    /// OSC scanner, and variants that separate character writes from scrolling. A
+    /// measurement, not a check (ignored); run with
+    /// `cargo test --release -p browser --bin browser parse_throughput -- --ignored --nocapture`.
+    /// On 2026-11-25 (release, 110x24): ours ~80 MB/s, bare alacritty ~82, no scrollback
+    /// ~110, no scrolling ~135, one-character lines ~58: the time is alacritty's own
+    /// per-character work, not ours.
+    #[test]
+    #[ignore]
+    fn parse_throughput() {
+        let line = b"The quick brown fox jumps over the lazy dog 0123456789 abcdefghijklmnopqrstuvwxyz ABCDEFGHIJ\r
+";
+        let data: Vec<u8> = line.repeat(200_000);
+        let chunk = 6500;
+        let mut pty = PtyTerm::new(110, 24, DEFAULT_SCROLLBACK);
+        let t = std::time::Instant::now();
+        for c in data.chunks(chunk) {
+            pty.feed(c);
+        }
+        let ours = t.elapsed();
+        let mut scan = CwdScan::default();
+        let t = std::time::Instant::now();
+        for &b in &data {
+            std::hint::black_box(scan.push(b));
+        }
+        let scanned = t.elapsed();
+        let listener = TermListener {
+            reported: Arc::new(Mutex::new(Reported::default())),
+            title: Arc::new(Mutex::new(None)),
+        };
+        let config = Config {
+            scrolling_history: DEFAULT_SCROLLBACK,
+            ..Config::default()
+        };
+        let mut vt = Term::new(config, &TermSize::new(110, 24), listener);
+        let mut parser: Processor = Processor::new();
+        let t = std::time::Instant::now();
+        for c in data.chunks(chunk) {
+            parser.advance(&mut vt, c);
+        }
+        let bare = t.elapsed();
+        let mb = data.len() as f64 / 1e6;
+        eprintln!(
+            "ours {:.1} MB/s, bare alacritty {:.1} MB/s, scanner alone {:.1} MB/s",
+            mb / ours.as_secs_f64(),
+            mb / bare.as_secs_f64(),
+            mb / scanned.as_secs_f64()
+        );
+        let run = |data: &[u8], hist: usize| {
+            let listener = TermListener {
+                reported: Arc::new(Mutex::new(Reported::default())),
+                title: Arc::new(Mutex::new(None)),
+            };
+            let config = Config {
+                scrolling_history: hist,
+                ..Config::default()
+            };
+            let mut vt = Term::new(config, &TermSize::new(110, 24), listener);
+            let mut parser: Processor = Processor::new();
+            let t = std::time::Instant::now();
+            for c in data.chunks(chunk) {
+                parser.advance(&mut vt, c);
+            }
+            data.len() as f64 / 1e6 / t.elapsed().as_secs_f64()
+        };
+        eprintln!("scrollback 0: {:.1} MB/s", run(&data, 0));
+        let noscroll: Vec<u8> = b"The quick brown fox jumps over the lazy dog 0123456789 abcdefghijklmnopqrstuvwxyz ABCDEFGHIJ\r".repeat(200_000);
+        eprintln!("no scrolling (CR only): {:.1} MB/s", run(&noscroll, 5000));
+        let short: Vec<u8> = b"x\r
+"
+        .repeat(2_000_000);
+        eprintln!(
+            "short lines (scroll-bound): {:.1} MB/s ({:.0} lines/ms)",
+            run(&short, 5000),
+            run(&short, 5000) / 3.0 * 1000.0 / 1000.0
+        );
     }
 }

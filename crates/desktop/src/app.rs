@@ -692,6 +692,11 @@ pub(crate) struct App {
     pub(crate) ime_committed: Option<(String, Instant)>,
     /// Where the IME composition window was last placed (window pixels).
     pub(crate) ime_pos: Option<(i32, i32)>,
+    /// When the window was last painted, for pacing output-driven repaints.
+    pub(crate) last_draw: Instant,
+    /// A repaint terminal output asked for, held until this frame slot (see
+    /// [`request_term_redraw`](App::request_term_redraw)).
+    pub(crate) term_redraw_at: Option<Instant>,
     /// True while the browser is frozen (`:freeze`): every web tab's view is dropped so
     /// the engine exits; the content band shows a frozen notice instead of
     /// the pages. `:unfreeze` rebuilds them. See [`freeze`](crate::freeze).

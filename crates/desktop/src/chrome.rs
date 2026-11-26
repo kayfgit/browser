@@ -835,6 +835,8 @@ pub(crate) fn draw_pane_border(
 
 impl App {
     pub(crate) fn draw(&mut self) -> Result<()> {
+        self.last_draw = std::time::Instant::now();
+        self.term_redraw_at = None;
         // Keep the engine-free read layout current (cheap no-op unless something
         // that affects layout changed) before we read it for painting.
         self.refresh_read_layout();
