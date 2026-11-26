@@ -54,6 +54,8 @@ const SETTING_KEYS: &[&str] = &[
     "term.bundled_conpty",
     "term.shell_integration",
     "term.notify_done",
+    "term.kitty_keyboard",
+    "term.ime",
 ];
 
 /// Every action the browser exposes through [`App::perform`] — the single list the
@@ -359,7 +361,10 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
                        Microsoft ConPTY instead of Windows' own console host. \
                        term.shell_integration: prompt jumps, copying a command's output \
                        and failed-command marks in terminals. term.notify_done: mark a \
-                       terminal's tab when a long command finishes there.",
+                       terminal's tab when a long command finishes there. \
+                       term.kitty_keyboard: terminal programs can use the kitty keyboard \
+                       protocol. term.ime: input methods (Japanese/Chinese/Korean IME, the \
+                       emoji panel) type into terminals.",
             },
             ParamSpec {
                 name: "value",
@@ -967,8 +972,10 @@ impl App {
         }
         self.refresh_visibility();
         let blink = self.config.setting("term.cursor_blink");
+        let kitty = self.config.setting("term.kitty_keyboard");
         for s in self.tabs.iter_mut().filter_map(|t| t.term_mut()) {
             s.pty.set_cursor_blink(blink);
+            s.pty.set_kitty_keyboard(kitty);
         }
         self.window.request_redraw();
         let on = if self.config.setting(key) {

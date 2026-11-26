@@ -614,6 +614,26 @@ impl PtyTerm {
         }
     }
 
+    /// Whether programs can turn on the kitty keyboard protocol (`term.kitty_keyboard`):
+    /// with it off the engine ignores their requests and doesn't answer their query, so
+    /// they stay on the legacy encoding.
+    pub fn set_kitty_keyboard(&mut self, on: bool) {
+        if self.config.kitty_keyboard != on {
+            self.config.kitty_keyboard = on;
+            self.vt.set_options(self.config.clone());
+        }
+    }
+
+    /// The kitty keyboard enhancements the running program asked for.
+    pub fn kitty_flags(&self) -> crate::kitty_keys::Flags {
+        crate::kitty_keys::Flags::from_mode(*self.vt.mode())
+    }
+
+    /// Where the live cursor is on screen, as a (col, row) viewport cell, if it is.
+    pub fn cursor_cell(&self) -> Option<(usize, usize)> {
+        self.viewport_cell(self.vt.grid().cursor.point)
+    }
+
     /// Whether the cursor blinks now: the program's choice, else the default above.
     pub fn cursor_blinking(&self) -> bool {
         self.vt.cursor_style().blinking
@@ -2709,5 +2729,23 @@ mod tests {
         assert_eq!(pty.prompt_spans().len(), 3);
         let first = pty.prompt_spans()[0].1;
         assert_eq!(pty.command_output_at(first).unwrap().output, "a.txt\nb.txt");
+    }
+
+    /// A program asking for the kitty keyboard protocol hears back only when it's on,
+    /// and the flags it pushed are what the keys get encoded with.
+    #[test]
+    fn kitty_keyboard_is_negotiated_only_when_on() {
+        let st = TermStyle::default();
+        let mut pty = PtyTerm::new(10, 2, DEFAULT_SCROLLBACK);
+        pty.feed(b"[>1u[?u");
+        assert!(pty.take_reply(&st, (9, 18)).is_empty());
+        assert!(!pty.kitty_flags().any());
+        pty.set_kitty_keyboard(true);
+        pty.feed(b"[>3u[?u");
+        assert_eq!(pty.take_reply(&st, (9, 18)), b"[?3u");
+        let f = pty.kitty_flags();
+        assert!(f.disambiguate && f.event_types && !f.all_as_escapes);
+        pty.feed(b"[<u");
+        assert!(!pty.kitty_flags().any(), "popped");
     }
 }

@@ -686,6 +686,12 @@ pub(crate) struct App {
     /// Hint mode was entered from a terminal's Passthrough (Ctrl+Shift+O): Esc goes
     /// back to typing in it.
     pub(crate) hint_back_to_passthrough: bool,
+    /// Text an input method just committed (and when), so the same characters
+    /// arriving again as key events aren't typed twice. See
+    /// [`is_ime_echo`](App::is_ime_echo).
+    pub(crate) ime_committed: Option<(String, Instant)>,
+    /// Where the IME composition window was last placed (window pixels).
+    pub(crate) ime_pos: Option<(i32, i32)>,
     /// True while the browser is frozen (`:freeze`): every web tab's view is dropped so
     /// the engine exits; the content band shows a frozen notice instead of
     /// the pages. `:unfreeze` rebuilds them. See [`freeze`](crate::freeze).
