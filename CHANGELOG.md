@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/kayfgit/browser/compare/v0.17.0...v0.17.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* update uBlock Origin Lite to 2026.1122.1948 ([#84](https://github.com/kayfgit/browser/issues/84)) ([ab56408](https://github.com/kayfgit/browser/commit/ab564087f8b92c961804957b74e9961cc3c7c892))
+
 ## [0.17.0](https://github.com/kayfgit/browser/compare/v0.16.0...v0.17.0) (2026-11-26)
 
 **TL;DR**
