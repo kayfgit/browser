@@ -8,8 +8,11 @@
 # `conpty-update/<version>` and open a PR, closing any older one it replaces. The commit
 # is a `fix:`, so release-please puts it in the next release.
 #
-# A PR opened with GITHUB_TOKEN doesn't trigger other workflows, so CI is started
-# explicitly with `gh workflow run`. Its checks still show on the PR.
+# A PR opened with GITHUB_TOKEN doesn't trigger other workflows, and a CI run started
+# with `gh workflow run` doesn't count as the PR's required check, so the PR would sit
+# blocked. So the PR is pushed and opened with the RELEASE_PLEASE_TOKEN personal
+# access token (contents + pull requests write), which runs CI like any other PR.
+# Without that secret it falls back to GITHUB_TOKEN + `gh workflow run`.
 name: update ConPTY
 
 on:
@@ -30,6 +33,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
 
       - name: Fetch the latest ConPTY
         shell: pwsh
@@ -38,7 +43,8 @@ jobs:
       - name: Open a PR if it changed
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          HAS_PAT: ${{ secrets.RELEASE_PLEASE_TOKEN != '' && 'yes' || '' }}
         run: |
           git add -A crates/desktop/conpty
           if git diff --cached --quiet; then
@@ -71,4 +77,7 @@ jobs:
               gh pr close "$old" --delete-branch --comment "Superseded by $url."
             done
 
-          gh workflow run ci.yml --ref "$branch"
+          # A personal access token already started CI by opening the PR.
+          if [ -z "$HAS_PAT" ]; then
+            gh workflow run ci.yml --ref "$branch"
+          fi
