@@ -39,7 +39,24 @@ pub(crate) struct ActionSpec {
 
 /// The [`SETTINGS`](crate::config::SETTINGS) keys, as the `set` action offers them
 /// (a test keeps the two lists equal).
-const SETTING_KEYS: &[&str] = &["tabs.lazy_load", "tabs.speaker", "tabs.hover_buttons"];
+const SETTING_KEYS: &[&str] = &[
+    "tabs.lazy_load",
+    "tabs.speaker",
+    "tabs.hover_buttons",
+    "term.mouse_reporting",
+    "term.text_styles",
+    "term.cursor_shape",
+    "term.cursor_blink",
+    "term.clipboard_write",
+    "term.visual_bell",
+    "term.links",
+    "term.search",
+    "term.bundled_conpty",
+    "term.shell_integration",
+    "term.notify_done",
+    "term.kitty_keyboard",
+    "term.ime",
+];
 
 /// Every action the browser exposes through [`App::perform`] — the single list the
 /// command bar, the help page, and the assistant all read from. A param with an
@@ -321,7 +338,8 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
         summary: "Turn one of the browser's optional behaviours on or off. Use for \
                   requests like 'load all my tabs at startup' (tabs.lazy_load off), \
                   'hide the speaker icon on tabs' (tabs.speaker off) or 'stop tabs \
-                  growing when I hover them' (tabs.hover_buttons off).",
+                  growing when I hover them' (tabs.hover_buttons off), 'stop my \
+                  terminal cursor blinking' (term.cursor_blink off).",
         params: &[
             ParamSpec {
                 name: "key",
@@ -330,7 +348,23 @@ pub(crate) const ACTIONS: &[ActionSpec] = &[
                 desc: "tabs.lazy_load: restored tabs load only when first shown. \
                        tabs.speaker: a speaker on tabs playing sound. \
                        tabs.hover_buttons: hovering a tab widens it and shows close/mute \
-                       buttons.",
+                       buttons. term.mouse_reporting: terminal programs that read the \
+                       mouse get clicks, drags and the wheel. term.text_styles: terminals \
+                       draw bold, italic, dim, underline and strikethrough. \
+                       term.cursor_shape: the terminal cursor takes the shape programs \
+                       ask for and turns hollow without the keyboard. term.cursor_blink: \
+                       the terminal cursor blinks. term.clipboard_write: terminal \
+                       programs can copy to the clipboard. term.visual_bell: the terminal \
+                       flashes on the bell. term.links: terminal links open in a new tab \
+                       (Ctrl+click, s in copy mode, Ctrl+Shift+O). term.search: / searches a terminal's \
+                       scrollback. term.bundled_conpty: new terminals use the bundled \
+                       Microsoft ConPTY instead of Windows' own console host. \
+                       term.shell_integration: prompt jumps, copying a command's output \
+                       and failed-command marks in terminals. term.notify_done: mark a \
+                       terminal's tab when a long command finishes there. \
+                       term.kitty_keyboard: terminal programs can use the kitty keyboard \
+                       protocol. term.ime: input methods (Japanese/Chinese/Korean IME, the \
+                       emoji panel) type into terminals.",
             },
             ParamSpec {
                 name: "value",
@@ -937,6 +971,12 @@ impl App {
             self.update_tab_hover(Some(self.cursor_pos));
         }
         self.refresh_visibility();
+        let blink = self.config.setting("term.cursor_blink");
+        let kitty = self.config.setting("term.kitty_keyboard");
+        for s in self.tabs.iter_mut().filter_map(|t| t.term_mut()) {
+            s.pty.set_cursor_blink(blink);
+            s.pty.set_kitty_keyboard(kitty);
+        }
         self.window.request_redraw();
         let on = if self.config.setting(key) {
             "on"

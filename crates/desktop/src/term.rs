@@ -25,6 +25,109 @@ pub(crate) const MULTI_CLICK: Duration = Duration::from_millis(500);
 /// zoom taps; shorter refits the grid sooner.
 pub(crate) const TERM_RESIZE_DEBOUNCE: Duration = Duration::from_millis(300);
 
+/// Half a cursor blink: shown this long, then hidden this long. Windows' default
+/// caret blink rate.
+pub(crate) const BLINK_HALF: Duration = Duration::from_millis(530);
+
+/// A cursor stops blinking (and stays shown) this long after the last keypress,
+/// output or focus change, as in Alacritty: an idle terminal shouldn't wake the
+/// browser twice a second forever.
+pub(crate) const BLINK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Where a blink cycle that restarted `elapsed` ago stands: whether the cursor shows,
+/// and when that next changes (`None` once it has stopped blinking).
+pub(crate) fn blink_phase(elapsed: Duration) -> (bool, Option<Duration>) {
+    if elapsed >= BLINK_TIMEOUT {
+        return (true, None);
+    }
+    let half = BLINK_HALF.as_millis();
+    let ms = elapsed.as_millis();
+    let on = (ms / half).is_multiple_of(2);
+    let next = Duration::from_millis((half - ms % half) as u64);
+    // The last change before the timeout lands it shown.
+    (on, Some(next.min(BLINK_TIMEOUT - elapsed)))
+}
+
+/// Add a wheel movement (`dy`, in lines) to `acc` and take out the whole `step`s
+/// it now holds (signed: positive = up). The remainder waits for the next event,
+/// so a precision touchpad's fractions add up instead of each rounding to a whole
+/// step; turning the other way drops what was left of the old direction.
+pub(crate) fn take_wheel_steps(acc: &mut f64, dy: f64, step: f64) -> i32 {
+    if *acc != 0.0 && acc.signum() != dy.signum() {
+        *acc = 0.0;
+    }
+    *acc += dy;
+    let steps = (*acc / step).trunc();
+    *acc -= steps * step;
+    steps as i32
+}
+
+/// Windows' "lines to scroll per notch" setting (3 unless changed; a page setting
+/// counts as 3, as tao treats it).
+fn wheel_lines() -> f64 {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SystemParametersInfoW, SPI_GETWHEELSCROLLLINES, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        };
+        let mut lines = 3u32;
+        // SAFETY: SPI_GETWHEELSCROLLLINES writes one UINT into `lines`.
+        let _ = unsafe {
+            SystemParametersInfoW(
+                SPI_GETWHEELSCROLLLINES,
+                0,
+                Some((&mut lines as *mut u32).cast()),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+        };
+        // WHEEL_PAGESCROLL (u32::MAX) means "a page per notch".
+        if lines == 0 || lines == u32::MAX {
+            return 3.0;
+        }
+        lines as f64
+    }
+    #[cfg(not(windows))]
+    3.0
+}
+
+/// Whether character `c` is the next piece of text an input method committed within
+/// the last half second (`pending`), using it up if so. Anything else ends the watch.
+fn ime_echo(pending: &mut Option<(String, Instant)>, c: &str, now: Instant) -> bool {
+    let Some((text, at)) = pending.as_mut() else {
+        return false;
+    };
+    if now.duration_since(*at) > Duration::from_millis(500) {
+        *pending = None;
+        return false;
+    }
+    match text.strip_prefix(c) {
+        Some(rest) => {
+            *text = rest.to_string();
+            if text.is_empty() {
+                *pending = None;
+            }
+            true
+        }
+        None => {
+            *pending = None;
+            false
+        }
+    }
+}
+
+/// The shortest gap between repaints driven by terminal output (~120 a second).
+pub(crate) const TERM_FRAME: Duration = Duration::from_millis(8);
+
+/// When an output-driven repaint may happen, given the last paint: `None` = now,
+/// `Some(t)` = wait for that frame slot.
+fn frame_slot(last_draw: Instant, now: Instant) -> Option<Instant> {
+    let due = last_draw + TERM_FRAME;
+    (now < due).then_some(due)
+}
+
+/// How long a terminal flashes when a program rings the bell.
+pub(crate) const BELL_FLASH: Duration = Duration::from_millis(150);
+
 /// A terminal grid size a pane wants: `(tab, cols, rows)`.
 pub(crate) type GridWant = (usize, usize, usize);
 
@@ -79,6 +182,113 @@ pub(crate) struct TermSession {
     pub(crate) reader: Option<JoinHandle<()>>,
     /// The native VT engine + grid this terminal renders from (no WebView2).
     pub(crate) pty: pty_term::PtyTerm,
+    /// When a program last rang the bell, while its flash
+    /// (`term.visual_bell`) is still showing.
+    pub(crate) bell_at: Option<Instant>,
+    /// Something happened here while you weren't looking: a long command finished or
+    /// a program rang the bell. Shown in the tab strip until the terminal is on screen.
+    pub(crate) activity: Option<Activity>,
+}
+
+/// What a terminal off screen has to tell you (see [`TermSession::activity`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Activity {
+    /// A command that ran at least [`NOTIFY_AFTER`] finished, with its exit code when
+    /// the shell reports one.
+    Done(Option<i32>),
+    /// A program rang the bell.
+    Bell,
+}
+
+impl Activity {
+    /// The marker the tab strip puts before the label: ✓ succeeded, ✗ failed,
+    /// • the bell or a command whose result the shell didn't say.
+    pub(crate) fn marker(self) -> &'static str {
+        match self {
+            Activity::Done(Some(0)) => "✓",
+            Activity::Done(Some(_)) => "✗",
+            Activity::Done(None) | Activity::Bell => "•",
+        }
+    }
+}
+
+/// How long a command must run before its finishing is worth telling you about
+/// (`term.notify_done`): long enough that you'd have looked away.
+pub(crate) const NOTIFY_AFTER: Duration = Duration::from_secs(5);
+
+/// The PowerShell side of shell integration, run at startup (`-NoExit
+/// -EncodedCommand`, after the profile): wrap whatever `prompt` the profile set up
+/// (starship, oh-my-posh, the default) so each prompt reports the last command's exit
+/// code (`OSC 133;D`), where the prompt starts and ends (`133;A`/`133;B`) and the
+/// current folder (`OSC 9;9`, so session restore works with no `$PROFILE` edit). A
+/// command counts as run when the history grew, so an empty Enter reports nothing.
+const PWSH_HOOK: &str = r#"
+$global:__browserPrompt = $function:prompt
+$global:__browserLast = $null
+function global:prompt {
+    $ok = $global:?
+    $code = $global:LASTEXITCODE
+    $e = [char]27; $b = [char]7
+    $h = Get-History -Count 1
+    $id = if ($h) { $h.Id } else { 0 }
+    $done = ''
+    if ($null -ne $global:__browserLast -and $id -ne $global:__browserLast) {
+        $exit = if ($ok) { 0 } elseif ($code) { $code } else { 1 }
+        $done = "$e]133;D;$exit$b"
+    }
+    $global:__browserLast = $id
+    $loc = $executionContext.SessionState.Path.CurrentLocation
+    $cwd = if ($loc.Provider.Name -eq 'FileSystem') { "$e]9;9;$($loc.ProviderPath)$b" } else { '' }
+    $p = & $global:__browserPrompt
+    "$done$e]133;A$b$cwd$p$e]133;B$b"
+}
+"#;
+
+/// The arguments that start PowerShell with [`PWSH_HOOK`]: `-NoExit -EncodedCommand`
+/// with the script base64-encoded as UTF-16LE (PowerShell's own format), so no
+/// quoting can mangle it on the way through two command lines.
+fn pwsh_hook_args() -> [String; 3] {
+    use base64::Engine as _;
+    let utf16: Vec<u8> = PWSH_HOOK
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    [
+        "-NoExit".into(),
+        "-EncodedCommand".into(),
+        base64::engine::general_purpose::STANDARD.encode(utf16),
+    ]
+}
+
+/// Whether a PowerShell command line already says what to run (then it isn't
+/// interactive, or the user wired their own startup, and the hook stays out).
+fn pwsh_runs_something(args: &[String]) -> bool {
+    args.iter().any(|a| {
+        let a = a.to_ascii_lowercase();
+        let a = a.trim_start_matches(['-', '/']);
+        [
+            "command",
+            "c",
+            "file",
+            "f",
+            "encodedcommand",
+            "e",
+            "ec",
+            "noexit",
+        ]
+        .contains(&a)
+    })
+}
+
+/// cmd's `PROMPT` with shell-integration marks around it: the previous command
+/// finished (cmd can't report its exit code there), a prompt starts, the folder is
+/// `$P`, the user's own prompt, the prompt ends. Without integration, just the folder.
+fn cmd_prompt(prompt: &str, marks: bool) -> String {
+    if marks {
+        format!("$E]133;D$E\\$E]133;A$E\\$E]9;9;$P$E\\{prompt}$E]133;B$E\\")
+    } else {
+        format!("$E]9;9;$P$E\\{prompt}")
+    }
 }
 
 impl TermSession {
@@ -212,6 +422,123 @@ impl App {
         (cols, rows)
     }
 
+    /// Text an input method (Japanese, Chinese, Korean IME, the emoji panel) committed:
+    /// it goes where typing goes, into the terminal while it has the keyboard, or into
+    /// the command line. Web pages handle their own IME.
+    pub(crate) fn on_ime_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        crate::journal::log(
+            "keys",
+            format!("ime commit ({} chars)", text.chars().count()),
+        );
+        match self.mode {
+            ModeKind::Passthrough if self.active_is_term() => {
+                if !self.config.setting("term.ime") {
+                    return;
+                }
+                if let Some(s) = self
+                    .active
+                    .and_then(|i| self.tabs.get_mut(i))
+                    .and_then(|t| t.term_mut())
+                {
+                    s.pty.clear_selection();
+                    snap_to_live(s, &self.window);
+                    s.send(0, text.as_bytes());
+                }
+                self.ime_committed = Some((text.to_string(), Instant::now()));
+                self.restart_term_blink();
+            }
+            ModeKind::Command | ModeKind::Find => {
+                self.cmdline.insert(text);
+                if self.mode == ModeKind::Find {
+                    self.find_update();
+                }
+                self.ime_committed = Some((text.to_string(), Instant::now()));
+                self.window.request_redraw();
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether a key event is the same text an input method just committed, which
+    /// Windows can also deliver as ordinary character messages: typed twice otherwise.
+    pub(crate) fn is_ime_echo(&mut self, key: &KeyEvent) -> bool {
+        match &key.logical_key {
+            Key::Character(c) => ime_echo(&mut self.ime_committed, c, Instant::now()),
+            _ => false,
+        }
+    }
+
+    /// Put the input method's composition window at the terminal cursor (its own
+    /// candidate list opens there), when typing into a terminal. Cheap when the cursor
+    /// hasn't moved.
+    pub(crate) fn place_ime(&mut self) {
+        if self.mode != ModeKind::Passthrough || !self.config.setting("term.ime") {
+            return;
+        }
+        let Some(cell) = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.term())
+            .and_then(|s| s.pty.cursor_cell())
+        else {
+            return;
+        };
+        let rect = self.focused_pane_rect();
+        let (cw, ch) = self.term_cell();
+        let pos = (
+            rect.x + TERM_PAD + cell.0 as i32 * cw,
+            rect.y + cell.1 as i32 * ch,
+        );
+        if self.ime_pos != Some(pos) {
+            self.ime_pos = Some(pos);
+            self.window
+                .set_ime_position(tao::dpi::PhysicalPosition::new(pos.0, pos.1));
+        }
+    }
+
+    /// How terminals are drawn this frame: the style and cursor settings, the blink
+    /// phase, and `focused` = the window has the OS focus and keys go to terminals
+    /// (each pane narrows that to itself, see `chrome::paint_pane`).
+    pub(crate) fn term_render_opts(&self) -> pty_term::RenderOpts {
+        pty_term::RenderOpts {
+            text_styles: self.config.setting("term.text_styles"),
+            cursor_shapes: self.config.setting("term.cursor_shape"),
+            focused: self.window_focused,
+            blink_on: blink_phase(self.term_blink_at.elapsed()).0,
+            shell_marks: self.config.setting("term.shell_integration"),
+        }
+    }
+
+    /// When the focused terminal's blinking cursor next turns on or off, so the event
+    /// loop can wake to repaint it. `None` when nothing is blinking.
+    pub(crate) fn term_blink_deadline(&self) -> Option<Instant> {
+        if !self.term_cursor_blinks() {
+            return None;
+        }
+        let (_, next) = blink_phase(self.term_blink_at.elapsed());
+        Some(Instant::now() + next?)
+    }
+
+    /// Whether the focused terminal shows a blinking cursor: the window is focused,
+    /// keys go to the terminal, and its cursor style blinks.
+    pub(crate) fn term_cursor_blinks(&self) -> bool {
+        self.window_focused
+            && self.mode == ModeKind::Passthrough
+            && self
+                .active
+                .and_then(|i| self.tabs.get(i))
+                .and_then(|t| t.term())
+                .is_some_and(|s| s.pty.cursor_blinking() && !s.pty.is_vi())
+    }
+
+    /// Restart the cursor blink with the cursor shown (typing, output, focus).
+    pub(crate) fn restart_term_blink(&mut self) {
+        self.term_blink_at = Instant::now();
+    }
+
     /// Open a native terminal tab (no WebView2). The ConPTY + shell run in the
     /// `browser-pty-host` companion (so they can't deadlock our exit); its raw
     /// output is parsed by an in-process `alacritty_terminal` engine and painted by
@@ -322,14 +649,29 @@ impl App {
         if let Some(dir) = cwd {
             command.arg("--cwd").arg(dir);
         }
+        // The bundled Microsoft ConPTY, unpacked on first use; without it (setting
+        // off, or it couldn't be unpacked) the host uses Windows' own.
+        #[cfg(windows)]
+        if self.config.setting("term.bundled_conpty") {
+            if let Some(dir) = crate::bundled_conpty::dir() {
+                command.arg("--conpty").arg(dir);
+            }
+        }
         // cmd reads its prompt from the PROMPT env var, so cwd reporting can be
         // injected with no user setup: prefix the prompt with `OSC 9;9;<cwd> ST`
         // ($E = ESC, $P = cwd — the Windows Terminal shell-integration pattern).
         // Other shells (pwsh, bash/WSL) need their own one-line prompt hook; see
         // `:help te`.
+        // Shell integration (`term.shell_integration`): cmd gets its marks the same way,
+        // and PowerShell runs a startup hook that wraps its prompt (see PWSH_HOOK).
+        let marks = self.config.setting("term.shell_integration");
         if shell_kind(&shell[0]) == ShellKind::Cmd {
             let prompt = std::env::var("PROMPT").unwrap_or_else(|_| "$P$G".to_string());
-            command.env("PROMPT", format!("$E]9;9;$P$E\\{prompt}"));
+            command.env("PROMPT", cmd_prompt(&prompt, marks));
+        }
+        let mut shell = shell;
+        if marks && shell_kind(&shell[0]) == ShellKind::Pwsh && !pwsh_runs_something(&shell[1..]) {
+            shell.extend(pwsh_hook_args());
         }
         command
             .args(&shell)
@@ -366,7 +708,8 @@ impl App {
         let proxy = self.proxy.clone();
         let reader_handle = std::thread::spawn(move || {
             let mut stdout = stdout;
-            let mut buf = [0u8; 8192];
+            // Big reads: a flood of output arrives in fewer, larger events.
+            let mut buf = vec![0u8; 65536];
             loop {
                 match stdout.read(&mut buf) {
                     Ok(0) | Err(_) => {
@@ -402,7 +745,14 @@ impl App {
                     stdin,
                     job,
                     reader: Some(reader_handle),
-                    pty: pty_term::PtyTerm::new(cols, rows, self.term_scrollback),
+                    pty: {
+                        let mut pty = pty_term::PtyTerm::new(cols, rows, self.term_scrollback);
+                        pty.set_cursor_blink(self.config.setting("term.cursor_blink"));
+                        pty.set_kitty_keyboard(self.config.setting("term.kitty_keyboard"));
+                        pty
+                    },
+                    bell_at: None,
+                    activity: None,
                 }),
             },
             true,
@@ -424,12 +774,101 @@ impl App {
     /// the engine produced (e.g. the `ESC[6n` cursor-position answer the shell waits
     /// for) is written straight back to the PTY.
     pub(crate) fn feed_terminal(&mut self, id: u64, data: &[u8]) {
-        if let Some(s) = self.term_session_mut(id) {
-            s.pty.feed(data);
-            let reply = s.pty.take_reply();
-            if !reply.is_empty() {
-                s.send(0, &reply);
+        let style = self.term_style;
+        let (cw, ch) = self.term_cell();
+        let clipboard_ok = self.config.setting("term.clipboard_write");
+        let bell_ok = self.config.setting("term.visual_bell");
+        let active = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.term())
+            .is_some_and(|s| s.id == id);
+        let notify = self.config.setting("term.notify_done");
+        let on_screen = self.pane_layout().0.iter().any(|(tab, _)| {
+            self.tabs
+                .get(*tab)
+                .and_then(|t| t.term())
+                .is_some_and(|s| s.id == id)
+        });
+        let window_focused = self.window_focused;
+        let Some(s) = self.term_session_mut(id) else {
+            return;
+        };
+        s.pty.feed(data);
+        // A long command finishing, or the bell, while you're elsewhere: mark the tab
+        // when it's off screen, and flash the taskbar when the browser isn't in front.
+        let mut attention = false;
+        if notify {
+            for done in s.pty.take_commands_done() {
+                if done.duration >= NOTIFY_AFTER {
+                    if !on_screen {
+                        s.activity = Some(Activity::Done(done.exit));
+                    }
+                    attention |= !window_focused;
+                }
             }
+        } else {
+            s.pty.take_commands_done();
+        }
+        let reply = s.pty.take_reply(&style, (cw as u16, ch as u16));
+        if !reply.is_empty() {
+            s.send(0, &reply);
+        }
+        if s.pty.take_bell() {
+            if bell_ok {
+                s.bell_at = Some(Instant::now());
+            }
+            if notify && !on_screen && s.activity.is_none() {
+                s.activity = Some(Activity::Bell);
+            }
+        }
+        // A program copying (nvim, tmux, also over SSH) writes the clipboard.
+        if let Some(text) = s.pty.take_clipboard().filter(|_| clipboard_ok) {
+            clipboard_set(&text);
+        }
+        // Output shows the cursor again, like typing does.
+        if active {
+            self.restart_term_blink();
+        }
+        if attention {
+            self.window
+                .request_user_attention(Some(tao::window::UserAttentionType::Informational));
+        }
+        self.request_term_redraw();
+    }
+
+    /// Repaint for new terminal output, at most once per [`TERM_FRAME`]: a flood of
+    /// output (ConPTY sends hundreds of small updates a second) would otherwise repaint
+    /// the whole window for each one. A repaint that comes too soon waits for the next
+    /// frame slot (the event loop wakes for it); typing still repaints at once.
+    pub(crate) fn request_term_redraw(&mut self) {
+        match frame_slot(self.last_draw, Instant::now()) {
+            None => self.window.request_redraw(),
+            Some(due) => {
+                self.term_redraw_at.get_or_insert(due);
+            }
+        }
+    }
+
+    /// When the next bell flash ends (to wake and repaint without it).
+    pub(crate) fn term_bell_deadline(&self) -> Option<Instant> {
+        self.tabs
+            .iter()
+            .filter_map(|t| t.term()?.bell_at)
+            .map(|at| at + BELL_FLASH)
+            .min()
+    }
+
+    /// End bell flashes that have run their course, repainting without them.
+    pub(crate) fn expire_term_bells(&mut self) {
+        let mut ended = false;
+        for s in self.tabs.iter_mut().filter_map(|t| t.term_mut()) {
+            if s.bell_at.is_some_and(|at| at.elapsed() >= BELL_FLASH) {
+                s.bell_at = None;
+                ended = true;
+            }
+        }
+        if ended {
             self.window.request_redraw();
         }
     }
@@ -488,10 +927,51 @@ impl App {
             .and_then(|i| self.tabs.get(i))
             .and_then(|t| t.term())
             .is_some_and(|s| s.pty.app_cursor());
-        let ctrl = self.modifiers.control_key();
-        let alt = self.modifiers.alt_key();
+        let mut ctrl = self.modifiers.control_key();
+        let mut alt = self.modifiers.alt_key();
         let shift = self.modifiers.shift_key();
-        if let Some(bytes) = encode_term_key(&key.logical_key, ctrl, alt, shift, app_cursor) {
+        // A character typed with AltGr (Ctrl+Alt to Windows) is plain text.
+        if is_altgr(&key.logical_key, &key.key_without_modifiers(), ctrl, alt) {
+            (ctrl, alt) = (false, false);
+        }
+        // A program that asked for the kitty keyboard protocol gets keys its way; keys
+        // the protocol leaves alone fall through to the legacy encoding.
+        let kitty = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.term())
+            .map(|s| s.pty.kitty_flags())
+            .filter(|f| f.any());
+        let event = if key.state == tao::event::ElementState::Released {
+            crate::kitty_keys::Event::Release
+        } else if key.repeat {
+            crate::kitty_keys::Event::Repeat
+        } else {
+            crate::kitty_keys::Event::Press
+        };
+        let encoded = kitty.and_then(|flags| {
+            let mods = crate::kitty_keys::Mods {
+                shift,
+                alt,
+                ctrl,
+                meta: self.modifiers.super_key(),
+            };
+            crate::kitty_keys::encode(
+                &key.logical_key,
+                &key.key_without_modifiers(),
+                key.text,
+                mods,
+                event,
+                flags,
+            )
+        });
+        let bytes = match encoded {
+            Some(bytes) => Some(bytes),
+            // Releases only ever go out in the kitty encoding.
+            None if event == crate::kitty_keys::Event::Release => None,
+            None => encode_term_key(&key.logical_key, ctrl, alt, shift, app_cursor),
+        };
+        if let Some(bytes) = bytes.filter(|b| !b.is_empty()) {
             if let Some(s) = self
                 .active
                 .and_then(|i| self.tabs.get_mut(i))
@@ -503,9 +983,24 @@ impl App {
                 // (keys only reach the PTY in passthrough).
                 s.pty.clear_selection();
                 snap_to_live(s, &self.window);
+                if bytes == b"\r" {
+                    s.pty.command_entered();
+                }
                 s.send(0, &bytes);
+                self.restart_term_blink();
             }
         }
+    }
+
+    /// Whether a key release should reach the terminal: it's typing into a terminal
+    /// whose program asked for releases (kitty flag 2).
+    pub(crate) fn term_wants_releases(&self) -> bool {
+        self.mode == ModeKind::Passthrough
+            && self
+                .active
+                .and_then(|i| self.tabs.get(i))
+                .and_then(|t| t.term())
+                .is_some_and(|s| s.pty.kitty_flags().event_types)
     }
 
     /// Paste the clipboard into the active terminal's PTY (Ctrl+V in a `:te` tab).
@@ -536,6 +1031,24 @@ impl App {
         }
         snap_to_live(s, &self.window);
         s.send(0, &out);
+        self.restart_term_blink();
+    }
+
+    /// What to say when copy mode looks for a prompt and finds none: there isn't one
+    /// that far, or this shell doesn't mark its prompts.
+    fn no_prompt_hint(&self) -> String {
+        let integrated = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.term())
+            .is_some_and(|s| s.pty.shell_integrated());
+        if integrated {
+            "no prompt that way".into()
+        } else if !self.config.setting("term.shell_integration") {
+            "shell integration is off (term.shell_integration)".into()
+        } else {
+            "this shell doesn't mark its prompts (see :help te for bash/zsh)".into()
+        }
     }
 
     /// Whether the active terminal is in copy/vi mode.
@@ -596,6 +1109,11 @@ impl App {
         let mut consumed = true;
         // An f/F/t/T that needs to wait for its target char (applied after the borrow).
         let mut pending: Option<(bool, bool)> = None;
+        // `s`: label the links on screen (after the borrow).
+        let mut link_hints = false;
+        // `Y`: copy the output of the command at the cursor (after the borrow).
+        let mut copy_output = None;
+        let mut no_prompt = false;
         {
             let Some(s) = self
                 .active
@@ -672,6 +1190,17 @@ impl App {
                         }
                         "y" => yank = pty.yank(),
                         "i" => exit = true,
+                        // Links: the terminal's `f` (which is vim's find-char here).
+                        // `s` is a scroll-hint key on pages, with no use in a terminal.
+                        "s" => link_hints = true,
+                        // Shell integration: `[`/`]` jump to the previous/next prompt,
+                        // `Y` copies the output of the command the cursor is in.
+                        "[" | "{" => no_prompt = !pty.vi_prompt_jump(true),
+                        "]" | "}" => no_prompt = !pty.vi_prompt_jump(false),
+                        "Y" => {
+                            let line = pty.vt.vi_mode_cursor.point.line;
+                            copy_output = Some(pty.command_output_at(line));
+                        }
                         _ => consumed = false,
                     },
                     _ => consumed = false,
@@ -680,6 +1209,27 @@ impl App {
         }
         if let Some(p) = pending {
             self.term_find_pending = Some(p);
+        }
+        if link_hints {
+            self.enter_term_hints();
+            return true;
+        }
+        if no_prompt {
+            self.set_status(self.no_prompt_hint());
+        }
+        match copy_output {
+            Some(Some(out)) => {
+                let lines = out.output.lines().count();
+                clipboard_set(&out.output);
+                let what = if out.command.is_empty() {
+                    "that command".to_string()
+                } else {
+                    format!("`{}`", out.command.chars().take(40).collect::<String>())
+                };
+                self.set_status(format!("copied the output of {what} ({lines} lines)"));
+            }
+            Some(None) => self.set_status(self.no_prompt_hint()),
+            None => {}
         }
         if let Some(text) = yank {
             let n = text.chars().count();
@@ -771,14 +1321,7 @@ impl App {
         let Some((col, row, right)) = self.term_cell_at(tab, rect, x, y) else {
             return false;
         };
-        let shift = self.modifiers.shift_key();
-        if self
-            .tabs
-            .get(tab)
-            .and_then(|t| t.term())
-            .is_some_and(|s| s.pty.mouse_mode())
-            && !shift
-        {
+        if self.term_mouse_report(tab).is_some() && !self.modifiers.shift_key() {
             return false;
         }
         // A press within the streak window AND on the same cell continues the streak;
@@ -851,34 +1394,339 @@ impl App {
         self.window.request_redraw();
     }
 
-    /// Forward a wheel notch to a terminal program that turned on mouse reporting,
-    /// as a mouse wheel-button event at the cell under the cursor (relative to the
-    /// pane's rect). Returns `false` (so the caller scrolls our scrollback instead)
-    /// when no program wants mice.
-    pub(crate) fn term_mouse_wheel(&mut self, tab: usize, rect: PaneRect, dy_lines: f64) -> bool {
-        let (cw, ch) = self.term_cell();
-        let (px, py) = (self.cursor_pos.0 as i32, self.cursor_pos.1 as i32);
-        let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) else {
+    /// Ctrl held over a link in a terminal: underline it and show a hand pointer, as
+    /// a hint that Ctrl+click opens it. Called as the pointer moves and as Ctrl goes
+    /// down or up; cheap when Ctrl isn't held and nothing was hovered.
+    pub(crate) fn term_link_hover(&mut self) {
+        let (x, y) = self.cursor_pos;
+        let want = if self.config.setting("term.links") && self.modifiers.control_key() {
+            self.pane_at_pixel(x, y).and_then(|(tab, rect)| {
+                let (col, row, _) = self.term_cell_at(tab, rect, x, y)?;
+                let link = self.tabs.get(tab)?.term()?.pty.link_at(col, row)?;
+                Some((tab, (link.start, link.end)))
+            })
+        } else {
+            None
+        };
+        if want == self.term_link_hover {
+            return;
+        }
+        if let Some((tab, _)) = self.term_link_hover.take() {
+            if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
+                s.pty.link_hover = None;
+            }
+        }
+        if let Some((tab, range)) = want {
+            if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
+                s.pty.link_hover = Some(range);
+            }
+        }
+        self.term_link_hover = want;
+        self.window.set_cursor_icon(if want.is_some() {
+            tao::window::CursorIcon::Hand
+        } else {
+            tao::window::CursorIcon::Default
+        });
+        self.window.request_redraw();
+    }
+
+    /// A Ctrl+click on a link in terminal `tab`: open it in a new tab. Returns whether
+    /// the press was on a link (and so is used up).
+    pub(crate) fn term_click_link(&mut self, tab: usize, rect: PaneRect) -> bool {
+        if !self.config.setting("term.links") || !self.modifiers.control_key() {
+            return false;
+        }
+        let (x, y) = self.cursor_pos;
+        let Some((col, row, _)) = self.term_cell_at(tab, rect, x, y) else {
             return false;
         };
-        if !s.pty.mouse_mode() {
+        let Some(link) = self
+            .tabs
+            .get(tab)
+            .and_then(|t| t.term()?.pty.link_at(col, row))
+        else {
             return false;
-        }
-        let (cols, rows) = (s.pty.cols as i32, s.pty.rows as i32);
-        let col = (((px - rect.x - TERM_PAD) / cw) + 1).clamp(1, cols.max(1));
-        let row = (((py - rect.y) / ch) + 1).clamp(1, rows.max(1));
-        // xterm wheel buttons: 64 = up, 65 = down.
-        let button = if dy_lines > 0.0 { 64 } else { 65 };
-        let sgr = s.pty.sgr_mouse();
-        let notches = (dy_lines.abs().round() as i32).max(1);
-        let mut out = Vec::new();
-        for _ in 0..notches {
-            out.extend_from_slice(&encode_mouse_wheel(sgr, button, col, row));
-        }
-        s.send(0, &out);
-        self.window.request_redraw();
+        };
+        self.open_term_link(&link.url);
         true
     }
+
+    /// Open a link from a terminal in a new tab. Only web addresses open: a terminal's
+    /// `file:` links (`ls --hyperlink`) and other schemes just say so.
+    pub(crate) fn open_term_link(&mut self, url: &str) -> bool {
+        match pty_term::openable_url(url) {
+            Some(url) => {
+                self.clear_term_link_hover();
+                self.open_tab(&url, false, true);
+                true
+            }
+            None => {
+                self.set_status(format!("only web links open from the terminal: {url}"));
+                false
+            }
+        }
+    }
+
+    /// Re-run the `/` search in each terminal on screen whose output moved since its
+    /// matches were found, once per frame rather than once per chunk of output.
+    pub(crate) fn refresh_term_searches(&mut self) {
+        let (panes, _) = self.pane_layout();
+        for (tab, _) in panes {
+            if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
+                s.pty.search_refresh();
+                // On screen now: whatever it had to tell you has been seen.
+                s.activity = None;
+            }
+        }
+    }
+
+    /// Drop the hovered-link underline and hand pointer.
+    pub(crate) fn clear_term_link_hover(&mut self) {
+        if let Some((tab, _)) = self.term_link_hover.take() {
+            if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
+                s.pty.link_hover = None;
+            }
+            self.window
+                .set_cursor_icon(tao::window::CursorIcon::Default);
+        }
+    }
+
+    /// Label every link on screen (`s` in copy mode, Ctrl+Shift+O while typing);
+    /// typing a label opens that link in a new tab, Esc goes back to what you were
+    /// doing. The same badges and letters as `f` on a page.
+    pub(crate) fn enter_term_hints(&mut self) {
+        if !self.config.setting("term.links") {
+            self.set_status("terminal links are off (term.links)");
+            return;
+        }
+        let rect = self.focused_pane_rect();
+        let (cw, ch) = self.term_cell();
+        let Some(pty) = self
+            .active
+            .and_then(|i| self.tabs.get(i))
+            .and_then(|t| t.term())
+            .map(|s| &s.pty)
+        else {
+            return;
+        };
+        let links = pty.visible_links();
+        let labels = crate::hints::hint_labels(links.len());
+        let hints: Vec<crate::hints::NativeHint> = links
+            .into_iter()
+            .zip(labels)
+            .filter_map(|(link, label)| {
+                let (col, row) = pty.viewport_cell(link.start)?;
+                Some(crate::hints::NativeHint {
+                    label,
+                    url: link.url,
+                    x: rect.x + TERM_PAD + col as i32 * cw,
+                    y: rect.y + row as i32 * ch + ch * 3 / 4,
+                })
+            })
+            .collect();
+        if hints.is_empty() {
+            self.set_status("no links on screen");
+            return;
+        }
+        self.clear_term_link_hover();
+        self.native_hints = hints;
+        self.hint_back_to_passthrough = self.mode == ModeKind::Passthrough;
+        self.hint_act = crate::hints::HintAct::Follow;
+        self.hint_input.clear();
+        self.mode = ModeKind::Hint;
+        self.window.request_redraw();
+    }
+
+    /// The mouse reporting terminal `tab`'s program asked for, when it should get the
+    /// mouse: `term.mouse_reporting` is on and copy mode isn't (copy mode's clicks
+    /// and drags select, as they do for a program that reads no mouse).
+    pub(crate) fn term_mouse_report(&self, tab: usize) -> Option<pty_term::MouseReport> {
+        if !self.config.setting("term.mouse_reporting") {
+            return None;
+        }
+        let s = self.tabs.get(tab)?.term()?;
+        if s.pty.is_vi() {
+            return None;
+        }
+        s.pty.mouse_report()
+    }
+
+    /// The 1-based cell a mouse report names for a window pixel over terminal `tab`.
+    fn term_report_cell(&self, tab: usize, rect: PaneRect, x: f64, y: f64) -> Option<(u32, u32)> {
+        let (col, row, _) = self.term_cell_at(tab, rect, x, y)?;
+        Some((col as u32 + 1, row as u32 + 1))
+    }
+
+    /// The modifier bits a mouse report carries: Shift 4, Alt 8, Ctrl 16.
+    fn mouse_mods(&self) -> u8 {
+        let m = &self.modifiers;
+        (m.shift_key() as u8) << 2 | (m.alt_key() as u8) << 3 | (m.control_key() as u8) << 4
+    }
+
+    /// A mouse button pressed over terminal `tab`: report it to the program when it
+    /// reads the mouse (Shift held keeps the press ours, to select, as in xterm).
+    /// `button` is xterm's code: 0 left, 1 middle, 2 right. Returns whether the press
+    /// went to the program.
+    pub(crate) fn term_mouse_press(&mut self, tab: usize, rect: PaneRect, button: u8) -> bool {
+        let Some(report) = self.term_mouse_report(tab) else {
+            return false;
+        };
+        if self.modifiers.shift_key() {
+            return false;
+        }
+        let (x, y) = self.cursor_pos;
+        let Some(cell) = self.term_report_cell(tab, rect, x, y) else {
+            return false;
+        };
+        let bytes = encode_mouse(report.encoding, button | self.mouse_mods(), cell, false);
+        self.term_mouse_held = Some(TermMouseHeld {
+            tab,
+            rect,
+            button,
+            cell,
+        });
+        self.term_mouse_send(tab, &bytes);
+        true
+    }
+
+    /// [`term_mouse_press`](Self::term_mouse_press) for whatever pane is under the
+    /// pointer (the right and middle buttons, which don't focus or select).
+    pub(crate) fn term_mouse_button_press(&mut self, button: u8) -> bool {
+        let (x, y) = self.cursor_pos;
+        match self.pane_at_pixel(x, y) {
+            Some((tab, rect)) => self.term_mouse_press(tab, rect, button),
+            None => false,
+        }
+    }
+
+    /// A mouse button released: report it when its press went to the program. The
+    /// release lands on the cell under the pointer (clamped to the pane), or on the
+    /// last one reported when the pointer left the window (`at_last_cell`).
+    pub(crate) fn term_mouse_release(&mut self, button: u8, at_last_cell: bool) -> bool {
+        let Some(held) = self.term_mouse_held.filter(|h| h.button == button) else {
+            return false;
+        };
+        self.term_mouse_held = None;
+        let Some(report) = self.term_mouse_report(held.tab) else {
+            return true;
+        };
+        let (x, y) = self.cursor_pos;
+        let cell = if at_last_cell {
+            held.cell
+        } else {
+            self.term_report_cell(held.tab, held.rect, x, y)
+                .unwrap_or(held.cell)
+        };
+        let bytes = encode_mouse(report.encoding, button | self.mouse_mods(), cell, true);
+        self.term_mouse_send(held.tab, &bytes);
+        true
+    }
+
+    /// The pointer moved: report it when the program tracks motion — while a button
+    /// it was told about is held (drag, DEC 1002), or always (DEC 1003). One report
+    /// per cell crossed, not per pixel.
+    pub(crate) fn term_mouse_motion(&mut self, x: f64, y: f64) {
+        if let Some(held) = self.term_mouse_held {
+            let Some(report) = self.term_mouse_report(held.tab) else {
+                return;
+            };
+            if !(report.drag || report.motion) {
+                return;
+            }
+            let Some(cell) = self.term_report_cell(held.tab, held.rect, x, y) else {
+                return;
+            };
+            if cell == held.cell {
+                return;
+            }
+            self.term_mouse_held = Some(TermMouseHeld { cell, ..held });
+            let code = held.button | 32 | self.mouse_mods();
+            let bytes = encode_mouse(report.encoding, code, cell, false);
+            self.term_mouse_send(held.tab, &bytes);
+            return;
+        }
+        let Some((tab, rect)) = self.pane_at_pixel(x, y) else {
+            self.term_mouse_hover = None;
+            return;
+        };
+        let Some(report) = self.term_mouse_report(tab).filter(|r| r.motion) else {
+            self.term_mouse_hover = None;
+            return;
+        };
+        let Some(cell) = self.term_report_cell(tab, rect, x, y) else {
+            return;
+        };
+        if self.term_mouse_hover == Some((tab, cell)) {
+            return;
+        }
+        self.term_mouse_hover = Some((tab, cell));
+        // No button held: xterm reports motion as button 3 (none) plus the motion bit.
+        let bytes = encode_mouse(report.encoding, 3 | 32 | self.mouse_mods(), cell, false);
+        self.term_mouse_send(tab, &bytes);
+    }
+
+    fn term_mouse_send(&mut self, tab: usize, bytes: &[u8]) {
+        if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
+            s.send(0, bytes);
+        }
+    }
+
+    /// The wheel over terminal `tab` (`dy_lines` > 0 = rolled up, in lines: tao
+    /// multiplies notches by Windows' lines-per-notch setting). A program reading the
+    /// mouse gets one wheel report per notch, as xterm and Windows Terminal send, and
+    /// scrolls its own amount for each (vim: 3 lines). Otherwise it moves a line per
+    /// line: as arrow keys when a full-screen program without mouse support (less,
+    /// man) is up, since the alternate screen has no scrollback, else our scrollback.
+    pub(crate) fn term_wheel(&mut self, tab: usize, rect: PaneRect, dy_lines: f64) {
+        if let Some(report) = self.term_mouse_report(tab) {
+            let notches = take_wheel_steps(&mut self.term_wheel_acc, dy_lines, wheel_lines());
+            if notches == 0 {
+                return;
+            }
+            let (x, y) = self.cursor_pos;
+            let Some(cell) = self.term_report_cell(tab, rect, x, y) else {
+                return;
+            };
+            // xterm wheel buttons: 64 = up, 65 = down.
+            let button = if notches > 0 { 64 } else { 65 };
+            let one = encode_mouse(report.encoding, button | self.mouse_mods(), cell, false);
+            self.term_mouse_send(tab, &one.repeat(notches.unsigned_abs() as usize));
+            return;
+        }
+        let lines = take_wheel_steps(&mut self.term_wheel_acc, dy_lines, 1.0);
+        if lines == 0 {
+            return;
+        }
+        let mouse_on = self.config.setting("term.mouse_reporting");
+        let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) else {
+            return;
+        };
+        if mouse_on && s.pty.alternate_scroll() {
+            let key = if lines > 0 {
+                Key::ArrowUp
+            } else {
+                Key::ArrowDown
+            };
+            if let Some(one) = encode_term_key(&key, false, false, false, s.pty.app_cursor()) {
+                s.send(0, &one.repeat(lines.unsigned_abs() as usize));
+            }
+            return;
+        }
+        s.pty.scroll_display(lines);
+        self.window.request_redraw();
+    }
+}
+
+/// A mouse button whose press went to a terminal program, so its motion and
+/// release go there too.
+#[derive(Clone, Copy)]
+pub(crate) struct TermMouseHeld {
+    pub(crate) tab: usize,
+    pub(crate) rect: PaneRect,
+    /// xterm's code: 0 left, 1 middle, 2 right.
+    pub(crate) button: u8,
+    /// The last cell reported (1-based).
+    pub(crate) cell: (u32, u32),
 }
 
 /// Input sent to a terminal returns its view to the live screen, as other terminals
@@ -1031,25 +1879,42 @@ fn pty_host_path() -> Option<std::path::PathBuf> {
     Some(exe.parent()?.join(name))
 }
 
-/// Encode a single mouse-button event for a terminal in mouse-reporting mode.
-/// `button` is the xterm button code (64/65 = wheel up/down), `col`/`row` are
-/// 1-based cell coordinates. Uses the SGR (1006) form when the program asked for
-/// it, else the legacy X10 byte form. Wheel events are press-only (no release).
-fn encode_mouse_wheel(sgr: bool, button: u8, col: i32, row: i32) -> Vec<u8> {
-    if sgr {
-        format!("\x1b[<{button};{col};{row}M").into_bytes()
-    } else {
-        // X10: each field is its value + 32, clamped to one byte.
-        let cb = 32u8.saturating_add(button);
-        let cx = (32 + col).clamp(32, 255) as u8;
-        let cy = (32 + row).clamp(32, 255) as u8;
-        vec![0x1b, b'[', b'M', cb, cx, cy]
+/// Encode one mouse report for a terminal program. `code` is xterm's button code
+/// with its extra bits already added: 0/1/2 left/middle/right, 3 no button, 64/65
+/// wheel up/down, +4 Shift, +8 Alt, +16 Ctrl, +32 motion. `cell` is the 1-based
+/// (col, row). A release keeps its button in SGR (`…m`) but is button 3 in the
+/// older encodings, which can't say which button went up.
+fn encode_mouse(
+    encoding: pty_term::MouseEncoding,
+    code: u8,
+    (col, row): (u32, u32),
+    release: bool,
+) -> Vec<u8> {
+    use pty_term::MouseEncoding;
+    if encoding == MouseEncoding::Sgr {
+        let end = if release { 'm' } else { 'M' };
+        return format!("\x1b[<{code};{col};{row}{end}").into_bytes();
     }
+    let code = if release { (code & !0b11) | 3 } else { code };
+    let mut out = vec![0x1b, b'[', b'M', 32 + code];
+    for v in [col, row] {
+        let v = 32 + v;
+        if encoding == MouseEncoding::Utf8 {
+            // Up to 2015 fits in two UTF-8 bytes; past that it clamps.
+            let ch = char::from_u32(v.min(2047)).unwrap_or(' ');
+            let mut b = [0; 4];
+            out.extend_from_slice(ch.encode_utf8(&mut b).as_bytes());
+        } else {
+            out.push(v.min(255) as u8);
+        }
+    }
+    out
 }
 
 /// Encode a key event into the bytes a PTY expects (the inverse of what xterm.js
 /// used to do). Covers printable input, Ctrl-combos → control codes, Enter/Tab/
-/// Backspace/Esc, and the cursor/navigation keys (honoring DECCKM app-cursor mode).
+/// Backspace/Esc, the cursor/navigation keys (honoring DECCKM app-cursor mode) and
+/// F1–F12.
 /// `None` for keys with no terminal meaning. Alt prefixes the sequence with ESC.
 fn encode_term_key(
     key: &Key,
@@ -1079,6 +1944,13 @@ fn encode_term_key(
             format!("\x1b[{n}~").into_bytes()
         }
     };
+    let ss3 = |c: u8| -> Vec<u8> {
+        if modf > 1 {
+            format!("\x1b[1;{modf}{}", c as char).into_bytes()
+        } else {
+            vec![0x1b, b'O', c]
+        }
+    };
     let mut out: Vec<u8> = match key {
         Key::Character(s) => {
             if ctrl {
@@ -1088,6 +1960,9 @@ fn encode_term_key(
             }
         }
         Key::Enter => vec![b'\r'],
+        // Ctrl+Backspace is ^H, the "delete word backward" key in PowerShell, bash and
+        // fish (Windows Terminal sends it too); plain Backspace is DEL.
+        Key::Backspace if ctrl => vec![0x08],
         Key::Backspace => vec![0x7f],
         // Shift+Tab is the "back-tab" CSI Z — TUIs (Claude Code's mode switch,
         // form/field navigation) need it to move backward; plain Tab otherwise.
@@ -1110,6 +1985,20 @@ fn encode_term_key(
         Key::PageDown => tilde(6),
         Key::Delete => tilde(3),
         Key::Insert => tilde(2),
+        // F1–F4 are SS3 keys (`ESC O P`), switching to CSI when modified (`ESC[1;2P`).
+        Key::F1 => ss3(b'P'),
+        Key::F2 => ss3(b'Q'),
+        Key::F3 => ss3(b'R'),
+        Key::F4 => ss3(b'S'),
+        // F5–F12 are numbered tilde keys; xterm skips 16 and 22.
+        Key::F5 => tilde(15),
+        Key::F6 => tilde(17),
+        Key::F7 => tilde(18),
+        Key::F8 => tilde(19),
+        Key::F9 => tilde(20),
+        Key::F10 => tilde(21),
+        Key::F11 => tilde(23),
+        Key::F12 => tilde(24),
         _ => return None,
     };
     // Alt = Meta: prefix with ESC (unless the sequence already starts with one).
@@ -1119,6 +2008,19 @@ fn encode_term_key(
         out = v;
     }
     Some(out)
+}
+
+/// Whether a key pressed with Ctrl+Alt is really AltGr typing a character: Windows
+/// reports AltGr as Ctrl+Alt, and the layout then made a different character than
+/// the bare key (`/` from AltGr+Q on a Brazilian layout, `@` on a German one). A
+/// letter with Ctrl+Alt that the layout left alone is a real chord (Meta+Ctrl+Q).
+fn is_altgr(logical: &Key, unmodified: &Key, ctrl: bool, alt: bool) -> bool {
+    match (logical, unmodified) {
+        (Key::Character(typed), Key::Character(bare)) if ctrl && alt => {
+            typed.to_lowercase() != bare.to_lowercase()
+        }
+        _ => false,
+    }
 }
 
 /// Control code for `Ctrl+<char>`: `Ctrl+A`→0x01 … `Ctrl+Z`→0x1a, `Ctrl+[`→ESC,
@@ -1228,5 +2130,184 @@ mod tests {
         assert_eq!(enc(Key::Delete, false, false, false, false), b"\x1b[3~");
         assert_eq!(enc(Key::Delete, true, false, false, false), b"\x1b[3;5~");
         assert_eq!(enc(Key::Home, true, false, false, false), b"\x1b[1;5H");
+    }
+
+    /// F1–F12 reach the program as xterm sends them (htop quits on F10, Midnight
+    /// Commander lives on them). F1–F4 are SS3 (`ESC O P`) unmodified and CSI with a
+    /// modifier; F5–F12 are numbered tilde keys with the gap at 16 and 22.
+    #[test]
+    fn function_keys_use_xterm_sequences() {
+        let enc = |key, ctrl, alt, shift| encode_term_key(&key, ctrl, alt, shift, false).unwrap();
+        assert_eq!(enc(Key::F1, false, false, false), b"\x1bOP");
+        assert_eq!(enc(Key::F4, false, false, false), b"\x1bOS");
+        assert_eq!(enc(Key::F1, false, false, true), b"\x1b[1;2P");
+        assert_eq!(enc(Key::F5, false, false, false), b"\x1b[15~");
+        assert_eq!(enc(Key::F6, false, false, false), b"\x1b[17~");
+        assert_eq!(enc(Key::F10, false, false, false), b"\x1b[21~");
+        assert_eq!(enc(Key::F11, false, false, false), b"\x1b[23~");
+        assert_eq!(enc(Key::F12, false, false, false), b"\x1b[24~");
+        assert_eq!(enc(Key::F12, true, false, false), b"\x1b[24;5~");
+        // Alt doesn't add a second ESC in front of a sequence that has one.
+        assert_eq!(enc(Key::F2, false, true, false), b"\x1b[1;3Q");
+    }
+
+    /// The cursor shows for the first half of each blink, hides for the second, and
+    /// stops blinking, shown, once things have been quiet for the timeout.
+    #[test]
+    fn the_blink_alternates_then_settles_shown() {
+        let ms = Duration::from_millis;
+        assert_eq!(blink_phase(ms(0)), (true, Some(BLINK_HALF)));
+        assert_eq!(blink_phase(ms(100)), (true, Some(BLINK_HALF - ms(100))));
+        assert_eq!(blink_phase(BLINK_HALF), (false, Some(BLINK_HALF)));
+        assert!(blink_phase(BLINK_HALF * 2).0);
+        // The last change lands exactly on the timeout...
+        let near = BLINK_TIMEOUT - ms(10);
+        assert_eq!(blink_phase(near).1, Some(ms(10)));
+        // ...after which it stays shown and nothing more is scheduled.
+        assert_eq!(blink_phase(BLINK_TIMEOUT), (true, None));
+        assert_eq!(blink_phase(BLINK_TIMEOUT * 3), (true, None));
+    }
+
+    /// cmd's prompt gets the marks around the user's own; without integration only
+    /// the folder report, as before.
+    #[test]
+    fn cmd_prompts_carry_the_marks() {
+        let marked = cmd_prompt("$P$G", true);
+        assert!(marked.starts_with(r"$E]133;D$E\$E]133;A$E\"), "{marked}");
+        assert!(marked.ends_with(r"$P$G$E]133;B$E\"), "{marked}");
+        assert!(marked.contains("$E]9;9;$P"));
+        assert_eq!(cmd_prompt("$P$G", false), r"$E]9;9;$P$E\$P$G");
+    }
+
+    /// The PowerShell hook travels as UTF-16LE base64 and decodes back to itself; it
+    /// stays out of a command line that already runs something.
+    #[test]
+    fn the_powershell_hook_is_encoded_for_its_command_line() {
+        use base64::Engine as _;
+        let [noexit, flag, b64] = pwsh_hook_args();
+        assert_eq!(
+            (noexit.as_str(), flag.as_str()),
+            ("-NoExit", "-EncodedCommand")
+        );
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
+        let units: Vec<u16> = bytes
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        assert_eq!(String::from_utf16(&units).unwrap(), PWSH_HOOK);
+        let args = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
+        assert!(!pwsh_runs_something(&args("-NoLogo")));
+        assert!(pwsh_runs_something(&args("-NoLogo -Command ls")));
+        assert!(pwsh_runs_something(&args("-c ls")));
+        assert!(pwsh_runs_something(&args("-File x.ps1")));
+        assert!(pwsh_runs_something(&args("-NoExit")));
+    }
+
+    /// Characters repeating what the IME just committed are dropped once each; a
+    /// different one, or one after half a second, types normally.
+    #[test]
+    fn ime_text_isnt_typed_twice() {
+        let t0 = Instant::now();
+        let mut pending = Some(("漢字".to_string(), t0));
+        assert!(ime_echo(&mut pending, "漢", t0));
+        assert!(ime_echo(&mut pending, "字", t0));
+        assert!(pending.is_none());
+        assert!(!ime_echo(&mut pending, "字", t0), "used up");
+        let mut pending = Some(("ab".to_string(), t0));
+        assert!(!ime_echo(&mut pending, "x", t0));
+        assert!(pending.is_none(), "a different key ends the watch");
+        let mut pending = Some(("a".to_string(), t0));
+        assert!(!ime_echo(&mut pending, "a", t0 + Duration::from_secs(1)));
+    }
+
+    /// Output repaints come at most one frame slot apart; past it, at once.
+    #[test]
+    fn output_repaints_are_paced() {
+        let t0 = Instant::now();
+        assert_eq!(frame_slot(t0, t0), Some(t0 + TERM_FRAME));
+        assert_eq!(frame_slot(t0, t0 + TERM_FRAME / 2), Some(t0 + TERM_FRAME));
+        assert_eq!(frame_slot(t0, t0 + TERM_FRAME), None);
+        assert_eq!(frame_slot(t0, t0 + TERM_FRAME * 3), None);
+    }
+
+    #[test]
+    fn tab_markers_say_how_it_ended() {
+        assert_eq!(Activity::Done(Some(0)).marker(), "✓");
+        assert_eq!(Activity::Done(Some(3)).marker(), "✗");
+        assert_eq!(Activity::Done(None).marker(), "•");
+        assert_eq!(Activity::Bell.marker(), "•");
+    }
+
+    /// A notch (3 lines on Windows' default) is one wheel report and three lines;
+    /// touchpad fractions add up; reversing drops the old direction's remainder.
+    #[test]
+    fn wheel_movement_becomes_whole_steps() {
+        let mut acc = 0.0;
+        assert_eq!(
+            take_wheel_steps(&mut acc, 3.0, 3.0),
+            1,
+            "a notch is one report"
+        );
+        assert_eq!(take_wheel_steps(&mut acc, 3.0, 1.0), 3, "and three lines");
+        assert_eq!(take_wheel_steps(&mut acc, -6.0, 3.0), -2);
+        assert_eq!(acc, 0.0);
+        // A touchpad's small deltas: nothing until a whole notch has built up.
+        assert_eq!(take_wheel_steps(&mut acc, 1.2, 3.0), 0);
+        assert_eq!(take_wheel_steps(&mut acc, 1.2, 3.0), 0);
+        assert_eq!(take_wheel_steps(&mut acc, 1.2, 3.0), 1);
+        assert!((acc - 0.6).abs() < 1e-9);
+        // Turning around starts fresh rather than paying back the leftover.
+        assert_eq!(take_wheel_steps(&mut acc, -1.0, 1.0), -1);
+    }
+
+    /// Mouse reports in the three encodings programs ask for: SGR keeps the button
+    /// on release and writes plain numbers; X10 adds 32 to everything and reports
+    /// every release as button 3; UTF-8 is X10 with big coordinates UTF-8 encoded.
+    #[test]
+    fn mouse_reports_follow_the_programs_encoding() {
+        use pty_term::MouseEncoding::*;
+        assert_eq!(encode_mouse(Sgr, 0, (5, 3), false), b"\x1b[<0;5;3M");
+        assert_eq!(encode_mouse(Sgr, 0, (5, 3), true), b"\x1b[<0;5;3m");
+        assert_eq!(encode_mouse(Sgr, 2 | 16, (1, 1), false), b"\x1b[<18;1;1M");
+        assert_eq!(encode_mouse(Sgr, 32, (300, 2), false), b"\x1b[<32;300;2M");
+        assert_eq!(encode_mouse(X10, 0, (5, 3), false), b"\x1b[M\x20\x25\x23");
+        assert_eq!(encode_mouse(X10, 2, (5, 3), true), b"\x1b[M\x23\x25\x23");
+        assert_eq!(encode_mouse(X10, 65, (1, 1), false), b"\x1b[M\x61\x21\x21");
+        // X10 can't go past column 223.
+        assert_eq!(encode_mouse(X10, 0, (500, 1), false), b"\x1b[M\x20\xff\x21");
+        // UTF-8 writes column 200 (232) as two bytes.
+        assert_eq!(
+            encode_mouse(Utf8, 0, (200, 1), false),
+            b"\x1b[M\x20\xc3\xa8\x21"
+        );
+    }
+
+    /// AltGr is Ctrl+Alt on Windows, so a character typed with it (`/` and `?` on
+    /// Brazilian keyboards, `@ { [ ] } \` on German ones) arrives with both held.
+    /// It's text when the layout made a different character than the bare key;
+    /// Ctrl+Alt+Q on a US layout (still `q`) stays a chord.
+    #[test]
+    fn altgr_characters_are_text_not_chords() {
+        let ch = |s: &'static str| Key::Character(s);
+        assert!(is_altgr(&ch("/"), &ch("q"), true, true));
+        assert!(is_altgr(&ch("@"), &ch("q"), true, true));
+        assert!(!is_altgr(&ch("q"), &ch("q"), true, true));
+        assert!(
+            !is_altgr(&ch("Q"), &ch("q"), true, true),
+            "Shift isn't AltGr"
+        );
+        assert!(!is_altgr(&ch("/"), &ch("q"), true, false), "needs Alt too");
+        assert!(!is_altgr(&Key::F1, &Key::F1, true, true));
+    }
+
+    /// Ctrl+Backspace sends ^H, which PowerShell, bash and fish read as "delete the
+    /// word before the cursor" (as in Windows Terminal); plain Backspace stays DEL.
+    #[test]
+    fn ctrl_backspace_deletes_a_word() {
+        let enc = |ctrl| encode_term_key(&Key::Backspace, ctrl, false, false, false).unwrap();
+        assert_eq!(enc(false), b"\x7f");
+        assert_eq!(enc(true), b"\x08");
     }
 }

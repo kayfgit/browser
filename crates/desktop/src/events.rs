@@ -102,6 +102,19 @@ fn on_timer(app: &mut App) {
     if app.term_resize.deadline().is_some() {
         app.window.request_redraw();
     }
+    // A terminal repaint held for its frame slot.
+    if app.term_redraw_at.is_some_and(|at| Instant::now() >= at) {
+        app.term_redraw_at = None;
+        app.window.request_redraw();
+    }
+    // The terminal cursor's blink, including the change that stops it shown.
+    if app.term_cursor_blinks()
+        && app.term_blink_at.elapsed() < crate::term::BLINK_TIMEOUT + crate::term::BLINK_HALF
+    {
+        app.window.request_redraw();
+    }
+    // A finished bell flash repaints without it.
+    app.expire_term_bells();
     // Repeatable pane-resize auto-leaves after a spell of no resize key, so a
     // later j/k (meant to scroll) doesn't silently resize.
     if app.mode == ModeKind::PaneResize
@@ -155,6 +168,8 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
         WindowEvent::ModifiersChanged(state) => {
             app.modifiers = state;
             app.on_modifiers_changed();
+            // Pressing or letting go of Ctrl over a terminal link shows or hides it.
+            app.term_link_hover();
         }
         WindowEvent::Focused(focused) => {
             crate::journal::log(
@@ -168,6 +183,9 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             if focused {
                 app.last_focus_gain = Instant::now();
             }
+            app.window_focused = focused;
+            app.term_blink_at = Instant::now();
+            app.window.request_redraw();
         }
         WindowEvent::CursorMoved { position, .. } => {
             app.cursor_pos = (position.x, position.y);
@@ -175,6 +193,10 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             app.bar_drag(position.x);
             // Left-drag inside a terminal pane extends ITS selection.
             app.term_select_drag(position.x, position.y);
+            // A terminal program tracking the mouse hears the motion.
+            app.term_mouse_motion(position.x, position.y);
+            // Ctrl over a terminal link underlines it.
+            app.term_link_hover();
             // Left-drag on a tab slides it along the strip.
             app.tab_drag_move(position.x, position.y);
             // Hovering the command bar reveals the full (vs. shortened) URL.
@@ -207,6 +229,13 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             // HWND) isn't a release, and shouldn't clobber the clipboard. What
             // was selected stays highlighted and yankable.
             app.term_drag = None;
+            // A button a terminal program was told about went down: tell it the
+            // button is up again, or it would stay held there.
+            if let Some(held) = app.term_mouse_held {
+                app.term_mouse_release(held.button, true);
+            }
+            app.term_mouse_hover = None;
+            app.clear_term_link_hover();
             // A tab drag keeps wherever the tab got to.
             app.end_tab_drag();
             app.update_tab_hover(None);
@@ -229,6 +258,8 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             ..
         } => {
             app.bar_dragging = false;
+            // A press a terminal program got: its release goes there too.
+            app.term_mouse_release(0, false);
             // Ends a terminal drag-select and copies what it covered.
             app.term_select_end();
             // Drops a dragged tab where it is.
@@ -243,7 +274,32 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             ..
         } => {
             crate::journal::log("mouse", format!("right press at {:?}", app.cursor_pos));
-            app.right_click_copy(app.cursor_pos.0, app.cursor_pos.1)
+            // A terminal program reading the mouse gets the right button; otherwise
+            // a right press copies the surface's selection.
+            if !app.term_mouse_button_press(2) {
+                app.right_click_copy(app.cursor_pos.0, app.cursor_pos.1)
+            }
+        }
+        WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Middle,
+            ..
+        } => {
+            app.term_mouse_button_press(1);
+        }
+        WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Right,
+            ..
+        } => {
+            app.term_mouse_release(2, false);
+        }
+        WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Middle,
+            ..
+        } => {
+            app.term_mouse_release(1, false);
         }
         WindowEvent::MouseInput {
             state: ElementState::Pressed,
@@ -297,9 +353,12 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
                 if app.is_split() {
                     app.focus_pane_click(tab);
                 }
-                // Then start a drag-selection if that pane is a terminal (also
-                // when unsplit — one terminal filling the band still selects).
-                app.term_select_start(tab, rect, app.cursor_pos.0, app.cursor_pos.1);
+                // Then hand the press to a terminal program reading the mouse, or
+                // start a drag-selection if that pane is a terminal (also when
+                // unsplit — one terminal filling the band still selects).
+                if !app.term_click_link(tab, rect) && !app.term_mouse_press(tab, rect, 0) {
+                    app.term_select_start(tab, rect, app.cursor_pos.0, app.cursor_pos.1);
+                }
             }
         }
         // Mouse wheel: scroll the native-drawn content under the cursor (the
@@ -320,11 +379,25 @@ fn on_window_event(app: &mut App, event: WindowEvent<'_>, control_flow: &mut Con
             is_synthetic,
             ..
         } if takes_key_press(key.state, is_synthetic) => {
+            let key = packet_as_char(key);
+            if app.is_ime_echo(&key) {
+                return;
+            }
             app.handle_key(&key);
             if app.quit {
                 app.teardown();
                 *control_flow = ControlFlow::Exit;
             }
+        }
+        // Text from an input method (Japanese/Chinese/Korean IME, the emoji panel).
+        WindowEvent::ReceivedImeText(text) => app.on_ime_text(&text),
+        // A program using the kitty keyboard protocol can ask for key releases too.
+        WindowEvent::KeyboardInput {
+            event: key,
+            is_synthetic: false,
+            ..
+        } if key.state == ElementState::Released && app.term_wants_releases() => {
+            app.key_term(&key);
         }
         _ => {}
     }
@@ -775,6 +848,22 @@ fn schedule_wakeup(app: &App, control_flow: &mut ControlFlow, servo_smoke: bool)
             };
             *control_flow = ControlFlow::WaitUntil(next);
         }
+        // A blinking terminal cursor's next change, the end of a bell flash, and a
+        // terminal repaint waiting for its frame slot.
+        for deadline in [
+            app.term_blink_deadline(),
+            app.term_bell_deadline(),
+            app.term_redraw_at,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let next = match *control_flow {
+                ControlFlow::WaitUntil(t) => t.min(deadline),
+                _ => deadline,
+            };
+            *control_flow = ControlFlow::WaitUntil(next);
+        }
         // A held-back terminal resize: wake when its settle window closes.
         if let Some(deadline) = app.term_resize.deadline() {
             let next = match *control_flow {
@@ -797,6 +886,31 @@ fn schedule_wakeup(app: &App, control_flow: &mut ControlFlow, servo_smoke: bool)
     }
 }
 
+/// Unicode "packet" input (SendInput with KEYEVENTF_UNICODE: the emoji panel,
+/// AutoHotkey, remote desktop, on-screen keyboards) reaches tao as an unidentified
+/// key that carries its text. Treat it as that character, so it types like any other.
+fn packet_as_char(mut key: tao::event::KeyEvent) -> tao::event::KeyEvent {
+    if let Some(text) = packet_char(&key.logical_key, key.text) {
+        key.logical_key = tao::keyboard::Key::Character(text);
+    }
+    key
+}
+
+/// The character an unidentified key with printable text types, if that's what it is.
+fn packet_char(
+    logical: &tao::keyboard::Key<'static>,
+    text: Option<&'static str>,
+) -> Option<&'static str> {
+    match (logical, text) {
+        (tao::keyboard::Key::Unidentified(_), Some(t))
+            if !t.is_empty() && !t.chars().any(char::is_control) =>
+        {
+            Some(t)
+        }
+        _ => None,
+    }
+}
+
 /// Whether a keyboard event is a key press the shell should act on. Releases never
 /// are, and neither are SYNTHETIC presses: when the window gains focus, tao reports
 /// every key still held down as a fresh press. A quick Alt+Tab into the browser
@@ -808,8 +922,25 @@ fn takes_key_press(state: ElementState, is_synthetic: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::takes_key_press;
+    use super::{packet_char, takes_key_press};
     use tao::event::ElementState;
+
+    /// Unicode packet input types its character; real unidentified keys and control
+    /// text don't.
+    #[test]
+    fn packet_input_types_its_character() {
+        use tao::keyboard::{Key, NativeKeyCode};
+        let unknown = Key::Unidentified(NativeKeyCode::Windows(0));
+        assert_eq!(packet_char(&unknown, Some("漢")), Some("漢"));
+        assert_eq!(packet_char(&unknown, Some("é")), Some("é"));
+        assert_eq!(packet_char(&unknown, None), None);
+        assert_eq!(packet_char(&unknown, Some("\r")), None);
+        assert_eq!(
+            packet_char(&Key::Character("a"), Some("a")),
+            None,
+            "already a character"
+        );
+    }
 
     #[test]
     fn keys_still_held_when_focus_arrives_are_ignored() {

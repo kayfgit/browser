@@ -37,6 +37,8 @@ mod audio;
 mod bangs;
 mod blocklist;
 mod bookmarks;
+#[cfg(windows)]
+mod bundled_conpty;
 mod bundled_extensions;
 mod buttons;
 mod chrome;
@@ -60,6 +62,7 @@ mod glance;
 mod hints;
 mod journal;
 mod keys;
+mod kitty_keys;
 mod layout;
 mod markdown;
 mod navguard;
@@ -311,6 +314,15 @@ fn main() -> Result<()> {
         adblock: adblock::Adblock::default(),
         term_drag: None,
         term_clicks: None,
+        term_mouse_held: None,
+        term_mouse_hover: None,
+        term_wheel_acc: 0.0,
+        term_link_hover: None,
+        hint_back_to_passthrough: false,
+        ime_committed: None,
+        ime_pos: None,
+        last_draw: Instant::now(),
+        term_redraw_at: None,
         extension_request: 0,
         downloads: Default::default(),
         permissions: Default::default(),
@@ -347,6 +359,8 @@ fn main() -> Result<()> {
         config: cfg,
         theme: draw::Theme::default(),
         last_focus_gain: Instant::now(),
+        window_focused: true,
+        term_blink_at: Instant::now(),
         visited: visited::Visited::default(),
         saved: bookmarks::load(),
         closed_tabs: Vec::new(),

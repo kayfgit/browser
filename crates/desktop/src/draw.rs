@@ -3,8 +3,9 @@
 //! This is what keeps the shell engine-free at idle: no WebView is involved in
 //! drawing the UI.
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::{anyhow, Result};
@@ -367,15 +368,38 @@ static FALLBACKS: [Fallback; 7] = [
     fallback(r"C:\Windows\Fonts\simsun.ttc", true),  // SimSun — Chinese
 ];
 
+/// Which face of the family a character is drawn in (terminal bold/italic text).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FontStyle {
+    Regular,
+    Bold,
+    Italic,
+    BoldItalic,
+}
+
+/// How far synthesized italics lean: x shift per pixel above the baseline (about
+/// 11°, what fonts' own obliques use).
+const SLANT: f32 = 0.2;
+
 pub struct Painter {
     /// A custom primary face (the terminal's configured font), tried before the
     /// system face.
     custom: Option<Font>,
     system: &'static Font,
+    /// The primary face's file (the custom one, else the system one), whose family's
+    /// bold and italic files [`FontStyle`] draws with.
+    primary_path: Option<PathBuf>,
     px: f32,
     /// Glyphs at `px`. Behind a `RefCell` because drawing and measuring take `&self`;
     /// a painter belongs to the UI thread.
     cache: RefCell<GlyphCache>,
+    /// The family's bold, italic and bold-italic faces, looked up the first time a
+    /// styled character is drawn; `None` where the family has no such file, and the
+    /// style is then synthesized from the regular face. Lazy (memory-mapped), so they
+    /// cost no memory a terminal without styled text would pay.
+    styled_faces: OnceCell<[Option<LazyFace>; 3]>,
+    /// Glyphs at `px` for bold, italic and bold-italic.
+    styled_cache: [RefCell<GlyphCache>; 3],
 }
 
 impl Painter {
@@ -403,9 +427,53 @@ impl Painter {
         Ok(Painter {
             custom,
             system: system_font()?,
+            primary_path: primary
+                .map(Path::to_path_buf)
+                .or_else(|| system_font_path().map(PathBuf::from)),
             px,
             cache: RefCell::default(),
+            styled_faces: OnceCell::new(),
+            styled_cache: Default::default(),
         })
+    }
+
+    /// The family's bold, italic and bold-italic faces (see `styled_faces`).
+    fn styled_faces(&self) -> &[Option<LazyFace>; 3] {
+        self.styled_faces.get_or_init(|| {
+            let siblings = self
+                .primary_path
+                .as_deref()
+                .map(style_siblings)
+                .unwrap_or_default();
+            siblings.map(|p| p.and_then(|p| LazyFace::open(p.to_str()?)))
+        })
+    }
+
+    /// Rasterize `ch` in `style`: from the family's own bold/italic face when it has
+    /// one with the glyph, else synthesized from the regular glyph (emboldened by a
+    /// pixel, slanted for italics), as terminals do for fonts without those files.
+    fn rasterize_styled(&self, ch: char, style: FontStyle) -> Glyph {
+        let faces = self.styled_faces();
+        let px = self.px;
+        let real = |i: usize| faces[i].as_ref().filter(|f| f.has(ch));
+        let regular = || self.font_for(ch).rasterize(ch, px);
+        match style {
+            FontStyle::Regular => regular(),
+            FontStyle::Bold => match real(0) {
+                Some(f) => f.rasterize(ch, px),
+                None => embolden(regular()),
+            },
+            FontStyle::Italic => match real(1) {
+                Some(f) => f.rasterize(ch, px),
+                None => slant(regular()),
+            },
+            FontStyle::BoldItalic => match (real(2), real(0), real(1)) {
+                (Some(f), _, _) => f.rasterize(ch, px),
+                (None, Some(bold), _) => slant(bold.rasterize(ch, px)),
+                (None, None, Some(italic)) => embolden(italic.rasterize(ch, px)),
+                (None, None, None) => slant(embolden(regular())),
+            },
+        }
     }
 
     /// The first font that has a glyph for `ch` (else the primary, which renders its
@@ -445,6 +513,7 @@ impl Painter {
         if px != self.px {
             self.px = px;
             *self.cache.get_mut() = GlyphCache::default();
+            self.styled_cache = Default::default();
         }
     }
 
@@ -464,9 +533,22 @@ impl Painter {
 
     /// The bitmap of `ch`, rasterized the first time it's drawn at this size.
     fn cached_glyph<'a>(&self, cache: &'a mut GlyphCache, ch: char) -> &'a Glyph {
+        self.cached_styled_glyph(cache, ch, FontStyle::Regular)
+    }
+
+    /// [`cached_glyph`](Self::cached_glyph) in a style; `cache` is that style's.
+    fn cached_styled_glyph<'a>(
+        &self,
+        cache: &'a mut GlyphCache,
+        ch: char,
+        style: FontStyle,
+    ) -> &'a Glyph {
         cache.trim();
         if self.cached(cache, ch).bitmap.is_none() {
-            let glyph = self.font_for(ch).rasterize(ch, self.px);
+            let glyph = match style {
+                FontStyle::Regular => self.font_for(ch).rasterize(ch, self.px),
+                _ => self.rasterize_styled(ch, style),
+            };
             if ch as usize >= cache.ascii.len() {
                 cache.bytes += glyph.coverage.len();
             }
@@ -501,11 +583,11 @@ impl Painter {
         self.cached(&mut cache, ch).advance
     }
 
-    /// Draw one character with its baseline at `baseline` and its pen at `x`:
-    /// [`text`](Self::text) without a string to build, for callers that place every
-    /// cell themselves (the terminal grid).
+    /// Draw one character in `style` with its baseline at `baseline` and its pen at
+    /// `x`: [`text`](Self::text) without a string to build, for callers that place
+    /// every cell themselves (the terminal grid).
     #[allow(clippy::too_many_arguments)]
-    pub fn put_char(
+    pub fn put_char_styled(
         &self,
         buf: &mut [u32],
         w: usize,
@@ -514,9 +596,16 @@ impl Painter {
         baseline: usize,
         ch: char,
         color: Rgb,
+        style: FontStyle,
     ) {
-        let mut cache = self.cache.borrow_mut();
-        let glyph = self.cached_glyph(&mut cache, ch);
+        let cell = match style {
+            FontStyle::Regular => &self.cache,
+            FontStyle::Bold => &self.styled_cache[0],
+            FontStyle::Italic => &self.styled_cache[1],
+            FontStyle::BoldItalic => &self.styled_cache[2],
+        };
+        let mut cache = cell.borrow_mut();
+        let glyph = self.cached_styled_glyph(&mut cache, ch, style);
         let (x, baseline) = (x as i32, baseline as i32);
         blit(buf, w, glyph, x, baseline, color, 0, w as i32, 0, h as i32);
     }
@@ -678,6 +767,28 @@ pub fn fill_rect(
     }
 }
 
+/// Blend `color` over the rectangle [x0, x1) × [y0, y1) at `alpha` (0–255) out of
+/// 255, keeping what's drawn there visible beneath (the terminal bell's flash).
+pub fn tint_rect(
+    buf: &mut [u32],
+    w: usize,
+    h: usize,
+    (x0, y0): (usize, usize),
+    (x1, y1): (usize, usize),
+    color: Rgb,
+    alpha: u8,
+) {
+    let (x1, y1) = (x1.min(w), y1.min(h));
+    if x0 >= x1 {
+        return;
+    }
+    for y in y0..y1 {
+        for px in &mut buf[y * w + x0..y * w + x1] {
+            *px = blend(*px, color, alpha);
+        }
+    }
+}
+
 fn pack((r, g, b): Rgb) -> u32 {
     ((r as u32) << 16) | ((g as u32) << 8) | b as u32
 }
@@ -722,13 +833,130 @@ fn is_cjk(ch: char) -> bool {
     )
 }
 
+/// The system face, in order of preference.
+const SYSTEM_FONT_CANDIDATES: &[&str] = &[
+    r"C:\Windows\Fonts\consola.ttf",
+    r"C:\Windows\Fonts\segoeui.ttf",
+    r"C:\Windows\Fonts\arial.ttf",
+];
+
+/// The file the system face is loaded from.
+fn system_font_path() -> Option<&'static str> {
+    SYSTEM_FONT_CANDIDATES
+        .iter()
+        .copied()
+        .find(|p| Path::new(p).is_file())
+}
+
+/// The bold, italic and bold-italic files of `regular`'s family, from the same
+/// folder, by the names families use: Windows' short suffixes (consola → consolab,
+/// consolai, consolaz; cour → courbd, couri, courbi) and spelled-out ones
+/// (JetBrainsMono-Regular → -Bold, -Italic, -BoldItalic). `None` where there's no
+/// such file (Cascadia's bold lives inside a variable font fontdue can't select).
+fn style_siblings(regular: &Path) -> [Option<PathBuf>; 3] {
+    let norm = |s: &str| -> String {
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase()
+    };
+    let Some(stem) = regular.file_stem().and_then(|s| s.to_str()) else {
+        return Default::default();
+    };
+    let stem = norm(stem);
+    let base = ["regular", "book", "roman"]
+        .iter()
+        .find_map(|s| stem.strip_suffix(s).filter(|b| !b.is_empty()))
+        .unwrap_or(&stem)
+        .to_string();
+    let files: Vec<(String, PathBuf)> = regular
+        .parent()
+        .and_then(|d| std::fs::read_dir(d).ok())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+            matches!(ext.as_str(), "ttf" | "otf" | "ttc")
+                .then(|| Some((norm(path.file_stem()?.to_str()?), path)))?
+        })
+        .collect();
+    let find = |suffixes: &[&str]| {
+        suffixes.iter().find_map(|s| {
+            let want = format!("{base}{s}");
+            files
+                .iter()
+                .find(|(n, _)| *n == want)
+                .map(|(_, p)| p.clone())
+        })
+    };
+    [
+        find(&["bold", "b", "bd"]),
+        find(&["italic", "i", "it", "oblique"]),
+        find(&["bolditalic", "z", "bi", "boldoblique"]),
+    ]
+}
+
+/// A glyph a pixel bolder: each pixel takes the stronger of itself and its left
+/// neighbour, widening every stroke by one pixel (synthetic bold).
+fn embolden(g: Glyph) -> Glyph {
+    if g.width == 0 {
+        return g;
+    }
+    let width = g.width + 1;
+    let mut coverage = vec![0u8; width * g.height];
+    for row in 0..g.height {
+        let src = &g.coverage[row * g.width..][..g.width];
+        let dst = &mut coverage[row * width..][..width];
+        for (x, out) in dst.iter_mut().enumerate() {
+            let here = src.get(x).copied().unwrap_or(0);
+            let left = x.checked_sub(1).map_or(0, |l| src[l]);
+            *out = here.max(left);
+        }
+    }
+    Glyph {
+        width,
+        coverage,
+        ..g
+    }
+}
+
+/// A glyph leaned right by [`SLANT`] (synthetic italic): each row shifts by its
+/// height above the baseline, split between two pixels so the edges stay smooth.
+fn slant(g: Glyph) -> Glyph {
+    if g.width == 0 || g.height == 0 {
+        return g;
+    }
+    // Height above the baseline of a row's centre (row 0 is the top).
+    let rise = |row: usize| (g.ymin + g.height as i32 - 1 - row as i32) as f32 + 0.5;
+    let lo = (rise(g.height - 1) * SLANT).floor();
+    let hi = (rise(0) * SLANT).ceil();
+    let width = g.width + (hi - lo) as usize + 1;
+    let mut coverage = vec![0u8; width * g.height];
+    for row in 0..g.height {
+        let shift = rise(row) * SLANT - lo;
+        let (whole, frac) = (shift.floor() as usize, shift.fract());
+        let src = &g.coverage[row * g.width..][..g.width];
+        let dst = &mut coverage[row * width..][..width];
+        for (x, &c) in src.iter().enumerate() {
+            let c = c as f32;
+            let a = &mut dst[x + whole];
+            *a = (*a as f32 + c * (1.0 - frac)).min(255.0) as u8;
+            let b = &mut dst[x + whole + 1];
+            *b = (*b as f32 + c * frac).min(255.0) as u8;
+        }
+    }
+    Glyph {
+        xmin: g.xmin + lo as i32,
+        width,
+        coverage,
+        ..g
+    }
+}
+
 fn load_system_font() -> Result<Vec<u8>> {
-    const CANDIDATES: &[&str] = &[
-        r"C:\Windows\Fonts\consola.ttf",
-        r"C:\Windows\Fonts\segoeui.ttf",
-        r"C:\Windows\Fonts\arial.ttf",
-    ];
-    for path in CANDIDATES {
+    for path in SYSTEM_FONT_CANDIDATES {
         if let Ok(bytes) = std::fs::read(path) {
             return Ok(bytes);
         }
@@ -806,7 +1034,10 @@ pub fn find_font(query: &str) -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_cjk, parse_color, Face, LazyFace, Painter, GLYPH_CACHE_BYTES};
+    use super::{
+        is_cjk, parse_color, Face, FontStyle, Glyph, LazyFace, Painter, GLYPH_CACHE_BYTES,
+    };
+    use std::path::{Path, PathBuf};
 
     /// A small frame with `text` drawn into it by `p`.
     fn frame(p: &Painter, text: &str) -> Vec<u32> {
@@ -878,9 +1109,84 @@ mod tests {
         for ch in ['g', '漢', ' '] {
             let (mut a, mut b) = (vec![0u32; w * h], vec![0u32; w * h]);
             p.text(&mut a, w, h, 5, 28, &ch.to_string(), (255, 255, 255));
-            p.put_char(&mut b, w, h, 5, 28, ch, (255, 255, 255));
+            p.put_char_styled(&mut b, w, h, 5, 28, ch, (255, 255, 255), FontStyle::Regular);
             assert_eq!(a, b, "{ch:?}");
         }
+    }
+
+    /// Consolas ships its bold/italic files under Windows' short names, and spelled-out
+    /// families (JetBrains Mono) are found by theirs.
+    #[cfg(windows)]
+    #[test]
+    fn a_familys_bold_and_italic_files_are_found() {
+        let [b, i, z] = super::style_siblings(Path::new(r"C:\Windows\Fonts\consola.ttf"));
+        let name = |p: Option<PathBuf>| {
+            p.and_then(|p| Some(p.file_name()?.to_str()?.to_ascii_lowercase()))
+        };
+        assert_eq!(name(b).as_deref(), Some("consolab.ttf"));
+        assert_eq!(name(i).as_deref(), Some("consolai.ttf"));
+        assert_eq!(name(z).as_deref(), Some("consolaz.ttf"));
+
+        let dir = std::env::temp_dir().join(format!("browser-fonts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in [
+            "JetBrainsMono-Regular.ttf",
+            "JetBrainsMono-Bold.ttf",
+            "Other-Italic.ttf",
+        ] {
+            std::fs::write(dir.join(f), b"").unwrap();
+        }
+        let [b, i, z] = super::style_siblings(&dir.join("JetBrainsMono-Regular.ttf"));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(name(b).as_deref(), Some("jetbrainsmono-bold.ttf"));
+        assert_eq!(i, None, "another family's italic isn't this one's");
+        assert_eq!(z, None);
+    }
+
+    /// Bold and italic text differs from regular text, whether the face comes from the
+    /// family's own file or is synthesized; a synthesized bold covers more pixels and a
+    /// synthesized italic leans (its top row starts further right than its bottom).
+    #[test]
+    fn styled_glyphs_differ_from_regular() {
+        use super::{embolden, slant};
+        let p = Painter::new(20.0).unwrap();
+        let (w, h) = (40, 40);
+        let draw = |style| {
+            let mut buf = vec![0u32; w * h];
+            p.put_char_styled(&mut buf, w, h, 10, 30, 'l', (255, 255, 255), style);
+            buf
+        };
+        let regular = draw(FontStyle::Regular);
+        for style in [FontStyle::Bold, FontStyle::Italic, FontStyle::BoldItalic] {
+            assert_ne!(draw(style), regular, "{style:?}");
+        }
+
+        let face = super::system_font().unwrap();
+        let (m, coverage) = face.rasterize('l', 20.0);
+        let glyph = || Glyph {
+            xmin: m.xmin,
+            ymin: m.ymin,
+            width: m.width,
+            height: m.height,
+            advance: m.advance_width,
+            coverage: coverage.clone(),
+        };
+        let ink = |g: &Glyph| g.coverage.iter().map(|&c| c as u32).sum::<u32>();
+        let bold = embolden(glyph());
+        assert_eq!(bold.width, m.width + 1);
+        assert!(ink(&bold) > ink(&glyph()));
+        let italic = slant(glyph());
+        let first_inked = |g: &Glyph, row: usize| {
+            g.coverage[row * g.width..][..g.width]
+                .iter()
+                .position(|&c| c > 0)
+                .map(|x| x as i32 + g.xmin)
+        };
+        let (top, bottom) = (
+            first_inked(&italic, 0),
+            first_inked(&italic, italic.height - 1),
+        );
+        assert!(top > bottom, "top {top:?} bottom {bottom:?}");
     }
 
     #[test]
@@ -904,7 +1210,16 @@ mod tests {
             -20,
             90,
         );
-        p.put_char(&mut buf, w, h, 29, 19, 'g', (255, 255, 255));
+        p.put_char_styled(
+            &mut buf,
+            w,
+            h,
+            29,
+            19,
+            'g',
+            (255, 255, 255),
+            FontStyle::Regular,
+        );
         assert!(buf.iter().any(|&px| px != 0));
     }
 

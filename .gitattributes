@@ -8,3 +8,6 @@
 # Vendored third-party code and data: keep it out of GitHub's language stats and diffs.
 crates/desktop/extensions/** linguist-vendored
 crates/desktop/assets/** linguist-vendored
+crates/desktop/conpty/** linguist-vendored
+crates/desktop/conpty/*.dll binary
+crates/desktop/conpty/*.exe binary

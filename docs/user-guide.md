@@ -223,9 +223,38 @@ current one, and `:w` saves your choice with the session.
 - `Ctrl+S` gives the keyboard back to the browser and enters copy mode: a vim cursor
   over the output and scrollback (`h`/`j`/`k`/`l`, `w`/`b`, `f` to find, `v` to select,
   `y` to yank). `i` or `Enter` returns to the live shell.
+- `/` in copy mode searches the whole scrollback, ignoring case. Every match is
+  highlighted, starting from the newest one above the cursor; `n` goes further back
+  through older output, `N` comes forward, `Esc` clears it.
+- Links open in a new tab: hold `Ctrl` to underline the one under the pointer and
+  `Ctrl`+click it, or label every link on screen and type a label: `s` in copy mode
+  (it's the terminal's `f`, which is vim's find-char there), `Ctrl+Shift+O` while
+  typing. Web addresses in the output count, and so do
+  links programs mark (`ls --hyperlink`, compilers, `delta`); `file:` links don't
+  open.
 - `Ctrl+V` pastes; you can also drag to select, and double/triple-click takes a word/line.
+- Programs that use the mouse (htop, lazygit, vim with `mouse=a`, tmux) get clicks,
+  drags and the wheel; hold `Shift` to select text instead. In full-screen programs
+  without mouse support (less, man, git's pager) the wheel scrolls with arrow keys.
+- Bold, italic, dim, underlined and struck-through text show as such. The cursor
+  takes the shape a program asks for (vim's insert-mode bar), blinks, and turns
+  hollow while the terminal doesn't have the keyboard. Programs can copy to the
+  clipboard (nvim, tmux, also over SSH), and the pane flashes when one rings the bell.
+  Each of these can be switched off (see the `term.*` settings below).
+- Programs that use the kitty keyboard protocol (nvim, helix, fish, kakoune…) get
+  keys the legacy encoding can't tell apart: Ctrl+I from Tab, Esc from Alt, Ctrl+Shift
+  chords, Shift+Enter, and key releases when they ask.
+- Input methods type into the terminal: a Japanese, Chinese or Korean IME (its
+  composition window opens at the cursor), the emoji panel (`Win+.`) and tools that
+  send Unicode text (AutoHotkey, on-screen keyboards).
 - Typing `exit` closes the tab.
 - `:te <command>` (with a command) runs it once and shows the output in the command bar.
+
+Terminals run under Microsoft's ConPTY, the console host Windows Terminal ships, which
+comes bundled with the browser. It's faster than Windows' own on heavy output and passes
+through what Windows' own drops: colour queries (programs picking a light or dark theme),
+curly/dotted/dashed underlines and underline colours. `:set term.bundled_conpty off` uses
+Windows' own for terminals opened after that.
 
 When you save the session, each terminal's working directory is saved too, and the next
 launch reopens the shell there. How the directory is detected depends on the shell:
@@ -233,13 +262,7 @@ launch reopens the shell there. How the directory is detected depends on the she
 - **cmd**: automatic.
 - **nushell**: automatic. For exact results while a long-running program is open, add
   `$env.config.shell_integration.osc9_9 = true` to `config.nu`.
-- **PowerShell**: `Set-Location` doesn't change the process directory, so add a prompt
-  hook to `$PROFILE`:
-
-  ```powershell
-  function prompt { "PS $($executionContext.SessionState.Path.CurrentLocation)$('>' * ($nestedPromptLevel + 1)) $([char]27)]9;9;$($executionContext.SessionState.Path.CurrentLocation.ProviderPath)$([char]27)\" }
-  ```
-
+- **PowerShell**: automatic (shell integration, below, sets it up at launch).
 - **WSL**: the Linux directory isn't visible from Windows. Add this to the distro's
   `~/.bashrc` (for zsh, put the `printf` in a `precmd()` function) and restore re-enters
   WSL in the saved directory:
@@ -248,6 +271,31 @@ launch reopens the shell there. How the directory is detected depends on the she
   __browser_cwd() { printf '\e]9;9;\\\\wsl.localhost\\%s%s\e\\' "$WSL_DISTRO_NAME" "${PWD//\//\\}"; }
   PROMPT_COMMAND=__browser_cwd
   ```
+
+### Shell integration
+
+The terminal knows where each prompt, command and its output is, so:
+
+- In copy mode, `[` and `]` jump to the previous and next prompt, and `Y` copies the
+  output of the command the cursor is in.
+- A command that failed gets a red mark beside its prompt.
+- When a command that ran 5 seconds or more finishes in a terminal you're not looking
+  at, its tab shows ✓ (it worked), ✗ (it failed) or • (no result reported, or the
+  terminal rang the bell) until you look; if the browser isn't in front, the taskbar
+  flashes too.
+
+PowerShell and cmd are set up automatically when the terminal starts (PowerShell keeps
+whatever prompt your profile sets, starship and oh-my-posh included); cmd can't report
+exit codes, so its commands get no ✗. Nushell marks its prompts by itself. For bash or
+zsh (WSL), add the marks to the prompt, for example in `~/.bashrc`:
+
+  ```bash
+  PS0='\[\e]133;C\a\]'
+  PS1='\[\e]133;D;$?\a\e]133;A\a\]'"$PS1"'\[\e]133;B\a\]'
+  ```
+
+`:set term.shell_integration off` turns all of this off (for terminals opened after),
+and `:set term.notify_done off` just the tab marks.
 
 ## Ad blocking and privacy
 
@@ -285,7 +333,7 @@ Other protections and toggles:
 their values; `:set tabs.speaker off` switches one off, `:set tabs.speaker default`
 brings back the default, `:set tabs.speaker` on its own flips it, and
 `:set tabs.speaker?` says what it does. They live in
-the `[tabs]` table of `config.toml` (`:theme` opens it), and `:ai` can change them too
+the `[tabs]` and `[term]` tables of `config.toml` (`:theme` opens it), and `:ai` can change them too
 ("load all my tabs at startup").
 
 | Setting | Default | What it does |
@@ -293,6 +341,19 @@ the `[tabs]` table of `config.toml` (`:theme` opens it), and `:ai` can change th
 | `tabs.lazy_load` | on | Restored tabs load only when first shown; off loads every tab at launch. |
 | `tabs.speaker` | on | A speaker on tabs playing sound, crossed out while muted. |
 | `tabs.hover_buttons` | on | Hovering a tab widens it and shows its close and mute buttons. |
+| `term.mouse_reporting` | on | Terminal programs that use the mouse get clicks, drags and the wheel (`Shift`+drag still selects). |
+| `term.text_styles` | on | Terminals draw bold, italic, dim, underlined and struck-through text. |
+| `term.cursor_shape` | on | The terminal cursor takes the shape programs ask for and turns hollow without the keyboard; off is always a solid block. |
+| `term.cursor_blink` | on | The terminal cursor blinks (it stops after 5 seconds idle), unless a program asks for a steady one. |
+| `term.clipboard_write` | on | Terminal programs can copy to the clipboard. |
+| `term.visual_bell` | on | The terminal flashes when a program rings the bell. |
+| `term.links` | on | Terminal links open in a new tab (`Ctrl`+click, or `s` in copy mode / `Ctrl+Shift+O` while typing to label them). |
+| `term.search` | on | `/` in a terminal's copy mode searches its whole scrollback. |
+| `term.shell_integration` | on | Terminals know their prompts: `[`/`]` jump between them and `Y` copies a command's output in copy mode, failed commands are marked; PowerShell and cmd are set up automatically. |
+| `term.notify_done` | on | A command that ran 5s+ finishing (or the bell) in a terminal off screen marks its tab with ✓/✗/•, and flashes the taskbar when the browser isn't in front. |
+| `term.kitty_keyboard` | on | Terminal programs can use the kitty keyboard protocol (Ctrl+I apart from Tab, Ctrl+Shift chords, key releases). |
+| `term.ime` | on | Input methods (Japanese/Chinese/Korean IME, the emoji panel) type into terminals, with their window at the cursor. |
+| `term.bundled_conpty` | on | New terminals run under the bundled Microsoft ConPTY (what Windows Terminal ships); off uses Windows' own console host. |
 - Private tabs (`:open -n`) are never saved to the session or the closed-tab list.
 
 ## Command bar tricks

@@ -139,6 +139,71 @@ pub(crate) const SETTINGS: &[Setting] = &[
         default: true,
         desc: "hovering a tab widens it and shows its close and mute buttons",
     },
+    Setting {
+        key: "term.mouse_reporting",
+        default: true,
+        desc: "terminal programs that read the mouse (htop, lazygit, vim) get clicks, drags and the wheel; Shift+drag still selects",
+    },
+    Setting {
+        key: "term.text_styles",
+        default: true,
+        desc: "terminals draw bold, italic, dim, underlined and struck-through text",
+    },
+    Setting {
+        key: "term.cursor_shape",
+        default: true,
+        desc: "the terminal cursor takes the shape programs ask for (bar, underline) and turns hollow when the terminal doesn't have the keyboard",
+    },
+    Setting {
+        key: "term.cursor_blink",
+        default: true,
+        desc: "the terminal cursor blinks, unless a program asks for a steady one",
+    },
+    Setting {
+        key: "term.clipboard_write",
+        default: true,
+        desc: "terminal programs can copy to the clipboard (nvim, tmux, also over SSH)",
+    },
+    Setting {
+        key: "term.visual_bell",
+        default: true,
+        desc: "the terminal flashes when a program rings the bell",
+    },
+    Setting {
+        key: "term.links",
+        default: true,
+        desc: "links in a terminal open in a new tab: Ctrl+click one, or label them all with s in copy mode (Ctrl+Shift+O while typing)",
+    },
+    Setting {
+        key: "term.search",
+        default: true,
+        desc: "/ in a terminal's copy mode searches its whole scrollback (n goes further back, N forward)",
+    },
+    Setting {
+        key: "term.bundled_conpty",
+        default: true,
+        desc: "new terminals use the bundled Microsoft ConPTY (what Windows Terminal ships): colour queries, styled underlines, faster output; off uses Windows' own console host",
+    },
+    Setting {
+        key: "term.shell_integration",
+        default: true,
+        desc: "terminals know where each prompt and command is: [ and ] jump between prompts in copy mode, Y copies a command's output, failed commands get a red mark (PowerShell and cmd are set up automatically)",
+    },
+    Setting {
+        key: "term.notify_done",
+        default: true,
+        desc: "a command that ran 5s+ finishing (or the bell) in a terminal you're not looking at marks its tab with ✓/✗/•, and flashes the taskbar when the browser isn't in front",
+    },
+    Setting {
+        key: "term.kitty_keyboard",
+        default: true,
+        desc: "terminal programs can use the kitty keyboard protocol (nvim, helix, fish): Ctrl+I apart from Tab, Ctrl+Shift chords, key releases",
+    },
+    Setting {
+        key: "term.ime",
+        default: true,
+        desc: "input methods (Japanese, Chinese, Korean IME, the emoji panel Win+.) type into terminals, with their window at the cursor",
+    },
 ];
 
 /// Parse a setting's value as typed: `on`/`off` (and `true`/`false`, `yes`/`no`,
@@ -160,6 +225,19 @@ impl Config {
             "tabs.lazy_load" => self.tabs.lazy_load,
             "tabs.speaker" => self.tabs.speaker,
             "tabs.hover_buttons" => self.tabs.hover_buttons,
+            "term.mouse_reporting" => self.term.mouse_reporting,
+            "term.text_styles" => self.term.text_styles,
+            "term.cursor_shape" => self.term.cursor_shape,
+            "term.cursor_blink" => self.term.cursor_blink,
+            "term.clipboard_write" => self.term.clipboard_write,
+            "term.visual_bell" => self.term.visual_bell,
+            "term.links" => self.term.links,
+            "term.search" => self.term.search,
+            "term.bundled_conpty" => self.term.bundled_conpty,
+            "term.shell_integration" => self.term.shell_integration,
+            "term.notify_done" => self.term.notify_done,
+            "term.kitty_keyboard" => self.term.kitty_keyboard,
+            "term.ime" => self.term.ime,
             _ => return None,
         })
     }
@@ -169,6 +247,19 @@ impl Config {
             "tabs.lazy_load" => &mut self.tabs.lazy_load,
             "tabs.speaker" => &mut self.tabs.speaker,
             "tabs.hover_buttons" => &mut self.tabs.hover_buttons,
+            "term.mouse_reporting" => &mut self.term.mouse_reporting,
+            "term.text_styles" => &mut self.term.text_styles,
+            "term.cursor_shape" => &mut self.term.cursor_shape,
+            "term.cursor_blink" => &mut self.term.cursor_blink,
+            "term.clipboard_write" => &mut self.term.clipboard_write,
+            "term.visual_bell" => &mut self.term.visual_bell,
+            "term.links" => &mut self.term.links,
+            "term.search" => &mut self.term.search,
+            "term.bundled_conpty" => &mut self.term.bundled_conpty,
+            "term.shell_integration" => &mut self.term.shell_integration,
+            "term.notify_done" => &mut self.term.notify_done,
+            "term.kitty_keyboard" => &mut self.term.kitty_keyboard,
+            "term.ime" => &mut self.term.ime,
             _ => return None,
         })
     }
@@ -338,6 +429,53 @@ pub(crate) struct TermConfig {
     /// Terminal default text colour (name or hex) — overrides the scheme's.
     #[serde(default)]
     pub(crate) fg: Option<String>,
+    /// Programs that read the mouse (htop, lazygit, vim `mouse=a`) get clicks, drags
+    /// and the wheel. One of the [`SETTINGS`].
+    #[serde(default)]
+    pub(crate) mouse_reporting: Option<bool>,
+    /// Bold, italic, dim, underlined and struck-through text is drawn as such.
+    #[serde(default)]
+    pub(crate) text_styles: Option<bool>,
+    /// The cursor takes the shape programs ask for (a bar, an underline) and turns
+    /// hollow while the terminal doesn't have the keyboard.
+    #[serde(default)]
+    pub(crate) cursor_shape: Option<bool>,
+    /// The cursor blinks (unless a program asks for a steady one).
+    #[serde(default)]
+    pub(crate) cursor_blink: Option<bool>,
+    /// Programs can copy to the clipboard (OSC 52: nvim, tmux, over SSH too).
+    #[serde(default)]
+    pub(crate) clipboard_write: Option<bool>,
+    /// The terminal flashes when a program rings the bell.
+    #[serde(default)]
+    pub(crate) visual_bell: Option<bool>,
+    /// Links in a terminal open in a new tab: Ctrl+click, or Ctrl+Shift+O to label
+    /// them all.
+    #[serde(default)]
+    pub(crate) links: Option<bool>,
+    /// `/` in a terminal's copy mode searches its scrollback.
+    #[serde(default)]
+    pub(crate) search: Option<bool>,
+    /// New terminals run under the bundled Microsoft ConPTY instead of Windows' own
+    /// console host. See [`bundled_conpty`](crate::bundled_conpty).
+    #[serde(default)]
+    pub(crate) bundled_conpty: Option<bool>,
+    /// Shell integration: PowerShell and cmd mark their prompts (set up at launch),
+    /// copy mode jumps between prompts and copies a command's output, failed commands
+    /// are marked.
+    #[serde(default)]
+    pub(crate) shell_integration: Option<bool>,
+    /// A long command finishing (or the bell) in a terminal off screen marks its tab,
+    /// and flashes the taskbar when the browser isn't in front.
+    #[serde(default)]
+    pub(crate) notify_done: Option<bool>,
+    /// Programs can turn on the kitty keyboard protocol (nvim, helix, fish, …).
+    #[serde(default)]
+    pub(crate) kitty_keyboard: Option<bool>,
+    /// Input methods (Japanese, Chinese, Korean IME, the emoji panel) type into
+    /// terminals, with their composition window at the cursor.
+    #[serde(default)]
+    pub(crate) ime: Option<bool>,
 }
 
 /// Location of the config file (plain TOML in the app data dir, beside the session).

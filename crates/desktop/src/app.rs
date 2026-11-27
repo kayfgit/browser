@@ -544,6 +544,12 @@ pub(crate) struct App {
     /// When the window last gained focus — used to swallow the stray `Tab` that
     /// Alt+Tab delivers to a focused terminal.
     pub(crate) last_focus_gain: Instant,
+    /// Whether the window has the OS focus (a terminal's cursor goes hollow without).
+    pub(crate) window_focused: bool,
+    /// When the terminal cursor's blink cycle last restarted: typing, output and
+    /// focus restart it with the cursor showing, and it stops blinking (stays shown)
+    /// [`BLINK_TIMEOUT`](crate::term::BLINK_TIMEOUT) after.
+    pub(crate) term_blink_at: Instant,
     /// Visited URLs with their visit times, most recent first. Drives command-bar
     /// autocomplete for `:open <partial>` and `:history`; persisted in the session.
     pub(crate) visited: crate::visited::Visited,
@@ -659,6 +665,38 @@ pub(crate) struct App {
     /// `(when, x, y, count)` of the last press. A press near the same spot within
     /// [`MULTI_CLICK`](crate::term::MULTI_CLICK) grows `count` (2 = word, 3 = line).
     pub(crate) term_clicks: Option<(Instant, f64, f64, u8)>,
+    /// A mouse button whose press went to a terminal program (it reads the mouse),
+    /// so its drag and release go there too. See
+    /// [`term_mouse_press`](App::term_mouse_press).
+    pub(crate) term_mouse_held: Option<crate::term::TermMouseHeld>,
+    /// The terminal and cell the last button-less motion report named, so a program
+    /// tracking every motion (DEC 1003) hears once per cell crossed.
+    pub(crate) term_mouse_hover: Option<(usize, (u32, u32))>,
+    /// Wheel movement over a terminal not yet turned into whole lines or notches
+    /// (a precision touchpad sends fractions). See [`take_wheel_steps`](crate::term::take_wheel_steps).
+    pub(crate) term_wheel_acc: f64,
+    /// The terminal and link the pointer is over while Ctrl is held (drawn underlined).
+    pub(crate) term_link_hover: Option<(
+        usize,
+        (
+            alacritty_terminal::index::Point,
+            alacritty_terminal::index::Point,
+        ),
+    )>,
+    /// Hint mode was entered from a terminal's Passthrough (Ctrl+Shift+O): Esc goes
+    /// back to typing in it.
+    pub(crate) hint_back_to_passthrough: bool,
+    /// Text an input method just committed (and when), so the same characters
+    /// arriving again as key events aren't typed twice. See
+    /// [`is_ime_echo`](App::is_ime_echo).
+    pub(crate) ime_committed: Option<(String, Instant)>,
+    /// Where the IME composition window was last placed (window pixels).
+    pub(crate) ime_pos: Option<(i32, i32)>,
+    /// When the window was last painted, for pacing output-driven repaints.
+    pub(crate) last_draw: Instant,
+    /// A repaint terminal output asked for, held until this frame slot (see
+    /// [`request_term_redraw`](App::request_term_redraw)).
+    pub(crate) term_redraw_at: Option<Instant>,
     /// True while the browser is frozen (`:freeze`): every web tab's view is dropped so
     /// the engine exits; the content band shows a frozen notice instead of
     /// the pages. `:unfreeze` rebuilds them. See [`freeze`](crate::freeze).
@@ -1477,18 +1515,7 @@ impl App {
             return;
         };
         if self.tabs.get(tab).is_some_and(|t| t.term().is_some()) {
-            // If the program enabled mouse reporting (vim `mouse=a`, less, tmux…),
-            // hand it the wheel so IT scrolls; otherwise page our own scrollback.
-            if self.term_mouse_wheel(tab, rect, dy_lines) {
-                return;
-            }
-            let lines = (dy_lines * 3.0).round() as i32;
-            if lines != 0 {
-                if let Some(s) = self.tabs.get_mut(tab).and_then(|t| t.term_mut()) {
-                    s.pty.scroll_display(lines);
-                    self.window.request_redraw();
-                }
-            }
+            self.term_wheel(tab, rect, dy_lines);
             return;
         }
         // Native read pane: scroll its own pixel offset, clamped to its pane height.
